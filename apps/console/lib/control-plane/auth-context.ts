@@ -1,0 +1,65 @@
+import { createRemoteJWKSet, jwtVerify } from "jose";
+
+export type ActorRole = "admin" | "operator" | "reviewer" | "analyst";
+
+export type RequestContext = {
+  tenantId: string;
+  actorId: string;
+  actorName: string;
+  role: ActorRole;
+};
+
+const roles = new Set<ActorRole>(["admin", "operator", "reviewer", "analyst"]);
+
+export const demoRequestContext: RequestContext = {
+  tenantId: "tenant_demo",
+  actorId: "user_lin",
+  actorName: "林晓",
+  role: "operator"
+};
+
+export async function requestContextFrom(request: Request): Promise<RequestContext> {
+  if (process.env.NODE_ENV === "production") return contextFromBearerToken(request);
+
+  const tenantId = request.headers.get("x-tenant-id");
+  const actorId = request.headers.get("x-actor-id");
+  const actorName = request.headers.get("x-actor-name");
+  const role = request.headers.get("x-actor-role");
+
+  if (!tenantId || !actorId || !actorName || !role) return demoRequestContext;
+
+  if (!roles.has(role as ActorRole)) throw new Response("Invalid actor role", { status: 403 });
+  return { tenantId, actorId, actorName, role: role as ActorRole };
+}
+
+async function contextFromBearerToken(request: Request): Promise<RequestContext> {
+  const authorization = request.headers.get("authorization");
+  if (!authorization?.startsWith("Bearer ")) throw new Response("Missing bearer token", { status: 401 });
+  const issuer = process.env.OIDC_ISSUER_URL;
+  const audience = process.env.OIDC_AUDIENCE;
+  const jwksUrl = process.env.OIDC_JWKS_URL;
+  if (!issuer || !audience || !jwksUrl) throw new Error("OIDC_ISSUER_URL, OIDC_AUDIENCE, and OIDC_JWKS_URL are required in production");
+
+  try {
+    const keys = createRemoteJWKSet(new URL(jwksUrl));
+    const { payload } = await jwtVerify(authorization.slice(7), keys, { issuer, audience });
+    const tenantId = stringClaim(payload, "tenant_id");
+    const role = stringClaim(payload, "role");
+    const actorId = stringClaim(payload, "sub");
+    if (!tenantId || !actorId || !role || !roles.has(role as ActorRole)) throw new Response("Token does not contain a valid tenant role", { status: 403 });
+    const actorName = stringClaim(payload, "name") ?? stringClaim(payload, "preferred_username") ?? actorId;
+    return { tenantId, actorId, actorName, role: role as ActorRole };
+  } catch (error) {
+    if (error instanceof Response) throw error;
+    throw new Response("Bearer token verification failed", { status: 401 });
+  }
+}
+
+function stringClaim(payload: Record<string, unknown>, claim: string) {
+  const value = payload[claim];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+export function requireRole(context: RequestContext, allowed: ActorRole[]) {
+  if (!allowed.includes(context.role)) throw new Response("Insufficient permission", { status: 403 });
+}

@@ -1,0 +1,20 @@
+{
+  "name": "shuzhiren",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Commercial digital-human live operations platform",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @shuzhiren/console",
+    "build": "npm run build --workspace @shuzhiren/console",
+    "lint": "npm run lint --workspace @shuzhiren/console",
+    "typecheck": "npm run typecheck --workspace @shuzhiren/console",
+    "db:migrate": "npm run db:migrate --workspace @shuzhiren/console",
+    "worker:runtime": "npm run start --workspace @shuzhiren/runtime-worker"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

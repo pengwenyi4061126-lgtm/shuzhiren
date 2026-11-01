@@ -1,0 +1,29 @@
+# Secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+.runtime-env
+secrets/
+
+# Licensed media, identity assets, and session evidence
+assets/raw/
+assets/voice/
+assets/portraits/
+recordings/
+exports/
+
+# Model weights and runtime caches
+models/
+weights/
+cache/
+logs/
+__pycache__/
+*.py[cod]
+
+# Node and editor artifacts
+node_modules/
+.npm-cache/
+.next/
+*.tsbuildinfo
+.idea/
+.vscode/

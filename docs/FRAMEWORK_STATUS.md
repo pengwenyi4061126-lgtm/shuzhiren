@@ -1,0 +1,16 @@
+# 框架状态
+
+当前代码仓库已经具备不依赖 GPU 的产品框架：
+
+| 模块 | 当前状态 | 4090 到位后如何接入 |
+| --- | --- | --- |
+| Web 控制台 | 可运行，生产 API 强制 OIDC JWT 并从 claims 解析租户和角色 | 配置真实 OIDC 提供商、SSO 和成员同步 |
+| 控制面命令 | 直播场次、状态迁移、幂等命令与媒体 outbox 均具备开发内存/PostgreSQL Repository 双模式 | 在 PostgreSQL 上做并发、断网和重试集成测试；后续接 Redis 队列 |
+| 商品事实与预检 | 商品、版本创建、审批、批准版本查询、节目段落和预检硬校验均具备开发内存/PostgreSQL Repository 双模式 | 接 ERP/PIM、审核后台，并在 PostgreSQL 上做并发版本创建测试 |
+| 策略引擎 | 基础规则与 API 已建立 | 增加策略包、检索证据和红队测试集 |
+| 渠道适配 | 渠道连接、能力矩阵、密钥引用与预检校验已建立 | 每个平台实现独立 Adapter、OAuth/Webhook 与商品同步 |
+| 媒体运行时 | Runtime Gateway、源码锁定、LiveTalking/CosyVoice 音频链路和 GPU Compose 已建立 | 租机后下载受许可权重，完成 4090 端到端压测与 durable outbox 投递 |
+| 数据库 | 完整迁移、RLS、OIDC 操作者同步、直播场次、商品事实和节目单 Repository 已建立 | 租机后启动 PostgreSQL、执行迁移并迁移素材/渠道 Repository |
+| 基础设施 | Compose、CI、运行遥测上报接口、阈值告警和监控页已建立 | 部署到 Linux 服务器，注入运行时服务令牌，接入 Gateway/Prometheus 指标和通知通道 |
+
+不需要等待 4090 的工作：完整后台页面、认证、SKU/场次审批、PostgreSQL Repository、策略测试、渠道适配、审计、部署自动化。

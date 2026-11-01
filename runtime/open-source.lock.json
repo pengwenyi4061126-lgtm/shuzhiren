@@ -1,0 +1,7 @@
+{
+  "components": [
+    { "name": "MuseTalk", "repository": "https://github.com/TMElyralab/MuseTalk.git", "commit": "0a89dec45a0192b824e3cf4daf96c239440c5ed8", "license": "MIT", "role": "authorized portrait lip-sync inference" },
+    { "name": "CosyVoice", "repository": "https://github.com/FunAudioLLM/CosyVoice.git", "commit": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc", "license": "Apache-2.0", "role": "streaming text-to-speech service" },
+    { "name": "LiveTalking", "repository": "https://github.com/lipku/LiveTalking.git", "commit": "c7269433a2b6ecebcd9342445d2ecc882c98b0da", "license": "Apache-2.0", "role": "avatar session, WebRTC and RTMP output adapter" }
+  ]
+}
