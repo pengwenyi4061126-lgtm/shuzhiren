@@ -135,11 +135,32 @@ async function markFailed(event, lastError) {
 }
 
 async function deliver(event) {
-  if (event.event_type !== "media.dispatch") throw new Error(`Unsupported event type: ${event.event_type}`);
-  const { sessionId, command } = event.payload;
-  const response = await fetch(`${gatewayUrl}/v1/media`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${gatewayToken}` }, body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type }) });
+  const request = deliveryRequest(event);
+  const response = await fetch(`${gatewayUrl}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${gatewayToken}` }, body: JSON.stringify(request.body) });
   if (!response.ok) throw new Error(`Runtime gateway returned ${response.status}: ${await response.text()}`);
 }
+
+function deliveryRequest(event) {
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) throw new Error("Invalid outbox payload");
+  if (event.event_type === "media.dispatch") {
+    const { sessionId, command } = event.payload;
+    if (!sessionIdValid(sessionId) || !command || typeof command !== "object" || Array.isArray(command)) throw new Error("Invalid media dispatch payload");
+    if (!commandIdValid(command.id) || !["start_program", "switch_to_fallback", "switch_to_human", "stop_program"].includes(command.type)) throw new Error("Invalid media command");
+    return { path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type } };
+  }
+  if (event.event_type === "speech.dispatch") {
+    const { sessionId, command } = event.payload;
+    if (!sessionIdValid(sessionId) || !command || typeof command !== "object" || Array.isArray(command)) throw new Error("Invalid speech dispatch payload");
+    if (!commandIdValid(command.id) || !sessionIdValid(command.runId) || typeof command.text !== "string" || command.text.length < 1 || command.text.length > 800) throw new Error("Invalid speech command");
+    if (typeof command.voice !== "string" || command.voice.length < 1 || command.voice.length > 128 || typeof command.interrupt !== "boolean") throw new Error("Invalid speech options");
+    if (!sessionIdValid(command.productVersionId) || !Number.isInteger(command.productRevision) || command.productRevision < 1) throw new Error("Invalid speech evidence");
+    return { path: "/v1/speak", body: { command_id: command.id, session_id: sessionId, text: command.text, interrupt: command.interrupt, voice: command.voice, provider: "cosyvoice" } };
+  }
+  throw new Error(`Unsupported event type: ${event.event_type}`);
+}
+
+function commandIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+function sessionIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 
 async function tick() {
   const now = Date.now();

@@ -1,4 +1,5 @@
 import type { MediaCommand } from "@/lib/media-protocol";
+import type { SpeechCommand } from "@/lib/speech-protocol";
 
 type RuntimeGatewayConfig = { url?: string; token?: string; demoMode: boolean };
 
@@ -27,5 +28,17 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
     body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type })
   });
   if (!response.ok) throw new Error(`Runtime gateway rejected media command: ${response.status}`);
+  return { delivery: "accepted" as const, provider: await response.json() as unknown };
+}
+
+export async function dispatchSpeechCommand(command: SpeechCommand, sessionId: string) {
+  const config = runtimeGatewayConfig();
+  if (config.demoMode) return { delivery: "demo" as const };
+  const response = await fetch(`${config.url}/v1/speak`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+    body: JSON.stringify({ command_id: command.id, session_id: sessionId, text: command.text, voice: command.voice, interrupt: command.interrupt })
+  });
+  if (!response.ok) throw new Error(`Runtime gateway rejected speech command: ${response.status}`);
   return { delivery: "accepted" as const, provider: await response.json() as unknown };
 }

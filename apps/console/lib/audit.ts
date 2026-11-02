@@ -39,17 +39,19 @@ export async function recordAuditEvent(context: RequestContext, input: Omit<Audi
     auditStore().events.unshift(event);
     return event;
   }
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
-    const result = await client.query<PersistentAuditRow>(
-      `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
-       values ($1, $2, $3, $4, $5::uuid, $6, $7::jsonb)
-       returning id, tenant_id, event_type, resource_type, resource_key, $8::text as external_subject,
-         $9::text as actor_name, occurred_at, detail`,
-      [context.tenantId, actor.rows[0].id, input.type, input.resource, asUuid(input.resourceId), input.resourceId, JSON.stringify(input.detail), context.actorId, context.actorName]
-    );
-    return persistentAuditEvent(result.rows[0]);
-  });
+  return withTenantTransaction(context.tenantId, async (client) => recordAuditEventInTransaction(client, context, input));
+}
+
+export async function recordAuditEventInTransaction(client: import("pg").PoolClient, context: RequestContext, input: Omit<AuditEvent, "id" | "tenantId" | "actorId" | "actorName" | "occurredAt">) {
+  const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
+  const result = await client.query<PersistentAuditRow>(
+    `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+     values ($1, $2, $3, $4, $5::uuid, $6, $7::jsonb)
+     returning id, tenant_id, event_type, resource_type, resource_key, $8::text as external_subject,
+       $9::text as actor_name, occurred_at, detail`,
+    [context.tenantId, actor.rows[0].id, input.type, input.resource, asUuid(input.resourceId), input.resourceId, JSON.stringify(input.detail), context.actorId, context.actorName]
+  );
+  return persistentAuditEvent(result.rows[0]);
 }
 
 export async function listAuditEvents(context: RequestContext) {

@@ -52,13 +52,14 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 
 - `GET /api/v1/runtime/health`：检查 Gateway 是否可用；本地开发返回 `demo`。
 - `POST /api/v1/runtime/media`：向已存在的直播运行派发媒体命令。需要 `admin` 或 `operator`，且会写审计事件。
-- Gateway 的 `POST /v1/speak`：默认走 CosyVoice -> WAV -> LiveTalking `/humanaudio`，`provider: "livetalking"` 才允许使用 LiveTalking 的回读模式。
+- `POST /api/v1/live-runs/{runId}/speech-dispatches`：只接收观众问题与幂等键，不接收自由播报文本。控制面仅在场次直播中、已绑定真实会话、冻结商品版本仍获批准且策略允许时，从已批准商品事实生成文案并写入 `speech.dispatch`；高风险问题仅返回人工接管结论，不会入队。
+- Gateway 的 `POST /v1/speak`：必须带 outbox 生成的 `command_id`；默认走 CosyVoice -> WAV -> LiveTalking `/humanaudio`，`provider: "livetalking"` 才允许使用 LiveTalking 的回读模式。与媒体命令共用有界幂等缓存，网络重试不会重复播报相同语音。
 - Gateway 的 `POST /v1/media`：只接受 `start_program`、`switch_to_fallback`、`switch_to_human`、`stop_program`。开播会选择 `PROGRAM_AUDIOTYPE` 并开始录制；回退和人工接管会先打断当前语音再切换到各自固定动作；结束会中断语音并结束录制。三个动作索引必须在已批准的 LiveTalking Avatar 包中配置。
 - Gateway 的 `GET /healthz` 会实际请求 LiveTalking 的 `/api/admin/sessions`，而不是只检查环境变量；CosyVoice 通过 `/openapi.json` 探测。若 `COSYVOICE_REQUIRED=true`，CosyVoice 不可用会让 Gateway 健康检查返回 `503`。
 - 每个 `POST /v1/media` 必须带来自 outbox 的 `command_id`。Gateway 在有界 TTL 内对相同命令返回先前结果，拒绝同一 ID 的不同载荷，避免网络重试重复执行录制、切换或停止动作；数据库 outbox 仍保存长期投递状态和审计记录。
 - 每个 `live_run` 必须先绑定 LiveTalking 创建时返回的真实 `sessionid`；媒体 outbox 将该绑定值作为下游会话参数，不能将控制面场次 UUID 直接当作 LiveTalking 会话 ID。
 
-媒体命令当前先写入开发态 outbox，再由投递接口发送；状态包含 `pending`、`delivering`、`delivered` 与 `failed`，重复投递保持幂等。排期开播不会在创建 outbox 时直接标为 `LIVE`：`live_runs.scheduled_start_event_id` 绑定唯一开播事件，Gateway 成功确认后才切换状态；失败会保留 `ARMED` 与失败事件，供场控重试，避免“控制台显示已开播而推流没有启动”。生产 worker 将 `available_at` 作为领取租约：崩溃后超过 `OUTBOX_LEASE_SECONDS` 的 `delivering` 事件可被其他 worker 重领；失败按 `OUTBOX_RETRY_BASE_MS` 到 `OUTBOX_RETRY_MAX_MS` 指数退避，达到 `OUTBOX_MAX_ATTEMPTS` 后保留为 `failed` 并记录 `outbox.exhausted`。不能把网络调用塞进数据库事务或在状态转换后静默失败。
+媒体与语音命令当前先写入开发态 outbox，再由投递接口发送；状态包含 `pending`、`delivering`、`delivered` 与 `failed`，重复投递保持幂等。`POST /api/v1/live-runs/:runId/speech-dispatches` 仅允许 `admin`/`operator` 发送 `{ question, idempotencyKey }`：控制面只会用冻结的已批准商品事实生成 `ready` 文案；高风险问题返回人工接管而不会创建 outbox。`idempotencyKey` 是安全 ID（UUID 可用）且同时作为语音命令 ID；同一租户重复提交会返回既有事件，而非再次播报。`speech.dispatch` 载荷必须包含运行时会话、命令 ID、播报文本、已批准声线和冻结商品版本证据；worker 只把它投给 Gateway 的 CosyVoice 链路。排期开播不会在创建 outbox 时直接标为 `LIVE`：`live_runs.scheduled_start_event_id` 绑定唯一开播事件，Gateway 成功确认后才切换状态；失败会保留 `ARMED` 与失败事件，供场控重试，避免“控制台显示已开播而推流没有启动”。生产 worker 将 `available_at` 作为领取租约：崩溃后超过 `OUTBOX_LEASE_SECONDS` 的 `delivering` 事件可被其他 worker 重领；失败按 `OUTBOX_RETRY_BASE_MS` 到 `OUTBOX_RETRY_MAX_MS` 指数退避，达到 `OUTBOX_MAX_ATTEMPTS` 后保留为 `failed` 并记录 `outbox.exhausted`。不能把网络调用塞进数据库事务或在状态转换后静默失败。
 
 `apps/runtime-worker` 是生产投递器：它只从不承载业务数据的 `tenants` 表读取租户 ID，然后在每个领取、排期和状态回写事务中设置 `app.tenant_id`，再使用 `FOR UPDATE SKIP LOCKED` 处理该租户的待投递事件。轮询游标会在租户间轮转，避免一个租户的积压长期饿死其他租户；业务表仍受强制 RLS 保护，worker 不需要也不得拥有 `BYPASSRLS`。它调用 Gateway，并记录成功/失败和尝试次数，仅运行在私有网络，不接受浏览器请求。
 

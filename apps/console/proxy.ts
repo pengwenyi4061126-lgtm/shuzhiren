@@ -72,7 +72,7 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
   if (method === "POST") {
     if (path === "/api/v1/assets" || path === "/api/v1/channels/connections" || path === "/api/v1/live-runs" || path === "/api/v1/releases" || path === "/api/v1/products" || /^\/api\/v1\/products\/[^/]+\/versions$/.test(path)) return operatorRoles;
     if (/^\/api\/v1\/assets\/[^/]+\/approve$/.test(path) || /^\/api\/v1\/releases\/[^/]+\/approve$/.test(path) || /^\/api\/v1\/products\/[^/]+\/versions\/[^/]+\/approve$/.test(path)) return reviewerRoles;
-    if (/^\/api\/v1\/channels\/connections\/[^/]+\/verify$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/(commands|interactions|response-drafts)$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/interactions\/[^/]+\/handle$/.test(path) || path === "/api/v1/runtime/media" || /^\/api\/v1\/runtime\/outbox\/[^/]+\/deliver$/.test(path)) return operatorRoles;
+    if (/^\/api\/v1\/channels\/connections\/[^/]+\/verify$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/(commands|interactions|response-drafts|speech-dispatches)$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/interactions\/[^/]+\/handle$/.test(path) || path === "/api/v1/runtime/media" || /^\/api\/v1\/runtime\/outbox\/[^/]+\/deliver$/.test(path)) return operatorRoles;
     if (path === "/api/v1/policy/evaluate") return ["admin", "operator", "reviewer"];
     if (/^\/api\/v1\/live-runs\/[^/]+\/lifecycle$/.test(path)) return lifecycleRoles(request);
   }

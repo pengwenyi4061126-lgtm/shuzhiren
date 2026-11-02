@@ -20,10 +20,11 @@ REQUEST_TIMEOUT_SECONDS = float(os.environ.get("RUNTIME_REQUEST_TIMEOUT_SECONDS"
 COSYVOICE_REQUIRED = os.environ.get("COSYVOICE_REQUIRED", "false").lower() == "true"
 MEDIA_COMMAND_CACHE_TTL_SECONDS = float(os.environ.get("MEDIA_COMMAND_CACHE_TTL_SECONDS", "3600"))
 MEDIA_COMMAND_CACHE_MAX_ENTRIES = int(os.environ.get("MEDIA_COMMAND_CACHE_MAX_ENTRIES", "2048"))
-media_command_lock = asyncio.Lock()
-media_command_cache: OrderedDict[str, dict] = OrderedDict()
+runtime_command_lock = asyncio.Lock()
+runtime_command_cache: OrderedDict[str, dict] = OrderedDict()
 
 class SpeakRequest(BaseModel):
+    command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     text: str = Field(min_length=1, max_length=800)
     interrupt: bool = False
@@ -70,13 +71,13 @@ async def service_health(url: str, path: str, expected_code: int | None = None) 
         return {"available": False}
     return {"available": True}
 
-def prune_media_command_cache(now: float) -> None:
+def prune_runtime_command_cache(now: float) -> None:
     expiry = now - MEDIA_COMMAND_CACHE_TTL_SECONDS
-    while media_command_cache:
-        oldest_id, oldest = next(iter(media_command_cache.items()))
-        if oldest["completed_at"] >= expiry and len(media_command_cache) <= MEDIA_COMMAND_CACHE_MAX_ENTRIES:
+    while runtime_command_cache:
+        oldest_id, oldest = next(iter(runtime_command_cache.items()))
+        if oldest["completed_at"] >= expiry and len(runtime_command_cache) <= MEDIA_COMMAND_CACHE_MAX_ENTRIES:
             break
-        media_command_cache.pop(oldest_id)
+        runtime_command_cache.pop(oldest_id)
 
 def pcm_to_wav(pcm: bytes) -> bytes:
     output = BytesIO()
@@ -129,27 +130,42 @@ async def healthz() -> JSONResponse:
 @app.post("/v1/speak")
 async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
     authorize(authorization)
-    if request.provider == "cosyvoice":
-        if not request.voice:
-            raise HTTPException(status_code=400, detail="CosyVoice speaker id is required")
-        if request.interrupt:
-            await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
-        await livetalking_audio(request.session_id, await cosyvoice_synthesize(request.text, request.voice))
-        return {"accepted": True, "provider": "cosyvoice_to_livetalking", "mode": "audio"}
-    tts = {"voice": request.voice} if request.voice else {}
-    await livetalking_post("/human", {"sessionid": request.session_id, "text": request.text, "type": "echo", "interrupt": request.interrupt, "tts": tts})
-    return {"accepted": True, "provider": "livetalking", "mode": "echo"}
+    identity = {"session_id": request.session_id, "text": request.text, "interrupt": request.interrupt, "voice": request.voice, "provider": request.provider}
+    async with runtime_command_lock:
+        now = time.monotonic()
+        prune_runtime_command_cache(now)
+        cached = runtime_command_cache.get(request.command_id)
+        if cached:
+            if cached["kind"] != "speech" or cached["identity"] != identity:
+                raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
+            return {**cached["response"], "duplicate": True}
+
+        if request.provider == "cosyvoice":
+            if not request.voice:
+                raise HTTPException(status_code=400, detail="CosyVoice speaker id is required")
+            if request.interrupt:
+                await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
+            await livetalking_audio(request.session_id, await cosyvoice_synthesize(request.text, request.voice))
+            result = {"accepted": True, "provider": "cosyvoice_to_livetalking", "mode": "audio", "command_id": request.command_id}
+        else:
+            tts = {"voice": request.voice} if request.voice else {}
+            await livetalking_post("/human", {"sessionid": request.session_id, "text": request.text, "type": "echo", "interrupt": request.interrupt, "tts": tts})
+            result = {"accepted": True, "provider": "livetalking", "mode": "echo", "command_id": request.command_id}
+        runtime_command_cache[request.command_id] = {"kind": "speech", "identity": identity, "response": result, "completed_at": now}
+        prune_runtime_command_cache(now)
+        return {**result, "duplicate": False}
 
 @app.post("/v1/media")
 async def media(request: MediaRequest, authorization: str | None = Header(default=None)) -> dict:
     authorize(authorization)
-    async with media_command_lock:
+    identity = {"session_id": request.session_id, "action": request.action}
+    async with runtime_command_lock:
         now = time.monotonic()
-        prune_media_command_cache(now)
-        cached = media_command_cache.get(request.command_id)
+        prune_runtime_command_cache(now)
+        cached = runtime_command_cache.get(request.command_id)
         if cached:
-            if cached["session_id"] != request.session_id or cached["action"] != request.action:
-                raise HTTPException(status_code=409, detail="Media command id was already used with a different payload")
+            if cached["kind"] != "media" or cached["identity"] != identity:
+                raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
             return {**cached["response"], "duplicate": True}
 
         downstream_actions: list[str] = []
@@ -170,6 +186,6 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
             await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": audiotype})
             downstream_actions.append("set_fallback_audiotype" if request.action == "switch_to_fallback" else "set_human_handoff_audiotype")
         result = {"accepted": True, "provider": "livetalking", "command_id": request.command_id, "action": request.action, "downstream_actions": downstream_actions}
-        media_command_cache[request.command_id] = {"session_id": request.session_id, "action": request.action, "response": result, "completed_at": now}
-        prune_media_command_cache(now)
+        runtime_command_cache[request.command_id] = {"kind": "media", "identity": identity, "response": result, "completed_at": now}
+        prune_runtime_command_cache(now)
         return {**result, "duplicate": False}

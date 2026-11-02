@@ -40,8 +40,8 @@ export async function listRunEvents(context: RequestContext, runId: string) {
       id: `media:${event.id}`,
       category: "media" as const,
       occurredAt: event.deliveredAt ?? event.createdAt,
-      title: mediaTitle(event.command.type),
-      detail: `运行时会话 ${event.sessionId} · 第 ${event.attempts} 次投递${event.lastError ? ` · ${event.lastError}` : ""}`,
+      title: event.type === "speech.dispatch" ? "受控语音播报" : mediaTitle(event.command.type),
+      detail: `${event.type === "speech.dispatch" ? `商品事实 v${event.command.productRevision}` : "媒体动作"} · 运行时会话 ${event.sessionId} · 第 ${event.attempts} 次投递${event.lastError ? ` · ${event.lastError}` : ""}`,
       state: event.state
     })),
     ...alerts.map((alert) => ({
