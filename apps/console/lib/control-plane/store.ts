@@ -196,7 +196,9 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
     hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id),
     channelReady: channel.passed,
     channelDetail: channel.detail,
-    outputReady: run.outputReady && runtime.passed,
+    // output_ready was an early manual flag. A fresh observer sample is the only
+    // authoritative proof that the current runtime/output path is usable.
+    outputReady: runtime.passed,
     outputDetail: runtime.passed ? runtime.detail : `运行时探针未通过：${runtime.detail}`,
     runtimeSessionReady: Boolean(run.runtimeSessionId),
     runtimeSessionDetail: run.runtimeSessionId ? `已绑定运行时会话 ${run.runtimeSessionId}` : "尚未绑定 LiveTalking 运行时会话"

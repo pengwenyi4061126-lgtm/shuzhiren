@@ -17,7 +17,8 @@
     "observer:runtime": "npm run start --workspace @shuzhiren/runtime-observer",
     "observer:runtime:test": "node scripts/test-runtime-observer.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
-    "policy:red-team": "node scripts/check-policy-redteam.mjs"
+    "policy:red-team": "node scripts/check-policy-redteam.mjs",
+    "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs"
   },
   "engines": {
     "node": ">=20.9.0"
