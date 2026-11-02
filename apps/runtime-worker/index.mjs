@@ -245,6 +245,12 @@ async function markDelivered(event) {
         [event.payload.command.runId, event.tenant_id, event.id]
       );
     }
+    if (event.payload?.command?.payload?.controlAction === "END") {
+      await client.query(
+        "update live_runs set state = 'ENDED', pending_media_event_id = null, updated_at = now() where id = $1 and tenant_id = $2 and state in ('LIVE', 'DEGRADED') and pending_media_event_id = $3",
+        [event.payload.command.runId, event.tenant_id, event.id]
+      );
+    }
   });
 }
 

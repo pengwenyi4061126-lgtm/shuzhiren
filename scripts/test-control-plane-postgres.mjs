@@ -263,6 +263,22 @@ try {
   assert.equal((await client.query("select state from live_runs where id = $1", [audioRun.runId])).rows[0].state, "DEGRADED", "silent output must degrade the live run");
   assert.equal((await client.query("select status from runtime_alerts where live_run_id = $1 and code = 'audio_silence'", [audioRun.runId])).rows[0].status, "open");
 
+  const endRun = await seedRun("LIVE", "session_confirmed_end", new Date());
+  const endCommand = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${endRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "END", expectedState: "LIVE", idempotencyKey: randomUUID() }) });
+  assert.equal(endCommand.status, 202, "end command should enter the outbox before changing the visible lifecycle state");
+  const endBody = await endCommand.json();
+  assert.equal(endBody.data.run.state, "LIVE", "the run must remain live until the runtime confirms stop");
+  const pendingEnd = await client.query("select state, pending_media_event_id from live_runs where id = $1", [endRun.runId]);
+  assert.deepEqual(pendingEnd.rows[0], { state: "LIVE", pending_media_event_id: endBody.data.mediaEvent.id });
+  const duplicateEnd = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${endRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "END", expectedState: "LIVE", idempotencyKey: randomUUID() }) });
+  assert.equal(duplicateEnd.status, 409, "a second end command must not race the pending stop acknowledgement");
+  const endDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${endBody.data.mediaEvent.id}/deliver`, { method: "POST", headers: requestHeaders });
+  assert.equal(endDelivery.status, 202);
+  await waitFor(async () => (await client.query("select state, pending_media_event_id from live_runs where id = $1", [endRun.runId])).rows[0]?.state === "ENDED", 5_000, "stop acknowledgement");
+  const deliveredEnd = await client.query("select state, pending_media_event_id from live_runs where id = $1", [endRun.runId]);
+  assert.deepEqual(deliveredEnd.rows[0], { state: "ENDED", pending_media_event_id: null }, "runtime stop acknowledgement must atomically end the run and release its pending reservation");
+  assert.equal(mock.mediaCommands.at(-1)?.action, "stop_program");
+
   const recordingInput = {
     tenantId,
     runId: recoverRunId,

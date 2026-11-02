@@ -10,6 +10,8 @@ import { canTransition } from "@/lib/live-run";
 
 type Props = { initialRun: LiveRun; initialTelemetry: RuntimeTelemetry | null; initialAlerts: RuntimeAlert[]; initialInteractions: LiveInteraction[]; canOperate: boolean };
 type CommandResponse = { data: { command: LiveCommand; run: LiveRun; duplicate: boolean } };
+type GatewayConfirmedAction = Extract<LiveCommand["action"], "START" | "RECOVER" | "END">;
+type GatewayConfirmation = { action: GatewayConfirmedAction; waitingState: LiveRunState };
 
 type NavigationItem = { icon: typeof MonitorPlay; label: string; href?: string };
 
@@ -47,7 +49,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
   const [pendingAction, setPendingAction] = useState<LiveCommand["action"] | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
-  const [activationAwaitingConfirmation, setActivationAwaitingConfirmation] = useState<Extract<LiveCommand["action"], "START" | "RECOVER"> | null>(null);
+  const [gatewayConfirmation, setGatewayConfirmation] = useState<GatewayConfirmation | null>(null);
   const elapsed = useMemo(() => (run.state === "LIVE" ? "01:24:17" : run.state === "DEGRADED" ? "已降级" : "未开始"), [run.state]);
   const telemetryHealthy = Boolean(telemetry?.outputConnected && telemetry.outputFps >= 24 && telemetry.avSyncMs <= 120 && telemetry.bitrateMbps >= 2 && telemetry.audioActive && telemetry.fallbackReady);
   const selectedInteraction = interactions.find((interaction) => interaction.id === selectedQuestion) ?? null;
@@ -92,8 +94,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
   }, [run.id]);
 
   useEffect(() => {
-    if (!activationAwaitingConfirmation) return;
-    const waitingState = activationAwaitingConfirmation === "START" ? "ARMED" : "DEGRADED";
+    if (!gatewayConfirmation) return;
     let active = true;
     const refresh = async () => {
       try {
@@ -101,9 +102,10 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
         const payload = await response.json().catch(() => null) as { data?: LiveRun } | null;
         if (!response.ok || !payload?.data || !active) return;
         setRun(payload.data);
-        if (payload.data.state !== waitingState) {
-          setActivationAwaitingConfirmation(null);
-          setCommandNotice(payload.data.state === "LIVE" ? "运行时已确认，场次正在直播。" : `运行时确认结束，场次当前为 ${stateLabel[payload.data.state]}。`);
+        const confirmed = gatewayConfirmation.action === "END" ? payload.data.state === "ENDED" : payload.data.state !== gatewayConfirmation.waitingState;
+        if (confirmed) {
+          setGatewayConfirmation(null);
+          setCommandNotice(gatewayConfirmation.action === "END" && payload.data.state === "ENDED" ? "运行时已确认，场次已结束。" : payload.data.state === "LIVE" ? "运行时已确认，场次正在直播。" : `运行时确认结束，场次当前为 ${stateLabel[payload.data.state]}。`);
         }
       } catch {
         // Keep waiting; the outbox and server-side retry policy remain authoritative.
@@ -112,7 +114,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [activationAwaitingConfirmation, run.id]);
+  }, [gatewayConfirmation, run.id]);
 
   async function dispatch(action: LiveCommand["action"]) {
     if (!canOperate || !canTransition(run.state, action) || pendingAction) return;
@@ -130,9 +132,9 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
       if (!response.ok || !payload || !("data" in payload)) throw new Error(payload && "error" in payload ? payload.error : "命令提交失败");
       setRun(payload.data.run);
       setCommands((current) => [payload.data.command, ...current.filter((item) => item.id !== payload.data.command.id)].slice(0, 8));
-      if ((action === "START" && payload.data.run.state === "ARMED") || (action === "RECOVER" && payload.data.run.state === "DEGRADED")) {
-        setActivationAwaitingConfirmation(action);
-        setCommandNotice("运行时激活命令已进入队列，正在等待 Gateway 确认。请勿重复点击。");
+      if ((action === "START" && payload.data.run.state === "ARMED") || (action === "RECOVER" && payload.data.run.state === "DEGRADED") || (action === "END" && (payload.data.run.state === "LIVE" || payload.data.run.state === "DEGRADED"))) {
+        setGatewayConfirmation({ action, waitingState: payload.data.run.state });
+        setCommandNotice(action === "END" ? "停止命令已进入队列，正在等待 Gateway 确认。请勿关闭值守。" : "运行时激活命令已进入队列，正在等待 Gateway 确认。请勿重复点击。");
       }
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : "命令提交失败");
@@ -207,7 +209,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
             <div className="panel-header"><div><h2>直播预览</h2><span>主运行时 · 720p · {telemetry?.outputFps ?? "--"} FPS</span></div><span className={telemetryHealthy && !alerts.length ? "healthy" : "unhealthy"}><span />{telemetryHealthy && !alerts.length ? "输出健康" : `待处理 ${alerts.length} 项`}</span></div>
             <div className="preview" aria-label="数字人直播预览"><div className="live-badge"><span />{run.state === "LIVE" ? "LIVE" : stateLabel[run.state]}</div><div className="avatar" aria-hidden="true" /><div className="caption">现在下单，赠旅行装三件套</div></div>
             <div className="stage-metrics"><Metric label="视频帧率" value={telemetry ? telemetry.outputFps.toFixed(1) : "--"} unit="FPS" /><Metric label="音画同步" value={telemetry ? String(telemetry.avSyncMs) : "--"} unit="ms" /><Metric label="输出码率" value={telemetry ? String(telemetry.bitrateMbps) : "--"} unit="Mbps" /><Metric label="备用节目" value={telemetry?.fallbackReady ? "就绪" : "未就绪"} unit="" /></div>
-            <div className="control-row"><CommandButton action="START" icon={Play} label="开始" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="PAUSE" icon={Pause} label="暂停" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="HANDOFF" icon={UserRoundCheck} label="人工接管" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="RECOVER" icon={RotateCcw} label="恢复运行" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="END" icon={CircleStop} label="结束" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} danger /></div>
+            <div className="control-row"><CommandButton action="START" icon={Play} label="开始" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="PAUSE" icon={Pause} label="暂停" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="HANDOFF" icon={UserRoundCheck} label="人工接管" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="RECOVER" icon={RotateCcw} label="恢复运行" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="END" icon={CircleStop} label="结束" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} danger /></div>
             {commandNotice ? <p className="command-notice" role="status">{commandNotice}</p> : null}
             {commandError ? <p className="command-error" role="alert">命令未执行：{commandError}</p> : null}
           </section>
@@ -219,10 +221,10 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
   </div>;
 }
 
-function CommandButton({ action, icon: Icon, label, run, pendingAction, onDispatch, canOperate, activationAwaitingConfirmation, danger = false }: { action: LiveCommand["action"]; icon: typeof Play; label: string; run: LiveRun; pendingAction: LiveCommand["action"] | null; onDispatch: (action: LiveCommand["action"]) => void; canOperate: boolean; activationAwaitingConfirmation: Extract<LiveCommand["action"], "START" | "RECOVER"> | null; danger?: boolean }) {
+function CommandButton({ action, icon: Icon, label, run, pendingAction, onDispatch, canOperate, gatewayConfirmation, danger = false }: { action: LiveCommand["action"]; icon: typeof Play; label: string; run: LiveRun; pendingAction: LiveCommand["action"] | null; onDispatch: (action: LiveCommand["action"]) => void; canOperate: boolean; gatewayConfirmation: GatewayConfirmation | null; danger?: boolean }) {
   const pending = pendingAction === action;
-  const waitingForActivation = activationAwaitingConfirmation === action;
-  return <button className={danger ? "button danger" : "button"} disabled={!canOperate || !canTransition(run.state, action) || Boolean(pendingAction) || waitingForActivation} onClick={() => onDispatch(action)} type="button" title={!canOperate ? "当前角色仅可查看" : waitingForActivation ? "运行时正在确认激活命令" : undefined}>{pending ? <LoaderCircle className="button-spinner" size={16} /> : <Icon size={16} />}{pending ? "提交中" : waitingForActivation ? "等待确认" : label}</button>;
+  const waitingForConfirmation = gatewayConfirmation?.action === action;
+  return <button className={danger ? "button danger" : "button"} disabled={!canOperate || !canTransition(run.state, action) || Boolean(pendingAction) || Boolean(gatewayConfirmation) || waitingForConfirmation} onClick={() => onDispatch(action)} type="button" title={!canOperate ? "当前角色仅可查看" : waitingForConfirmation ? "运行时正在确认该命令" : gatewayConfirmation ? "正在等待其他运行时命令确认" : undefined}>{pending ? <LoaderCircle className="button-spinner" size={16} /> : <Icon size={16} />}{pending ? "提交中" : waitingForConfirmation ? "等待确认" : label}</button>;
 }
 
 function Metric({ label, value, unit }: { label: string; value: string; unit: string }) { return <div className="metric"><span>{label}</span><strong>{value} <small>{unit}</small></strong></div>; }

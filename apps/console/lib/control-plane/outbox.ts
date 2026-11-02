@@ -150,6 +150,12 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent)
         [event.command.runId, event.id]
       );
     }
+    if (event.type === "media.dispatch" && event.command.payload.controlAction === "END") {
+      await client.query(
+        "update live_runs set state = 'ENDED', pending_media_event_id = null, updated_at = now() where id = $1 and state in ('LIVE', 'DEGRADED') and pending_media_event_id = $2",
+        [event.command.runId, event.id]
+      );
+    }
     return event;
   });
 }
