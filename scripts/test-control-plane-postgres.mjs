@@ -277,6 +277,12 @@ try {
     body: JSON.stringify({ tenantId, runId: "not-a-uuid", outputConnected: true, inferenceFps: 30, outputFps: 25, avSyncMs: 20, bitrateMbps: 4, gpuUtilization: 70, gpuMemoryMiB: 12000, audioActive: true, fallbackReady: true })
   });
   assert.equal(malformedRuntimeTelemetry.status, 400, "runtime telemetry must reject malformed run IDs before PostgreSQL UUID casting");
+  const malformedTimestampTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` },
+    body: JSON.stringify({ tenantId, runId: audioRun.runId, sampledAt: "not-a-timestamp", outputConnected: true, inferenceFps: 30, outputFps: 25, avSyncMs: 20, bitrateMbps: 4, gpuUtilization: 70, gpuMemoryMiB: 12000, audioActive: true, fallbackReady: true })
+  });
+  assert.equal(malformedTimestampTelemetry.status, 400, "runtime telemetry must reject invalid sample timestamps instead of rewriting them");
   const audioTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` },

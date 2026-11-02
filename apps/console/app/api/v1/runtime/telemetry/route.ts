@@ -65,7 +65,7 @@ function isTelemetryBody(value: unknown): value is RuntimeTelemetryBody {
   const numbers = ["inferenceFps", "outputFps", "avSyncMs", "bitrateMbps", "gpuUtilization", "gpuMemoryMiB"];
   return typeof body.tenantId === "string" && body.tenantId.length > 0
     && typeof body.runId === "string" && isUuid(body.runId)
-    && (body.sampledAt === undefined || typeof body.sampledAt === "string")
+    && (body.sampledAt === undefined || (typeof body.sampledAt === "string" && !Number.isNaN(Date.parse(body.sampledAt))))
     && booleans.every((key) => typeof body[key] === "boolean")
     && numbers.every((key) => typeof body[key] === "number" && Number.isFinite(body[key]) && body[key] >= 0);
 }
