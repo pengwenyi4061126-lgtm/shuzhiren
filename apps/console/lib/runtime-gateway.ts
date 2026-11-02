@@ -2,6 +2,7 @@ import type { MediaCommand } from "@/lib/media-protocol";
 import type { SpeechCommand } from "@/lib/speech-protocol";
 
 type RuntimeGatewayConfig = { url?: string; token?: string; demoMode: boolean };
+type RuntimeSessionObservation = { session: { id: string; active: boolean } };
 
 function runtimeGatewayConfig(): RuntimeGatewayConfig {
   const url = process.env.RUNTIME_GATEWAY_URL;
@@ -17,6 +18,17 @@ export async function runtimeGatewayHealth() {
   const response = await fetch(`${config.url}/healthz`, { cache: "no-store" });
   if (!response.ok) throw new Error(`Runtime gateway health check failed: ${response.status}`);
   return { status: "ok" as const, ...(await response.json() as Record<string, unknown>) };
+}
+
+export async function observeRuntimeSession(sessionId: string): Promise<RuntimeSessionObservation> {
+  const config = runtimeGatewayConfig();
+  if (config.demoMode) return { session: { id: sessionId, active: true } };
+  const response = await fetch(`${config.url}/v1/observations/${encodeURIComponent(sessionId)}`, { cache: "no-store", headers: { authorization: `Bearer ${config.token}` } });
+  if (!response.ok) throw new Error(`Runtime session observation failed: ${response.status}`);
+  const body = await response.json() as { session?: unknown };
+  const session = body.session;
+  if (!session || typeof session !== "object" || typeof (session as { id?: unknown }).id !== "string" || typeof (session as { active?: unknown }).active !== "boolean") throw new Error("Runtime session observation response is invalid");
+  return { session: session as RuntimeSessionObservation["session"] };
 }
 
 export async function dispatchMediaCommand(command: MediaCommand, sessionId: string) {

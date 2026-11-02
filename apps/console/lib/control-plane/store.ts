@@ -40,6 +40,7 @@ export type StoredRun = LiveRun & {
 
 type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
 export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm";
+const runtimeSessionBindingStates = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"]);
 type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, LiveCommand> };
 type PersistentRunRow = {
   id: string;
@@ -393,22 +394,21 @@ export async function bindRuntimeSession(context: RequestContext, runId: string,
   if (!databasePool()) {
     const run = getDemoRun(context, runId);
     if (!run) throw new Response("Live run not found", { status: 404 });
+    if (!canBindRuntimeSession(run.state)) throw new Response("Runtime session is locked after arming", { status: 409 });
     run.runtimeSessionId = runtimeSessionId;
     return run;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentRunRow>(
-      `update live_runs set runtime_session_id = $2, updated_at = now() where id = $1
-       returning id, tenant_id, show_revision_id, ''::text as show_name, state, trace_id,
-         channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version,
-         has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`,
-      [runId, runtimeSessionId]
-    );
-    if (!result.rows[0]) throw new Response("Live run not found", { status: 404 });
-    const run = result.rows[0];
-    const show = await client.query<{ show_name: string }>("select s.name as show_name from live_runs r join show_revisions sr on sr.id = r.show_revision_id join shows s on s.id = sr.show_id where r.id = $1", [runId]);
-    return persistentRun({ ...run, show_name: show.rows[0]?.show_name ?? "直播场次" }, []);
+    const run = await loadPersistentRun(client, runId, true);
+    if (!run) throw new Response("Live run not found", { status: 404 });
+    if (!canBindRuntimeSession(run.state)) throw new Response("Runtime session is locked after arming", { status: 409 });
+    await client.query("update live_runs set runtime_session_id = $2, updated_at = now() where id = $1", [runId, runtimeSessionId]);
+    return { ...run, runtimeSessionId };
   });
+}
+
+export function canBindRuntimeSession(state: LiveRunState) {
+  return runtimeSessionBindingStates.has(state);
 }
 
 async function loadPersistentRun(client: PoolClient, runId: string, lock = false) {

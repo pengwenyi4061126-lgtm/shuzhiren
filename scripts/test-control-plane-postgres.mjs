@@ -121,6 +121,11 @@ try {
   const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true }) });
   assert.equal(createdRunResponse.status, 201, "creating a production run should freeze currently approved media rights");
   const createdRun = await createdRunResponse.json();
+  const liveSessionRebind = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${staleRunId}/runtime-session`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ runtimeSessionId: "0" }) });
+  assert.equal(liveSessionRebind.status, 409, "operators must not redirect a live run to another runtime session");
+  const runtimeSessionBinding = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/runtime-session`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ runtimeSessionId: "0" }) });
+  assert.equal(runtimeSessionBinding.status, 200, "a preflight-eligible runtime session binding must be verified against the gateway");
+  assert.equal((await runtimeSessionBinding.json()).data.runtimeSessionId, "0");
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, createdRun.data.id]);
   const frozenRights = await client.query("select kind from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) order by kind", [createdRun.data.id]);
   assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["music", "portrait", "product_clip", "voice"]);
@@ -519,6 +524,10 @@ async function startMockServer() {
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/jwks") return json(response, 200, { keys: [jwk] });
+    if (url.pathname === "/v1/observations/0" && request.method === "GET") {
+      assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
+      return json(response, 200, { session: { id: "0", active: true } });
+    }
     if (url.pathname === "/v1/media" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
       mediaCommands.push(await requestBody(request));
