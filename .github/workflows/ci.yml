@@ -25,6 +25,8 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shuzhiren
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -32,8 +34,11 @@ jobs:
       - run: npm ci
       - run: npm run deploy:check -- --allow-placeholders
       - run: npm run policy:red-team
+      - run: npm run preflight:check
+      - run: npm run observer:runtime:test
       - run: python3 -m py_compile runtime/gateway/app.py
       - run: node --check apps/runtime-worker/index.mjs
+      - run: node --check apps/runtime-observer/index.mjs
       - run: npm run db:migrate
       - run: npm run db:verify -- --allow-privileged
       - run: npm run typecheck
