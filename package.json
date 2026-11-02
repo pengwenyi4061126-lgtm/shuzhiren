@@ -19,6 +19,8 @@
     "observer:runtime:test": "node scripts/test-runtime-observer.mjs",
     "observer:targets:check": "node scripts/check-runtime-observer-targets.mjs",
     "observer:targets:test": "node scripts/test-runtime-observer-targets.mjs",
+    "observer:targets:apply": "node scripts/apply-runtime-observer-targets.mjs",
+    "observer:targets:apply:test": "node scripts/test-apply-runtime-observer-targets.mjs",
     "output-probe:test": "node scripts/test-output-probe.mjs",
     "channel-adapter:test": "node scripts/test-channel-adapter.mjs",
     "alert-notifier:test": "node scripts/test-alert-notifier.mjs",

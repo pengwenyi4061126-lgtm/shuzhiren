@@ -41,6 +41,7 @@ jobs:
       - run: npm run runtime:acceptance:test
       - run: npm run observer:runtime:test
       - run: npm run observer:targets:test
+      - run: npm run observer:targets:apply:test
       - run: npm run output-probe:test
       - run: npm run channel-adapter:test
       - run: npm run alert-notifier:test
