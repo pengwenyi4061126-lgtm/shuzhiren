@@ -59,7 +59,8 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
      from live_runs r
      join show_revisions sr on sr.id = r.show_revision_id
      join shows s on s.id = sr.show_id
-     left join product_versions pv on pv.id = r.product_version_id
+     left join show_revision_product_versions product_binding on product_binding.show_revision_id = sr.id and product_binding.slot_key = 'primary'
+     left join product_versions pv on pv.id = product_binding.product_version_id
      left join products p on p.id = pv.product_id
      left join show_revision_policy_profiles policy_binding on policy_binding.show_revision_id = sr.id
      left join policy_profiles policy on policy.id = policy_binding.policy_profile_id

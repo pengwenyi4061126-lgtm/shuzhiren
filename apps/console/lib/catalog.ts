@@ -5,6 +5,7 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 export type ProductFacts = { priceCent: number; unitCostCent?: number; stock: number; highlights: string[]; faq: string[]; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil?: string };
 export type ProductVersion = { id: string; revision: number; status: "draft" | "approved" | "rejected"; facts: ProductFacts; createdAt: string; approvedAt?: string };
 export type Product = { id: string; tenantId: string; externalSku: string; name: string; versions: ProductVersion[] };
+export type FrozenProductVersionStatus = { active: boolean; detail: string; version?: ProductVersion };
 
 type Catalog = { products: Map<string, Product> };
 type PersistentProductRow = {
@@ -19,6 +20,7 @@ type PersistentProductRow = {
   version_created_at: Date | string | null;
   approved_at: Date | string | null;
 };
+type FrozenProductVersionRow = { run_product_version_id: string | null; frozen_product_version_id: string | null; id: string | null; revision: number | null; approval_status: ProductVersion["status"] | null; facts: unknown; created_at: Date | string | null; approved_at: Date | string | null };
 
 declare global { var shuzhirenCatalog: Catalog | undefined; }
 
@@ -129,6 +131,34 @@ export async function findApprovedProductVersion(context: RequestContext, versio
     const version = result.rows[0] ? persistentVersion(result.rows[0]) : null;
     return version && isProductFactsCurrent(version.facts) ? version : null;
   });
+}
+
+export async function frozenProductVersionStatusForRun(context: RequestContext, runId: string, expectedVersionId?: string): Promise<FrozenProductVersionStatus> {
+  if (!databasePool()) {
+    const runVersion = expectedVersionId ?? (runId === "run_20261101_001" ? "pv_a102_v1" : undefined);
+    const version = runVersion ? await findApprovedProductVersion(context, runVersion) : null;
+    return version ? { active: true, detail: `开发态已冻结商品版本 v${version.revision}`, version } : { active: false, detail: "场次缺少有效的冻结商品版本" };
+  }
+  return withTenantTransaction(context.tenantId, async (client) => frozenProductVersionStatusForRunInTransaction(client, runId));
+}
+
+export async function frozenProductVersionStatusForRunInTransaction(client: PoolClient, runId: string): Promise<FrozenProductVersionStatus> {
+  const result = await client.query<FrozenProductVersionRow>(
+    `select r.product_version_id as run_product_version_id, binding.product_version_id as frozen_product_version_id,
+      pv.id, pv.revision, pv.approval_status, pv.facts, pv.created_at, pv.approved_at
+     from live_runs r
+     left join show_revision_product_versions binding on binding.show_revision_id = r.show_revision_id and binding.slot_key = 'primary'
+     left join product_versions pv on pv.id = binding.product_version_id
+     where r.id = $1`,
+    [runId]
+  );
+  const row = result.rows[0];
+  if (!row?.frozen_product_version_id || !row.id || !row.revision || !row.approval_status || !row.created_at) return { active: false, detail: "场次修订缺少主商品冻结绑定" };
+  if (row.run_product_version_id !== row.frozen_product_version_id) return { active: false, detail: "场次商品字段与冻结商品版本不一致" };
+  const version = persistentVersion({ id: row.id, revision: row.revision, approval_status: row.approval_status, facts: row.facts, created_at: row.created_at, approved_at: row.approved_at });
+  if (version.status !== "approved") return { active: false, detail: `冻结商品版本 v${version.revision} 未获批准` };
+  if (!isProductFactsCurrent(version.facts)) return { active: false, detail: `冻结商品版本 v${version.revision} 的来源已过期或不在有效期` };
+  return { active: true, detail: `已冻结商品版本 v${version.revision}，来源与有效期均有效`, version };
 }
 
 function demoProducts(context: RequestContext) {

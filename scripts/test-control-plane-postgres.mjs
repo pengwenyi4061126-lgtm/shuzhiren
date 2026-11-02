@@ -112,12 +112,12 @@ try {
   const freshVersion = await freshVersionResponse.json();
   const freshApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${freshVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(freshApproval.status, 200, "fresh product source facts should be approvable");
-  await client.query("update live_runs set product_version_id = $2 where id = $1", [recoverRunId, freshVersion.data.id]);
   const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true }) });
   assert.equal(createdRunResponse.status, 201, "creating a production run should freeze currently approved media rights");
   const createdRun = await createdRunResponse.json();
   const frozenRights = await client.query("select kind from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) order by kind", [createdRun.data.id]);
   assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["music", "portrait", "product_clip", "voice"]);
+  await assert.rejects(client.query("delete from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) and kind = 'voice'", [createdRun.data.id]), /Frozen show revision bindings are immutable/, "frozen revision bindings must reject direct mutation");
   const manifestResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/release-manifest`, { headers: requestHeaders });
   assert.equal(manifestResponse.status, 200, "operators should read a run's frozen release manifest");
   const manifest = await manifestResponse.json();
@@ -428,6 +428,8 @@ try {
 async function seedRun(state, sessionId, sampledAt) {
   const showId = randomUUID();
   const revisionId = randomUUID();
+  const productId = randomUUID();
+  const productVersionId = randomUUID();
   const policyProfileId = randomUUID();
   const runId = randomUUID();
   const channelId = randomUUID();
@@ -436,6 +438,10 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into tenants (id, slug, name) values ($1, $2, $3) on conflict (id) do nothing", [tenantId, `integration-${tenantId}`, "Control plane integration"]);
   await client.query("insert into shows (id, tenant_id, name) values ($1, $2, $3)", [showId, tenantId, `Integration show ${runId}`]);
   await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'approved')", [revisionId, tenantId, showId]);
+  const productFacts = { priceCent: 9900, unitCostCent: 3500, stock: 20, highlights: ["Seeded product"], faq: ["Seeded FAQ"], sourceRef: `pim://integration/${runId}`, sourceSyncedAt: new Date().toISOString(), validFrom: new Date(Date.now() - 60_000).toISOString() };
+  await client.query("insert into products (id, tenant_id, external_sku, name) values ($1, $2, $3, $4)", [productId, tenantId, `seed-${runId}`, "Seeded integration product"]);
+  await client.query("insert into product_versions (id, tenant_id, product_id, revision, facts, approval_status, approved_at) values ($1, $2, $3, 1, $4::jsonb, 'approved', now())", [productVersionId, tenantId, productId, JSON.stringify(productFacts)]);
+  await client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [tenantId, revisionId, productVersionId]);
   for (const [component, releaseId] of Object.entries(modelReleaseIds)) {
     await client.query("insert into model_releases (id, tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, 'integration', $4::model_release_component, 'integration-commit', 'sha256:integration-image', 'sha256:integration-artifact', 'NVIDIA integration', 'Apache-2.0', 'Integration validation only', 'evidence://integration/model-release', 'Integration-bound approved release.', 'approved', now())", [releaseId, tenantId, `Integration ${component}`, component]);
     await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4::model_release_component)", [tenantId, revisionId, releaseId, component]);
@@ -449,9 +455,9 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
   const capabilities = { channel: "integration-webhook", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
   await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now())", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities)]);
-  await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId]);
+  await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id, product_version_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7, $8)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId, productVersionId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, $3)", [tenantId, runId, sampledAt]);
-  return { runId, channelId, policyProfileId, modelReleaseIds, mediaAssetIds };
+  return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
 }
 
 async function startMockServer() {

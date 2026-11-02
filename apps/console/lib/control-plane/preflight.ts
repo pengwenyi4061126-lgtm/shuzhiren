@@ -5,12 +5,12 @@ export type PreflightCheck = {
   detail: string;
 };
 
-export function evaluatePreflight(input: { hasApprovedRights: boolean; rightsDetail: string; hasApprovedModelReleases: boolean; modelReleaseDetail: string; hasApprovedPolicyProfile: boolean; policyProfileDetail: string; hasOperator: boolean; hasApprovedSkuVersion: boolean; hasFallbackProgram: boolean; channelReady: boolean; channelDetail: string; outputReady: boolean; outputDetail: string; runtimeSessionReady: boolean; runtimeSessionDetail: string; aiDisclosureEnabled: boolean }) {
+export function evaluatePreflight(input: { hasApprovedRights: boolean; rightsDetail: string; hasApprovedModelReleases: boolean; modelReleaseDetail: string; hasApprovedPolicyProfile: boolean; policyProfileDetail: string; hasOperator: boolean; hasApprovedSkuVersion: boolean; skuDetail: string; hasFallbackProgram: boolean; channelReady: boolean; channelDetail: string; outputReady: boolean; outputDetail: string; runtimeSessionReady: boolean; runtimeSessionDetail: string; aiDisclosureEnabled: boolean }) {
   const checks: PreflightCheck[] = [
     { id: "rights", label: "人物与声音授权", status: input.hasApprovedRights ? "passed" : "blocked", detail: input.rightsDetail },
     { id: "model_release", label: "模型与运行时发布包", status: input.hasApprovedModelReleases ? "passed" : "blocked", detail: input.modelReleaseDetail },
     { id: "policy_profile", label: "策略包版本", status: input.hasApprovedPolicyProfile ? "passed" : "blocked", detail: input.policyProfileDetail },
-    { id: "sku", label: "SKU 与资质审核", status: input.hasApprovedSkuVersion ? "passed" : "blocked", detail: input.hasApprovedSkuVersion ? "商品版本已批准" : "缺少已批准的商品版本" },
+    { id: "sku", label: "SKU 与资质审核", status: input.hasApprovedSkuVersion ? "passed" : "blocked", detail: input.skuDetail },
     { id: "program", label: "节目单与降级策略", status: input.hasFallbackProgram ? "passed" : "blocked", detail: input.hasFallbackProgram ? "已批准的节目单包含备用或人工接管段" : "节目单缺少可用的降级段" },
     { id: "channel", label: "渠道连接与能力", status: input.channelReady ? "passed" : "blocked", detail: input.channelDetail },
     { id: "operator", label: "场控值守", status: input.hasOperator ? "passed" : "blocked", detail: input.hasOperator ? "已指定值守人" : "必须指定场控" },
