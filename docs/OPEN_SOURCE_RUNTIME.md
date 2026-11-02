@@ -79,3 +79,5 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 ### 输出探针当前契约
 
 输出探针除连接、帧率、同步、码率和备用节目事实外，还必须返回布尔 `audioActive`，且该值由独立输出音频分析器测得。缺失该字段、返回 `false` 或探针不可用均会被 observer fail-closed 上报；控制面据此打开 `audio_silence` 严重告警并进入降级，而不是把“存在音频流”误认为正在发声。
+
+仓库内 `output-probe` 现已使用容器内的 `ffmpeg silencedetect` 在配置的受控输出流上直接测量 `audioActive`；`avSyncProbeUrl` 只需要提供真实 `avSyncMs`。默认采样 5 秒，将从采样起点持续 2 秒以上且没有恢复的低于 -50 dB 音频判为静音；这三个阈值只能由运行时私密环境配置调整，不能由 HTTP 请求注入。

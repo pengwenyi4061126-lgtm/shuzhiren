@@ -117,3 +117,5 @@ npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-
 ### 输出音频活动事实
 
 从 2026-11-03 的运行时协议起，`runtime-observer` 的输出探针 JSON 必须包含布尔 `audioActive`。该值必须由独立输出音频分析器给出，不可由数字人或 TTS 进程自行声明；缺失、`false` 或探针不可达时均会 fail-closed，生成严重静音告警并受控降级。
+
+仓库内 `output-probe` 已内置活动音频测量：它用 `ffmpeg silencedetect` 对配置的受控回放/中继流采样，并将结果作为 `audioActive` 返回给 observer。`avSyncProbeUrl` 仍必须由独立分析器提供真实 `avSyncMs`；不要让同一数字人进程同时充当被测媒体源和质量判定源。

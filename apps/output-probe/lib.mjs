@@ -27,14 +27,15 @@ function safeHttpUrl(value, label) {
   return url.toString();
 }
 
-export async function probeTarget(target, { ffprobePath = "ffprobe", timeoutMs = 5000, fetchImpl = fetch, execute = execFileAsync } = {}) {
-  const [primary, fallback, quality] = await Promise.all([
+export async function probeTarget(target, { ffprobePath = "ffprobe", ffmpegPath = "ffmpeg", timeoutMs = 5000, audioSampleSeconds = 5, silenceThresholdDb = -50, silenceDurationSeconds = 2, fetchImpl = fetch, execute = execFileAsync } = {}) {
+  const [primary, fallback, avSyncMs, audioActive] = await Promise.all([
     inspectStream(target.streamUrl, { ffprobePath, timeoutMs, execute }),
     target.fallbackStreamUrl ? inspectStream(target.fallbackStreamUrl, { ffprobePath, timeoutMs, execute }).then(() => true).catch(() => false) : Promise.resolve(false),
-    fetchOutputQuality(target.avSyncProbeUrl, { timeoutMs, fetchImpl })
+    fetchAvSync(target.avSyncProbeUrl, { timeoutMs, fetchImpl }),
+    detectAudioActivity(target.streamUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute })
   ]);
   if (!primary.hasAudio || !primary.hasVideo || primary.outputFps === null || primary.bitrateMbps === null) throw new Error("primary_stream_measurement_incomplete");
-  return { outputConnected: true, outputFps: primary.outputFps, avSyncMs: quality.avSyncMs, bitrateMbps: primary.bitrateMbps, audioActive: quality.audioActive, fallbackReady: fallback };
+  return { outputConnected: true, outputFps: primary.outputFps, avSyncMs, bitrateMbps: primary.bitrateMbps, audioActive, fallbackReady: fallback };
 }
 
 async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
@@ -48,14 +49,20 @@ async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
   return { hasVideo: Boolean(video), hasAudio, outputFps, bitrateMbps: bitrate === null ? null : round(bitrate / 1_000_000) };
 }
 
-async function fetchOutputQuality(url, { timeoutMs, fetchImpl }) {
+async function fetchAvSync(url, { timeoutMs, fetchImpl }) {
   const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`av_sync_probe_http_${response.status}`);
   const payload = await response.json();
   const value = payload?.avSyncMs;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error("av_sync_probe_payload_invalid");
-  if (typeof payload?.audioActive !== "boolean") throw new Error("audio_activity_probe_payload_invalid");
-  return { avSyncMs: round(value), audioActive: payload.audioActive };
+  return round(value);
+}
+
+async function detectAudioActivity(sourceUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute }) {
+  const { stderr = "" } = await execute(ffmpegPath, ["-hide_banner", "-nostdin", "-t", String(audioSampleSeconds), "-i", sourceUrl, "-map", "0:a:0", "-af", `silencedetect=n=${silenceThresholdDb}dB:d=${silenceDurationSeconds}`, "-f", "null", "-"], { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+  const silentFromStart = /silence_start:\s*0(?:\.0+)?(?:\s|$)/.test(stderr);
+  const becameActive = /silence_end:/.test(stderr);
+  return !(silentFromStart && !becameActive);
 }
 
 function frameRate(value) {
