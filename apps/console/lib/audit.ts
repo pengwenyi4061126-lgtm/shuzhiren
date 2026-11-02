@@ -12,6 +12,7 @@ export type AuditEvent = {
   occurredAt: string;
   detail: Record<string, string | number | boolean | null>;
 };
+export type AuditChainVerification = { verified: boolean; sealedEvents: number; legacyEvents: number; detail: string };
 
 type AuditStore = { events: AuditEvent[] };
 type PersistentAuditRow = {
@@ -64,6 +65,16 @@ export async function listAuditEvents(context: RequestContext) {
        order by a.occurred_at desc limit 500`
     );
     return result.rows.map(persistentAuditEvent);
+  });
+}
+
+export async function verifyAuditChain(context: RequestContext): Promise<AuditChainVerification> {
+  if (!databasePool()) return { verified: false, sealedEvents: 0, legacyEvents: auditStore().events.filter((event) => event.tenantId === context.tenantId).length, detail: "演示模式不提供持久化哈希链" };
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<{ verified: boolean; sealed_events: string | number; legacy_events: string | number; detail: string }>("select * from verify_audit_chain($1::uuid)", [context.tenantId]);
+    const row = result.rows[0];
+    if (!row) throw new Error("Audit chain verification returned no result");
+    return { verified: row.verified, sealedEvents: Number(row.sealed_events), legacyEvents: Number(row.legacy_events), detail: row.detail };
   });
 }
 

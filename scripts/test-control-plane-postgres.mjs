@@ -237,6 +237,10 @@ try {
   assert.ok(acknowledgedAlert.rows[0].acknowledged_by);
   const acknowledgementAudit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'runtime_alert.acknowledged'", [alertId]);
   assert.equal(acknowledgementAudit.rows.length, 1);
+  const auditChain = await client.query("select verified, sealed_events, legacy_events from verify_audit_chain($1::uuid)", [tenantId]);
+  assert.equal(auditChain.rows[0].verified, true, "new audit events must form a valid tenant hash chain");
+  assert.ok(Number(auditChain.rows[0].sealed_events) > 0);
+  assert.equal(Number(auditChain.rows[0].legacy_events), 0);
   const audit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'runtime_guard.degraded'", [staleRunId]);
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
