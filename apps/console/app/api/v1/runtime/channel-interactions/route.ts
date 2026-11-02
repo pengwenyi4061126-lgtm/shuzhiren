@@ -1,17 +1,16 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { getChannelConnection } from "@/lib/channels";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
-import { createInteraction } from "@/lib/interactions";
+import { createChannelInteraction } from "@/lib/interactions";
 import { requireChannelIngestService } from "@/lib/runtime-service-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    requireChannelIngestService(request);
     const body: unknown = await request.json().catch(() => null);
     if (!isChannelInteraction(body)) return Response.json({ error: "invalid_channel_interaction" }, { status: 400 });
+    requireChannelIngestService(request, body.tenantId);
 
     const context: RequestContext = { tenantId: body.tenantId, actorId: "channel-ingest-service", actorName: "渠道接入服务", role: "operator" };
     const [run, channel] = await Promise.all([getRun(context, body.runId), getChannelConnection(context, body.channelConnectionId)]);
@@ -20,17 +19,14 @@ export async function POST(request: Request) {
     if (run.state !== "LIVE" && run.state !== "DEGRADED") return Response.json({ error: "live_run_not_accepting_interactions" }, { status: 409 });
     if (channel.status !== "connected" || !channel.capability.supportsWebhook || !channel.capability.supportsComments) return Response.json({ error: "channel_not_enabled_for_interactions" }, { status: 409 });
 
-    const interaction = await createInteraction(context, {
+    const interaction = await createChannelInteraction(context, {
       runId: run.id,
       question: body.question.trim(),
       source: `channel:${channel.provider}:${channel.id}`,
       externalEventId: body.eventId,
-      evidenceIds: []
+      evidenceIds: [],
+      channelConnectionId: channel.id
     });
-    if (!interaction.duplicate) {
-      await recordAuditEvent(context, { type: "channel_interaction.received", resource: "live_interaction", resourceId: interaction.id, detail: { runId: run.id, channelConnectionId: channel.id, risk: interaction.risk, decision: interaction.decision } });
-      if (interaction.decision === "handoff") await recordAuditEvent(context, { type: "interaction.handoff_required", resource: "live_interaction", resourceId: interaction.id, detail: { runId: run.id, reasons: interaction.reasons.join(";") } });
-    }
     return Response.json({ data: interaction }, { status: interaction.duplicate ? 200 : 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "channel_interaction_rejected" }, { status: error.status });

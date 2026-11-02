@@ -8,9 +8,9 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    requireRuntimeService(request);
     const body: unknown = await request.json().catch(() => null);
     if (!isTelemetryBody(body)) return Response.json({ error: "invalid_telemetry" }, { status: 400 });
+    requireRuntimeService(request, body.tenantId);
 
     const serviceContext: RequestContext = { tenantId: body.tenantId, actorId: "runtime-service", actorName: "运行时服务", role: "operator" };
     if (!await getRun(serviceContext, body.runId)) return Response.json({ error: "live_run_not_found" }, { status: 404 });

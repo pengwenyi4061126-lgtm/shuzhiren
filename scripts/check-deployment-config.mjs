@@ -57,11 +57,22 @@ const control = parseEnv(controlText);
 const runtime = parseEnv(runtimeText);
 const gateway = parseEnv(gatewayText);
 
-required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "CONTROL_PLANE_DEMO_MODE", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "RUNTIME_TELEMETRY_TOKEN", "CHANNEL_INGEST_TOKEN", "RUNTIME_SPEECH_VOICE"]);
+required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "CONTROL_PLANE_DEMO_MODE", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "RUNTIME_TELEMETRY_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "RUNTIME_SPEECH_VOICE"]);
 required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_RTMP_URL", "STREAM_KEY", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS"]);
-required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
+required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 equal(control, "控制面", "NODE_ENV", "production");
 equal(control, "控制面", "CONTROL_PLANE_DEMO_MODE", "false");
+
+for (const key of ["RUNTIME_TELEMETRY_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS"]) {
+  const value = control.get(key);
+  try {
+    const tokens = value ? JSON.parse(value) : null;
+    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens) || !Object.entries(tokens).every(([tenant, token]) => tenant.length > 0 && typeof token === "string" && token.length >= 16)) throw new Error("invalid");
+  } catch {
+    const message = `控制面 的 ${key} 必须是每租户独立服务密钥的 JSON 对象`;
+    if (allowPlaceholders) warnings.push(message); else errors.push(message);
+  }
+}
 equal(runtime, "运行时", "LIVE_MAX_CONCURRENT_AVATARS", "1");
 equal(runtime, "运行时", "LIVE_ALLOW_LLM_FREEFORM", "false");
 equal(runtime, "运行时", "LIVE_REQUIRE_HUMAN_HANDOFF_FOR_HIGH_RISK", "true");

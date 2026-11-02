@@ -1,5 +1,6 @@
 import type { LiveQuestion } from "@/lib/domain";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { evaluatePolicy, type PolicyDecision } from "@/lib/policy-engine";
 
@@ -26,6 +27,8 @@ type PersistentInteractionRow = {
   required_evidence: unknown; evidence_ids: unknown; status: LiveInteraction["status"]; created_at: Date | string;
   handled_at: Date | string | null; handled_by_name: string | null; resolution_note: string | null;
 };
+
+type CreateInteractionInput = { runId: string; question: string; source?: string; externalEventId?: string; evidenceIds: string[] };
 
 declare global { var shuzhirenInteractionStore: InteractionStore | undefined; }
 
@@ -57,7 +60,7 @@ export async function listInteractions(context: RequestContext, runId: string, s
   });
 }
 
-export async function createInteraction(context: RequestContext, input: { runId: string; question: string; source?: string; externalEventId?: string; evidenceIds: string[] }): Promise<LiveInteraction & { duplicate?: boolean }> {
+export async function createInteraction(context: RequestContext, input: CreateInteractionInput): Promise<LiveInteraction & { duplicate?: boolean }> {
   const decision = evaluatePolicy(input.question, input.evidenceIds);
   const detail = interactionDetail(decision);
   if (!databasePool()) {
@@ -66,15 +69,35 @@ export async function createInteraction(context: RequestContext, input: { runId:
     const existingId = eventKey ? interactionStore().externalEvents.get(eventKey) : undefined;
     if (existingId) {
       const existing = interactionStore().interactions.get(existingId);
-      if (existing) return { ...existing, duplicate: true };
+      if (existing) {
+        if (existing.text !== input.question) throw new Response("External interaction event id was already used with different content", { status: 409 });
+        return { ...existing, duplicate: true };
+      }
     }
     const interaction: LiveInteraction = { id: `interaction_${crypto.randomUUID()}`, tenantId: context.tenantId, runId: input.runId, source, externalEventId: input.externalEventId, text: input.question, detail, risk: decision.riskLevel, status: "queued", decision: decision.action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: input.evidenceIds, submittedAt: new Date().toISOString() };
     interactionStore().interactions.set(interaction.id, interaction);
     if (eventKey) interactionStore().externalEvents.set(eventKey, interaction.id);
     return interaction;
   }
+  return withTenantTransaction(context.tenantId, (client) => createPersistentInteraction(client, context, input, decision));
+}
+
+export async function createChannelInteraction(context: RequestContext, input: CreateInteractionInput & { channelConnectionId: string }): Promise<LiveInteraction & { duplicate?: boolean }> {
+  if (!databasePool()) {
+    const interaction = await createInteraction(context, input);
+    if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId);
+    return interaction;
+  }
+  const decision = evaluatePolicy(input.question, input.evidenceIds);
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentInteractionRow>(
+    const interaction = await createPersistentInteraction(client, context, input, decision);
+    if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId, client);
+    return interaction;
+  });
+}
+
+async function createPersistentInteraction(client: import("pg").PoolClient, context: RequestContext, input: CreateInteractionInput, decision: PolicyDecision): Promise<LiveInteraction & { duplicate?: boolean }> {
+  const result = await client.query<PersistentInteractionRow>(
       `insert into live_interactions (tenant_id, live_run_id, source, external_event_id, question_text, risk_level, policy_action, policy_reasons, required_evidence, evidence_ids)
        values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
        on conflict (tenant_id, live_run_id, source, external_event_id) where external_event_id is not null do nothing
@@ -82,16 +105,23 @@ export async function createInteraction(context: RequestContext, input: { runId:
          required_evidence, evidence_ids, status, created_at, handled_at, null::text as handled_by_name, resolution_note`,
       [context.tenantId, input.runId, input.source ?? "viewer", input.externalEventId ?? null, input.question, decision.riskLevel, decision.action, JSON.stringify(decision.reasons), JSON.stringify(decision.requiredEvidence), JSON.stringify(input.evidenceIds)]
     );
-    if (result.rows[0]) return persistentInteraction(result.rows[0]);
-    const existing = await client.query<PersistentInteractionRow>(
+  if (result.rows[0]) return persistentInteraction(result.rows[0]);
+  const existing = await client.query<PersistentInteractionRow>(
       `select id, tenant_id, live_run_id, source, external_event_id, question_text, risk_level, policy_action, policy_reasons,
         required_evidence, evidence_ids, status, created_at, handled_at, null::text as handled_by_name, resolution_note
        from live_interactions where live_run_id = $1 and source = $2 and external_event_id = $3`,
       [input.runId, input.source ?? "viewer", input.externalEventId]
     );
-    if (!existing.rows[0]) throw new Error("Interaction idempotency conflict could not be resolved");
-    return { ...persistentInteraction(existing.rows[0]), duplicate: true };
-  });
+  if (!existing.rows[0]) throw new Error("Interaction idempotency conflict could not be resolved");
+  const interaction = persistentInteraction(existing.rows[0]);
+  if (interaction.text !== input.question) throw new Response("External interaction event id was already used with different content", { status: 409 });
+  return { ...interaction, duplicate: true };
+}
+
+async function recordChannelInteractionAudit(context: RequestContext, interaction: LiveInteraction, channelConnectionId: string, client?: import("pg").PoolClient) {
+  const record = client ? (input: Parameters<typeof recordAuditEvent>[1]) => recordAuditEventInTransaction(client, context, input) : (input: Parameters<typeof recordAuditEvent>[1]) => recordAuditEvent(context, input);
+  await record({ type: "channel_interaction.received", resource: "live_interaction", resourceId: interaction.id, detail: { runId: interaction.runId, channelConnectionId, risk: interaction.risk, decision: interaction.decision } });
+  if (interaction.decision === "handoff") await record({ type: "interaction.handoff_required", resource: "live_interaction", resourceId: interaction.id, detail: { runId: interaction.runId, reasons: interaction.reasons.join(";") } });
 }
 
 export async function handleInteraction(context: RequestContext, runId: string, interactionId: string, resolutionNote?: string) {

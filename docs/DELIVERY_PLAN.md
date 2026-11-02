@@ -7,6 +7,7 @@
 交付：
 
 - Linux/Docker/CUDA 环境检查清单与 `scripts/check-runtime-host.sh` 的可执行主机预检。
+- PostgreSQL 归档备份、校验与隔离恢复演练；录屏落盘到受控主机路径并站外复制。
 - LiveTalking、MuseTalk、CosyVoice 的固定版本清单。
 - 授权形象素材的本地预览。
 - 测试 RTMP 输出、健康检查和 4 小时连续运行报告。

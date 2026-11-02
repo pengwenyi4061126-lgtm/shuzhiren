@@ -15,6 +15,11 @@ type OutboxStore = { events: Map<string, RuntimeOutboxEvent>; speechCommandEvent
 type PersistentOutboxRow = { id: string; tenant_id: string; event_type: RuntimeOutboxEvent["type"]; state: OutboxState; attempts: number; payload: unknown; created_at: Date | string; delivered_at: Date | string | null; last_error: string | null };
 declare global { var shuzhirenOutboxStore: OutboxStore | undefined; }
 
+const manualDeliveryLeaseSeconds = (() => {
+  const configured = Number.parseInt(process.env.OUTBOX_LEASE_SECONDS ?? "60", 10);
+  return Number.isInteger(configured) && configured > 0 ? configured : 60;
+})();
+
 function outboxStore(): OutboxStore { globalThis.shuzhirenOutboxStore ??= { events: new Map(), speechCommandEvents: new Map() }; return globalThis.shuzhirenOutboxStore; }
 
 export async function enqueueMediaCommand(context: RequestContext, input: Omit<MediaCommand, "id" | "issuedAt"> & { sessionId: string }): Promise<MediaOutboxEvent> {
@@ -121,7 +126,7 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
     const current = persistentEvent(selected.rows[0]);
     if (current.state === "delivered") return { event: current, duplicate: true as const };
     if (current.state === "delivering") throw new Response("Outbox event is already delivering", { status: 409 });
-    const updated = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivering', attempts = attempts + 1, last_error = null where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [eventId]);
+    const updated = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivering', attempts = attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second') where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [eventId, manualDeliveryLeaseSeconds]);
     return { event: persistentEvent(updated.rows[0]), duplicate: false as const };
   });
 }

@@ -1,9 +1,28 @@
-function requireServiceToken(request: Request, variable: "RUNTIME_TELEMETRY_TOKEN" | "CHANNEL_INGEST_TOKEN", developmentToken: string, label: string) {
-  const expected = process.env[variable] ?? (process.env.NODE_ENV === "production" ? undefined : developmentToken);
+type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS";
+
+function configuredTenantTokens(variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
+  const value = process.env[variable];
+  if (!value) {
+    if (process.env.NODE_ENV === "production") throw new Response(`${label} tenant token map is not configured`, { status: 503 });
+    return new Map([["tenant_demo", developmentToken]]);
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    const tokens = new Map(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[0] === "string" && entry[0].length > 0 && entry[0].length <= 200 && typeof entry[1] === "string" && entry[1].length >= 16));
+    if (!tokens.size) throw new Error("no valid tenant token");
+    return tokens;
+  } catch {
+    throw new Response(`${label} tenant token map is invalid`, { status: 503 });
+  }
+}
+
+function requireTenantService(request: Request, tenantId: string, variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
+  const expected = configuredTenantTokens(variable, developmentToken, label).get(tenantId);
   const authorization = request.headers.get("authorization");
-  if (!expected) throw new Response(`${label} token is not configured`, { status: 503 });
+  if (!expected) throw new Response(`No ${label} token is authorized for this tenant`, { status: 401 });
   if (authorization !== `Bearer ${expected}`) throw new Response(`Invalid ${label} token`, { status: 401 });
 }
 
-export function requireRuntimeService(request: Request) { requireServiceToken(request, "RUNTIME_TELEMETRY_TOKEN", "demo-runtime-token", "runtime service"); }
-export function requireChannelIngestService(request: Request) { requireServiceToken(request, "CHANNEL_INGEST_TOKEN", "demo-channel-ingest-token", "channel ingest service"); }
+export function requireRuntimeService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "RUNTIME_TELEMETRY_TENANT_TOKENS", "demo-runtime-token", "runtime service"); }
+export function requireChannelIngestService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "CHANNEL_INGEST_TENANT_TOKENS", "demo-channel-ingest-token", "channel ingest service"); }

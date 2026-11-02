@@ -57,7 +57,7 @@ services:
     volumes:
       - ${MODEL_VOLUME_PATH:?set-in-runtime-env}:/app/models:ro
       - ${AVATAR_VOLUME_PATH:?set-in-runtime-env}:/app/data/avatars:ro
-      - recordings:/app/data/record
+      - ${RECORDINGS_VOLUME_PATH:?set-in-runtime-env}:/app/data/record
     expose:
       - "8010"
     healthcheck:
@@ -81,6 +81,3 @@ services:
       - ${COSYVOICE_MODEL_PATH:?set-in-runtime-env}:/opt/CosyVoice/CosyVoice/pretrained_models:ro
     expose:
       - "50000"
-
-volumes:
-  recordings:
