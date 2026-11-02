@@ -14,7 +14,7 @@
 
 ## 发布判定
 
-1. 在任意开发机先运行 `npm run verify:local`。它执行可在本地完成的配置契约、策略红队、observer/探针/渠道/告警模拟、控制台类型检查、lint 和生产构建；它不连接 PostgreSQL、不启动 Docker，也不代表 GPU 或平台验收。
+1. 在任意开发机先运行 `npm run verify:local`。它执行可在本地完成的配置契约、策略红队、observer/探针/渠道/告警模拟、所有常驻 Node 服务入口解析、控制台类型检查、lint 和生产构建；它不连接 PostgreSQL、不启动 Docker，也不代表 Python 运行时、GPU 或平台验收。
 2. 再运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --channel-adapter /srv/shuzhiren/channel-adapter.env --alert-notifier /srv/shuzhiren/alert-notifier.env --require-output-probe`。
 3. 主机、权重、账号和密钥就绪后，执行内部试播、故障演练与独立输出探针验证。
 4. 只有 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json` 通过，且所有外部项有可审计证据，才允许真实小规模开播。
