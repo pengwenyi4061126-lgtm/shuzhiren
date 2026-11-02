@@ -50,6 +50,7 @@ function runtime(outputProbeTargets) {
     COSYVOICE_REF: commits.CosyVoice,
     RUNTIME_GATEWAY_URL: "http://runtime-gateway.internal:8090",
     RUNTIME_SHARED_TOKEN: runtimeToken,
+    RUNTIME_GATEWAY_DEMO_MODE: "false",
     DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
     CONTROL_PLANE_URL: "https://control-plane.internal",
     RUNTIME_OBSERVER_TARGETS_DIR: "/srv/shuzhiren/observer-config",
@@ -139,6 +140,12 @@ try {
   await Promise.all([writeFile(files.control, control), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
+  const demoGateway = check(["--require-cosyvoice"]);
+  assert.notEqual(demoGateway.status, 0, "production deployment must reject runtime gateway demo mode");
+  assert.match(demoGateway.stderr, /RUNTIME_GATEWAY_DEMO_MODE/, "demo gateway rejection must identify the runtime gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
 
   await writeFile(files.gateway, gateway.replace("COSYVOICE_REQUIRED=true", "COSYVOICE_REQUIRED=false"));
   const missingCosyVoice = check(["--require-cosyvoice"]);
