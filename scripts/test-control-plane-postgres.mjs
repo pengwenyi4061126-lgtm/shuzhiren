@@ -121,6 +121,7 @@ try {
   const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true }) });
   assert.equal(createdRunResponse.status, 201, "creating a production run should freeze currently approved media rights");
   const createdRun = await createdRunResponse.json();
+  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, createdRun.data.id]);
   const frozenRights = await client.query("select kind from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) order by kind", [createdRun.data.id]);
   assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["music", "portrait", "product_clip", "voice"]);
   await assert.rejects(client.query("delete from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) and kind = 'voice'", [createdRun.data.id]), /Frozen show revision bindings are immutable/, "frozen revision bindings must reject direct mutation");
@@ -136,6 +137,13 @@ try {
   assert.equal(manifest.data.frozenSha256, manifest.data.sha256, "new runs must seal their creation manifest hash");
   assert.equal(manifest.data.frozenSnapshotVerified, true, "the stored release manifest snapshot must verify against its hash");
   await assert.rejects(client.query("update show_revision_release_manifest_snapshots set manifest = '{}'::jsonb where show_revision_id = (select show_revision_id from live_runs where id = $1)", [createdRun.data.id]), /append-only/, "release manifest snapshots must reject direct mutation");
+  for (const [action, expectedState] of [["submit_review", "REVIEW"], ["approve", "APPROVED"], ["begin_preflight", "PREFLIGHT"], ["arm", "ARMED"]]) {
+    const lifecycleResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action }) });
+    assert.equal(lifecycleResponse.status, 200, `lifecycle action ${action} should advance a fully governed run`);
+    assert.equal((await lifecycleResponse.json()).data.state, expectedState, `lifecycle action ${action} should reach ${expectedState}`);
+  }
+  const armAudit = await client.query("select event_type from audit_events where resource_id = $1 and event_type = 'live_run.arm'", [createdRun.data.id]);
+  assert.equal(armAudit.rows.length, 1, "arming a preflight-ready run must leave an audit record");
   const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();
