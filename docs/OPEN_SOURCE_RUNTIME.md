@@ -48,6 +48,8 @@ CosyVoice 与 MuseTalk 同占一张 4090 时必须做真实压测。首版只开
 
 Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/healthz`；只有二者健康后才启动 runtime worker。worker 的私网 `/healthz` 同时检查数据库连通性与轮询新鲜度，observer 的私网 `/healthz` 检查观测循环新鲜度；两者均使用 Compose 内部端口且带 `unless-stopped` 重启策略。首次载入模型时 LiveTalking 有 60 秒启动宽限，超过后仍不健康会保留失败状态而不是让 worker 盲目投递。CosyVoice 是可选 profile，只有显式设置 `COSYVOICE_REQUIRED=true` 才会把其不可用升级为 Gateway 健康失败。
 
+`STREAM_FPS` 会实际传入 LiveTalking；当前锁定的 MuseTalk 路径要求 `25`，部署预检会拒绝其他值。画面分辨率由经过批准的 Avatar 源视频决定，当前开源运行时没有可安全覆盖它的通用启动参数，因此模板不提供看似有效但实际无效的 `STREAM_RESOLUTION` 开关。推流目的端的真实帧率、码率与分辨率仍必须由私网输出探针和试播验收测得。
+
 ## 控制面接口
 
 - `GET /api/v1/runtime/health`：检查 Gateway 是否可用；本地开发返回 `demo`。
