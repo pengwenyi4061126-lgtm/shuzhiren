@@ -9,6 +9,7 @@ import { createGroundedResponseDraft } from "@/lib/response-draft";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/response-drafts">) {
+  try {
   const actor = await requestContextFrom(request);
   requireRole(actor, ["admin", "operator"]);
   const body: unknown = await request.json().catch(() => null);
@@ -22,6 +23,10 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   const draft = createGroundedResponseDraft(body.question.trim(), version, await policyRulesForRun(actor, run.id));
   await recordAuditEvent(actor, { type: draft.status === "ready" ? "response_draft.created" : "response_draft.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: createHash("sha256").update(body.question.trim()).digest("hex") } });
   return Response.json({ data: draft }, { status: draft.status === "ready" ? 200 : 202 });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "response_draft_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 function isDraftInput(value: unknown): value is { question: string } {

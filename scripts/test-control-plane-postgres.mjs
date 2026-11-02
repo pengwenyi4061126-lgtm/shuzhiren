@@ -342,6 +342,14 @@ try {
   assert.ok(acknowledgedAlert.rows[0].acknowledged_by);
   const acknowledgementAudit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'runtime_alert.acknowledged'", [alertId]);
   assert.equal(acknowledgementAudit.rows.length, 1);
+  const revokedProfile = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles/${recoverRun.policyProfileId}/revoke`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ reason: "Integration revocation must fail closed for a bound live run." }) });
+  assert.equal(revokedProfile.status, 200, "an approved policy profile should be revocable with a recorded reason");
+  const revokedPreflight = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/preflight`, { headers: requestHeaders });
+  assert.equal(revokedPreflight.status, 200);
+  const revokedPreflightBody = await revokedPreflight.json();
+  assert.equal(revokedPreflightBody.data.checks.find((check) => check.id === "policy_profile")?.status, "blocked", "a revoked frozen policy profile must block preflight");
+  const interactionAfterRevocation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/interactions`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "撤销后不应继续自动问答", evidenceIds: ["product_version"] }) });
+  assert.equal(interactionAfterRevocation.status, 409, "a revoked frozen policy profile must fail closed for new interactions");
   const auditChain = await client.query("select verified, sealed_events, legacy_events from verify_audit_chain($1::uuid)", [tenantId]);
   assert.equal(auditChain.rows[0].verified, true, "new audit events must form a valid tenant hash chain");
   assert.ok(Number(auditChain.rows[0].sealed_events) > 0);
@@ -376,7 +384,7 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now())", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities)]);
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, $3)", [tenantId, runId, sampledAt]);
-  return { runId, channelId };
+  return { runId, channelId, policyProfileId };
 }
 
 async function startMockServer() {

@@ -66,6 +66,21 @@ export function PolicyProfileWorkspace({ initialProfiles, canManage, canApprove 
     }
   }
 
+  async function revoke(id: string) {
+    const reason = window.prompt("填写撤销原因；已绑定此策略包的场次将不能通过预检或继续自动问答。");
+    if (!reason?.trim()) return;
+    setBusy(id);
+    setError(null);
+    try {
+      const profile = await request<PolicyProfile>(`/api/v1/policy/profiles/${encodeURIComponent(id)}/revoke`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: reason.trim() }) });
+      setProfiles((items) => items.map((item) => item.id === id ? profile : item));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "策略包撤销失败");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return <section className="policy-profiles">
     <header>
       <div><p>版本治理</p><h2>策略包</h2><span>只有已批准策略包会冻结到新的生产场次；规则按关键词匹配并在互动、草稿和播报中生效。</span></div>
@@ -87,7 +102,7 @@ export function PolicyProfileWorkspace({ initialProfiles, canManage, canApprove 
     <div className="policy-profile-list">
       {profiles.map((profile) => <article key={profile.id}>
         <div><ShieldCheck size={18} /><div><strong>{profile.name} <small>v{profile.version}</small></strong><span>{profile.rules.length ? `${profile.rules.length} 条自定义规则` : "基线策略包"} · {profile.evidenceRef}</span></div></div>
-        <div className="policy-profile-actions"><span className={`policy-profile-status ${profile.approval}`}>{profile.approval === "approved" ? <BadgeCheck size={14} /> : <ClipboardCheck size={14} />}{profile.approval === "approved" ? "已批准" : profile.approval === "pending" ? "待批准" : "已撤销"}</span>{canApprove && profile.approval === "pending" ? <button type="button" disabled={busy === profile.id} onClick={() => approve(profile.id)}>{busy === profile.id ? "处理中" : "批准"}</button> : null}</div>
+        <div className="policy-profile-actions"><span className={`policy-profile-status ${profile.approval}`}>{profile.approval === "approved" ? <BadgeCheck size={14} /> : <ClipboardCheck size={14} />}{profile.approval === "approved" ? "已批准" : profile.approval === "pending" ? "待批准" : "已撤销"}</span>{canApprove && profile.approval === "pending" ? <button type="button" disabled={busy === profile.id} onClick={() => approve(profile.id)}>{busy === profile.id ? "处理中" : "批准"}</button> : null}{canApprove && profile.approval === "approved" ? <button className="policy-revoke" type="button" disabled={busy === profile.id} onClick={() => revoke(profile.id)}>{busy === profile.id ? "处理中" : "撤销"}</button> : null}</div>
       </article>)}
       {!profiles.length ? <div className="policy-profile-empty">尚无策略包；生产场次无法冻结互动策略。</div> : null}
     </div>

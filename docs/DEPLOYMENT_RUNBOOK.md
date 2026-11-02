@@ -34,7 +34,7 @@ REQUIRED_GPU_NAME='RTX 4090D' MIN_FREE_GIB=250 bash scripts/check-runtime-host.s
 
 商品事实接入：PIM/ERP 只能通过私网 `POST /api/v1/integrations/product-facts` 使用独立的 `PIM_INGEST_TENANT_TOKENS` 提交无买家 PII 的商品事实。每个 `eventId` 只对应同一载荷；重试返回同一草稿，不同载荷会被拒绝。接入服务可更新商品名称并建立新版本，但不得自行批准价格、库存、卖点或 FAQ，审核员必须在控制台复核。
 
-策略包治理：上线前由运营登记策略包名称、版本、自定义关键词规则、验收证据引用和验收摘要；审核角色通过控制台批准。没有已批准策略包时，生产数据库拒绝创建新的直播场次。创建后系统将策略包绑定到场次修订，后续即使有更新版本也不改变已排期场次的互动、草稿和播报判定。策略包规则应只描述可审查的业务处置，不得写入密钥、买家 PII 或原始对话样本。
+策略包治理：上线前由运营登记策略包名称、版本、自定义关键词规则、验收证据引用和验收摘要；审核角色通过控制台批准。没有已批准策略包时，生产数据库拒绝创建新的直播场次。创建后系统将策略包绑定到场次修订，后续即使有更新版本也不改变已排期场次的互动、草稿和播报判定。审核角色撤销已批准版本时必须写明原因；被绑定场次的预检、自动互动和草稿会 fail-closed，值班人员必须重新建立并审批场次所需的新版本。策略包规则应只描述可审查的业务处置，不得写入密钥、买家 PII 或原始对话样本。
 6. 生产单卡保持 `LIVE_MAX_CONCURRENT_AVATARS=1`、`LIVE_ALLOW_LLM_FREEFORM=false`、高风险问题人工接管和 AI 标识开启。
 7. `runtime.example.env` 的 `LIVETALKING_REF`、`MUSETALK_REF`、`COSYVOICE_REF` 必须逐项等于 `runtime/open-source.lock.json`；`npm run deploy:check` 还会读取 `vendor/` 下真实 Git HEAD 并拒绝脏源码。模型权重的许可证、人物和声音授权另行登记。
 8. 在 Gateway 环境中配置 `PROGRAM_AUDIOTYPE`、`FALLBACK_AUDIOTYPE` 与 `HUMAN_HANDOFF_AUDIOTYPE`，并在 LiveTalking 的已批准 Avatar 包中逐项验证动作含义；不能将默认索引当作真实人接管或备用节目。

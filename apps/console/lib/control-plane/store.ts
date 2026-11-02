@@ -18,7 +18,7 @@ import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import { createGroundedResponseDraft, type ResponseDraft } from "@/lib/response-draft";
 import { createSpeechCommand } from "@/lib/speech-protocol";
 import { assertLiveActivationAllowed } from "@/lib/entitlements";
-import { latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
+import { activePolicyProfileStatusForRun, latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
 import type { PolicyRule } from "@/lib/policy-engine";
 
 export type StoredRun = LiveRun & {
@@ -193,12 +193,17 @@ function getDemoRun(context: RequestContext, runId: string) {
 }
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
-  const channel = await validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled });
-  const runtime = await evaluateRuntimeReadiness(context, run.id);
+  const [channel, runtime, policyProfile] = await Promise.all([
+    validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled }),
+    evaluateRuntimeReadiness(context, run.id),
+    activePolicyProfileStatusForRun(context, run.id)
+  ]);
   return evaluatePreflight({
     ...run,
     hasApprovedRights: await hasApprovedLiveRights(context),
     hasApprovedModelReleases: await hasApprovedProductionReleases(context, run.revisionId),
+    hasApprovedPolicyProfile: policyProfile.active,
+    policyProfileDetail: policyProfile.detail,
     hasApprovedSkuVersion: Boolean(run.productVersionId && await findApprovedProductVersion(context, run.productVersionId)),
     hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id),
     channelReady: channel.passed,

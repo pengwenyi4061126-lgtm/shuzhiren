@@ -76,6 +76,7 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
     if (path === "/api/v1/policy/evaluate") return ["admin", "operator", "reviewer"];
     if (path === "/api/v1/policy/profiles") return operatorRoles;
     if (/^\/api\/v1\/policy\/profiles\/[^/]+\/approve$/.test(path)) return reviewerRoles;
+    if (/^\/api\/v1\/policy\/profiles\/[^/]+\/revoke$/.test(path)) return reviewerRoles;
     if (/^\/api\/v1\/live-runs\/[^/]+\/lifecycle$/.test(path)) return lifecycleRoles(request);
   }
 
