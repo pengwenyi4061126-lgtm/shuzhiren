@@ -5,6 +5,7 @@ const databaseUrl = required("DATABASE_URL");
 const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
 const gatewayToken = required("RUNTIME_SHARED_TOKEN");
 const pollMs = positiveInt(process.env.OUTBOX_POLL_MS, 1000);
+const schedulerPollMs = positiveInt(process.env.SCHEDULER_POLL_MS, 1000);
 const maxAttempts = positiveInt(process.env.OUTBOX_MAX_ATTEMPTS, 6);
 const pool = new Pool({ connectionString: databaseUrl, max: 4 });
 
@@ -39,6 +40,35 @@ async function claimEvent() {
   } finally { client.release(); }
 }
 
+async function scheduleDueRun() {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const due = await client.query(`
+      select id, tenant_id, trace_id, runtime_session_id
+      from live_runs
+      where state = 'ARMED' and scheduled_at <= now() and runtime_session_id is not null
+      order by scheduled_at
+      for update skip locked
+      limit 1
+    `);
+    const run = due.rows[0];
+    if (!run) { await client.query("commit"); return null; }
+    await client.query("update live_runs set state = 'LIVE', updated_at = now() where id = $1", [run.id]);
+    const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START" } };
+    const event = await client.query(`
+      insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
+      values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)
+      returning id
+    `, [run.tenant_id, run.id, JSON.stringify({ sessionId: run.runtime_session_id, command })]);
+    await client.query("commit");
+    return { runId: run.id, eventId: event.rows[0].id };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally { client.release(); }
+}
+
 async function mark(id, state, lastError = null) {
   await pool.query("update outbox_events set state = $2, delivered_at = case when $2 = 'delivered' then now() else delivered_at end, last_error = $3 where id = $1", [id, state, lastError]);
 }
@@ -51,6 +81,8 @@ async function deliver(event) {
 }
 
 async function tick() {
+  const scheduled = await scheduleDueRun();
+  if (scheduled) log("schedule.started", scheduled);
   const event = await claimEvent();
   if (!event) return;
   try {
@@ -66,10 +98,10 @@ async function tick() {
 
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { pollMs, maxAttempts });
+log("worker.started", { pollMs, schedulerPollMs, maxAttempts });
 while (!stopping) {
   try { await tick(); } catch (error) { log("worker.error", { error: error instanceof Error ? error.message : "unknown" }); }
-  await new Promise((resolve) => setTimeout(resolve, pollMs));
+  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerPollMs)));
 }
 await pool.end();
 log("worker.stopped");

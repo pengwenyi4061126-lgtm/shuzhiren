@@ -25,6 +25,7 @@ services:
       RUNTIME_GATEWAY_URL: http://runtime-gateway:8090
       RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
       OUTBOX_POLL_MS: 1000
+      SCHEDULER_POLL_MS: 1000
       OUTBOX_MAX_ATTEMPTS: 6
     depends_on:
       runtime-gateway:
