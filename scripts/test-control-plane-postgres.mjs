@@ -128,6 +128,7 @@ try {
   assert.deepEqual(manifest.data.assets.map((asset) => asset.kind), ["music", "portrait", "product_clip", "voice"]);
   assert.match(manifest.data.sha256, /^[a-f0-9]{64}$/, "release manifest must include a reproducible SHA-256 evidence hash");
   assert.equal(manifest.data.frozenSha256, manifest.data.sha256, "new runs must seal their creation manifest hash");
+  assert.equal(manifest.data.frozenSnapshotVerified, true, "the stored release manifest snapshot must verify against its hash");
   await assert.rejects(client.query("update show_revision_release_manifest_snapshots set manifest = '{}'::jsonb where show_revision_id = (select show_revision_id from live_runs where id = $1)", [createdRun.data.id]), /append-only/, "release manifest snapshots must reject direct mutation");
   const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
   assert.equal(policyEvaluation.status, 200);

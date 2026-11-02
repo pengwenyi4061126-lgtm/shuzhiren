@@ -23,6 +23,7 @@ export type RunReleaseManifest = {
   assets: FrozenAsset[];
   sha256: string;
   frozenSha256?: string;
+  frozenSnapshotVerified?: boolean;
 };
 
 type ManifestRunRow = {
@@ -43,6 +44,7 @@ type ManifestRunRow = {
   policy_evidence_ref: string | null;
   policy_validation_summary: string | null;
   frozen_manifest_sha256: string | null;
+  frozen_manifest: unknown;
 };
 type ManifestModelRow = { id: string; component: ReleaseComponent; name: string; version: string; approval_status: ReleaseApproval; source_commit: string; artifact_hash: string; evidence_ref: string };
 type ManifestAssetRow = { id: string; kind: AssetKind; name: string; approval_status: AssetApproval; expires_at: Date | string | null; object_key: string; checksum: string; rights_scope: string; source_ref: string };
@@ -67,7 +69,7 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
       policy.id as policy_id, policy.name as policy_name, policy.version as policy_version,
       policy.approval_status as policy_approval, policy.evidence_ref as policy_evidence_ref,
       policy.validation_summary as policy_validation_summary,
-      snapshot.manifest_sha256 as frozen_manifest_sha256
+      snapshot.manifest_sha256 as frozen_manifest_sha256, snapshot.manifest as frozen_manifest
      from live_runs r
      join show_revisions sr on sr.id = r.show_revision_id
      join shows s on s.id = sr.show_id
@@ -96,7 +98,8 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
     models: models.rows.map((model) => ({ id: model.id, component: model.component, name: model.name, version: model.version, approval: model.approval_status, sourceCommit: model.source_commit, artifactHash: model.artifact_hash, evidenceRef: model.evidence_ref })),
     assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined, objectKey: asset.object_key, checksum: asset.checksum, rightsScope: asset.rights_scope, source: asset.source_ref }))
   });
-  return { ...manifest, frozenSha256: row.frozen_manifest_sha256 ?? undefined };
+  const frozenSnapshotVerified = row.frozen_manifest_sha256 && isRecord(row.frozen_manifest) ? hashManifest(row.frozen_manifest) === row.frozen_manifest_sha256 : undefined;
+  return { ...manifest, frozenSha256: row.frozen_manifest_sha256 ?? undefined, frozenSnapshotVerified };
 }
 
 async function demoManifest(context: RequestContext, runId: string): Promise<RunReleaseManifest | null> {
@@ -115,10 +118,20 @@ async function demoManifest(context: RequestContext, runId: string): Promise<Run
   });
 }
 
-function hashedManifest(manifest: Omit<RunReleaseManifest, "sha256" | "frozenSha256">): RunReleaseManifest {
-  return { ...manifest, sha256: createHash("sha256").update(JSON.stringify(manifest)).digest("hex") };
+function hashedManifest(manifest: Omit<RunReleaseManifest, "sha256" | "frozenSha256" | "frozenSnapshotVerified">): RunReleaseManifest {
+  return { ...manifest, sha256: hashManifest(manifest) };
+}
+
+function hashManifest(manifest: unknown) { return createHash("sha256").update(canonicalJson(manifest)).digest("hex"); }
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
 }
 
 function isProductFacts(value: unknown): value is ProductFacts {
   return value !== null && typeof value === "object" && "sourceRef" in value && "sourceSyncedAt" in value && "validFrom" in value;
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
