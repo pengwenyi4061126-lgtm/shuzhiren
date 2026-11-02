@@ -192,6 +192,24 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
   });
 }
 
+export async function degradeRunFromRuntime(context: RequestContext, runId: string, input: { fallbackReady: boolean; reasons: string[] }) {
+  const mediaType = input.fallbackReady ? "switch_to_fallback" as const : "switch_to_human" as const;
+  if (!databasePool()) {
+    const run = getDemoRun(context, runId);
+    if (!run || run.state !== "LIVE") return { changed: false as const };
+    run.state = "DEGRADED";
+    const mediaEvent = run.runtimeSessionId ? await enqueueMediaCommand(context, { runId: run.id, traceId: run.traceId, type: mediaType, payload: { controlAction: "RUNTIME_GUARD", reasons: input.reasons.join(",") }, sessionId: run.runtimeSessionId }) : undefined;
+    return { changed: true as const, mediaType, mediaEvent };
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const run = await loadPersistentRun(client, runId, true);
+    if (!run || run.state !== "LIVE") return { changed: false as const };
+    await client.query("update live_runs set state = 'DEGRADED', updated_at = now() where id = $1", [run.id]);
+    const mediaEvent = run.runtimeSessionId ? await enqueueMediaCommandInTransaction(client, context, createMediaCommand({ runId: run.id, traceId: run.traceId, type: mediaType, payload: { controlAction: "RUNTIME_GUARD", reasons: input.reasons.join(",") } }), run.runtimeSessionId) : undefined;
+    return { changed: true as const, mediaType, mediaEvent };
+  });
+}
+
 export async function issueCommand(context: RequestContext, runId: string, input: CommandInput) {
   if (!databasePool()) return issueDemoCommand(context, runId, input);
   return withTenantTransaction(context.tenantId, async (client) => {

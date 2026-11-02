@@ -1,7 +1,7 @@
 import { recordAuditEvent } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
-import { getRun } from "@/lib/control-plane/store";
-import { ingestTelemetry, type RuntimeTelemetryInput } from "@/lib/monitoring";
+import { degradeRunFromRuntime, getRun } from "@/lib/control-plane/store";
+import { ingestTelemetry, requiresRuntimeIntervention, type RuntimeTelemetryInput } from "@/lib/monitoring";
 import { requireRuntimeService } from "@/lib/runtime-service-auth";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +36,18 @@ export async function POST(request: Request) {
         detail: { runId: alert.runId, code: alert.code, severity: alert.severity }
       });
     }
-    return Response.json({ data: result }, { status: 202 });
+    const escalation = requiresRuntimeIntervention(result.telemetry)
+      ? await degradeRunFromRuntime(serviceContext, result.telemetry.runId, { fallbackReady: result.telemetry.fallbackReady, reasons: result.alerts.filter((alert) => alert.severity === "critical" || alert.status === "open").map((alert) => alert.code) })
+      : { changed: false as const };
+    if (escalation.changed) {
+      await recordAuditEvent(serviceContext, {
+        type: "runtime_guard.degraded",
+        resource: "live_run",
+        resourceId: result.telemetry.runId,
+        detail: { mediaType: escalation.mediaType, fallbackReady: result.telemetry.fallbackReady, reasons: escalation.mediaEvent?.command.payload.reasons ?? "runtime_critical" }
+      });
+    }
+    return Response.json({ data: { ...result, escalation } }, { status: 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "runtime_telemetry_rejected" }, { status: error.status });
     throw error;

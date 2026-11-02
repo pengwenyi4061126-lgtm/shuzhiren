@@ -84,6 +84,10 @@ function alertConditions(telemetry: RuntimeTelemetry): AlertCondition[] {
   return conditions;
 }
 
+export function requiresRuntimeIntervention(telemetry: RuntimeTelemetry) {
+  return alertConditions(telemetry).some((condition) => condition.severity === "critical");
+}
+
 export async function evaluateRuntimeReadiness(context: RequestContext, runId: string) {
   const telemetry = await getTelemetry(context, runId);
   if (!telemetry) return { passed: false, detail: "没有运行时遥测数据" };
