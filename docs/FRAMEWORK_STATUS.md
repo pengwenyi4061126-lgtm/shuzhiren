@@ -10,7 +10,7 @@
 | 策略引擎 | 基础规则与 API 已建立 | 增加策略包、检索证据和红队测试集 |
 | 渠道适配 | 渠道连接、能力矩阵、密钥引用与预检校验已建立 | 每个平台实现独立 Adapter、OAuth/Webhook 与商品同步 |
 | 媒体运行时 | Runtime Gateway、源码锁定、LiveTalking/CosyVoice 音频链路和 GPU Compose 已建立 | 租机后下载受许可权重，完成 4090 端到端压测与 durable outbox 投递 |
-| 数据库 | 完整迁移、RLS、OIDC 操作者同步、直播场次、商品事实、节目单和素材授权 Repository 已建立 | 租机后启动 PostgreSQL、执行迁移并迁移渠道 Repository |
+| 数据库 | 完整迁移、RLS、OIDC 操作者同步、直播场次、商品事实、节目单、素材授权和渠道连接 Repository 已建立 | 租机后启动 PostgreSQL、执行迁移并补充监控/审计 Repository |
 | 基础设施 | Compose、CI、运行遥测上报接口、阈值告警和监控页已建立 | 部署到 Linux 服务器，注入运行时服务令牌，接入 Gateway/Prometheus 指标和通知通道 |
 
 不需要等待 4090 的工作：完整后台页面、认证、SKU/场次审批、PostgreSQL Repository、策略测试、渠道适配、审计、部署自动化。

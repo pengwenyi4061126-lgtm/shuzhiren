@@ -3,7 +3,9 @@ import { BadgeCheck, CircleDotDashed, Link2, MonitorPlay, Radio } from "lucide-r
 import { listChannelConnections } from "@/lib/channels";
 import { demoRequestContext } from "@/lib/control-plane/auth-context";
 
-export default function ChannelsPage() {
-  const connections = listChannelConnections(demoRequestContext);
+export const dynamic = "force-dynamic";
+
+export default async function ChannelsPage() {
+  const connections = await listChannelConnections(demoRequestContext);
   return <main className="channels-page"><header className="channels-header"><div><p>渠道中心</p><h1>平台连接与能力</h1><span>密钥只保留在 KMS/Secret Manager，控制台仅展示密钥引用和可用能力</span></div><span className="channel-connected"><BadgeCheck size={16} />{connections.filter((item) => item.status === "connected").length} 已连接</span></header><section className="channels-table"><div className="channels-row channels-labels"><span>连接</span><span>输出</span><span>互动与商品</span><span>合规与回放</span><span>状态</span></div>{connections.map((connection) => <div className="channels-row" key={connection.id}><div className="channel-name"><Radio size={18} /><div><strong>{connection.name}</strong><small>{connection.capability.channel} · {connection.secretRef}</small></div></div><span>{connection.outputProtocol.toUpperCase()} · 最大 {connection.capability.maxResolution}</span><span>{connection.capability.supportsComments ? "支持互动" : "无评论接口"} · {connection.capability.supportsProductPins ? "支持挂车" : "无商品接口"}</span><span>{connection.capability.requiresAiDisclosure ? "要求 AI 标识" : "AI 标识可选"} · {connection.capability.supportsReplay ? "支持回放" : "无回放接口"}</span><span className="channel-status"><CircleDotDashed size={15} />已验证</span></div>)}</section><section className="channel-notice"><MonitorPlay size={18} /><div><strong>预检约束</strong><p>场次会根据已绑定渠道校验协议、分辨率和 AI 标识。没有商品接口的 RTMP 渠道只能使用平台侧人工挂车或已批准的画面引导，不允许假装已完成商品同步。</p></div></section><Link className="catalog-back" href="/"><Link2 size={16} />返回指挥台</Link></main>;
 }

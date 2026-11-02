@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   const context = await requestContextFrom(request);
-  return Response.json({ data: listChannelConnections(context).map((connection) => connection.capability) });
+  return Response.json({ data: (await listChannelConnections(context)).map((connection) => connection.capability) });
 }

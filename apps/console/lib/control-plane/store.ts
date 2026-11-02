@@ -101,10 +101,7 @@ function getDemoRun(context: RequestContext, runId: string) {
 }
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
-  const persistent = Boolean(databasePool());
-  const channel = persistent
-    ? { passed: run.channelReady, detail: run.channelReady ? "渠道连接快照已验证" : "渠道连接尚未验证" }
-    : validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled });
+  const channel = await validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled });
   const runtime = evaluateRuntimeReadiness(context, run.id);
   return evaluatePreflight({
     ...run,
