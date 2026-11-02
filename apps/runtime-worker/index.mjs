@@ -1,3 +1,4 @@
+import http from "node:http";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -15,6 +16,7 @@ const maxAttempts = positiveInt(process.env.OUTBOX_MAX_ATTEMPTS, 6);
 const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
 const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.OUTBOX_RETRY_MAX_MS, 60000));
+const healthPort = positiveInt(process.env.RUNTIME_WORKER_PORT, 8080);
 const pool = new Pool({ connectionString: databaseUrl, max: 4 });
 
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
@@ -329,14 +331,30 @@ let nextSchedulerTenantCursor = 0;
 let nextWatchdogPollAt = 0;
 let nextWatchdogTenantCursor = 0;
 let nextUsageMeterPollAt = 0;
+let lastSuccessfulTickAt = Date.now();
+let lastTickError = null;
+const healthServer = http.createServer(async (request, response) => {
+  if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { ok: false, error: "not_found" });
+  const tickFresh = Date.now() - lastSuccessfulTickAt <= Math.max(pollMs * 3, 15_000);
+  try {
+    await pool.query("select 1");
+    return json(response, tickFresh && !stopping ? 200 : 503, { ok: tickFresh && !stopping, lastSuccessfulTickAt: new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError });
+  } catch {
+    return json(response, 503, { ok: false, lastSuccessfulTickAt: new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError ?? "database_unavailable" });
+  }
+});
+healthServer.listen(healthPort, "0.0.0.0", () => log("worker.health_listening", { port: healthPort }));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs });
+log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort });
 while (!stopping) {
-  try { await tick(); } catch (error) { log("worker.error", { error: error instanceof Error ? error.message : "unknown" }); }
+  try { await tick(); lastSuccessfulTickAt = Date.now(); lastTickError = null; } catch (error) { lastTickError = error instanceof Error ? error.message : "unknown"; log("worker.error", { error: lastTickError }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());
   const watchdogWaitMs = Math.max(1, nextWatchdogPollAt - Date.now());
   const usageWaitMs = Math.max(1, nextUsageMeterPollAt - Date.now());
   await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs, watchdogWaitMs, usageWaitMs)));
 }
+await new Promise((resolve) => healthServer.close(resolve));
 await pool.end();
 log("worker.stopped");
+
+function json(response, status, value) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify(value)); }

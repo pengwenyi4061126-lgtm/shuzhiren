@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const observer = path.join(root, "apps", "runtime-observer", "index.mjs");
 const telemetryToken = "observer-tenant-token-at-least-16";
 const gatewayToken = "gateway-shared-token-at-least-16";
+const observerPort = 18084;
 
 async function startServer(probeMode) {
   const samples = [];
@@ -50,10 +51,17 @@ async function observeOnce(probeMode) {
   const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
   const child = spawn(process.execPath, [observer], {
     cwd: root,
-    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true" },
+    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
     stdio: ["ignore", "pipe", "pipe"]
   });
   try {
+    await waitFor(async () => {
+      try {
+        return (await fetch(`http://127.0.0.1:${observerPort}/healthz`)).ok;
+      } catch {
+        return false;
+      }
+    }, 5000);
     await waitFor(() => fixture.samples.length === 1, 5000);
     return fixture.samples[0];
   } finally {
@@ -65,7 +73,7 @@ async function observeOnce(probeMode) {
 
 async function waitFor(predicate, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() >= deadline) throw new Error("timed out waiting for runtime observer telemetry");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

@@ -1,9 +1,12 @@
+import http from "node:http";
+
 const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
 const gatewayUrl = requiredUrl("RUNTIME_GATEWAY_URL");
 const gatewayToken = required("RUNTIME_SHARED_TOKEN");
 const pollMs = positiveInt(process.env.RUNTIME_OBSERVER_POLL_MS, 5000);
 const timeoutMs = positiveInt(process.env.RUNTIME_OBSERVER_TIMEOUT_MS, 3000);
 const failClosed = process.env.RUNTIME_OBSERVER_FAIL_CLOSED !== "false";
+const healthPort = positiveInt(process.env.RUNTIME_OBSERVER_PORT, 8084);
 const targets = configuredTargets();
 
 function required(name) {
@@ -127,10 +130,28 @@ async function observeTarget(target) {
 }
 
 let stopping = false;
+let lastSuccessfulCycleAt = Date.now();
+let lastCycleError = null;
+const healthServer = http.createServer((request, response) => {
+  if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { ok: false, error: "not_found" });
+  const cycleFresh = Date.now() - lastSuccessfulCycleAt <= Math.max(pollMs * 3, 15_000);
+  return json(response, cycleFresh && !stopping ? 200 : 503, { ok: cycleFresh && !stopping, targetCount: targets.length, lastSuccessfulCycleAt: new Date(lastSuccessfulCycleAt).toISOString(), lastError: lastCycleError });
+});
+healthServer.listen(healthPort, "0.0.0.0", () => log("observer.health_listening", { port: healthPort }));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("observer.started", { targetCount: targets.length, pollMs, timeoutMs, failClosed });
+log("observer.started", { targetCount: targets.length, pollMs, timeoutMs, failClosed, healthPort });
 while (!stopping) {
-  await Promise.all(targets.map(observeTarget));
+  try {
+    await Promise.all(targets.map(observeTarget));
+    lastSuccessfulCycleAt = Date.now();
+    lastCycleError = null;
+  } catch (error) {
+    lastCycleError = error instanceof Error ? error.message : "observer_cycle_failed";
+    log("observer.error", { error: lastCycleError });
+  }
   await new Promise((resolve) => setTimeout(resolve, pollMs));
 }
+await new Promise((resolve) => healthServer.close(resolve));
 log("observer.stopped");
+
+function json(response, status, value) { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify(value)); }

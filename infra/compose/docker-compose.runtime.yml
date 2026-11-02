@@ -16,6 +16,7 @@ services:
       FALLBACK_AUDIOTYPE: ${FALLBACK_AUDIOTYPE:-1}
       HUMAN_HANDOFF_AUDIOTYPE: ${HUMAN_HANDOFF_AUDIOTYPE:-2}
     runtime: nvidia
+    restart: unless-stopped
     ports:
       - "8090:8090"
     healthcheck:
@@ -47,6 +48,15 @@ services:
       OUTBOX_LEASE_SECONDS: ${OUTBOX_LEASE_SECONDS:-60}
       OUTBOX_RETRY_BASE_MS: ${OUTBOX_RETRY_BASE_MS:-1000}
       OUTBOX_RETRY_MAX_MS: ${OUTBOX_RETRY_MAX_MS:-60000}
+      RUNTIME_WORKER_PORT: ${RUNTIME_WORKER_PORT:-8080}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
       runtime-gateway:
         condition: service_healthy
@@ -63,12 +73,22 @@ services:
       RUNTIME_OBSERVER_POLL_MS: ${RUNTIME_OBSERVER_POLL_MS:-5000}
       RUNTIME_OBSERVER_TIMEOUT_MS: ${RUNTIME_OBSERVER_TIMEOUT_MS:-3000}
       RUNTIME_OBSERVER_FAIL_CLOSED: ${RUNTIME_OBSERVER_FAIL_CLOSED:-true}
+      RUNTIME_OBSERVER_PORT: ${RUNTIME_OBSERVER_PORT:-8084}
+    restart: unless-stopped
+    expose:
+      - "8084"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8084/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
       runtime-gateway:
         condition: service_healthy
 
   output-probe:
     profiles: ["output-probe"]
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: apps/output-probe/Dockerfile
@@ -90,6 +110,7 @@ services:
 
   channel-adapter:
     profiles: ["channel-adapter"]
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: apps/channel-adapter/Dockerfile
@@ -110,6 +131,7 @@ services:
 
   alert-notifier:
     profiles: ["alert-notifier"]
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: apps/alert-notifier/Dockerfile
@@ -135,6 +157,7 @@ services:
       context: ../..
       dockerfile: runtime/livetalking/Dockerfile
     runtime: nvidia
+    restart: unless-stopped
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
     command: >-
@@ -155,6 +178,7 @@ services:
 
   cosyvoice:
     profiles: ["cosyvoice"]
+    restart: unless-stopped
     build:
       context: ../../vendor/CosyVoice
       dockerfile: runtime/python/Dockerfile
