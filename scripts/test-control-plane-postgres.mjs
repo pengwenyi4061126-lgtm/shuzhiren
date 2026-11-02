@@ -211,6 +211,11 @@ try {
   const pending = await client.query("select state, scheduled_start_event_id from live_runs where id = $1", [recoverRunId]);
   assert.equal(pending.rows[0].state, "DEGRADED");
   assert.equal(pending.rows[0].scheduled_start_event_id, eventId);
+  const pendingOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${eventId}`, { headers: requestHeaders });
+  assert.equal(pendingOutbox.status, 200, "operators should read one pending outbox event without polling the whole queue");
+  assert.equal((await pendingOutbox.json()).data.state, "pending");
+  const isolatedOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${eventId}`, { headers: isolatedRequestHeaders });
+  assert.equal(isolatedOutbox.status, 404, "one tenant must not read another tenant's outbox event");
 
   const duplicateResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, {
     method: "POST",

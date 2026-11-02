@@ -101,15 +101,15 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
       try {
         const [response, outboxResponse] = await Promise.all([
           fetch(`/api/v1/live-runs/${encodeURIComponent(run.id)}`, { cache: "no-store" }),
-          fetch("/api/v1/runtime/outbox", { cache: "no-store" })
+          fetch(`/api/v1/runtime/outbox/${encodeURIComponent(gatewayConfirmation.eventId)}`, { cache: "no-store" })
         ]);
         const [payload, outboxPayload] = await Promise.all([
           response.json().catch(() => null) as Promise<{ data?: LiveRun } | null>,
-          outboxResponse.json().catch(() => null) as Promise<{ data?: RuntimeOutboxEvent[] } | null>
+          outboxResponse.json().catch(() => null) as Promise<{ data?: RuntimeOutboxEvent } | null>
         ]);
         if (!response.ok || !payload?.data || !active) return;
         setRun(payload.data);
-        const event = outboxPayload?.data?.find((candidate) => candidate.id === gatewayConfirmation.eventId);
+        const event = outboxPayload?.data;
         if (event?.state === "failed") {
           setGatewayConfirmation(null);
           setCommandError(`运行时投递失败：${event.lastError ?? "未知错误"}。请前往投递队列确认后重试。`);
