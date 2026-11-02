@@ -124,6 +124,7 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
     event.attempts += 1;
     return { event, duplicate: false };
   }
+  if (!isUuid(eventId)) throw new Response("Outbox event not found", { status: 404 });
 
   return withTenantTransaction(context.tenantId, async (client) => {
     const selected = await client.query<PersistentOutboxRow>("select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error from outbox_events where id = $1 for update", [eventId]);

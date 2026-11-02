@@ -223,6 +223,8 @@ try {
   assert.equal(isolatedOutbox.status, 404, "one tenant must not read another tenant's outbox event");
   const malformedOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/not-a-uuid`, { headers: requestHeaders });
   assert.equal(malformedOutbox.status, 404, "malformed outbox IDs must not surface PostgreSQL UUID cast errors");
+  const malformedOutboxDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/not-a-uuid/deliver`, { method: "POST", headers: requestHeaders });
+  assert.equal(malformedOutboxDelivery.status, 404, "manual delivery must reject malformed outbox IDs without PostgreSQL UUID cast errors");
 
   const duplicateResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, {
     method: "POST",
