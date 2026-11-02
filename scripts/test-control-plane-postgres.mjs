@@ -118,6 +118,7 @@ try {
   const frozenRights = await client.query("select kind from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) order by kind", [createdRun.data.id]);
   assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["music", "portrait", "product_clip", "voice"]);
   await assert.rejects(client.query("delete from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) and kind = 'voice'", [createdRun.data.id]), /Frozen show revision bindings are immutable/, "frozen revision bindings must reject direct mutation");
+  await assert.rejects(client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, (select show_revision_id from live_runs where id = $2), $3, 'secondary')", [tenantId, createdRun.data.id, staleVersion.data.id]), /Frozen show revision bindings are immutable/, "a live run's revision must reject added product bindings");
   const manifestResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/release-manifest`, { headers: requestHeaders });
   assert.equal(manifestResponse.status, 200, "operators should read a run's frozen release manifest");
   const manifest = await manifestResponse.json();
