@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { recordAuditEvent } from "@/lib/audit";
 import { findApprovedProductVersion } from "@/lib/catalog";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
@@ -18,7 +19,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   const version = await findApprovedProductVersion(actor, run.productVersionId);
   if (!version) return Response.json({ error: "approved_product_version_required" }, { status: 409 });
   const draft = createGroundedResponseDraft(body.question.trim(), version);
-  await recordAuditEvent(actor, { type: draft.status === "ready" ? "response_draft.created" : "response_draft.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action } });
+  await recordAuditEvent(actor, { type: draft.status === "ready" ? "response_draft.created" : "response_draft.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: createHash("sha256").update(body.question.trim()).digest("hex") } });
   return Response.json({ data: draft }, { status: draft.status === "ready" ? 200 : 202 });
 }
 

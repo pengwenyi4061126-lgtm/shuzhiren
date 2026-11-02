@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { LiveCommand, LiveCommandAction, LiveRun, LiveRunState } from "@/lib/domain";
 import { canTransition, nextStateFor } from "@/lib/live-run";
@@ -284,11 +285,11 @@ async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun
   if (!version) throw new Response("Approved frozen product version is required", { status: 409 });
   const draft = createGroundedResponseDraft(question, version);
   if (draft.status !== "ready" || !draft.text) {
-    await recordAuditEvent(context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action } });
+    await recordAuditEvent(context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
   }
   const queued = await enqueueSpeechCommand(context, { runId: run.id, traceId: run.traceId, text: draft.text, voice, productVersionId: version.id, productRevision: version.revision, sessionId: run.runtimeSessionId!, idempotencyKey });
-  if (!queued.duplicate) await recordAuditEvent(context, { type: "speech_dispatch.queued", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, speechCommandId: queued.event.command.id, outboxEventId: queued.event.id } });
+  if (!queued.duplicate) await recordAuditEvent(context, { type: "speech_dispatch.queued", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, speechCommandId: queued.event.command.id, outboxEventId: queued.event.id, questionSha256: questionHash(question) } });
   return { status: "queued", draft, event: queued.event, duplicate: queued.duplicate };
 }
 
@@ -301,12 +302,12 @@ async function enqueueGroundedSpeechInTransaction(client: PoolClient, context: R
   const version = { id: versionRow.id, revision: versionRow.revision, status: versionRow.approval_status, facts: versionRow.facts as import("@/lib/catalog").ProductFacts, createdAt: new Date(versionRow.created_at).toISOString(), approvedAt: versionRow.approved_at ? new Date(versionRow.approved_at).toISOString() : undefined };
   const draft = createGroundedResponseDraft(question, version);
   if (draft.status !== "ready" || !draft.text) {
-    await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action } });
+    await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
   }
   const command = createSpeechCommand({ runId: run.id, traceId: run.traceId, text: draft.text, voice, productVersionId: version.id, productRevision: version.revision, idempotencyKey });
   const queued = await enqueueSpeechCommandInTransaction(client, context, command, run.runtimeSessionId!);
-  if (!queued.duplicate) await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.queued", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, speechCommandId: command.id, outboxEventId: queued.event.id } });
+  if (!queued.duplicate) await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.queued", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, speechCommandId: command.id, outboxEventId: queued.event.id, questionSha256: questionHash(question) } });
   return { status: "queued", draft, event: queued.event, duplicate: queued.duplicate };
 }
 
@@ -314,6 +315,8 @@ function assertSpeechReadyRun(run: StoredRun) {
   if (run.state !== "LIVE") throw new Response("Live run must be active before speech dispatch", { status: 409 });
   if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
 }
+
+function questionHash(question: string) { return createHash("sha256").update(question).digest("hex"); }
 
 async function issueDemoCommand(context: RequestContext, runId: string, input: CommandInput) {
   const activeStore = store();
