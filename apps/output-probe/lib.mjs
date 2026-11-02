@@ -10,7 +10,23 @@ export function validateTarget(value, index) {
   const streamUrl = safeSourceUrl(value.streamUrl, `OUTPUT_PROBE_TARGETS[${index}].streamUrl`);
   const avSyncProbeUrl = safeHttpUrl(value.avSyncProbeUrl, `OUTPUT_PROBE_TARGETS[${index}].avSyncProbeUrl`);
   const fallbackStreamUrl = value.fallbackStreamUrl === undefined ? null : safeSourceUrl(value.fallbackStreamUrl, `OUTPUT_PROBE_TARGETS[${index}].fallbackStreamUrl`);
-  return { id: value.id, streamUrl, fallbackStreamUrl, avSyncProbeUrl };
+  const expectedFps = optionalPositiveNumber(value.expectedFps, `OUTPUT_PROBE_TARGETS[${index}].expectedFps`, 120);
+  const expectedWidth = optionalPositiveInteger(value.expectedWidth, `OUTPUT_PROBE_TARGETS[${index}].expectedWidth`, 8192);
+  const expectedHeight = optionalPositiveInteger(value.expectedHeight, `OUTPUT_PROBE_TARGETS[${index}].expectedHeight`, 8192);
+  if ((expectedWidth === null) !== (expectedHeight === null)) throw new Error(`OUTPUT_PROBE_TARGETS[${index}] must set expectedWidth and expectedHeight together`);
+  return { id: value.id, streamUrl, fallbackStreamUrl, avSyncProbeUrl, expectedFps, expectedWidth, expectedHeight };
+}
+
+function optionalPositiveNumber(value, label, maximum) {
+  if (value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > maximum) throw new Error(`${label} is invalid`);
+  return value;
+}
+
+function optionalPositiveInteger(value, label, maximum) {
+  if (value === undefined) return null;
+  if (!Number.isInteger(value) || value <= 0 || value > maximum) throw new Error(`${label} is invalid`);
+  return value;
 }
 
 function safeSourceUrl(value, label) {
@@ -35,18 +51,22 @@ export async function probeTarget(target, { ffprobePath = "ffprobe", ffmpegPath 
     detectAudioActivity(target.streamUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute })
   ]);
   if (!primary.hasAudio || !primary.hasVideo || primary.outputFps === null || primary.bitrateMbps === null) throw new Error("primary_stream_measurement_incomplete");
+  if (target.expectedFps !== null && Math.abs(primary.outputFps - target.expectedFps) > 0.05) throw new Error("primary_stream_fps_mismatch");
+  if (target.expectedWidth !== null && (primary.width !== target.expectedWidth || primary.height !== target.expectedHeight)) throw new Error("primary_stream_resolution_mismatch");
   return { outputConnected: true, outputFps: primary.outputFps, avSyncMs, bitrateMbps: primary.bitrateMbps, audioActive, fallbackReady: fallback };
 }
 
 async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
-  const { stdout } = await execute(ffprobePath, ["-v", "error", "-show_entries", "stream=codec_type,avg_frame_rate,r_frame_rate,bit_rate:format=bit_rate", "-of", "json", sourceUrl], { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+  const { stdout } = await execute(ffprobePath, ["-v", "error", "-show_entries", "stream=codec_type,width,height,avg_frame_rate,r_frame_rate,bit_rate:format=bit_rate", "-of", "json", sourceUrl], { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
   const payload = JSON.parse(stdout);
   const streams = Array.isArray(payload?.streams) ? payload.streams : [];
   const video = streams.find((stream) => stream?.codec_type === "video");
   const hasAudio = streams.some((stream) => stream?.codec_type === "audio");
   const outputFps = frameRate(video?.avg_frame_rate) ?? frameRate(video?.r_frame_rate);
   const bitrate = numericBitrate(payload?.format?.bit_rate) ?? numericBitrate(video?.bit_rate);
-  return { hasVideo: Boolean(video), hasAudio, outputFps, bitrateMbps: bitrate === null ? null : round(bitrate / 1_000_000) };
+  const width = numericDimension(video?.width);
+  const height = numericDimension(video?.height);
+  return { hasVideo: Boolean(video), hasAudio, outputFps, width, height, bitrateMbps: bitrate === null ? null : round(bitrate / 1_000_000) };
 }
 
 async function fetchAvSync(url, { timeoutMs, fetchImpl }) {
@@ -75,6 +95,10 @@ function frameRate(value) {
 function numericBitrate(value) {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function numericDimension(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function round(value) { return Math.round(value * 1000) / 1000; }
