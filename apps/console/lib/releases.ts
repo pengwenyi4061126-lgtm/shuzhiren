@@ -3,6 +3,7 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type ReleaseComponent = "runtime" | "avatar" | "lip_sync" | "voice";
 export type ReleaseApproval = "pending" | "approved" | "revoked";
+export const requiredProductionReleaseComponents: ReleaseComponent[] = ["runtime", "lip_sync", "voice"];
 export type ModelRelease = { id: string; tenantId: string; name: string; version: string; component: ReleaseComponent; sourceCommit: string; imageDigest: string; artifactHash: string; driverVersion: string; license: string; rightsScope: string; notes?: string; approval: ReleaseApproval; approvedAt?: string };
 export type CreateModelReleaseInput = Omit<ModelRelease, "id" | "tenantId" | "approval" | "approvedAt">;
 type ReleaseStore = { releases: Map<string, ModelRelease> };
@@ -55,16 +56,17 @@ export async function approveModelRelease(context: RequestContext, releaseId: st
   });
 }
 
-export async function hasApprovedProductionReleases(context: RequestContext) {
-  const required: ReleaseComponent[] = ["runtime", "lip_sync", "voice"];
+export async function hasApprovedProductionReleases(context: RequestContext, revisionId?: string) {
   if (!databasePool()) {
     const approved = new Set([...releaseStore().releases.values()].filter((release) => release.tenantId === context.tenantId && release.approval === "approved").map((release) => release.component));
-    return required.every((component) => approved.has(component));
+    return requiredProductionReleaseComponents.every((component) => approved.has(component));
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<{ component: ReleaseComponent }>("select distinct component from model_releases where approval_status = 'approved' and component = any($1::model_release_component[])", [required]);
+    const result = await client.query<{ component: ReleaseComponent }>(revisionId
+      ? "select distinct release.component from show_revision_model_releases binding join model_releases release on release.id = binding.model_release_id where binding.show_revision_id = $1 and release.approval_status = 'approved' and binding.component = any($2::model_release_component[])"
+      : "select distinct component from model_releases where approval_status = 'approved' and component = any($1::model_release_component[])", revisionId ? [revisionId, requiredProductionReleaseComponents] : [requiredProductionReleaseComponents]);
     const approved = new Set(result.rows.map((row) => row.component));
-    return required.every((component) => approved.has(component));
+    return requiredProductionReleaseComponents.every((component) => approved.has(component));
   });
 }
 

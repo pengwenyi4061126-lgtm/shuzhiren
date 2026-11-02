@@ -7,7 +7,7 @@ import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { hasApprovedFallbackProgram } from "@/lib/show-program";
 import { registerDemoProgram, type ShowProgram } from "@/lib/show-program";
 import { hasApprovedLiveRights } from "@/lib/assets";
-import { hasApprovedProductionReleases } from "@/lib/releases";
+import { hasApprovedProductionReleases, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
 import { validateChannelConnection } from "@/lib/channels";
 import { evaluateRuntimeReadiness } from "@/lib/monitoring";
 import { databasePool, withTenantTransaction } from "@/lib/database";
@@ -116,9 +116,14 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
   if (!channel.passed) throw new Response(`Channel is not ready: ${channel.detail}`, { status: 409 });
   if (!databasePool()) return createDemoRun(context, input);
   return withTenantTransaction(context.tenantId, async (client) => {
+    const releases = await client.query<{ id: string; component: ReleaseComponent }>("select id, component from model_releases where approval_status = 'approved' and component = any($1::model_release_component[]) order by approved_at desc", [requiredProductionReleaseComponents]);
+    const frozenReleases = new Map<ReleaseComponent, string>();
+    for (const release of releases.rows) if (!frozenReleases.has(release.component)) frozenReleases.set(release.component, release.id);
+    if (!requiredProductionReleaseComponents.every((component) => frozenReleases.has(component))) throw new Response("Approved runtime, lip-sync, and voice releases are required", { status: 409 });
     const show = await client.query<{ id: string }>("insert into shows (tenant_id, name) values ($1, $2) returning id", [context.tenantId, input.showName]);
-    const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'approved') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId })]);
+    const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'approved') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId, modelReleaseIds: Object.fromEntries(frozenReleases) })]);
     await client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [context.tenantId, revision.rows[0].id, input.productVersionId]);
+    for (const component of requiredProductionReleaseComponents) await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, frozenReleases.get(component), component]);
     const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, $6, true, true, true, false, $7, $8, $9::timestamptz) returning id, tenant_id, show_revision_id, $10::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, await hasApprovedLiveRights(context), input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
     return persistentRun(run.rows[0], []);
@@ -175,7 +180,7 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
   return evaluatePreflight({
     ...run,
     hasApprovedRights: await hasApprovedLiveRights(context),
-    hasApprovedModelReleases: await hasApprovedProductionReleases(context),
+    hasApprovedModelReleases: await hasApprovedProductionReleases(context, run.revisionId),
     hasApprovedSkuVersion: Boolean(run.productVersionId && await findApprovedProductVersion(context, run.productVersionId)),
     hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id),
     channelReady: channel.passed,
