@@ -3,6 +3,7 @@ services:
     build:
       context: ../../runtime/gateway
     environment:
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
       LIVETALKING_BASE_URL: http://livetalking:8010
       COSYVOICE_BASE_URL: http://cosyvoice:50000
       RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
@@ -13,6 +14,7 @@ services:
       PROGRAM_AUDIOTYPE: ${PROGRAM_AUDIOTYPE:-0}
       FALLBACK_AUDIOTYPE: ${FALLBACK_AUDIOTYPE:-1}
       HUMAN_HANDOFF_AUDIOTYPE: ${HUMAN_HANDOFF_AUDIOTYPE:-2}
+    runtime: nvidia
     ports:
       - "8090:8090"
     healthcheck:

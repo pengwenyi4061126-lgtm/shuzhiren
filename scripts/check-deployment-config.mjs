@@ -123,6 +123,18 @@ try {
   }
 } catch { errors.push("无法解析开源运行时锁文件"); }
 
+try {
+  const liveTalkingSource = path.join(files.sourceRoot, "vendor", "LiveTalking");
+  const observabilityPatch = path.join(files.sourceRoot, "runtime", "patches", "livetalking-observability.patch");
+  const liveTalkingDockerfile = path.join(files.sourceRoot, "runtime", "livetalking", "Dockerfile");
+  const [patchText, dockerfileText] = await Promise.all([readFile(observabilityPatch, "utf8"), readFile(liveTalkingDockerfile, "utf8")]);
+  if (!patchText.includes("/api/admin/runtime-metrics")) errors.push("LiveTalking 观测补丁缺少运行时指标接口");
+  if (!dockerfileText.includes("livetalking-observability.patch") || !dockerfileText.includes("git apply --check --recount")) errors.push("LiveTalking 镜像没有强制应用观测补丁");
+  git(liveTalkingSource, ["apply", "--check", "--recount", observabilityPatch]);
+} catch (error) {
+  errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);
+}
+
 if (runtime.get("STREAM_OUTPUT_MODE") !== "rtmp") warnings.push("当前检查只验证 RTMP 输出；若使用 SRT，需要先扩展 Gateway 和验收脚本。");
 
 for (const warning of warnings) console.warn(`WARN  ${warning}`);

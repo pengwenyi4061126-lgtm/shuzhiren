@@ -80,9 +80,9 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 
 1. 启动 PostgreSQL、Redis、MinIO，运行 `npm run db:migrate`，再以控制面运行时账号执行 `npm run db:verify`。验证脚本只读检查迁移、关键表、RLS、租户上下文与账号权限；生产应用账号不得为超级用户或拥有 `BYPASSRLS`。仅在本地使用管理员账号进行排障时才可显式加 `-- --allow-privileged`。
 2. 启动控制台和 OIDC 配置，确认 `/api/health` 与数据库健康接口正常。
-3. 启动 Gateway、LiveTalking、CosyVoice（如启用）和 runtime worker。Compose 会等待 LiveTalking 会话接口与 Gateway `/healthz` 健康后才拉起 worker；先观察这两个健康状态，不能仅以容器 `running` 作为可开播依据。只有启用 Compose `cosyvoice` profile 时才将 `COSYVOICE_REQUIRED=true`。
+3. 启动 Gateway、LiveTalking、CosyVoice（如启用）和 runtime worker。Compose 会等待 LiveTalking 会话接口与 Gateway `/healthz` 健康后才拉起 worker；先观察这两个健康状态，不能仅以容器 `running` 作为可开播依据。Gateway 也需要以相同的 `NVIDIA_VISIBLE_DEVICES` 读取只读 NVML 指标。只有启用 Compose `cosyvoice` profile 时才将 `COSYVOICE_REQUIRED=true`。
 4. 用非公开推流地址进行 30 分钟内部试播；确认遥测到达、媒体 outbox 可投递、录屏生成和人工接管成功。
-5. 执行 4 小时连续试播与断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音演练后，才允许真实小规模场次。现有 Gateway 健康接口只证明依赖服务可连通；必须另行采集并人工核验 RTMP 目的端接收、实际输出 FPS/码率、音画同步和录屏成品，不能把 `/healthz` 的 `200` 作为质量结论。
+5. 执行 4 小时连续试播与断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音演练后，才允许真实小规模场次。使用私网共享令牌调用 Gateway 的 `GET /v1/observations/{session_id}`，核验会话仍在、录制状态、进程内推理/输出 FPS 和 GPU 指标。该接口不能证明平台目的端接收、真实上行码率或音画同步；这些必须另行采集并人工核验，不能把 `/healthz` 或 writer 状态当作质量结论。
 
 ## 5. 上线阻断项
 

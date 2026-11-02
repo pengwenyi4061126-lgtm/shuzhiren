@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 import wave
 from collections import OrderedDict
@@ -22,6 +23,7 @@ MEDIA_COMMAND_CACHE_TTL_SECONDS = float(os.environ.get("MEDIA_COMMAND_CACHE_TTL_
 MEDIA_COMMAND_CACHE_MAX_ENTRIES = int(os.environ.get("MEDIA_COMMAND_CACHE_MAX_ENTRIES", "2048"))
 runtime_command_lock = asyncio.Lock()
 runtime_command_cache: OrderedDict[str, dict] = OrderedDict()
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 class SpeakRequest(BaseModel):
     command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -50,6 +52,18 @@ async def livetalking_post(path: str, payload: dict) -> dict:
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
             response = await client.post(f"{LIVE_TALKING_URL}{path}", json=payload)
+            response.raise_for_status()
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail=f"LiveTalking request failed: {error}") from error
+    data = response.json()
+    if data.get("code") != 0:
+        raise HTTPException(status_code=502, detail=f"LiveTalking rejected request: {data.get('msg', 'unknown error')}")
+    return data
+
+async def livetalking_get(path: str) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.get(f"{LIVE_TALKING_URL}{path}")
             response.raise_for_status()
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail=f"LiveTalking request failed: {error}") from error
@@ -87,6 +101,22 @@ def pcm_to_wav(pcm: bytes) -> bytes:
         wav.setframerate(COSYVOICE_SAMPLE_RATE)
         wav.writeframes(pcm)
     return output.getvalue()
+
+def gpu_observation() -> dict:
+    try:
+        from pynvml import nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates, nvmlInit, nvmlShutdown
+        visible = os.environ.get("NVIDIA_VISIBLE_DEVICES", "0").split(",", 1)[0]
+        device_index = int(visible) if visible.isdigit() else 0
+        nvmlInit()
+        try:
+            handle = nvmlDeviceGetHandleByIndex(device_index)
+            memory = nvmlDeviceGetMemoryInfo(handle)
+            utilization = nvmlDeviceGetUtilizationRates(handle)
+            return {"available": True, "utilization_percent": int(utilization.gpu), "memory_used_mib": int(memory.used // (1024 * 1024)), "memory_total_mib": int(memory.total // (1024 * 1024))}
+        finally:
+            nvmlShutdown()
+    except Exception:
+        return {"available": False}
 
 async def cosyvoice_synthesize(text: str, speaker: str) -> bytes:
     try:
@@ -126,6 +156,42 @@ async def healthz() -> JSONResponse:
             "media_actions": ["start_program", "switch_to_fallback", "switch_to_human", "stop_program"],
         },
     )
+
+@app.get("/v1/observations/{session_id}")
+async def observation(session_id: str, authorization: str | None = Header(default=None)) -> dict:
+    authorize(authorization)
+    if not SESSION_ID_PATTERN.fullmatch(session_id):
+        raise HTTPException(status_code=400, detail="Invalid runtime session id")
+    data = await livetalking_get("/api/admin/runtime-metrics")
+    sessions = data.get("data", {}).get("sessions", [])
+    session = next((item for item in sessions if isinstance(item, dict) and item.get("sessionid") == session_id), None)
+    if not session:
+        return {
+            "session": {"id": session_id, "active": False, "speaking": False, "recording": False},
+            "gpu": gpu_observation(),
+            "quality": {"writer_accepting_frames": False, "output_fps": None, "inference_fps": None, "configured_bitrate_mbps": None, "actual_bitrate_mbps": None, "av_sync_ms": None, "destination_receipt": None},
+            "limitations": ["session_not_found", "destination_receipt_not_available", "actual_bitrate_not_available", "av_sync_not_available"],
+        }
+    metrics = session.get("metrics") if isinstance(session.get("metrics"), dict) else {}
+    return {
+        "session": {"id": session_id, "active": True, "speaking": bool(session.get("speaking")), "recording": bool(session.get("recording"))},
+        "gpu": gpu_observation(),
+        "quality": {
+            "writer_accepting_frames": bool(metrics.get("output_connected")),
+            "output_fps": numeric_metric(metrics.get("output_fps")),
+            "inference_fps": numeric_metric(metrics.get("inference_fps")),
+            "configured_bitrate_mbps": numeric_metric(metrics.get("output_bitrate_mbps_configured")),
+            "actual_bitrate_mbps": None,
+            "av_sync_ms": None,
+            "destination_receipt": None,
+            "last_output_at": numeric_metric(metrics.get("last_output_at")),
+            "last_output_error": metrics.get("last_output_error") if isinstance(metrics.get("last_output_error"), str) else None,
+        },
+        "limitations": ["writer_accepting_frames_is_not_destination_receipt", "actual_bitrate_not_available", "av_sync_not_available"],
+    }
+
+def numeric_metric(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 @app.post("/v1/speak")
 async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
