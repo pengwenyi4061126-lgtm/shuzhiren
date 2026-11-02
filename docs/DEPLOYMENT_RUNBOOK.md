@@ -36,7 +36,7 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 
 1. 启动 PostgreSQL、Redis、MinIO，运行 `npm run db:migrate`，再以控制面运行时账号执行 `npm run db:verify`。验证脚本只读检查迁移、关键表、RLS、租户上下文与账号权限；生产应用账号不得为超级用户或拥有 `BYPASSRLS`。仅在本地使用管理员账号进行排障时才可显式加 `-- --allow-privileged`。
 2. 启动控制台和 OIDC 配置，确认 `/api/health` 与数据库健康接口正常。
-3. 启动 Gateway、LiveTalking、CosyVoice（如启用）和 runtime worker。
+3. 启动 Gateway、LiveTalking、CosyVoice（如启用）和 runtime worker。先访问 Gateway `/healthz`：它必须确认 LiveTalking 的真实会话管理接口可达；只有启用 Compose `cosyvoice` profile 时才将 `COSYVOICE_REQUIRED=true`。
 4. 用非公开推流地址进行 30 分钟内部试播；确认遥测到达、媒体 outbox 可投递、录屏生成和人工接管成功。
 5. 执行 4 小时连续试播与断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音演练后，才允许真实小规模场次。
 

@@ -1,10 +1,14 @@
+import asyncio
 import os
+import time
 import wave
+from collections import OrderedDict
 from io import BytesIO
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Shuzhiren Runtime Gateway", version="0.1.0")
@@ -13,6 +17,11 @@ COSYVOICE_URL = os.environ.get("COSYVOICE_BASE_URL", "http://cosyvoice:50000").r
 COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "22050"))
 RUNTIME_TOKEN = os.environ.get("RUNTIME_SHARED_TOKEN", "")
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("RUNTIME_REQUEST_TIMEOUT_SECONDS", "15"))
+COSYVOICE_REQUIRED = os.environ.get("COSYVOICE_REQUIRED", "false").lower() == "true"
+MEDIA_COMMAND_CACHE_TTL_SECONDS = float(os.environ.get("MEDIA_COMMAND_CACHE_TTL_SECONDS", "3600"))
+MEDIA_COMMAND_CACHE_MAX_ENTRIES = int(os.environ.get("MEDIA_COMMAND_CACHE_MAX_ENTRIES", "2048"))
+media_command_lock = asyncio.Lock()
+media_command_cache: OrderedDict[str, dict] = OrderedDict()
 
 class SpeakRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -22,6 +31,7 @@ class SpeakRequest(BaseModel):
     provider: Literal["cosyvoice", "livetalking"] = "cosyvoice"
 
 class MediaRequest(BaseModel):
+    command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     action: Literal["start_program", "switch_to_fallback", "switch_to_human", "stop_program"]
 
@@ -46,6 +56,27 @@ async def livetalking_post(path: str, payload: dict) -> dict:
     if data.get("code") != 0:
         raise HTTPException(status_code=502, detail=f"LiveTalking rejected request: {data.get('msg', 'unknown error')}")
     return data
+
+async def service_health(url: str, path: str, expected_code: int | None = None) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.get(f"{url}{path}")
+            response.raise_for_status()
+        if expected_code is not None:
+            data = response.json()
+            if data.get("code") != expected_code:
+                return {"available": False}
+    except (httpx.HTTPError, ValueError):
+        return {"available": False}
+    return {"available": True}
+
+def prune_media_command_cache(now: float) -> None:
+    expiry = now - MEDIA_COMMAND_CACHE_TTL_SECONDS
+    while media_command_cache:
+        oldest_id, oldest = next(iter(media_command_cache.items()))
+        if oldest["completed_at"] >= expiry and len(media_command_cache) <= MEDIA_COMMAND_CACHE_MAX_ENTRIES:
+            break
+        media_command_cache.pop(oldest_id)
 
 def pcm_to_wav(pcm: bytes) -> bytes:
     output = BytesIO()
@@ -77,8 +108,23 @@ async def livetalking_audio(session_id: str, audio: bytes) -> None:
         raise HTTPException(status_code=502, detail=f"LiveTalking rejected audio: {data.get('msg', 'unknown error')}")
 
 @app.get("/healthz")
-async def healthz() -> dict:
-    return {"status": "ok", "dependencies": {"livetalking_configured": bool(LIVE_TALKING_URL), "cosyvoice_configured": bool(COSYVOICE_URL)}, "media_actions": ["start_program", "switch_to_fallback", "switch_to_human", "stop_program"]}
+async def healthz() -> JSONResponse:
+    livetalking, cosyvoice = await asyncio.gather(
+        service_health(LIVE_TALKING_URL, "/api/admin/sessions", expected_code=0),
+        service_health(COSYVOICE_URL, "/openapi.json"),
+    )
+    status = "ok" if livetalking["available"] and (not COSYVOICE_REQUIRED or cosyvoice["available"]) else "degraded"
+    return JSONResponse(
+        status_code=200 if status == "ok" else 503,
+        content={
+            "status": status,
+            "dependencies": {
+                "livetalking": livetalking,
+                "cosyvoice": {**cosyvoice, "required": COSYVOICE_REQUIRED},
+            },
+            "media_actions": ["start_program", "switch_to_fallback", "switch_to_human", "stop_program"],
+        },
+    )
 
 @app.post("/v1/speak")
 async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
@@ -97,21 +143,33 @@ async def speak(request: SpeakRequest, authorization: str | None = Header(defaul
 @app.post("/v1/media")
 async def media(request: MediaRequest, authorization: str | None = Header(default=None)) -> dict:
     authorize(authorization)
-    downstream_actions: list[str] = []
-    if request.action == "stop_program":
-        await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
-        downstream_actions.append("interrupt_talk")
-        await livetalking_post("/record", {"sessionid": request.session_id, "type": "end_record"})
-        downstream_actions.append("end_record")
-    elif request.action == "start_program":
-        await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": PROGRAM_AUDIOTYPE})
-        downstream_actions.append("set_program_audiotype")
-        await livetalking_post("/record", {"sessionid": request.session_id, "type": "start_record"})
-        downstream_actions.append("start_record")
-    else:
-        await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
-        downstream_actions.append("interrupt_talk")
-        audiotype = FALLBACK_AUDIOTYPE if request.action == "switch_to_fallback" else HUMAN_HANDOFF_AUDIOTYPE
-        await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": audiotype})
-        downstream_actions.append("set_fallback_audiotype" if request.action == "switch_to_fallback" else "set_human_handoff_audiotype")
-    return {"accepted": True, "provider": "livetalking", "action": request.action, "downstream_actions": downstream_actions}
+    async with media_command_lock:
+        now = time.monotonic()
+        prune_media_command_cache(now)
+        cached = media_command_cache.get(request.command_id)
+        if cached:
+            if cached["session_id"] != request.session_id or cached["action"] != request.action:
+                raise HTTPException(status_code=409, detail="Media command id was already used with a different payload")
+            return {**cached["response"], "duplicate": True}
+
+        downstream_actions: list[str] = []
+        if request.action == "stop_program":
+            await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
+            downstream_actions.append("interrupt_talk")
+            await livetalking_post("/record", {"sessionid": request.session_id, "type": "end_record"})
+            downstream_actions.append("end_record")
+        elif request.action == "start_program":
+            await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": PROGRAM_AUDIOTYPE})
+            downstream_actions.append("set_program_audiotype")
+            await livetalking_post("/record", {"sessionid": request.session_id, "type": "start_record"})
+            downstream_actions.append("start_record")
+        else:
+            await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
+            downstream_actions.append("interrupt_talk")
+            audiotype = FALLBACK_AUDIOTYPE if request.action == "switch_to_fallback" else HUMAN_HANDOFF_AUDIOTYPE
+            await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": audiotype})
+            downstream_actions.append("set_fallback_audiotype" if request.action == "switch_to_fallback" else "set_human_handoff_audiotype")
+        result = {"accepted": True, "provider": "livetalking", "command_id": request.command_id, "action": request.action, "downstream_actions": downstream_actions}
+        media_command_cache[request.command_id] = {"session_id": request.session_id, "action": request.action, "response": result, "completed_at": now}
+        prune_media_command_cache(now)
+        return {**result, "duplicate": False}

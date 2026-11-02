@@ -24,7 +24,7 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
   const response = await fetch(`${config.url}/v1/media`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ session_id: sessionId, action: command.type })
+    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type })
   });
   if (!response.ok) throw new Error(`Runtime gateway rejected media command: ${response.status}`);
   return { delivery: "accepted" as const, provider: await response.json() as unknown };

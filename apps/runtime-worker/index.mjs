@@ -77,7 +77,7 @@ async function mark(id, state, lastError = null) {
 async function deliver(event) {
   if (event.event_type !== "media.dispatch") throw new Error(`Unsupported event type: ${event.event_type}`);
   const { sessionId, command } = event.payload;
-  const response = await fetch(`${gatewayUrl}/v1/media`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${gatewayToken}` }, body: JSON.stringify({ session_id: sessionId, action: command.type }) });
+  const response = await fetch(`${gatewayUrl}/v1/media`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${gatewayToken}` }, body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type }) });
   if (!response.ok) throw new Error(`Runtime gateway returned ${response.status}: ${await response.text()}`);
 }
 
