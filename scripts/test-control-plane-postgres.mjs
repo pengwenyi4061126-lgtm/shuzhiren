@@ -19,10 +19,12 @@ const worker = path.join(root, "apps", "runtime-worker", "index.mjs");
 const channelAdapter = path.join(root, "apps", "channel-adapter", "index.mjs");
 const alertNotifier = path.join(root, "apps", "alert-notifier", "index.mjs");
 const tenantId = randomUUID();
+const isolatedTenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const commerceToken = "control-plane-integration-commerce-token";
 const recordingToken = "control-plane-integration-recording-token";
 const pimToken = "control-plane-integration-pim-token";
+const isolatedPimToken = "control-plane-integration-isolated-pim-token";
 const { publicKey, privateKey } = await generateKeyPair("RS256");
 const jwk = { ...(await exportJWK(publicKey)), kid: "integration-key", alg: "RS256", use: "sig" };
 const client = new Client({ connectionString: databaseUrl });
@@ -53,9 +55,18 @@ try {
     .setIssuedAt()
     .setExpirationTime("5m")
     .sign(privateKey);
+  const isolatedToken = await new SignJWT({ tenant_id: isolatedTenantId, role: "admin", name: "Isolated Tenant Admin" })
+    .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
+    .setSubject("isolated-operator")
+    .setIssuer(issuer)
+    .setAudience("shuzhiren-integration")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
 
   const recoverRun = await seedRun("DEGRADED", "session_recover", new Date());
   const staleRun = await seedRun("LIVE", "session_stale", new Date(Date.now() - 120_000));
+  await client.query("insert into tenants (id, slug, name) values ($1, $2, $3)", [isolatedTenantId, `isolated-${isolatedTenantId}`, "Isolated integration tenant"]);
   const recoverRunId = recoverRun.runId;
   const staleRunId = staleRun.runId;
   next = spawn(process.execPath, [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(consolePort)], {
@@ -72,13 +83,16 @@ try {
       OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
       CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken }),
       RUNTIME_RECORDING_TENANT_TOKENS: JSON.stringify({ [tenantId]: recordingToken }),
-      PIM_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: pimToken })
+      PIM_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: pimToken, [isolatedTenantId]: isolatedPimToken })
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
   await waitFor(async () => (await fetch(`http://127.0.0.1:${consolePort}/api/health`)).ok, 20_000, "control plane startup");
 
   const requestHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
+  const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
+  const foreignRunRead = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}`, { headers: isolatedRequestHeaders });
+  assert.equal(foreignRunRead.status, 404, "one tenant must not read another tenant's live run");
   const productResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products`, {
     method: "POST",
     headers: requestHeaders,
@@ -164,6 +178,10 @@ try {
   assert.equal(Number(productFactRows.rows[0].count), 1);
   const productFactAudit = await client.query("select event_type from audit_events where resource_type = 'product_version' and event_type = 'product_facts.ingested'");
   assert.equal(productFactAudit.rows.length, 1);
+  const crossTenantPimAttempt = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: productFactHeaders, body: JSON.stringify({ ...productFactInput, tenantId: isolatedTenantId }) });
+  assert.equal(crossTenantPimAttempt.status, 401, "a PIM credential must not write another tenant's product facts");
+  const isolatedProductFact = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${isolatedPimToken}` }, body: JSON.stringify({ ...productFactInput, tenantId: isolatedTenantId }) });
+  assert.equal(isolatedProductFact.status, 202, "the same external PIM event ID may be used independently by another tenant");
 
   const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1 }) });
   assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");
@@ -304,7 +322,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane rejects stale product facts, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
   await stop(workerProcess);
