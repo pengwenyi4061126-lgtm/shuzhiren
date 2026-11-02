@@ -2,6 +2,12 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { NextResponse, type NextRequest } from "next/server";
 
 const roles = new Set(["admin", "operator", "reviewer", "analyst"]);
+type Role = "admin" | "operator" | "reviewer" | "analyst";
+const operatorRoles: Role[] = ["admin", "operator"];
+const reviewerRoles: Role[] = ["admin", "reviewer"];
+const observerRoles: Role[] = ["admin", "operator", "analyst"];
+const reviewObserverRoles: Role[] = ["admin", "reviewer", "analyst"];
+const allRoles: Role[] = ["admin", "operator", "reviewer", "analyst"];
 
 export async function proxy(request: NextRequest) {
   if (process.env.NODE_ENV !== "production" || request.nextUrl.pathname === "/api/v1/runtime/telemetry") return NextResponse.next();
@@ -17,6 +23,8 @@ export async function proxy(request: NextRequest) {
     const tenantId = stringClaim(payload, "tenant_id");
     const role = stringClaim(payload, "role");
     if (!tenantId || !role || !roles.has(role)) return error("invalid_tenant_role", 403);
+    const allowed = await requiredRoles(request);
+    if (allowed && !allowed.includes(role as Role)) return error("insufficient_permission", 403);
     return NextResponse.next();
   } catch {
     return error("bearer_token_verification_failed", 401);
@@ -27,6 +35,39 @@ function accessTokenFrom(request: NextRequest) {
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) return authorization.slice(7);
   return request.cookies.get(process.env.OIDC_ACCESS_TOKEN_COOKIE ?? "shuzhiren_access_token")?.value;
+}
+
+async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> {
+  const path = request.nextUrl.pathname;
+  const method = request.method;
+
+  if (method === "GET") {
+    if (path === "/api/v1/alerts" || /^\/api\/v1\/live-runs\/[^/]+\/telemetry$/.test(path) || path === "/api/v1/runtime/outbox") return observerRoles;
+    if (path === "/api/v1/audit-events") return reviewObserverRoles;
+    if (path === "/api/v1/channels/connections") return observerRoles;
+    if (/^\/api\/v1\/live-runs\/[^/]+\/(events|interactions)$/.test(path) || path === "/api/v1/live-runs") return allRoles;
+    if (path === "/api/v1/runtime/health") return operatorRoles;
+    return undefined;
+  }
+
+  if (method === "POST") {
+    if (path === "/api/v1/assets" || path === "/api/v1/channels/connections" || path === "/api/v1/live-runs" || path === "/api/v1/releases" || path === "/api/v1/products" || /^\/api\/v1\/products\/[^/]+\/versions$/.test(path)) return operatorRoles;
+    if (/^\/api\/v1\/assets\/[^/]+\/approve$/.test(path) || /^\/api\/v1\/releases\/[^/]+\/approve$/.test(path) || /^\/api\/v1\/products\/[^/]+\/versions\/[^/]+\/approve$/.test(path)) return reviewerRoles;
+    if (/^\/api\/v1\/channels\/connections\/[^/]+\/verify$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/(commands|interactions|response-drafts)$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/interactions\/[^/]+\/handle$/.test(path) || path === "/api/v1/runtime/media" || /^\/api\/v1\/runtime\/outbox\/[^/]+\/deliver$/.test(path)) return operatorRoles;
+    if (path === "/api/v1/policy/evaluate") return ["admin", "operator", "reviewer"];
+    if (/^\/api\/v1\/live-runs\/[^/]+\/lifecycle$/.test(path)) return lifecycleRoles(request);
+  }
+
+  if (method === "PUT" && /^\/api\/v1\/live-runs\/[^/]+\/runtime-session$/.test(path)) return operatorRoles;
+  return undefined;
+}
+
+async function lifecycleRoles(request: NextRequest): Promise<Role[] | undefined> {
+  const body: unknown = await request.clone().json().catch(() => null);
+  const action = body && typeof body === "object" ? (body as { action?: unknown }).action : undefined;
+  if (action === "approve") return reviewerRoles;
+  if (action === "submit_review" || action === "begin_preflight" || action === "arm") return operatorRoles;
+  return undefined;
 }
 
 function stringClaim(payload: Record<string, unknown>, key: string) { const value = payload[key]; return typeof value === "string" && value.length > 0 ? value : undefined; }
