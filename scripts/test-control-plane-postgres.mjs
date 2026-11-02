@@ -112,6 +112,13 @@ try {
   const freshVersion = await freshVersionResponse.json();
   const freshApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${freshVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(freshApproval.status, 200, "fresh product source facts should be approvable");
+  const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
+  assert.equal(policyEvaluation.status, 200);
+  const policyDecision = await policyEvaluation.json();
+  assert.equal(policyDecision.data.action, "handoff");
+  const policyAudit = await client.query("select detail from audit_events where event_type = 'policy.evaluated'");
+  assert.equal(policyAudit.rows.length, 1);
+  assert.equal(policyAudit.rows[0].detail.questionSha256.length, 64, "policy audit must retain a hash rather than the raw question");
 
   const commandResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, {
     method: "POST",

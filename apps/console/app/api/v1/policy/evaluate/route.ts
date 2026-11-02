@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { recordAuditEvent } from "@/lib/audit";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { evaluatePolicy } from "@/lib/policy-engine";
 
@@ -8,7 +10,9 @@ export async function POST(request: Request) {
   requireRole(context, ["admin", "operator", "reviewer"]);
   const body: unknown = await request.json().catch(() => null);
   if (!isPolicyInput(body)) return Response.json({ error: "invalid_input" }, { status: 400 });
-  return Response.json({ data: evaluatePolicy(body.question, body.evidenceIds) });
+  const decision = evaluatePolicy(body.question, body.evidenceIds);
+  await recordAuditEvent(context, { type: "policy.evaluated", resource: "policy_evaluation", resourceId: `policy-evaluation:${crypto.randomUUID()}`, detail: { questionSha256: createHash("sha256").update(body.question).digest("hex"), action: decision.action, riskLevel: decision.riskLevel, reasons: decision.reasons.join(";"), requiredEvidence: decision.requiredEvidence.join(";"), evidenceIds: body.evidenceIds.join(";") } });
+  return Response.json({ data: decision });
 }
 
 function isPolicyInput(value: unknown): value is { question: string; evidenceIds: string[] } {
