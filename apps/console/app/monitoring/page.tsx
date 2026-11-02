@@ -1,13 +1,15 @@
 import Link from "next/link";
 import { Activity, Gauge, HardDrive, RadioTower, ShieldCheck } from "lucide-react";
-import { pageRequestContext } from "@/lib/control-plane/page-context";
+import { AccessDenied } from "@/components/access-denied";
+import { authorizedPageRequestContext } from "@/lib/control-plane/page-context";
 import { listRuns } from "@/lib/control-plane/store";
 import { evaluateRuntimeReadiness, getTelemetry, listAlerts } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 
 export default async function MonitoringPage() {
-  const actor = await pageRequestContext();
+  const actor = await authorizedPageRequestContext(["admin", "operator", "analyst"]);
+  if (!actor) return <AccessDenied />;
   const runs = await listRuns(actor);
   const run = runs.find((candidate) => candidate.state === "LIVE" || candidate.state === "DEGRADED") ?? runs[0];
   if (!run) return <main className="empty-page"><h1>暂无可监控场次</h1><Link href="/shows">前往创建场次</Link></main>;

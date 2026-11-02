@@ -9,5 +9,5 @@ export const dynamic = "force-dynamic";
 export default async function ShowsPage() {
   const actor = await pageRequestContext();
   const [runs, products, channels] = await Promise.all([listRuns(actor), listProducts(actor), listChannelConnections(actor)]);
-  return <ShowScheduleWorkspace initialRuns={runs} products={products} channels={channels} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
+  return <ShowScheduleWorkspace initialRuns={runs} products={products} channels={channels} canManage={actor.role === "admin" || actor.role === "operator"} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
 }

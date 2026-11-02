@@ -17,11 +17,39 @@ function required(name) { const value = process.env[name]; if (!value) throw new
 function positiveInt(value, fallback) { const parsed = Number.parseInt(value ?? "", 10); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }
 function log(event, fields = {}) { process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), service: "runtime-worker", event, ...fields })}\n`); }
 
-async function claimEvent() {
+async function tenantIds() {
+  // tenants deliberately has no RLS policy. The worker reads only IDs here,
+  // then scopes every business-table transaction to one tenant below.
+  const result = await pool.query("select id from tenants order by id");
+  return result.rows.map((row) => row.id);
+}
+
+function tenantOrder(ids, cursor) {
+  if (!ids.length) return [];
+  const start = cursor % ids.length;
+  return [...ids.slice(start), ...ids.slice(0, start)];
+}
+
+async function inTenantTransaction(tenantId, operation) {
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const result = await client.query(`
+    await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+    const result = await operation(client);
+    await client.query("commit");
+    return result;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally { client.release(); }
+}
+
+async function claimEvent() {
+  const ids = await tenantIds();
+  const ordered = tenantOrder(ids, nextOutboxTenantCursor);
+  for (const tenantId of ordered) {
+    const event = await inTenantTransaction(tenantId, async (client) => {
+      const result = await client.query(`
       with candidate as (
         select id
         from outbox_events
@@ -37,53 +65,73 @@ async function claimEvent() {
       where event.id = candidate.id
       returning event.id, event.tenant_id, event.event_type, event.payload, event.attempts
     `, [maxAttempts, leaseSeconds]);
-    await client.query("commit");
-    return result.rows[0] ?? null;
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally { client.release(); }
+      return result.rows[0] ?? null;
+    });
+    if (event) {
+      nextOutboxTenantCursor = (ids.indexOf(tenantId) + 1) % ids.length;
+      return event;
+    }
+  }
+  if (ids.length) nextOutboxTenantCursor = (nextOutboxTenantCursor + 1) % ids.length;
+  return null;
 }
 
 async function scheduleDueRun() {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const due = await client.query(`
+  const ids = await tenantIds();
+  const ordered = tenantOrder(ids, nextSchedulerTenantCursor);
+  for (const tenantId of ordered) {
+    const scheduled = await inTenantTransaction(tenantId, async (client) => {
+      const due = await client.query(`
       select id, tenant_id, trace_id, runtime_session_id
       from live_runs
-      where state = 'ARMED' and scheduled_at <= now() and runtime_session_id is not null
+      where state = 'ARMED'
+        and scheduled_at <= now()
+        and runtime_session_id is not null
+        and scheduled_start_event_id is null
       order by scheduled_at
       for update skip locked
       limit 1
     `);
-    const run = due.rows[0];
-    if (!run) { await client.query("commit"); return null; }
-    await client.query("update live_runs set state = 'LIVE', updated_at = now() where id = $1", [run.id]);
-    const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START" } };
-    const event = await client.query(`
+      const run = due.rows[0];
+      if (!run) return null;
+      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START" } };
+      const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
       values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)
       returning id
     `, [run.tenant_id, run.id, JSON.stringify({ sessionId: run.runtime_session_id, command })]);
-    await client.query("commit");
-    return { runId: run.id, eventId: event.rows[0].id };
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally { client.release(); }
+      await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1", [run.id, event.rows[0].id]);
+      return { runId: run.id, eventId: event.rows[0].id };
+    });
+    if (scheduled) {
+      nextSchedulerTenantCursor = (ids.indexOf(tenantId) + 1) % ids.length;
+      return scheduled;
+    }
+  }
+  if (ids.length) nextSchedulerTenantCursor = (nextSchedulerTenantCursor + 1) % ids.length;
+  return null;
 }
 
 function retryDelayMs(attempts) { return Math.min(retryMaxMs, retryBaseMs * (2 ** Math.max(0, attempts - 1))); }
 
-async function markDelivered(id) {
-  await pool.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1", [id]);
+async function markDelivered(event) {
+  await inTenantTransaction(event.tenant_id, async (client) => {
+    await client.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1", [event.id]);
+    if (event.payload?.command?.payload?.controlAction === "SCHEDULED_START") {
+      await client.query(
+        "update live_runs set state = 'LIVE', updated_at = now() where id = $1 and tenant_id = $2 and state = 'ARMED' and scheduled_start_event_id = $3",
+        [event.payload.command.runId, event.tenant_id, event.id]
+      );
+    }
+  });
 }
 
-async function markFailed(id, attempts, lastError) {
-  const retryAfterMs = retryDelayMs(attempts);
-  await pool.query("update outbox_events set state = 'failed', available_at = now() + ($3 * interval '1 millisecond'), last_error = $2 where id = $1", [id, lastError, retryAfterMs]);
-  return { exhausted: attempts >= maxAttempts, retryAfterMs };
+async function markFailed(event, lastError) {
+  const retryAfterMs = retryDelayMs(event.attempts);
+  await inTenantTransaction(event.tenant_id, async (client) => {
+    await client.query("update outbox_events set state = 'failed', available_at = now() + ($3 * interval '1 millisecond'), last_error = $2 where id = $1", [event.id, lastError, retryAfterMs]);
+  });
+  return { exhausted: event.attempts >= maxAttempts, retryAfterMs };
 }
 
 async function deliver(event) {
@@ -109,17 +157,19 @@ async function tick() {
   if (!event) return;
   try {
     await deliver(event);
-    await markDelivered(event.id);
+    await markDelivered(event);
     log("outbox.delivered", { eventId: event.id, attempts: event.attempts });
   } catch (error) {
     const message = error instanceof Error ? error.message : "runtime_dispatch_failed";
-    const retry = await markFailed(event.id, event.attempts, message);
+    const retry = await markFailed(event, message);
     log(retry.exhausted ? "outbox.exhausted" : "outbox.failed", { eventId: event.id, attempts: event.attempts, retryAfterMs: retry.retryAfterMs, error: message });
   }
 }
 
 let stopping = false;
 let nextSchedulerPollAt = 0;
+let nextOutboxTenantCursor = 0;
+let nextSchedulerTenantCursor = 0;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
 log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs });
 while (!stopping) {

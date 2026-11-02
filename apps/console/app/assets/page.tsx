@@ -7,5 +7,5 @@ export const dynamic = "force-dynamic";
 export default async function AssetsPage() {
   const actor = await pageRequestContext();
   const assets = await listAssets(actor);
-  return <AssetWorkspace initialAssets={assets} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
+  return <AssetWorkspace initialAssets={assets} canManage={actor.role === "admin" || actor.role === "operator"} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
 }

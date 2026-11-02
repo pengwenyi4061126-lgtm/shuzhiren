@@ -7,5 +7,5 @@ export const dynamic = "force-dynamic";
 export default async function ProductsPage() {
   const actor = await pageRequestContext();
   const products = await listProducts(actor);
-  return <ProductWorkspace initialProducts={products} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
+  return <ProductWorkspace initialProducts={products} canManage={actor.role === "admin" || actor.role === "operator"} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
 }

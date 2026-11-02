@@ -53,7 +53,7 @@ export async function deliverOutboxEvent(context: RequestContext, eventId: strin
   if (claimed.duplicate) return claimed;
   try {
     const result = await dispatchMediaCommand(claimed.event.command, claimed.event.sessionId);
-    const event = await markDelivered(context, claimed.event.id);
+    const event = await markDelivered(context, claimed.event);
     return { event, duplicate: false as const, result };
   } catch (error) {
     await markFailed(context, claimed.event.id, error instanceof Error ? error.message : "runtime_dispatch_failed");
@@ -83,9 +83,9 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
   });
 }
 
-async function markDelivered(context: RequestContext, eventId: string) {
+async function markDelivered(context: RequestContext, input: MediaOutboxEvent) {
   if (!databasePool()) {
-    const event = outboxStore().events.get(eventId);
+    const event = outboxStore().events.get(input.id);
     if (!event) throw new Error("Outbox event disappeared during delivery");
     event.state = "delivered";
     event.deliveredAt = new Date().toISOString();
@@ -93,9 +93,16 @@ async function markDelivered(context: RequestContext, eventId: string) {
     return event;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [eventId]);
+    const result = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [input.id]);
     if (!result.rows[0]) throw new Error("Outbox event disappeared during delivery");
-    return persistentEvent(result.rows[0]);
+    const event = persistentEvent(result.rows[0]);
+    if (event.command.payload.controlAction === "SCHEDULED_START") {
+      await client.query(
+        "update live_runs set state = 'LIVE', updated_at = now() where id = $1 and state = 'ARMED' and scheduled_start_event_id = $2",
+        [event.command.runId, event.id]
+      );
+    }
+    return event;
   });
 }
 

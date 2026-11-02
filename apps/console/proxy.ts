@@ -63,7 +63,7 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
   if (method === "GET") {
     if (path === "/api/v1/alerts" || /^\/api\/v1\/live-runs\/[^/]+\/telemetry$/.test(path) || path === "/api/v1/runtime/outbox") return observerRoles;
     if (path === "/api/v1/audit-events") return reviewObserverRoles;
-    if (path === "/api/v1/channels/connections") return observerRoles;
+    if (path === "/api/v1/channels/connections" || path === "/api/v1/channels/capabilities") return observerRoles;
     if (/^\/api\/v1\/live-runs\/[^/]+\/(events|interactions)$/.test(path) || path === "/api/v1/live-runs") return allRoles;
     if (path === "/api/v1/runtime/health") return operatorRoles;
     return undefined;

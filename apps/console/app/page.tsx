@@ -16,5 +16,5 @@ export default async function Page() {
     listAlerts(actor, run.id),
     listInteractions(actor, run.id, "queued")
   ]);
-  return <ControlRoom initialRun={run} initialTelemetry={telemetry} initialAlerts={alerts.filter((alert) => alert.status === "open")} initialInteractions={interactions} />;
+  return <ControlRoom initialRun={run} initialTelemetry={telemetry} initialAlerts={alerts.filter((alert) => alert.status === "open")} initialInteractions={interactions} canOperate={actor.role === "admin" || actor.role === "operator"} />;
 }

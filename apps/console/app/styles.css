@@ -1,4 +1,5 @@
 :root { --bg: #f2f5f3; --surface: #ffffff; --surface-subtle: #f7faf8; --ink: #18231f; --muted: #65736b; --line: #d9e2dd; --green: #1d6d4c; --green-soft: #e7f2ec; --orange: #9a5318; --red: #b52e36; }
+.access-denied { max-width: 540px; margin: 72px auto; display: grid; justify-items: start; gap: 10px; }.access-denied svg { color: var(--red); }.access-denied h1 { margin: 0; font-size: 24px; }.access-denied p { margin: 0; color: var(--muted); font-size: 14px; }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); font-family: Arial, "Microsoft YaHei", sans-serif; }
 button { font: inherit; }
