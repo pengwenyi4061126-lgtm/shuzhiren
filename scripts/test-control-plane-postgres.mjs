@@ -167,6 +167,13 @@ try {
   await waitFor(async () => (await client.query("select state from live_runs where id = $1", [recoverRunId])).rows[0]?.state === "LIVE", 5_000, "recovery acknowledgement");
   assert.equal(mock.mediaCommands.length, 1);
   assert.equal(mock.mediaCommands[0].action, "start_program");
+  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, now() - interval '30 seconds'), ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, now() - interval '15 seconds')", [tenantId, recoverRunId]);
+  const samplingSloResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/slo`, { headers: requestHeaders });
+  assert.equal(samplingSloResponse.status, 200, "operators should read a run's sampling quality SLO");
+  const samplingSlo = await samplingSloResponse.json();
+  assert.equal(samplingSlo.data.status, "met");
+  assert.equal(samplingSlo.data.sampleCount, 3);
+  assert.equal(samplingSlo.data.healthRate, 1);
 
   const recordingInput = {
     tenantId,
@@ -368,7 +375,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
   await stop(workerProcess);

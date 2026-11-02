@@ -4,7 +4,11 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; fallbackReady: boolean };
 export type RuntimeTelemetryInput = Omit<RuntimeTelemetry, "tenantId" | "sampledAt"> & { sampledAt?: string };
 export type RuntimeAlert = { id: string; tenantId: string; runId: string; severity: "warning" | "critical"; code: string; message: string; status: "open" | "resolved"; openedAt: string; resolvedAt?: string; acknowledgedAt?: string; acknowledgedBy?: string };
+export type RuntimeSamplingSlo = { runId: string; windowMinutes: number; objective: number; sampleCount: number; healthySamples: number; healthRate: number | null; status: "met" | "breached" | "insufficient"; detail: string };
 const maxTelemetryAgeMs = 60_000;
+const samplingSloWindowMinutes = 15;
+const samplingSloObjective = 0.95;
+const samplingSloMinimumSamples = 3;
 
 type MonitoringStore = { telemetry: Map<string, RuntimeTelemetry>; alerts: Map<string, RuntimeAlert> };
 type AlertCondition = Pick<RuntimeAlert, "severity" | "code" | "message">;
@@ -26,6 +30,17 @@ export async function getTelemetry(context: RequestContext, runId: string) {
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready from runtime_health_samples where live_run_id = $1 order by sampled_at desc limit 1`, [runId]);
     return result.rows[0] ? persistentTelemetry(result.rows[0]) : null;
+  });
+}
+
+export async function getRuntimeSamplingSlo(context: RequestContext, runId: string): Promise<RuntimeSamplingSlo> {
+  if (!databasePool()) {
+    const telemetry = await getTelemetry(context, runId);
+    return summarizeRuntimeSamplingSlo(runId, telemetry ? [telemetry] : []);
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready from runtime_health_samples where live_run_id = $1 and sampled_at >= now() - ($2::text || ' minutes')::interval order by sampled_at asc limit 2000`, [runId, samplingSloWindowMinutes]);
+    return summarizeRuntimeSamplingSlo(runId, result.rows.map(persistentTelemetry));
   });
 }
 
@@ -105,6 +120,16 @@ function alertConditions(telemetry: RuntimeTelemetry): AlertCondition[] {
   if (!telemetry.fallbackReady) conditions.push({ severity: "critical", code: "fallback_not_ready", message: "备用节目未就绪" });
   return conditions;
 }
+
+function summarizeRuntimeSamplingSlo(runId: string, samples: RuntimeTelemetry[]): RuntimeSamplingSlo {
+  const healthySamples = samples.filter(isHealthyTelemetry).length;
+  if (samples.length < samplingSloMinimumSamples) return { runId, windowMinutes: samplingSloWindowMinutes, objective: samplingSloObjective, sampleCount: samples.length, healthySamples, healthRate: null, status: "insufficient", detail: `最近 ${samplingSloWindowMinutes} 分钟仅有 ${samples.length} 个样本，至少需要 ${samplingSloMinimumSamples} 个样本才可评估` };
+  const healthRate = healthySamples / samples.length;
+  if (healthRate >= samplingSloObjective) return { runId, windowMinutes: samplingSloWindowMinutes, objective: samplingSloObjective, sampleCount: samples.length, healthySamples, healthRate, status: "met", detail: `健康样本 ${healthySamples}/${samples.length}，达到 ${(samplingSloObjective * 100).toFixed(0)}% 采样质量目标` };
+  return { runId, windowMinutes: samplingSloWindowMinutes, objective: samplingSloObjective, sampleCount: samples.length, healthySamples, healthRate, status: "breached", detail: `健康样本 ${healthySamples}/${samples.length}，低于 ${(samplingSloObjective * 100).toFixed(0)}% 采样质量目标` };
+}
+
+function isHealthyTelemetry(telemetry: RuntimeTelemetry) { return alertConditions(telemetry).length === 0; }
 
 export function requiresRuntimeIntervention(telemetry: RuntimeTelemetry) {
   return alertConditions(telemetry).some((condition) => condition.severity === "critical");
