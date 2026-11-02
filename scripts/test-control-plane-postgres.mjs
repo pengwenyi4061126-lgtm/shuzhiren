@@ -199,10 +199,11 @@ try {
   assert.equal(policyAudit.rows[0].detail.questionSha256.length, 64, "policy audit must retain a hash rather than the raw question");
   assert.equal(JSON.stringify(policyAudit.rows[0].detail).includes("敏感肌"), false, "policy audit must not retain the raw question text");
 
+  const recoveryIdempotencyKey = randomUUID();
   const commandResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, {
     method: "POST",
     headers: requestHeaders,
-    body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() })
+    body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: recoveryIdempotencyKey })
   });
   assert.equal(commandResponse.status, 202);
   const commandBody = await commandResponse.json();
@@ -214,6 +215,10 @@ try {
   const pendingOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${eventId}`, { headers: requestHeaders });
   assert.equal(pendingOutbox.status, 200, "operators should read one pending outbox event without polling the whole queue");
   assert.equal((await pendingOutbox.json()).data.state, "pending");
+  const sameCommandRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: recoveryIdempotencyKey }) });
+  assert.equal(sameCommandRetry.status, 200, "a command retry with identical content must return the original command");
+  const conflictingCommandRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "END", expectedState: "DEGRADED", idempotencyKey: recoveryIdempotencyKey }) });
+  assert.equal(conflictingCommandRetry.status, 409, "a command idempotency key must reject a different action");
   const isolatedOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${eventId}`, { headers: isolatedRequestHeaders });
   assert.equal(isolatedOutbox.status, 404, "one tenant must not read another tenant's outbox event");
   const malformedOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/not-a-uuid`, { headers: requestHeaders });

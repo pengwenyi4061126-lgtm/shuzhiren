@@ -41,7 +41,8 @@ export type StoredRun = LiveRun & {
 type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
 export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm";
 const runtimeSessionBindingStates = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"]);
-type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, LiveCommand> };
+type CommandIdempotencyRecord = { command: LiveCommand; runId: string };
+type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, CommandIdempotencyRecord> };
 type PersistentRunRow = {
   id: string;
   tenant_id: string;
@@ -268,7 +269,10 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (!run) throw new Response("Live run not found", { status: 404 });
 
     const duplicate = await findCommandByIdempotency(client, input.idempotencyKey);
-    if (duplicate) return { command: duplicate, run, duplicate: true as const };
+    if (duplicate) {
+      if (!sameCommandInput(duplicate, run.id, input)) throw new Response("Command idempotency key was already used with different content", { status: 409 });
+      return { command: duplicate.command, run, duplicate: true as const };
+    }
     if (run.state !== input.expectedState) throw new Response("Live run state changed", { status: 409 });
     if (!canTransition(run.state, input.action)) throw new Response("Command is not allowed in current state", { status: 409 });
     if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
@@ -377,7 +381,10 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   if (!run) throw new Response("Live run not found", { status: 404 });
 
   const existing = activeStore.idempotency.get(`${context.tenantId}:${input.idempotencyKey}`);
-  if (existing) return { command: existing, run, duplicate: true as const };
+  if (existing) {
+    if (!sameCommandInput(existing, run.id, input)) throw new Response("Command idempotency key was already used with different content", { status: 409 });
+    return { command: existing.command, run, duplicate: true as const };
+  }
   if (run.state !== input.expectedState) throw new Response("Live run state changed", { status: 409 });
   if (!canTransition(run.state, input.action)) throw new Response("Command is not allowed in current state", { status: 409 });
   if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
@@ -405,7 +412,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action), sessionId: run.runtimeSessionId });
   run.state = nextStateFor(run.state, input.action);
   run.commandHistory.unshift(command);
-  activeStore.idempotency.set(`${context.tenantId}:${input.idempotencyKey}`, command);
+  activeStore.idempotency.set(`${context.tenantId}:${input.idempotencyKey}`, { command, runId: run.id });
   return { command, mediaEvent, run, duplicate: false as const };
 }
 
@@ -459,13 +466,17 @@ async function loadPersistentRun(client: PoolClient, runId: string, lock = false
 }
 
 async function findCommandByIdempotency(client: PoolClient, idempotencyKey: string) {
-  const result = await client.query<PersistentCommandRow>(
-    `select c.id, c.action, c.expected_state, c.issued_at, c.result, u.display_name as actor_name
+  const result = await client.query<PersistentCommandRow & { live_run_id: string }>(
+    `select c.id, c.live_run_id, c.action, c.expected_state, c.issued_at, c.result, u.display_name as actor_name
      from live_commands c join users u on u.id = c.actor_id
      where c.idempotency_key = $1`,
     [idempotencyKey]
   );
-  return result.rows[0] ? persistentCommand(result.rows[0]) : null;
+  return result.rows[0] ? { command: persistentCommand(result.rows[0]), runId: result.rows[0].live_run_id } : null;
+}
+
+function sameCommandInput(existing: CommandIdempotencyRecord, runId: string, input: CommandInput) {
+  return existing.runId === runId && existing.command.action === input.action && existing.command.expectedState === input.expectedState;
 }
 
 function persistentRun(row: PersistentRunRow, commandHistory: LiveCommand[]): StoredRun {
