@@ -74,8 +74,8 @@ export async function ingestTelemetry(context: RequestContext, input: RuntimeTel
     }
     for (const condition of active.values()) {
       if (existing.rows.some((alert) => alert.code === condition.code && alert.status === "open")) continue;
-      const opened = await client.query<PersistentAlertRow>(`insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status, opened_at) values ($1, $2, $3, $4, $5, 'open', $6) returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name`, [context.tenantId, telemetry.runId, condition.severity, condition.code, condition.message, telemetry.sampledAt]);
-      changed.push(persistentAlert(opened.rows[0]));
+      const opened = await client.query<PersistentAlertRow>(`insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status, opened_at) values ($1, $2, $3, $4, $5, 'open', $6) on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name`, [context.tenantId, telemetry.runId, condition.severity, condition.code, condition.message, telemetry.sampledAt]);
+      if (opened.rows[0]) changed.push(persistentAlert(opened.rows[0]));
     }
     return { telemetry, alerts: changed };
   });

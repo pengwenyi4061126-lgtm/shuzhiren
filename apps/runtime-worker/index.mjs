@@ -115,10 +115,12 @@ async function scheduleDueRun() {
       if (blockedCode) {
         const existing = await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'entitlement_exhausted' and status = 'open' for update", [run.id]);
         if (!existing.rows[0]) {
-          await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'warning', 'entitlement_exhausted', $3, 'open')", [run.tenant_id, run.id, `场次因额度 ${blockedCode} 而未自动开播`]);
-          const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-scheduler', '运行时排期器', 'operator'::membership_role) as id", [run.tenant_id]);
-          await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
-            values ($1, $2, 'live_run.start_blocked_by_entitlement', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ entitlement: blockedCode })]);
+          const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'warning', 'entitlement_exhausted', $3, 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id, `场次因额度 ${blockedCode} 而未自动开播`]);
+          if (opened.rows[0]) {
+            const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-scheduler', '运行时排期器', 'operator'::membership_role) as id", [run.tenant_id]);
+            await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+              values ($1, $2, 'live_run.start_blocked_by_entitlement', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ entitlement: blockedCode })]);
+          }
         }
         return null;
       }
@@ -213,7 +215,7 @@ async function degradeStaleLiveRun() {
       const existingAlert = await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale' and status = 'open' for update", [run.id]);
       if (!existingAlert.rows[0]) {
         await client.query(
-          "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'runtime_telemetry_stale', $3, 'open')",
+          "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'runtime_telemetry_stale', $3, 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing",
           [run.tenant_id, run.id, `运行时遥测超过 ${maxTelemetryAgeSeconds} 秒未更新`]
         );
       }
@@ -274,9 +276,10 @@ async function openDeliveryExhaustedAlert(client, event, lastError) {
   if (existing.rows[0]) return;
   const error = String(lastError).replace(/[\r\n\t]+/g, " ").slice(0, 500);
   const opened = await client.query(
-    "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') returning id",
+    "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id",
     [event.tenant_id, event.aggregate_id, severity, code, `运行时 ${event.event_type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`]
   );
+  if (!opened.rows[0]) return;
   const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-worker', '运行时投递器', 'operator'::membership_role) as id", [event.tenant_id]);
   await client.query(
     `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)

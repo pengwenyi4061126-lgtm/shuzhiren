@@ -189,9 +189,10 @@ async function openDeliveryExhaustedAlert(client: PoolClient, context: RequestCo
   if (existing.rows[0]) return;
   const error = String(lastError).replace(/[\r\n\t]+/g, " ").slice(0, 500);
   const opened = await client.query<{ id: string }>(
-    "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') returning id",
+    "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id",
     [context.tenantId, event.command.runId, severity, code, `运行时 ${event.type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`]
   );
+  if (!opened.rows[0]) return;
   const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
   await client.query(
     `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)

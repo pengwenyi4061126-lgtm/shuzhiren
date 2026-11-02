@@ -329,6 +329,7 @@ try {
   assert.equal(manualFailureDelivery.status, 503, "manual runtime delivery should surface gateway failure");
   const manualFailureAlert = await client.query("select severity, status from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted'", [manualFailureRun.runId]);
   assert.deepEqual(manualFailureAlert.rows[0], { severity: "critical", status: "open" }, "manual terminal delivery failure should create a critical alert");
+  await assert.rejects(client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'runtime_command_delivery_exhausted', 'duplicate alert', 'open')", [tenantId, manualFailureRun.runId]), /duplicate key/, "a run must not have duplicate open alerts for the same condition");
   const manualFailureAudit = await client.query("select detail from audit_events where event_type = 'runtime_command.delivery_exhausted' and resource_key = (select id::text from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted')", [manualFailureRun.runId]);
   assert.equal(manualFailureAudit.rows[0].detail.deliveryMode, "manual", "manual terminal delivery failure must record its delivery mode");
   const healthyManualFailureTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
