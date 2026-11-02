@@ -40,6 +40,7 @@ jobs:
       - run: npm run runtime:watchdog:check
       - run: npm run runtime:acceptance:test
       - run: npm run observer:runtime:test
+      - run: npm run observer:targets:test
       - run: npm run output-probe:test
       - run: npm run channel-adapter:test
       - run: npm run alert-notifier:test
@@ -49,6 +50,7 @@ jobs:
       - run: python3 scripts/test-runtime-gateway-concurrency.py
       - run: node --check apps/runtime-worker/index.mjs
       - run: node --check apps/runtime-observer/index.mjs
+      - run: node --check apps/runtime-observer/targets.mjs
       - run: node --check apps/output-probe/index.mjs
       - run: node --check apps/channel-adapter/index.mjs
       - run: node --check apps/alert-notifier/index.mjs

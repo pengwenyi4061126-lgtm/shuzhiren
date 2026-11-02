@@ -221,7 +221,8 @@ try {
   const cosyVoiceServer = path.join(files.sourceRoot, "vendor", "CosyVoice", "runtime", "python", "fastapi", "server.py");
   const gatewayApp = path.join(files.sourceRoot, "runtime", "gateway", "app.py");
   const gatewayDockerfile = path.join(files.sourceRoot, "runtime", "gateway", "Dockerfile");
-  const [compose, config, rtmp, cosyVoice, gatewayAppText, gatewayDockerfileText] = await Promise.all([composePath, liveTalkingConfig, liveTalkingRtmp, cosyVoiceServer, gatewayApp, gatewayDockerfile].map((file) => readFile(file, "utf8")));
+  const observerDockerfile = path.join(files.sourceRoot, "apps", "runtime-observer", "Dockerfile");
+  const [compose, config, rtmp, cosyVoice, gatewayAppText, gatewayDockerfileText, observerDockerfileText] = await Promise.all([composePath, liveTalkingConfig, liveTalkingRtmp, cosyVoiceServer, gatewayApp, gatewayDockerfile, observerDockerfile].map((file) => readFile(file, "utf8")));
   for (const expected of ["--transport rtmp", "--model musetalk", "--avatar_id", "--listenport 8010", "--max_session 1", "--fps ${STREAM_FPS:-25}", "--push_url", "COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 缺少受支持的启动契约：${expected}`);
   for (const expected of ["RUNTIME_OBSERVER_TARGETS_FILE: /run/shuzhiren/observer-config/runtime-observer-targets.json", "${RUNTIME_OBSERVER_TARGETS_DIR:-../../config}:/run/shuzhiren/observer-config:ro", "OUTPUT_PROBE_TARGETS: ${OUTPUT_PROBE_TARGETS:-[]}", "CHANNEL_ADAPTER_TARGETS: ${CHANNEL_ADAPTER_TARGETS:-[]}", "ALERT_NOTIFIER_TARGETS: ${ALERT_NOTIFIER_TARGETS:-[]}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 的可选 profile 解析契约缺失：${expected}`);
   for (const expected of ["parser.add_argument('--transport'", "parser.add_argument('--model'", "parser.add_argument('--avatar_id'", "parser.add_argument('--listenport'", "parser.add_argument('--max_session'", "parser.add_argument('--fps'", "parser.add_argument('--push_url'"]) if (!config.includes(expected)) errors.push(`锁定 LiveTalking 源码不再支持 Compose 所需参数：${expected}`);
@@ -229,6 +230,7 @@ try {
   if (!cosyVoice.includes("return StreamingResponse(generate_data(model_output))") || !cosyVoice.includes("tts_speech")) errors.push("锁定 CosyVoice FastAPI 不再输出原始语音 PCM 流");
   if (!gatewayAppText.includes('COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))') || !gatewayAppText.includes("pcm_s16le_to_wav")) errors.push("Gateway 未以 24 kHz 配置封装 CosyVoice PCM");
   if (!gatewayDockerfileText.includes("COPY app.py audio.py .")) errors.push("Gateway 镜像缺少 PCM/WAV 封装模块");
+  if (!observerDockerfileText.includes("COPY apps/runtime-observer/targets.mjs ./targets.mjs")) errors.push("Runtime observer 镜像缺少受管目标解析模块");
 } catch (error) {
   errors.push(`开源运行时启动契约不可验证：${error instanceof Error ? error.message : "读取失败"}`);
 }

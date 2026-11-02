@@ -1,6 +1,7 @@
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import { parseObserverTargets } from "./targets.mjs";
 
 const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
 const gatewayUrl = requiredUrl("RUNTIME_GATEWAY_URL");
@@ -35,27 +36,10 @@ function optionalAbsolutePath(value) {
   return value;
 }
 
-function configuredTargets(rawText, source) {
-  let parsed;
-  try { parsed = JSON.parse(rawText); } catch { throw new Error(`${source} must be valid JSON`); }
-  if (!Array.isArray(parsed)) throw new Error(`${source} must be a JSON array`);
-  return parsed.map((target, index) => {
-    if (!target || typeof target !== "object" || Array.isArray(target)) throw new Error(`${source}[${index}] must be an object`);
-    const value = target;
-    for (const key of ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"]) if (typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 2000) throw new Error(`${source}[${index}].${key} is invalid`);
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.sessionId)) throw new Error(`${source}[${index}].sessionId is invalid`);
-    if (value.telemetryToken.length < 16) throw new Error(`${source}[${index}].telemetryToken is too short`);
-    if (value.outputProbeToken !== undefined && (typeof value.outputProbeToken !== "string" || value.outputProbeToken.length < 16 || value.outputProbeToken.length > 2000)) throw new Error(`${source}[${index}].outputProbeToken is invalid`);
-    const probeUrl = new URL(value.outputProbeUrl);
-    if (!/^https?:$/.test(probeUrl.protocol) || probeUrl.username || probeUrl.password) throw new Error(`${source}[${index}].outputProbeUrl is invalid`);
-    return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, outputProbeUrl: probeUrl.toString(), outputProbeToken: value.outputProbeToken };
-  });
-}
-
 async function initialTargets() {
-  if (!targetsFile) return configuredTargets(process.env.RUNTIME_OBSERVER_TARGETS ?? "[]", "RUNTIME_OBSERVER_TARGETS");
+  if (!targetsFile) return parseObserverTargets(process.env.RUNTIME_OBSERVER_TARGETS ?? "[]", "RUNTIME_OBSERVER_TARGETS");
   const raw = await readFile(targetsFile, "utf8");
-  return { raw, targets: configuredTargets(raw, "RUNTIME_OBSERVER_TARGETS_FILE") };
+  return { raw, targets: parseObserverTargets(raw, "RUNTIME_OBSERVER_TARGETS_FILE") };
 }
 
 function log(event, fields = {}) {
@@ -165,7 +149,7 @@ async function refreshTargetsFromFile() {
   try {
     const raw = await readFile(targetsFile, "utf8");
     if (raw !== targetsFileContents) {
-      const nextTargets = configuredTargets(raw, "RUNTIME_OBSERVER_TARGETS_FILE");
+      const nextTargets = parseObserverTargets(raw, "RUNTIME_OBSERVER_TARGETS_FILE");
       targets = nextTargets;
       targetsFileContents = raw;
       log("observer.targets_reloaded", { targetCount: targets.length });
