@@ -4,6 +4,7 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; fallbackReady: boolean };
 export type RuntimeTelemetryInput = Omit<RuntimeTelemetry, "tenantId" | "sampledAt"> & { sampledAt?: string };
 export type RuntimeAlert = { id: string; tenantId: string; runId: string; severity: "warning" | "critical"; code: string; message: string; status: "open" | "resolved"; openedAt: string; resolvedAt?: string };
+const maxTelemetryAgeMs = 60_000;
 
 type MonitoringStore = { telemetry: Map<string, RuntimeTelemetry>; alerts: Map<string, RuntimeAlert> };
 type AlertCondition = Pick<RuntimeAlert, "severity" | "code" | "message">;
@@ -86,6 +87,9 @@ function alertConditions(telemetry: RuntimeTelemetry): AlertCondition[] {
 export async function evaluateRuntimeReadiness(context: RequestContext, runId: string) {
   const telemetry = await getTelemetry(context, runId);
   if (!telemetry) return { passed: false, detail: "没有运行时遥测数据" };
+  const telemetryAgeMs = Date.now() - new Date(telemetry.sampledAt).getTime();
+  if (!Number.isFinite(telemetryAgeMs) || telemetryAgeMs > maxTelemetryAgeMs) return { passed: false, detail: `运行时遥测已过期：${telemetry.sampledAt}` };
+  if (telemetryAgeMs < -5_000) return { passed: false, detail: "运行时遥测时间异常" };
   if (!telemetry.outputConnected) return { passed: false, detail: "推流连接未建立" };
   if (telemetry.outputFps < 24) return { passed: false, detail: `输出帧率过低：${telemetry.outputFps} FPS` };
   if (telemetry.avSyncMs > 120) return { passed: false, detail: `音画同步超阈值：${telemetry.avSyncMs} ms` };

@@ -11,6 +11,6 @@
 | 渠道适配 | 渠道连接、能力矩阵、密钥引用与预检校验已建立 | 每个平台实现独立 Adapter、OAuth/Webhook 与商品同步 |
 | 媒体运行时 | Runtime Gateway、源码锁定、LiveTalking/CosyVoice 音频链路、GPU Compose 和模型/运行时发布登记已建立；预检要求 runtime、口型驱动和语音组件均有批准发布包 | 租机后下载受许可权重，完成 4090 端到端压测与 durable outbox 投递 |
 | 数据库 | 完整迁移、RLS、OIDC 操作者同步、直播场次、商品事实、节目单、素材授权、渠道连接、运行遥测、告警与审计 Repository 已建立 | 租机后启动 PostgreSQL、执行迁移并做并发、故障恢复和权限隔离集成测试 |
-| 基础设施 | Compose、CI、运行遥测上报接口、告警自动开闭、审计证据、场次时间线与监控页已建立 | 部署到 Linux 服务器，注入运行时服务令牌，接入 Gateway/Prometheus 指标和通知通道 |
+| 基础设施 | Compose、CI、运行遥测上报接口、告警自动开闭、审计证据、场次时间线与监控页已建立；开播预检拒绝超过 60 秒的运行时健康样本 | 部署到 Linux 服务器，注入运行时服务令牌，接入 Gateway/Prometheus 指标和通知通道 |
 
 不需要等待 4090 的工作：完整后台页面、认证、SKU/场次审批、PostgreSQL Repository、策略测试、渠道适配、审计、部署自动化。
