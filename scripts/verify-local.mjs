@@ -13,6 +13,7 @@ const checks = [
   ["run", "deploy:check:test"],
   ["run", "policy:red-team"],
   ["run", "preflight:check"],
+  ["run", "lifecycle:authz:check"],
   ["run", "start:ack:check"],
   ["run", "runtime:watchdog:check"],
   ["run", "runtime:outbox:check"],

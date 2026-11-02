@@ -28,6 +28,7 @@
     "deploy:check:test": "node scripts/test-deployment-config.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
+    "lifecycle:authz:check": "node scripts/check-lifecycle-authorization.mjs",
     "start:ack:check": "node scripts/check-start-ack-gate.mjs",
     "runtime:watchdog:check": "node scripts/check-runtime-watchdog.mjs",
     "runtime:outbox:check": "node scripts/check-runtime-outbox-alerting.mjs",
