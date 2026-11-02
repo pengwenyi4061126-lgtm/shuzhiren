@@ -103,6 +103,28 @@ services:
       timeout: 5s
       retries: 12
 
+  alert-notifier:
+    profiles: ["alert-notifier"]
+    build:
+      context: ../..
+      dockerfile: apps/alert-notifier/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set-in-control-plane-env}
+      ALERT_NOTIFIER_PORT: ${ALERT_NOTIFIER_PORT:-8083}
+      ALERT_NOTIFIER_POLL_MS: ${ALERT_NOTIFIER_POLL_MS:-5000}
+      ALERT_NOTIFIER_LEASE_SECONDS: ${ALERT_NOTIFIER_LEASE_SECONDS:-60}
+      ALERT_NOTIFIER_MAX_ATTEMPTS: ${ALERT_NOTIFIER_MAX_ATTEMPTS:-6}
+      ALERT_NOTIFIER_RETRY_BASE_MS: ${ALERT_NOTIFIER_RETRY_BASE_MS:-1000}
+      ALERT_NOTIFIER_RETRY_MAX_MS: ${ALERT_NOTIFIER_RETRY_MAX_MS:-60000}
+      ALERT_NOTIFIER_TARGETS: ${ALERT_NOTIFIER_TARGETS:?set-in-alert-notifier-env}
+    expose:
+      - "8083"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8083/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   livetalking:
     build:
       context: ../..

@@ -1,0 +1,20 @@
+import assert from "node:assert/strict";
+import { alertPayload, matchingSeverities, parseTargets, retryDelayMs, signWebhook, verifyWebhook } from "../apps/alert-notifier/lib.mjs";
+
+const tenantId = "b783df8e-8456-44fa-9f04-e50429eac7a3";
+const targets = parseTargets(JSON.stringify([{ id: "oncall-critical", tenantId, webhookUrl: "https://alerts.example.com/hook", signingSecret: "notification-signing-secret", minimumSeverity: "critical" }]));
+assert.equal(targets.length, 1);
+assert.throws(() => parseTargets(JSON.stringify([{ id: "oncall", tenantId, webhookUrl: "http://alerts.example.com/hook", signingSecret: "notification-signing-secret" }])), /HTTPS/);
+const payload = alertPayload({ id: "delivery-1", alert_id: "alert-1", live_run_id: "run-1", severity: "critical", code: "stream_disconnected", message: "Output disconnected", opened_at: "2026-11-02T00:00:00.000Z" });
+assert.equal(payload.eventType, "runtime_alert.opened");
+assert.equal(payload.alert.severity, "critical");
+const raw = JSON.stringify(payload);
+const signed = signWebhook(raw, targets[0].signingSecret, "1793577600");
+assert.equal(verifyWebhook(raw, targets[0].signingSecret, signed.timestamp, signed.signature), true);
+assert.equal(verifyWebhook(`${raw}x`, targets[0].signingSecret, signed.timestamp, signed.signature), false);
+assert.equal(retryDelayMs(1, 1000, 60_000), 1000);
+assert.equal(retryDelayMs(3, 1000, 60_000), 4000);
+assert.equal(retryDelayMs(20, 1000, 60_000), 60_000);
+assert.deepEqual(matchingSeverities("critical"), ["critical"]);
+assert.deepEqual(matchingSeverities("warning"), ["warning", "critical"]);
+console.log("PASS  alert notifier validates targets, signs payloads, and bounds retry delay");

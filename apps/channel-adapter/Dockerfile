@@ -1,6 +1,7 @@
 FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY apps/alert-notifier/package.json apps/alert-notifier/package.json
 COPY apps/channel-adapter/package.json apps/channel-adapter/package.json
 COPY apps/console/package.json apps/console/package.json
 COPY apps/output-probe/package.json apps/output-probe/package.json

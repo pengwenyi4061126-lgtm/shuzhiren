@@ -17,6 +17,7 @@ const consoleRoot = path.join(root, "apps", "console");
 const nextCli = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const worker = path.join(root, "apps", "runtime-worker", "index.mjs");
 const channelAdapter = path.join(root, "apps", "channel-adapter", "index.mjs");
+const alertNotifier = path.join(root, "apps", "alert-notifier", "index.mjs");
 const tenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const commerceToken = "control-plane-integration-commerce-token";
@@ -27,6 +28,7 @@ let mock;
 let next;
 let workerProcess;
 let adapterProcess;
+let notifierProcess;
 
 try {
   await client.connect();
@@ -184,6 +186,26 @@ try {
   const alert = await client.query("select code, status from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId]);
   assert.deepEqual(alert.rows[0], { code: "runtime_telemetry_stale", status: "open" });
   const alertId = (await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId])).rows[0].id;
+  const notifierPort = await availablePort();
+  const notifierSigningSecret = "control-plane-integration-notifier-signing-secret";
+  notifierProcess = spawn(process.execPath, [alertNotifier], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      ALERT_NOTIFIER_PORT: String(notifierPort),
+      ALERT_NOTIFIER_POLL_MS: "20",
+      ALERT_NOTIFIER_ALLOW_INSECURE_HTTP: "true",
+      ALERT_NOTIFIER_TARGETS: JSON.stringify([{ id: "integration-critical", tenantId, webhookUrl: `${mock.baseUrl}/alert-webhook`, signingSecret: notifierSigningSecret, minimumSeverity: "critical" }])
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  await waitFor(async () => (await fetch(`http://127.0.0.1:${notifierPort}/healthz`)).ok, 10_000, "alert notifier startup");
+  await waitFor(() => mock.alertNotifications.length === 1, 10_000, "runtime alert webhook delivery");
+  assert.equal(mock.alertNotifications[0].payload.alert.id, alertId);
+  assert.equal(mock.alertNotifications[0].payload.alert.code, "runtime_telemetry_stale");
+  const notificationDelivery = await client.query("select state, attempts from alert_notification_deliveries where runtime_alert_id = $1", [alertId]);
+  assert.deepEqual(notificationDelivery.rows[0], { state: "delivered", attempts: 1 });
   const acknowledgement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/alerts/${alertId}/acknowledge`, { method: "POST", headers: requestHeaders });
   assert.equal(acknowledgement.status, 200, "operator should be able to acknowledge an open runtime alert");
   const acknowledgedAlert = await client.query("select acknowledged_at, acknowledged_by from runtime_alerts where id = $1", [alertId]);
@@ -195,8 +217,9 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, durably notifies and acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
+  await stop(notifierProcess);
   await stop(workerProcess);
   await stop(adapterProcess);
   await stop(next);
@@ -221,6 +244,7 @@ async function seedRun(state, sessionId, sampledAt) {
 
 async function startMockServer() {
   const mediaCommands = [];
+  const alertNotifications = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/jwks") return json(response, 200, { keys: [jwk] });
@@ -229,16 +253,26 @@ async function startMockServer() {
       mediaCommands.push(await requestBody(request));
       return json(response, 200, { accepted: true });
     }
+    if (url.pathname === "/alert-webhook" && request.method === "POST") {
+      const raw = await requestRawBody(request);
+      const timestamp = request.headers["x-shuzhiren-timestamp"];
+      const signature = request.headers["x-shuzhiren-signature"];
+      const expected = `sha256=${createHmac("sha256", "control-plane-integration-notifier-signing-secret").update(`${timestamp}.${raw}`).digest("hex")}`;
+      assert.equal(signature, expected);
+      alertNotifications.push({ payload: JSON.parse(raw), eventId: request.headers["x-shuzhiren-event-id"] });
+      return json(response, 204, {});
+    }
     return json(response, 404, { error: "not_found" });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("mock server did not bind a TCP port");
-  return { server, mediaCommands, baseUrl: `http://127.0.0.1:${address.port}` };
+  return { server, mediaCommands, alertNotifications, baseUrl: `http://127.0.0.1:${address.port}` };
 }
 
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); }
-async function requestBody(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+async function requestRawBody(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return Buffer.concat(chunks).toString("utf8"); }
+async function requestBody(request) { return JSON.parse(await requestRawBody(request)); }
 async function availablePort() { const server = http.createServer(); await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); await new Promise((resolve) => server.close(resolve)); if (!address || typeof address === "string") throw new Error("could not reserve a TCP port"); return address.port; }
 async function waitFor(predicate, timeoutMs, label) { const deadline = Date.now() + timeoutMs; let lastError; while (Date.now() < deadline) { try { if (await predicate()) return; } catch (error) { lastError = error; } await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error(`${label} timed out${lastError instanceof Error ? `: ${lastError.message}` : ""}`); }
 async function stop(child) { if (!child || child.exitCode !== null) return; child.kill("SIGTERM"); await Promise.race([new Promise((resolve) => child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 5_000))]); if (child.exitCode === null) child.kill("SIGKILL"); }
