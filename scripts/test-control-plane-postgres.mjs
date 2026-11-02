@@ -208,6 +208,8 @@ try {
   assert.equal(commandResponse.status, 202);
   const commandBody = await commandResponse.json();
   assert.equal(commandBody.data.run.state, "DEGRADED", "recovery must wait for runtime acknowledgement");
+  const malformedRun = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/not-a-uuid`, { headers: requestHeaders });
+  assert.equal(malformedRun.status, 404, "malformed live run IDs must not surface PostgreSQL UUID cast errors");
   const eventId = commandBody.data.mediaEvent.id;
   const pending = await client.query("select state, scheduled_start_event_id from live_runs where id = $1", [recoverRunId]);
   assert.equal(pending.rows[0].state, "DEGRADED");

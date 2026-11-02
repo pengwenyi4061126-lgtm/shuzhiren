@@ -443,6 +443,7 @@ export function canBindRuntimeSession(state: LiveRunState) {
 }
 
 async function loadPersistentRun(client: PoolClient, runId: string, lock = false) {
+  if (!isUuid(runId)) return null;
   const result = await client.query<PersistentRunRow>(
     `select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id,
       r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved,
@@ -477,6 +478,10 @@ async function findCommandByIdempotency(client: PoolClient, idempotencyKey: stri
 
 function sameCommandInput(existing: CommandIdempotencyRecord, runId: string, input: CommandInput) {
   return existing.runId === runId && existing.command.action === input.action && existing.command.expectedState === input.expectedState;
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function persistentRun(row: PersistentRunRow, commandHistory: LiveCommand[]): StoredRun {
