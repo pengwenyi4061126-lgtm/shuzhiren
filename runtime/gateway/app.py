@@ -15,16 +15,19 @@ RUNTIME_TOKEN = os.environ.get("RUNTIME_SHARED_TOKEN", "")
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("RUNTIME_REQUEST_TIMEOUT_SECONDS", "15"))
 
 class SpeakRequest(BaseModel):
-    session_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     text: str = Field(min_length=1, max_length=800)
     interrupt: bool = False
     voice: str | None = Field(default=None, max_length=128)
     provider: Literal["cosyvoice", "livetalking"] = "cosyvoice"
 
 class MediaRequest(BaseModel):
-    session_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     action: Literal["start_program", "switch_to_fallback", "switch_to_human", "stop_program"]
-    fallback_audiotype: int = Field(default=0, ge=0, le=99)
+
+PROGRAM_AUDIOTYPE = int(os.environ.get("PROGRAM_AUDIOTYPE", "0"))
+FALLBACK_AUDIOTYPE = int(os.environ.get("FALLBACK_AUDIOTYPE", "0"))
+HUMAN_HANDOFF_AUDIOTYPE = int(os.environ.get("HUMAN_HANDOFF_AUDIOTYPE", "0"))
 
 def authorize(authorization: str | None) -> None:
     if not RUNTIME_TOKEN:
@@ -75,7 +78,7 @@ async def livetalking_audio(session_id: str, audio: bytes) -> None:
 
 @app.get("/healthz")
 async def healthz() -> dict:
-    return {"status": "ok", "livetalking": LIVE_TALKING_URL}
+    return {"status": "ok", "dependencies": {"livetalking_configured": bool(LIVE_TALKING_URL), "cosyvoice_configured": bool(COSYVOICE_URL)}, "media_actions": ["start_program", "switch_to_fallback", "switch_to_human", "stop_program"]}
 
 @app.post("/v1/speak")
 async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
@@ -94,8 +97,21 @@ async def speak(request: SpeakRequest, authorization: str | None = Header(defaul
 @app.post("/v1/media")
 async def media(request: MediaRequest, authorization: str | None = Header(default=None)) -> dict:
     authorize(authorization)
+    downstream_actions: list[str] = []
     if request.action == "stop_program":
         await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
-    elif request.action in {"switch_to_fallback", "switch_to_human"}:
-        await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": request.fallback_audiotype})
-    return {"accepted": True, "provider": "livetalking", "action": request.action}
+        downstream_actions.append("interrupt_talk")
+        await livetalking_post("/record", {"sessionid": request.session_id, "type": "end_record"})
+        downstream_actions.append("end_record")
+    elif request.action == "start_program":
+        await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": PROGRAM_AUDIOTYPE})
+        downstream_actions.append("set_program_audiotype")
+        await livetalking_post("/record", {"sessionid": request.session_id, "type": "start_record"})
+        downstream_actions.append("start_record")
+    else:
+        await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
+        downstream_actions.append("interrupt_talk")
+        audiotype = FALLBACK_AUDIOTYPE if request.action == "switch_to_fallback" else HUMAN_HANDOFF_AUDIOTYPE
+        await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": audiotype})
+        downstream_actions.append("set_fallback_audiotype" if request.action == "switch_to_fallback" else "set_human_handoff_audiotype")
+    return {"accepted": True, "provider": "livetalking", "action": request.action, "downstream_actions": downstream_actions}

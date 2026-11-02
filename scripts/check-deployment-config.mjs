@@ -52,8 +52,8 @@ const runtime = parseEnv(runtimeText);
 const gateway = parseEnv(gatewayText);
 
 required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "CONTROL_PLANE_DEMO_MODE", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "RUNTIME_TELEMETRY_TOKEN"]);
-required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_RTMP_URL", "STREAM_KEY", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN"]);
-required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "STREAM_RTMP_URL", "STREAM_KEY"]);
+required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_RTMP_URL", "STREAM_KEY", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
+required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 equal(control, "控制面", "NODE_ENV", "production");
 equal(control, "控制面", "CONTROL_PLANE_DEMO_MODE", "false");
 equal(runtime, "运行时", "LIVE_MAX_CONCURRENT_AVATARS", "1");
@@ -66,6 +66,9 @@ if (runtime.get("NVIDIA_VISIBLE_DEVICES") !== gateway.get("NVIDIA_VISIBLE_DEVICE
 if (runtime.get("RUNTIME_SHARED_TOKEN") !== gateway.get("RUNTIME_SHARED_TOKEN")) errors.push("运行时与 Gateway 的 RUNTIME_SHARED_TOKEN 必须一致");
 if (runtime.get("STREAM_RTMP_URL") !== gateway.get("STREAM_RTMP_URL")) errors.push("运行时与 Gateway 的 STREAM_RTMP_URL 必须一致");
 if (runtime.get("STREAM_KEY") !== gateway.get("STREAM_KEY")) errors.push("运行时与 Gateway 的 STREAM_KEY 必须一致");
+if (runtime.get("PROGRAM_AUDIOTYPE") !== gateway.get("PROGRAM_AUDIOTYPE")) errors.push("运行时与 Gateway 的 PROGRAM_AUDIOTYPE 必须一致");
+if (runtime.get("FALLBACK_AUDIOTYPE") !== gateway.get("FALLBACK_AUDIOTYPE")) errors.push("运行时与 Gateway 的 FALLBACK_AUDIOTYPE 必须一致");
+if (runtime.get("HUMAN_HANDOFF_AUDIOTYPE") !== gateway.get("HUMAN_HANDOFF_AUDIOTYPE")) errors.push("运行时与 Gateway 的 HUMAN_HANDOFF_AUDIOTYPE 必须一致");
 
 try {
   const lock = JSON.parse(lockText);

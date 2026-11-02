@@ -51,6 +51,8 @@ CosyVoice 与 MuseTalk 同占一张 4090 时必须做真实压测。首版只开
 - `GET /api/v1/runtime/health`：检查 Gateway 是否可用；本地开发返回 `demo`。
 - `POST /api/v1/runtime/media`：向已存在的直播运行派发媒体命令。需要 `admin` 或 `operator`，且会写审计事件。
 - Gateway 的 `POST /v1/speak`：默认走 CosyVoice -> WAV -> LiveTalking `/humanaudio`，`provider: "livetalking"` 才允许使用 LiveTalking 的回读模式。
+- Gateway 的 `POST /v1/media`：只接受 `start_program`、`switch_to_fallback`、`switch_to_human`、`stop_program`。开播会选择 `PROGRAM_AUDIOTYPE` 并开始录制；回退和人工接管会先打断当前语音再切换到各自固定动作；结束会中断语音并结束录制。三个动作索引必须在已批准的 LiveTalking Avatar 包中配置。
+- 每个 `live_run` 必须先绑定 LiveTalking 创建时返回的真实 `sessionid`；媒体 outbox 将该绑定值作为下游会话参数，不能将控制面场次 UUID 直接当作 LiveTalking 会话 ID。
 
 媒体命令当前先写入开发态 outbox，再由投递接口发送；状态包含 `pending`、`delivering`、`delivered` 与 `failed`，重复投递保持幂等。生产数据库迁移已包含 `outbox_events`，租机前要将同一 Repository 接到 PostgreSQL，并由独立 Worker 轮询或消费队列。不能把网络调用塞进数据库事务或在状态转换后静默失败。
 

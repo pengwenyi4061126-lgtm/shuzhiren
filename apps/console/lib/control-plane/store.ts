@@ -24,6 +24,7 @@ export type StoredRun = LiveRun & {
   channelReady: boolean;
   outputReady: boolean;
   aiDisclosureEnabled: boolean;
+  runtimeSessionId?: string;
 };
 
 type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
@@ -44,6 +45,7 @@ type PersistentRunRow = {
   channel_ready: boolean;
   output_ready: boolean;
   ai_disclosure_enabled: boolean;
+  runtime_session_id: string | null;
 };
 type PersistentCommandRow = {
   id: string;
@@ -76,6 +78,7 @@ function initialStore(): Store {
       channelReady: true,
       outputReady: true,
       aiDisclosureEnabled: true,
+      runtimeSessionId: "session_demo_001",
       commandHistory: [],
       questions: []
     }]]),
@@ -113,7 +116,9 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
     channelReady: channel.passed,
     channelDetail: channel.detail,
     outputReady: run.outputReady && runtime.passed,
-    outputDetail: runtime.passed ? runtime.detail : `运行时探针未通过：${runtime.detail}`
+    outputDetail: runtime.passed ? runtime.detail : `运行时探针未通过：${runtime.detail}`,
+    runtimeSessionReady: Boolean(run.runtimeSessionId),
+    runtimeSessionDetail: run.runtimeSessionId ? `已绑定运行时会话 ${run.runtimeSessionId}` : "尚未绑定 LiveTalking 运行时会话"
   });
 }
 
@@ -127,6 +132,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (duplicate) return { command: duplicate, run, duplicate: true as const };
     if (run.state !== input.expectedState) throw new Response("Live run state changed", { status: 409 });
     if (!canTransition(run.state, input.action)) throw new Response("Command is not allowed in current state", { status: 409 });
+    if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
     if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
       throw new Response("Preflight requirements are not satisfied", { status: 409 });
     }
@@ -139,7 +145,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
     );
     await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, nextState]);
     const command = persistentCommand(inserted.rows[0]);
-    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action)), run.id);
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action)), run.runtimeSessionId);
     return { command, mediaEvent, run: { ...run, state: nextState, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
   });
 }
@@ -153,6 +159,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   if (existing) return { command: existing, run, duplicate: true as const };
   if (run.state !== input.expectedState) throw new Response("Live run state changed", { status: 409 });
   if (!canTransition(run.state, input.action)) throw new Response("Command is not allowed in current state", { status: 409 });
+  if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
   if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
     throw new Response("Preflight requirements are not satisfied", { status: 409 });
   }
@@ -165,7 +172,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
     expectedState: input.expectedState,
     result: "accepted"
   };
-  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action), sessionId: run.id });
+  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action), sessionId: run.runtimeSessionId });
   run.state = nextStateFor(run.state, input.action);
   run.commandHistory.unshift(command);
   activeStore.idempotency.set(`${context.tenantId}:${input.idempotencyKey}`, command);
@@ -177,12 +184,34 @@ function mediaCommandFor(run: StoredRun, action: LiveCommandAction): Omit<MediaC
   return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action } };
 }
 
+export async function bindRuntimeSession(context: RequestContext, runId: string, runtimeSessionId: string) {
+  if (!databasePool()) {
+    const run = getDemoRun(context, runId);
+    if (!run) throw new Response("Live run not found", { status: 404 });
+    run.runtimeSessionId = runtimeSessionId;
+    return run;
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<PersistentRunRow>(
+      `update live_runs set runtime_session_id = $2, updated_at = now() where id = $1
+       returning id, tenant_id, show_revision_id, ''::text as show_name, state, trace_id,
+         channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version,
+         has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id`,
+      [runId, runtimeSessionId]
+    );
+    if (!result.rows[0]) throw new Response("Live run not found", { status: 404 });
+    const run = result.rows[0];
+    const show = await client.query<{ show_name: string }>("select s.name as show_name from live_runs r join show_revisions sr on sr.id = r.show_revision_id join shows s on s.id = sr.show_id where r.id = $1", [runId]);
+    return persistentRun({ ...run, show_name: show.rows[0]?.show_name ?? "直播场次" }, []);
+  });
+}
+
 async function loadPersistentRun(client: PoolClient, runId: string, lock = false) {
   const result = await client.query<PersistentRunRow>(
     `select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id,
       r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved,
       r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready,
-      r.ai_disclosure_enabled
+      r.ai_disclosure_enabled, r.runtime_session_id
      from live_runs r
      join show_revisions sr on sr.id = r.show_revision_id
      join shows s on s.id = sr.show_id
@@ -227,6 +256,7 @@ function persistentRun(row: PersistentRunRow, commandHistory: LiveCommand[]): St
     channelReady: row.channel_ready,
     outputReady: row.output_ready,
     aiDisclosureEnabled: row.ai_disclosure_enabled,
+    runtimeSessionId: row.runtime_session_id ?? undefined,
     commandHistory,
     questions: []
   };

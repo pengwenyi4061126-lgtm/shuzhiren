@@ -16,6 +16,8 @@
 3. `RUNTIME_SHARED_TOKEN` 必须在运行时与 Gateway 中完全一致；`RUNTIME_TELEMETRY_TOKEN` 只给运行时上报控制面。
 4. 生产单卡保持 `LIVE_MAX_CONCURRENT_AVATARS=1`、`LIVE_ALLOW_LLM_FREEFORM=false`、高风险问题人工接管和 AI 标识开启。
 5. 固定 `runtime/open-source.lock.json` 中的提交；模型权重的许可证、人物和声音授权另行登记。
+6. 在 Gateway 环境中配置 `PROGRAM_AUDIOTYPE`、`FALLBACK_AUDIOTYPE` 与 `HUMAN_HANDOFF_AUDIOTYPE`，并在 LiveTalking 的已批准 Avatar 包中逐项验证动作含义；不能将默认索引当作真实人接管或备用节目。
+7. LiveTalking 建立会话后，将返回的 `sessionid` 通过 `PUT /api/v1/live-runs/{runId}/runtime-session` 绑定到场次；没有绑定运行时会话的场次不得接受媒体控制命令。
 
 示例结构检查：
 
