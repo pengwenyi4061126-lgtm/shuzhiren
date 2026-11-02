@@ -7,7 +7,7 @@ import { findApprovedProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { hasApprovedFallbackProgram } from "@/lib/show-program";
 import { registerDemoProgram, type ShowProgram } from "@/lib/show-program";
-import { hasApprovedLiveRights } from "@/lib/assets";
+import { activeMediaAssetStatus, activeMediaAssetStatusInTransaction, currentApprovedMediaAssetsInTransaction, hasApprovedLiveRights, requiredLiveAssetKinds } from "@/lib/assets";
 import { activeModelReleaseStatus, activeModelReleaseStatusInTransaction, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
 import { validateChannelConnection } from "@/lib/channels";
 import { evaluateRuntimeReadiness } from "@/lib/monitoring";
@@ -137,12 +137,15 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     if (!requiredProductionReleaseComponents.every((component) => frozenReleases.has(component))) throw new Response("Approved runtime, lip-sync, and voice releases are required", { status: 409 });
     const policyProfile = await latestApprovedPolicyProfile(client);
     if (!policyProfile) throw new Response("An approved policy profile is required", { status: 409 });
+    const mediaAssets = await currentApprovedMediaAssetsInTransaction(client);
+    if (!requiredLiveAssetKinds.every((kind) => mediaAssets.has(kind))) throw new Response("Approved portrait, voice, product clip, and music assets are required", { status: 409 });
     const show = await client.query<{ id: string }>("insert into shows (tenant_id, name) values ($1, $2) returning id", [context.tenantId, input.showName]);
     const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'approved') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId, modelReleaseIds: Object.fromEntries(frozenReleases), policyProfileId: policyProfile.id })]);
     await client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [context.tenantId, revision.rows[0].id, input.productVersionId]);
     for (const component of requiredProductionReleaseComponents) await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, frozenReleases.get(component), component]);
     await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [context.tenantId, revision.rows[0].id, policyProfile.id]);
-    const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, $6, true, true, true, false, $7, $8, $9::timestamptz) returning id, tenant_id, show_revision_id, $10::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, await hasApprovedLiveRights(context), input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
+    for (const kind of requiredLiveAssetKinds) await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, mediaAssets.get(kind)?.id, kind]);
+    const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, true, true, true, true, false, $6, $7, $8::timestamptz) returning id, tenant_id, show_revision_id, $9::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
     return persistentRun(run.rows[0], []);
   });
@@ -193,17 +196,19 @@ function getDemoRun(context: RequestContext, runId: string) {
 }
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
-  const [channel, runtime, policyProfile, modelRelease] = await Promise.all([
+  const [channel, runtime, policyProfile, modelRelease, mediaAssets] = await Promise.all([
     validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled }),
     evaluateRuntimeReadiness(context, run.id),
     activePolicyProfileStatusForRun(context, run.id),
-    activeModelReleaseStatus(context, run.revisionId)
+    activeModelReleaseStatus(context, run.revisionId),
+    activeMediaAssetStatus(context, run.revisionId)
   ]);
   return evaluatePreflight({
     ...run,
-    hasApprovedRights: await hasApprovedLiveRights(context),
+    hasApprovedRights: mediaAssets.active,
     hasApprovedModelReleases: modelRelease.active,
     modelReleaseDetail: modelRelease.detail,
+    rightsDetail: mediaAssets.detail,
     hasApprovedPolicyProfile: policyProfile.active,
     policyProfileDetail: policyProfile.detail,
     hasApprovedSkuVersion: Boolean(run.productVersionId && await findApprovedProductVersion(context, run.productVersionId)),
@@ -252,6 +257,9 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
       throw new Response("Preflight requirements are not satisfied", { status: 409 });
     }
+    if (input.action === "RECOVER" && !(await activeMediaAssetStatusInTransaction(client, run.revisionId)).active) {
+      throw new Response("Frozen media asset rights are not active for recovery", { status: 409 });
+    }
     if (input.action === "RECOVER" && !(await activeModelReleaseStatusInTransaction(client, run.revisionId)).active) {
       throw new Response("Frozen model releases are not active for recovery", { status: 409 });
     }
@@ -286,12 +294,14 @@ export async function enqueueGroundedSpeech(context: RequestContext, runId: stri
   if (!databasePool()) {
     const run = getDemoRun(context, runId);
     if (!run) throw new Response("Live run not found", { status: 404 });
+    if (!(await activeMediaAssetStatus(context, run.revisionId)).active) throw new Response("Frozen media asset rights are not active for speech dispatch", { status: 409 });
     if (!(await activeModelReleaseStatus(context, run.revisionId)).active) throw new Response("Frozen model releases are not active for speech dispatch", { status: 409 });
     return enqueueDemoGroundedSpeech(context, run, question, voice, idempotencyKey, policyRules);
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const run = await loadPersistentRun(client, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
+    if (!(await activeMediaAssetStatusInTransaction(client, run.revisionId)).active) throw new Response("Frozen media asset rights are not active for speech dispatch", { status: 409 });
     if (!(await activeModelReleaseStatusInTransaction(client, run.revisionId)).active) throw new Response("Frozen model releases are not active for speech dispatch", { status: 409 });
     return enqueueGroundedSpeechInTransaction(client, context, run, question, voice, idempotencyKey, policyRules);
   });
@@ -348,6 +358,9 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
   if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
     throw new Response("Preflight requirements are not satisfied", { status: 409 });
+  }
+  if (input.action === "RECOVER" && !(await activeMediaAssetStatus(context, run.revisionId)).active) {
+    throw new Response("Frozen media asset rights are not active for recovery", { status: 409 });
   }
   if (input.action === "RECOVER" && !(await activeModelReleaseStatus(context, run.revisionId)).active) {
     throw new Response("Frozen model releases are not active for recovery", { status: 409 });

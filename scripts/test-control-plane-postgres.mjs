@@ -113,6 +113,11 @@ try {
   const freshApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${freshVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(freshApproval.status, 200, "fresh product source facts should be approvable");
   await client.query("update live_runs set product_version_id = $2 where id = $1", [recoverRunId, freshVersion.data.id]);
+  const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true }) });
+  assert.equal(createdRunResponse.status, 201, "creating a production run should freeze currently approved media rights");
+  const createdRun = await createdRunResponse.json();
+  const frozenRights = await client.query("select kind from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) order by kind", [createdRun.data.id]);
+  assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["music", "portrait", "product_clip", "voice"]);
   const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();
@@ -375,6 +380,17 @@ try {
   assert.equal(recoveryAfterReleaseRevocation.status, 409, "a revoked frozen model release must block recovery");
   const modelReleaseAudit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'model_release.revoked'", [recoverRun.modelReleaseIds.voice]);
   assert.equal(modelReleaseAudit.rows.length, 1, "model release revocation must be audited");
+  const revokedAsset = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets/${recoverRun.mediaAssetIds.voice}/revoke`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ reason: "Integration test withdraws the frozen voice authorization." }) });
+  assert.equal(revokedAsset.status, 200, "an approved media asset should be revocable with a recorded reason");
+  const revokedAssetBody = await revokedAsset.json();
+  assert.ok(revokedAssetBody.data.approvedAt, "media asset revocation must retain the original approval timestamp");
+  assert.ok(revokedAssetBody.data.revokedAt, "media asset revocation must record when the asset was withdrawn");
+  const assetRevokedPreflight = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/preflight`, { headers: requestHeaders });
+  assert.equal(assetRevokedPreflight.status, 200);
+  const assetRevokedPreflightBody = await assetRevokedPreflight.json();
+  assert.equal(assetRevokedPreflightBody.data.checks.find((check) => check.id === "rights")?.status, "blocked", "a revoked frozen media asset must block preflight");
+  const mediaAssetAudit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'media_asset.revoked'", [recoverRun.mediaAssetIds.voice]);
+  assert.equal(mediaAssetAudit.rows.length, 1, "media asset revocation must be audited");
   const auditExport = await fetch(`http://127.0.0.1:${consolePort}/api/v1/audit-events/export`, { headers: requestHeaders });
   assert.equal(auditExport.status, 200, "authorized reviewers should export tenant audit evidence");
   assert.match(auditExport.headers.get("content-disposition") ?? "", /attachment; filename="shuzhiren-audit-evidence-/);
@@ -389,7 +405,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, revokes frozen model releases fail-closed, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, revokes frozen model releases and media rights fail-closed, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
   await stop(workerProcess);
@@ -406,12 +422,17 @@ async function seedRun(state, sessionId, sampledAt) {
   const runId = randomUUID();
   const channelId = randomUUID();
   const modelReleaseIds = { runtime: randomUUID(), lip_sync: randomUUID(), voice: randomUUID() };
+  const mediaAssetIds = { portrait: randomUUID(), voice: randomUUID(), product_clip: randomUUID(), music: randomUUID() };
   await client.query("insert into tenants (id, slug, name) values ($1, $2, $3) on conflict (id) do nothing", [tenantId, `integration-${tenantId}`, "Control plane integration"]);
   await client.query("insert into shows (id, tenant_id, name) values ($1, $2, $3)", [showId, tenantId, `Integration show ${runId}`]);
   await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'approved')", [revisionId, tenantId, showId]);
   for (const [component, releaseId] of Object.entries(modelReleaseIds)) {
     await client.query("insert into model_releases (id, tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, 'integration', $4::model_release_component, 'integration-commit', 'sha256:integration-image', 'sha256:integration-artifact', 'NVIDIA integration', 'Apache-2.0', 'Integration validation only', 'evidence://integration/model-release', 'Integration-bound approved release.', 'approved', now())", [releaseId, tenantId, `Integration ${component}`, component]);
     await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4::model_release_component)", [tenantId, revisionId, releaseId, component]);
+  }
+  for (const [kind, assetId] of Object.entries(mediaAssetIds)) {
+    await client.query("insert into media_assets (id, tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_at) values ($1, $2, $3::media_asset_kind, $4, $5, $6, 'Integration approved rights', 'evidence://integration/media-asset', 'approved', now())", [assetId, tenantId, kind, `Integration ${kind}`, `assets/${tenantId}/${kind}`, `sha256:${kind}`]);
+    await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, $4::media_asset_kind)", [tenantId, revisionId, assetId, kind]);
   }
   const profileRules = [{ id: "integration_block_term", terms: ["集成策略禁播词"], reason: "集成策略包禁止该类提问", action: "refuse", riskLevel: "high", requiredEvidence: [] }];
   await client.query("insert into policy_profiles (id, tenant_id, name, version, rules, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, '1.0.0', $4::jsonb, 'evidence://integration/seed', 'Seeded binding for integration validation.', 'approved', now())", [policyProfileId, tenantId, `Integration policy ${runId}`, JSON.stringify(profileRules)]);
@@ -420,7 +441,7 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now())", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities)]);
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, $3)", [tenantId, runId, sampledAt]);
-  return { runId, channelId, policyProfileId, modelReleaseIds };
+  return { runId, channelId, policyProfileId, modelReleaseIds, mediaAssetIds };
 }
 
 async function startMockServer() {

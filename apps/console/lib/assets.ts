@@ -1,8 +1,10 @@
+import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type AssetKind = "portrait" | "voice" | "product_clip" | "music";
 export type AssetApproval = "pending" | "approved" | "revoked";
+export const requiredLiveAssetKinds: AssetKind[] = ["portrait", "voice", "product_clip", "music"];
 export type MediaAsset = {
   id: string;
   tenantId: string;
@@ -15,6 +17,8 @@ export type MediaAsset = {
   objectKey: string;
   checksum: string;
   approvedAt?: string;
+  revokedAt?: string;
+  revocationReason?: string;
 };
 export type CreateMediaAssetInput = Pick<MediaAsset, "kind" | "name" | "rightsScope" | "source" | "objectKey" | "checksum"> & { expiresAt?: string };
 
@@ -31,7 +35,10 @@ type PersistentAssetRow = {
   object_key: string;
   checksum: string;
   approved_at: Date | string | null;
+  revoked_at: Date | string | null;
+  revocation_reason: string | null;
 };
+type BoundAssetRow = Pick<PersistentAssetRow, "kind" | "name" | "approval_status" | "expires_at">;
 
 declare global { var shuzhirenAssetStore: AssetStore | undefined; }
 
@@ -45,11 +52,13 @@ function assetStore(): AssetStore {
   return globalThis.shuzhirenAssetStore;
 }
 
+const columns = "id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at, revoked_at, revocation_reason";
+
 export async function listAssets(context: RequestContext) {
   if (!databasePool()) return demoAssets(context);
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentAssetRow>(
-      "select id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at from media_assets order by created_at desc",
+      `select ${columns} from media_assets order by created_at desc`,
     );
     return result.rows.map(persistentAsset);
   });
@@ -63,7 +72,7 @@ export async function createMediaAsset(context: RequestContext, input: CreateMed
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentAssetRow>(
-      "insert into media_assets (tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8::date) returning id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at",
+      `insert into media_assets (tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8::date) returning ${columns}`,
       [context.tenantId, input.kind, input.name, input.objectKey, input.checksum, input.rightsScope, input.source, input.expiresAt ?? null]
     );
     return persistentAsset(result.rows[0]);
@@ -73,7 +82,7 @@ export async function createMediaAsset(context: RequestContext, input: CreateMed
 export async function approveMediaAsset(context: RequestContext, assetId: string) {
   if (!databasePool()) {
     const asset = assetStore().assets.get(assetId);
-    if (!asset || asset.tenantId !== context.tenantId) throw new Response("Media asset not found", { status: 404 });
+    if (!asset || asset.tenantId !== context.tenantId || asset.approval !== "pending") throw new Response("Media asset not found or cannot be approved", { status: 409 });
     asset.approval = "approved";
     asset.approvedAt = new Date().toISOString();
     return asset;
@@ -81,23 +90,62 @@ export async function approveMediaAsset(context: RequestContext, assetId: string
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentAssetRow>(
-      "update media_assets set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 returning id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at",
+      `update media_assets set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 and approval_status = 'pending' returning ${columns}`,
       [assetId, actor.rows[0].id]
     );
-    if (!result.rows[0]) throw new Response("Media asset not found", { status: 404 });
+    if (!result.rows[0]) throw new Response("Media asset not found or cannot be approved", { status: 409 });
+    return persistentAsset(result.rows[0]);
+  });
+}
+
+export async function revokeMediaAsset(context: RequestContext, assetId: string, reason: string) {
+  if (!databasePool()) {
+    const asset = assetStore().assets.get(assetId);
+    if (!asset || asset.tenantId !== context.tenantId || asset.approval !== "approved") throw new Response("Media asset not found or cannot be revoked", { status: 409 });
+    asset.approval = "revoked"; asset.revokedAt = new Date().toISOString(); asset.revocationReason = reason;
+    return asset;
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const actor = await syncActor(client, context);
+    const result = await client.query<PersistentAssetRow>(`update media_assets set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [assetId, actor, reason]);
+    if (!result.rows[0]) throw new Response("Media asset not found or cannot be revoked", { status: 409 });
     return persistentAsset(result.rows[0]);
   });
 }
 
 export async function hasApprovedLiveRights(context: RequestContext) {
-  if (!databasePool()) return rightsAreComplete(demoAssets(context));
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<{ kind: AssetKind }>(
-      "select distinct kind from media_assets where approval_status = 'approved' and (expires_at is null or expires_at >= current_date) and kind = any($1::media_asset_kind[])",
-      [["portrait", "voice", "product_clip", "music"]]
-    );
-    return result.rows.length === 4;
+  return (await activeMediaAssetStatus(context)).active;
+}
+
+export async function currentApprovedMediaAssetsInTransaction(client: PoolClient) {
+  const result = await client.query<PersistentAssetRow>(`select distinct on (kind) ${columns} from media_assets where approval_status = 'approved' and (expires_at is null or expires_at >= current_date) and kind = any($1::media_asset_kind[]) order by kind, approved_at desc, created_at desc`, [requiredLiveAssetKinds]);
+  return new Map(result.rows.map((row) => [row.kind, persistentAsset(row)]));
+}
+
+export async function activeMediaAssetStatus(context: RequestContext, revisionId?: string) {
+  if (!databasePool()) {
+    const active = rightsAreComplete(demoAssets(context));
+    return { active, detail: active ? "开发态肖像、声线、商品视频和音乐授权均有效" : "缺少有效的肖像、声线、商品视频或音乐授权" };
+  }
+  return withTenantTransaction(context.tenantId, async (client) => activeMediaAssetStatusInTransaction(client, revisionId));
+}
+
+export async function activeMediaAssetStatusInTransaction(client: PoolClient, revisionId?: string) {
+  if (!revisionId) {
+    const assets = await currentApprovedMediaAssetsInTransaction(client);
+    const missing = requiredLiveAssetKinds.filter((kind) => !assets.has(kind));
+    return missing.length === 0 ? { active: true, detail: "肖像、声线、商品视频和音乐授权均有效" } : { active: false, detail: `缺少有效授权：${missing.join("、")}` };
+  }
+  const result = await client.query<BoundAssetRow>("select binding.kind, asset.name, asset.approval_status, asset.expires_at from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = any($2::media_asset_kind[])", [revisionId, requiredLiveAssetKinds]);
+  const failures = requiredLiveAssetKinds.flatMap((kind) => {
+    const matches = result.rows.filter((asset) => asset.kind === kind);
+    if (matches.length !== 1) return [`${kind} 缺少唯一冻结授权素材`];
+    const asset = matches[0];
+    const expiresAt = asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined;
+    const expired = Boolean(expiresAt && expiresAt < new Date().toISOString().slice(0, 10));
+    return asset.approval_status === "approved" && !expired ? [] : [`${kind} ${asset.name} 已撤销、未批准或授权已到期`];
   });
+  return failures.length === 0 ? { active: true, detail: "已冻结肖像、声线、商品视频和音乐授权均有效" } : { active: false, detail: failures.join("；") };
 }
 
 function demoAssets(context: RequestContext) {
@@ -105,9 +153,8 @@ function demoAssets(context: RequestContext) {
 }
 
 function rightsAreComplete(assets: MediaAsset[]) {
-  const needed: AssetKind[] = ["portrait", "voice", "product_clip", "music"];
   const today = new Date().toISOString().slice(0, 10);
-  return needed.every((kind) => assets.some((asset) => asset.kind === kind && asset.approval === "approved" && (!asset.expiresAt || asset.expiresAt >= today)));
+  return requiredLiveAssetKinds.every((kind) => assets.some((asset) => asset.kind === kind && asset.approval === "approved" && (!asset.expiresAt || asset.expiresAt >= today)));
 }
 
 function persistentAsset(row: PersistentAssetRow): MediaAsset {
@@ -122,6 +169,10 @@ function persistentAsset(row: PersistentAssetRow): MediaAsset {
     source: row.source_ref,
     objectKey: row.object_key,
     checksum: row.checksum,
-    approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined
+    approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined,
+    revokedAt: row.revoked_at ? new Date(row.revoked_at).toISOString() : undefined,
+    revocationReason: row.revocation_reason ?? undefined
   };
 }
+
+async function syncActor(client: PoolClient, context: RequestContext) { return (await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role])).rows[0].id; }
