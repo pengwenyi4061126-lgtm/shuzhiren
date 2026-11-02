@@ -119,6 +119,7 @@ try {
   const policyAudit = await client.query("select detail from audit_events where event_type = 'policy.evaluated'");
   assert.equal(policyAudit.rows.length, 1);
   assert.equal(policyAudit.rows[0].detail.questionSha256.length, 64, "policy audit must retain a hash rather than the raw question");
+  assert.equal(JSON.stringify(policyAudit.rows[0].detail).includes("敏感肌"), false, "policy audit must not retain the raw question text");
 
   const commandResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, {
     method: "POST",
