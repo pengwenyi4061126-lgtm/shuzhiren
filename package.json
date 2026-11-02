@@ -25,6 +25,8 @@
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "start:ack:check": "node scripts/check-start-ack-gate.mjs",
     "runtime:watchdog:check": "node scripts/check-runtime-watchdog.mjs",
+    "runtime:acceptance:verify": "node scripts/verify-4090-acceptance.mjs",
+    "runtime:acceptance:test": "node scripts/test-4090-acceptance.mjs",
     "control-plane:integration": "node scripts/test-control-plane-postgres.mjs"
   },
   "devDependencies": {

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-11-03T12:00:00.000Z",
+  "operator": "replace-with-duty-operator",
+  "releaseManifestSha256": "replace-with-64-character-release-manifest-sha256",
+  "host": {
+    "hostname": "replace-with-4090-hostname",
+    "gpuName": "NVIDIA GeForce RTX 4090",
+    "gpuMemoryMiB": 24564,
+    "driverVersion": "replace-with-nvidia-driver-version",
+    "cudaVersion": "replace-with-cuda-version"
+  },
+  "trial": {
+    "durationMinutes": 240,
+    "maxConcurrentAvatars": 1,
+    "minimumOutputFps": 25,
+    "maximumAvSyncMs": 120,
+    "outputProbeVerified": true,
+    "recordingVerified": true,
+    "runtimeObservationEvidence": "replace-with-private-observation-report-id",
+    "recordingEvidence": "replace-with-immutable-recording-evidence-id"
+  },
+  "drills": {
+    "networkLoss": { "passed": true, "evidence": "replace-with-drill-record-id" },
+    "rtmpRejected": { "passed": true, "evidence": "replace-with-drill-record-id" },
+    "gpuOom": { "passed": true, "evidence": "replace-with-drill-record-id" },
+    "ttsTimeout": { "passed": true, "evidence": "replace-with-drill-record-id" },
+    "blackFrame": { "passed": true, "evidence": "replace-with-drill-record-id" },
+    "silence": { "passed": true, "evidence": "replace-with-drill-record-id" }
+  }
+}

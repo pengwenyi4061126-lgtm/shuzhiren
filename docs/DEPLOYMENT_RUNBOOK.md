@@ -102,3 +102,13 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 - 渠道连接未验证、验证无可审计证据，或最后验证超过 24 小时。
 - 高风险问题没有人工场控值守与接管路径。
 - 未完成 PostgreSQL 归档校验与隔离恢复演练，或录屏/对象存储没有受控的站外复制路径。
+
+## 6. 4090 实机验收证据
+
+代码、Compose 和本地开发页面通过不等于单卡 4090 可以真实开播。完成内部试播后，从 `config/runtime-acceptance.example.json` 创建仅存于受控服务器的证据文件，填入真实主机信息、场次发布清单 SHA-256、连续试播观测、录屏证据和故障演练记录，然后执行：
+
+```bash
+npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json
+```
+
+该门禁要求至少 240 分钟单路试播、单路数字人、最低输出 24 FPS、最高音画偏差 120 ms、有效输出探针、录屏证据，以及断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音六类演练全部通过。模板占位符、口头结论或 `/healthz` 不能通过该校验。此文件是发布证据索引，不应写入流密钥、访问令牌、买家信息、原始音视频或私人 URL。
