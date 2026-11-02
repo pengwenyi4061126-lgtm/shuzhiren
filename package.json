@@ -18,7 +18,8 @@
     "observer:runtime:test": "node scripts/test-runtime-observer.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
-    "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs"
+    "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
+    "start:ack:check": "node scripts/check-start-ack-gate.mjs"
   },
   "engines": {
     "node": ">=20.9.0"

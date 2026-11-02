@@ -237,6 +237,10 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
       throw new Response("Preflight requirements are not satisfied", { status: 409 });
     }
+    if (input.action === "START") {
+      const pending = await client.query<{ scheduled_start_event_id: string | null }>("select scheduled_start_event_id from live_runs where id = $1", [run.id]);
+      if (pending.rows[0]?.scheduled_start_event_id) throw new Response("A start command is already pending runtime confirmation", { status: 409 });
+    }
 
     const nextState = nextStateFor(run.state, input.action);
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
@@ -244,9 +248,13 @@ export async function issueCommand(context: RequestContext, runId: string, input
       "insert into live_commands (tenant_id, live_run_id, actor_id, idempotency_key, expected_state, action, result) values ($1, $2, $3, $4, $5, $6, $7::jsonb) returning id, action, expected_state, issued_at, result, $8::text as actor_name",
       [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted" }), context.actorName]
     );
-    await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, nextState]);
     const command = persistentCommand(inserted.rows[0]);
     const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action)), run.runtimeSessionId);
+    if (input.action === "START") {
+      await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = 'ARMED' and scheduled_start_event_id is null", [run.id, mediaEvent.id]);
+      return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
+    }
+    await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, nextState]);
     return { command, mediaEvent, run: { ...run, state: nextState, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
   });
 }
