@@ -22,6 +22,7 @@ const tenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const commerceToken = "control-plane-integration-commerce-token";
 const recordingToken = "control-plane-integration-recording-token";
+const pimToken = "control-plane-integration-pim-token";
 const { publicKey, privateKey } = await generateKeyPair("RS256");
 const jwk = { ...(await exportJWK(publicKey)), kid: "integration-key", alg: "RS256", use: "sig" };
 const client = new Client({ connectionString: databaseUrl });
@@ -70,7 +71,8 @@ try {
       OIDC_AUDIENCE: "shuzhiren-integration",
       OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
       CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken }),
-      RUNTIME_RECORDING_TENANT_TOKENS: JSON.stringify({ [tenantId]: recordingToken })
+      RUNTIME_RECORDING_TENANT_TOKENS: JSON.stringify({ [tenantId]: recordingToken }),
+      PIM_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: pimToken })
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -147,6 +149,21 @@ try {
   assert.equal(recordingsBody.data[0].objectKey, recordingInput.objectKey);
   const recordingAudit = await client.query("select event_type from audit_events where resource_type = 'recording_evidence'");
   assert.deepEqual(recordingAudit.rows.map((row) => row.event_type), ["recording_evidence.registered"]);
+
+  const productFactInput = { tenantId, eventId: "pim-product-fact-1", externalSku: `pim-${tenantId}`, name: "PIM managed product", facts: { priceCent: 12900, stock: 18, highlights: ["PIM evidence"], faq: ["PIM FAQ"], sourceRef: "pim://integration/product-fact-1", sourceSyncedAt: new Date().toISOString(), validFrom: new Date(Date.now() - 60_000).toISOString() } };
+  const productFactHeaders = { "content-type": "application/json", authorization: `Bearer ${pimToken}` };
+  const productFactCreated = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: productFactHeaders, body: JSON.stringify(productFactInput) });
+  assert.equal(productFactCreated.status, 202, "PIM product facts should create a reviewable draft version");
+  const productFactPayload = await productFactCreated.json();
+  assert.equal(productFactPayload.data.version.status, "draft", "PIM ingestion must not self-approve product facts");
+  const productFactRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: productFactHeaders, body: JSON.stringify(productFactInput) });
+  assert.equal(productFactRetry.status, 200, "PIM product fact retries must return the existing draft");
+  const conflictingProductFact = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: productFactHeaders, body: JSON.stringify({ ...productFactInput, facts: { ...productFactInput.facts, stock: 19 } }) });
+  assert.equal(conflictingProductFact.status, 409, "reusing a PIM event ID with different facts must be rejected");
+  const productFactRows = await client.query("select count(*) as count from product_fact_ingest_events where external_event_id = $1", [productFactInput.eventId]);
+  assert.equal(Number(productFactRows.rows[0].count), 1);
+  const productFactAudit = await client.query("select event_type from audit_events where resource_type = 'product_version' and event_type = 'product_facts.ingested'");
+  assert.equal(productFactAudit.rows.length, 1);
 
   const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1 }) });
   assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");
@@ -287,7 +304,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane rejects stale product facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane rejects stale product facts, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
   await stop(workerProcess);
