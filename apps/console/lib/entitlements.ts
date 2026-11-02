@@ -16,7 +16,7 @@ export async function listEntitlements(context: RequestContext): Promise<Entitle
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentEntitlementRow>(`select e.code, e.limit_value,
       case e.code
-        when 'max_concurrent_live_runs' then (select count(*) from live_runs where state in ('LIVE', 'DEGRADED'))
+        when 'max_concurrent_live_runs' then (select count(*) from live_runs where state in ('LIVE', 'DEGRADED') or (state = 'ARMED' and scheduled_start_event_id is not null))
         when 'monthly_live_minutes' then (select coalesce(sum(quantity), 0) from usage_records where code = 'monthly_live_minutes' and occurred_at >= date_trunc('month', now()))
       end as used,
       e.effective_from, e.effective_until, e.updated_at
@@ -48,10 +48,10 @@ export async function setEntitlement(context: RequestContext, input: { code: Ent
 }
 
 export async function assertLiveActivationAllowed(client: PoolClient, context: RequestContext, runId: string) {
-  const rows = await client.query<{ code: EntitlementCode; limit_value: number }>("select code, limit_value from tenant_entitlements where effective_from <= current_date and (effective_until is null or effective_until >= current_date)");
+  const rows = await client.query<{ code: EntitlementCode; limit_value: number }>("select code, limit_value from tenant_entitlements where effective_from <= current_date and (effective_until is null or effective_until >= current_date) for update");
   for (const entitlement of rows.rows) {
     if (entitlement.code === "max_concurrent_live_runs") {
-      const active = await client.query<{ count: string }>("select count(*) from live_runs where state in ('LIVE', 'DEGRADED') and id <> $1", [runId]);
+      const active = await client.query<{ count: string }>("select count(*) from live_runs where (state in ('LIVE', 'DEGRADED') or (state = 'ARMED' and scheduled_start_event_id is not null)) and id <> $1", [runId]);
       if (Number(active.rows[0].count) >= entitlement.limit_value) throw new Response("Concurrent live-run entitlement is exhausted", { status: 409 });
     }
     if (entitlement.code === "monthly_live_minutes") {

@@ -358,18 +358,31 @@ try {
   assert.equal(isolatedProductFact.status, 202, "the same external PIM event ID may be used independently by another tenant");
 
   const degradedOccupyingRun = await seedRun("DEGRADED", "session_entitlement_degraded_active", new Date());
-  const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 2 }) });
+  const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 3 }) });
   assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");
   const minuteEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/monthly_live_minutes`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1000 }) });
   assert.equal(minuteEntitlementUpdate.status, 200, "admin should configure tenant live-minute entitlement");
   const entitlementList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
   assert.equal(entitlementList.status, 200);
   const entitlementBody = await entitlementList.json();
-  assert.equal(entitlementBody.data.find((item) => item.code === "max_concurrent_live_runs")?.used, 2, "degraded runs must consume concurrent live-run capacity");
+  assert.equal(entitlementBody.data.find((item) => item.code === "max_concurrent_live_runs")?.used, 3, "degraded runs must consume concurrent live-run capacity");
   assert.equal(entitlementBody.data.find((item) => item.code === "monthly_live_minutes")?.limitValue, 1000);
   const limitedRun = await seedRun("DEGRADED", "session_entitlement_limit", new Date());
   const blockedRecovery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${limitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
   assert.equal(blockedRecovery.status, 409, "configured concurrency entitlement must block a second live activation");
+  await client.query("update live_runs set state = 'ENDED', updated_at = now() where id = $1", [limitedRun.runId]);
+  const pendingStartRun = await seedRun("ARMED", "session_entitlement_pending_start", new Date());
+  const pendingStartPayload = { sessionId: "session_entitlement_pending_start", command: { id: `media_${randomUUID()}`, runId: pendingStartRun.runId, type: "start_program", issuedAt: new Date().toISOString(), traceId: `trace_${pendingStartRun.runId}`, payload: { controlAction: "START" } } };
+  const pendingStartEvent = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload, available_at) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb, now() + interval '1 hour') returning id", [tenantId, pendingStartRun.runId, JSON.stringify(pendingStartPayload)]);
+  await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1", [pendingStartRun.runId, pendingStartEvent.rows[0].id]);
+  const pendingEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 4 }) });
+  assert.equal(pendingEntitlementUpdate.status, 200, "admin should update tenant concurrency entitlement for a pending-start reservation");
+  const pendingEntitlementList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
+  assert.equal(pendingEntitlementList.status, 200);
+  assert.equal((await pendingEntitlementList.json()).data.find((item) => item.code === "max_concurrent_live_runs")?.used, 4, "an ARMED run with a pending start acknowledgement must reserve capacity");
+  const reservationLimitedRun = await seedRun("DEGRADED", "session_entitlement_pending_limit", new Date());
+  const blockedByPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${reservationLimitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
+  assert.equal(blockedByPendingStart.status, 409, "a pending start acknowledgement must block another activation at the tenant limit");
 
   const adapterPort = await availablePort();
   const adapterSigningSecret = "control-plane-integration-adapter-signing-secret";
