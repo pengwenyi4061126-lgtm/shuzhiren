@@ -18,7 +18,7 @@
 5. 固定 `runtime/open-source.lock.json` 中的提交；模型权重的许可证、人物和声音授权另行登记。
 6. 在 Gateway 环境中配置 `PROGRAM_AUDIOTYPE`、`FALLBACK_AUDIOTYPE` 与 `HUMAN_HANDOFF_AUDIOTYPE`，并在 LiveTalking 的已批准 Avatar 包中逐项验证动作含义；不能将默认索引当作真实人接管或备用节目。
 7. LiveTalking 建立会话后，将返回的 `sessionid` 通过 `PUT /api/v1/live-runs/{runId}/runtime-session` 绑定到场次；没有绑定运行时会话的场次不得接受媒体控制命令。
-8. runtime worker 会轮询已到排期时间的 `ARMED` 场次，在一个数据库事务内切换为 `LIVE` 并写入 `start_program` outbox；它不会自动武装场次，也不会跳过预检。可通过 `SCHEDULER_POLL_MS` 调整轮询间隔。
+8. runtime worker 会按 `SCHEDULER_POLL_MS` 独立轮询已到排期时间的 `ARMED` 场次。每个场次都在独立数据库事务内切换为 `LIVE` 并写入 `start_program` outbox；每一轮最多领取 `SCHEDULER_BATCH_SIZE` 个，既不会重复开播，也不会让大批到期场次按单条轮询周期逐个积压。它不会自动武装场次，也不会跳过预检。
 
 示例结构检查：
 

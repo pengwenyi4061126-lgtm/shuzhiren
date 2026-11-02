@@ -6,6 +6,7 @@ const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
 const gatewayToken = required("RUNTIME_SHARED_TOKEN");
 const pollMs = positiveInt(process.env.OUTBOX_POLL_MS, 1000);
 const schedulerPollMs = positiveInt(process.env.SCHEDULER_POLL_MS, 1000);
+const schedulerBatchSize = positiveInt(process.env.SCHEDULER_BATCH_SIZE, 10);
 const maxAttempts = positiveInt(process.env.OUTBOX_MAX_ATTEMPTS, 6);
 const pool = new Pool({ connectionString: databaseUrl, max: 4 });
 
@@ -81,8 +82,17 @@ async function deliver(event) {
 }
 
 async function tick() {
-  const scheduled = await scheduleDueRun();
-  if (scheduled) log("schedule.started", scheduled);
+  const now = Date.now();
+  if (now >= nextSchedulerPollAt) {
+    let scheduledCount = 0;
+    while (scheduledCount < schedulerBatchSize) {
+      const scheduled = await scheduleDueRun();
+      if (!scheduled) break;
+      log("schedule.started", scheduled);
+      scheduledCount += 1;
+    }
+    nextSchedulerPollAt = Date.now() + schedulerPollMs;
+  }
   const event = await claimEvent();
   if (!event) return;
   try {
@@ -97,11 +107,13 @@ async function tick() {
 }
 
 let stopping = false;
+let nextSchedulerPollAt = 0;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { pollMs, schedulerPollMs, maxAttempts });
+log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, maxAttempts });
 while (!stopping) {
   try { await tick(); } catch (error) { log("worker.error", { error: error instanceof Error ? error.message : "unknown" }); }
-  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerPollMs)));
+  const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());
+  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs)));
 }
 await pool.end();
 log("worker.stopped");
