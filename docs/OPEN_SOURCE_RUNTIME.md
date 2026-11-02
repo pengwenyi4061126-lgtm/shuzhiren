@@ -74,3 +74,5 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 平台 Adapter 必须在自己的私网服务中完成平台要求的 Webhook 签名、时间戳、重放和限流验证，再使用 `CHANNEL_INGEST_TENANT_TOKENS` 中当前租户对应的独立 secret 调用控制面的 `POST /api/v1/runtime/channel-interactions`。该入口只接受租户、场次、已绑定渠道、平台事件 ID 和评论文本；服务端令牌先约束租户，再验证场次正在 `LIVE` 或 `DEGRADED`、渠道已连接且声明支持评论 Webhook，并以 `tenant + run + channel source + event ID` 数据库唯一索引去重。重复投递返回既有互动；相同平台事件 ID 但不同评论文本会返回 `409`，不能产生第二次播报或审计噪声。
 
 首个 `normalized-webhook-rtmp` Adapter 只是受控的标准化桥接契约，不能被描述成已完成某个平台的 OAuth、评论或商品 API 集成。实际接入每个平台时仍必须分别实现签名校验、重放保护、错误码映射、限流、审核要求和验收证据。
+
+仓库还提供 `apps/channel-adapter` 作为私网参考桥接服务：使用 `CHANNEL_ADAPTER_TARGETS` 中每个渠道独立的 HMAC secret，对 `x-shuzhiren-timestamp`、`x-shuzhiren-event-id` 和 `x-shuzhiren-signature` 校验五分钟时间窗与正文签名。服务把事件 ID 和正文 SHA-256 以 `pending/delivered` 状态写入 PostgreSQL 后，才转发到评论或交易入口；重启后的相同事件会安全重试，正文不同的重用 ID 会被拒绝。它只接受标准化的 `interaction` 或 `commerce` JSON，不是任何真实平台的签名算法实现。通过 `docker compose --profile channel-adapter --env-file /srv/shuzhiren/channel-adapter.env -f infra/compose/docker-compose.runtime.yml up --build` 启动，必须放在完成平台验签或由平台直连的受控反向代理之后；不可把其 HMAC secret、控制面服务 token 或数据库地址交给浏览器。
