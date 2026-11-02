@@ -16,6 +16,7 @@ import { enqueueMediaCommand, enqueueMediaCommandInTransaction, enqueueSpeechCom
 import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import { createGroundedResponseDraft, type ResponseDraft } from "@/lib/response-draft";
 import { createSpeechCommand } from "@/lib/speech-protocol";
+import { assertLiveActivationAllowed } from "@/lib/entitlements";
 
 export type StoredRun = LiveRun & {
   tenantId: string;
@@ -241,6 +242,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
       throw new Response("Runtime health is not ready for recovery", { status: 409 });
     }
+    if (input.action === "START" || input.action === "RECOVER") await assertLiveActivationAllowed(client, context, run.id);
     if (requiresRuntimeConfirmation) {
       const pending = await client.query<{ scheduled_start_event_id: string | null }>("select scheduled_start_event_id from live_runs where id = $1", [run.id]);
       if (pending.rows[0]?.scheduled_start_event_id) throw new Response("A runtime activation command is already pending confirmation", { status: 409 });

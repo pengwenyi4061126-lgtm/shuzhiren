@@ -121,6 +121,19 @@ try {
   assert.equal(mock.mediaCommands.length, 1);
   assert.equal(mock.mediaCommands[0].action, "start_program");
 
+  const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1 }) });
+  assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");
+  const minuteEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/monthly_live_minutes`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1000 }) });
+  assert.equal(minuteEntitlementUpdate.status, 200, "admin should configure tenant live-minute entitlement");
+  const entitlementList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
+  assert.equal(entitlementList.status, 200);
+  const entitlementBody = await entitlementList.json();
+  assert.equal(entitlementBody.data.find((item) => item.code === "max_concurrent_live_runs")?.used, 1);
+  assert.equal(entitlementBody.data.find((item) => item.code === "monthly_live_minutes")?.limitValue, 1000);
+  const limitedRun = await seedRun("DEGRADED", "session_entitlement_limit", new Date());
+  const blockedRecovery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${limitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
+  assert.equal(blockedRecovery.status, 409, "configured concurrency entitlement must block a second live activation");
+
   const adapterPort = await availablePort();
   const adapterSigningSecret = "control-plane-integration-adapter-signing-secret";
   adapterProcess = spawn(process.execPath, [channelAdapter], {
@@ -186,11 +199,13 @@ try {
       SCHEDULER_BATCH_SIZE: "1",
       RUNTIME_WATCHDOG_POLL_MS: "10",
       RUNTIME_WATCHDOG_BATCH_SIZE: "1",
-      RUNTIME_TELEMETRY_MAX_AGE_SECONDS: "60"
+      RUNTIME_TELEMETRY_MAX_AGE_SECONDS: "60",
+      USAGE_METER_POLL_MS: "10"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
   await waitFor(async () => (await client.query("select state from live_runs where id = $1", [staleRunId])).rows[0]?.state === "DEGRADED", 10_000, "stale telemetry watchdog");
+  await waitFor(async () => Number((await client.query("select count(*) as count from usage_records where live_run_id = $1 and code = 'monthly_live_minutes'", [recoverRunId])).rows[0]?.count) >= 1, 10_000, "live-minute metering");
   const alert = await client.query("select code, status from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId]);
   assert.deepEqual(alert.rows[0], { code: "runtime_telemetry_stale", status: "open" });
   const alertId = (await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId])).rows[0].id;
@@ -245,7 +260,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane rejects stale product facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
   await stop(workerProcess);

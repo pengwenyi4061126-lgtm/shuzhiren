@@ -61,7 +61,7 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
   const method = request.method;
 
   if (method === "GET") {
-    if (path === "/api/v1/alerts" || path === "/api/v1/incidents" || /^\/api\/v1\/live-runs\/[^/]+\/telemetry$/.test(path) || path === "/api/v1/runtime/outbox") return observerRoles;
+    if (path === "/api/v1/alerts" || path === "/api/v1/incidents" || path === "/api/v1/entitlements" || /^\/api\/v1\/live-runs\/[^/]+\/telemetry$/.test(path) || path === "/api/v1/runtime/outbox") return observerRoles;
     if (path === "/api/v1/audit-events" || path === "/api/v1/audit-events/verification") return reviewObserverRoles;
     if (path === "/api/v1/channels/connections" || path === "/api/v1/channels/capabilities") return observerRoles;
     if (/^\/api\/v1\/live-runs\/[^/]+\/(events|interactions)$/.test(path) || path === "/api/v1/live-runs") return allRoles;
@@ -77,6 +77,7 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
     if (/^\/api\/v1\/live-runs\/[^/]+\/lifecycle$/.test(path)) return lifecycleRoles(request);
   }
 
+  if (method === "PUT" && /^\/api\/v1\/entitlements\/[^/]+$/.test(path)) return ["admin"];
   if (method === "PUT" && /^\/api\/v1\/live-runs\/[^/]+\/runtime-session$/.test(path)) return operatorRoles;
   return undefined;
 }

@@ -10,6 +10,7 @@ const schedulerBatchSize = positiveInt(process.env.SCHEDULER_BATCH_SIZE, 10);
 const watchdogPollMs = positiveInt(process.env.RUNTIME_WATCHDOG_POLL_MS, 5000);
 const watchdogBatchSize = positiveInt(process.env.RUNTIME_WATCHDOG_BATCH_SIZE, 10);
 const maxTelemetryAgeSeconds = positiveInt(process.env.RUNTIME_TELEMETRY_MAX_AGE_SECONDS, 60);
+const usageMeterPollMs = positiveInt(process.env.USAGE_METER_POLL_MS, 60_000);
 const maxAttempts = positiveInt(process.env.OUTBOX_MAX_ATTEMPTS, 6);
 const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
 const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
@@ -97,6 +98,28 @@ async function scheduleDueRun() {
     `);
       const run = due.rows[0];
       if (!run) return null;
+      const entitlements = await client.query("select code, limit_value from tenant_entitlements where effective_from <= current_date and (effective_until is null or effective_until >= current_date)");
+      let blockedCode = null;
+      for (const entitlement of entitlements.rows) {
+        if (entitlement.code === "max_concurrent_live_runs") {
+          const active = await client.query("select count(*) from live_runs where state = 'LIVE' and id <> $1", [run.id]);
+          if (Number(active.rows[0].count) >= Number(entitlement.limit_value)) blockedCode = "max_concurrent_live_runs";
+        }
+        if (entitlement.code === "monthly_live_minutes") {
+          const used = await client.query("select coalesce(sum(quantity), 0) as total from usage_records where code = 'monthly_live_minutes' and occurred_at >= date_trunc('month', now())");
+          if (Number(used.rows[0].total) >= Number(entitlement.limit_value)) blockedCode = "monthly_live_minutes";
+        }
+      }
+      if (blockedCode) {
+        const existing = await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'entitlement_exhausted' and status = 'open' for update", [run.id]);
+        if (!existing.rows[0]) {
+          await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'warning', 'entitlement_exhausted', $3, 'open')", [run.tenant_id, run.id, `场次因额度 ${blockedCode} 而未自动开播`]);
+          const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-scheduler', '运行时排期器', 'operator'::membership_role) as id", [run.tenant_id]);
+          await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+            values ($1, $2, 'live_run.start_blocked_by_entitlement', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ entitlement: blockedCode })]);
+        }
+        return null;
+      }
       const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START" } };
       const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
@@ -113,6 +136,25 @@ async function scheduleDueRun() {
   }
   if (ids.length) nextSchedulerTenantCursor = (nextSchedulerTenantCursor + 1) % ids.length;
   return null;
+}
+
+async function meterLiveUsage() {
+  const ids = await tenantIds();
+  let recorded = 0;
+  for (const tenantId of ids) {
+    recorded += await inTenantTransaction(tenantId, async (client) => {
+      const result = await client.query(`insert into usage_records (tenant_id, code, live_run_id, quantity, idempotency_key, metadata)
+        select $1, 'monthly_live_minutes', id, 1,
+          'live-minute:' || id::text || ':' || to_char(date_trunc('minute', now() at time zone 'UTC'), 'YYYYMMDDHH24MI'),
+          jsonb_build_object('meter', 'runtime-worker', 'bucket', 'one_minute')
+        from live_runs
+        where state = 'LIVE'
+          and exists (select 1 from tenant_entitlements where code = 'monthly_live_minutes' and effective_from <= current_date and (effective_until is null or effective_until >= current_date))
+        on conflict (tenant_id, idempotency_key) do nothing`, [tenantId]);
+      return result.rowCount ?? 0;
+    });
+  }
+  return recorded;
 }
 
 async function degradeStaleLiveRun() {
@@ -256,6 +298,11 @@ async function tick() {
     }
     nextWatchdogPollAt = Date.now() + watchdogPollMs;
   }
+  if (now >= nextUsageMeterPollAt) {
+    const recorded = await meterLiveUsage();
+    if (recorded) log("usage.live_minutes_recorded", { records: recorded });
+    nextUsageMeterPollAt = Date.now() + usageMeterPollMs;
+  }
   const event = await claimEvent();
   if (!event) return;
   try {
@@ -275,13 +322,15 @@ let nextOutboxTenantCursor = 0;
 let nextSchedulerTenantCursor = 0;
 let nextWatchdogPollAt = 0;
 let nextWatchdogTenantCursor = 0;
+let nextUsageMeterPollAt = 0;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs });
+log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs });
 while (!stopping) {
   try { await tick(); } catch (error) { log("worker.error", { error: error instanceof Error ? error.message : "unknown" }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());
   const watchdogWaitMs = Math.max(1, nextWatchdogPollAt - Date.now());
-  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs, watchdogWaitMs)));
+  const usageWaitMs = Math.max(1, nextUsageMeterPollAt - Date.now());
+  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs, watchdogWaitMs, usageWaitMs)));
 }
 await pool.end();
 log("worker.stopped");
