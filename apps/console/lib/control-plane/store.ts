@@ -39,7 +39,7 @@ export type StoredRun = LiveRun & {
 };
 
 type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
-export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm";
+export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm" | "disarm";
 const runtimeSessionBindingStates = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"]);
 type CommandIdempotencyRecord = { command: LiveCommand; runId: string };
 type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, CommandIdempotencyRecord> };
@@ -166,6 +166,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     return run;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
+    if (action === "disarm") return disarmPersistentRun(client, runId);
     const run = await loadPersistentRun(client, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
     const next = lifecycleTarget(run.state, action);
@@ -181,9 +182,24 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
 }
 
 function lifecycleTarget(state: LiveRunState, action: RunLifecycleAction): LiveRunState {
-  const target = ({ DRAFT: { submit_review: "REVIEW" }, REVIEW: { approve: "APPROVED" }, APPROVED: { begin_preflight: "PREFLIGHT" }, PREFLIGHT: { arm: "ARMED" } } as Partial<Record<LiveRunState, Partial<Record<RunLifecycleAction, LiveRunState>>>>)[state]?.[action];
+  const target = ({ DRAFT: { submit_review: "REVIEW" }, REVIEW: { approve: "APPROVED" }, APPROVED: { begin_preflight: "PREFLIGHT" }, PREFLIGHT: { arm: "ARMED" }, ARMED: { disarm: "PREFLIGHT" } } as Partial<Record<LiveRunState, Partial<Record<RunLifecycleAction, LiveRunState>>>>)[state]?.[action];
   if (!target) throw new Response("Lifecycle action is not allowed in current state", { status: 409 });
   return target;
+}
+
+async function disarmPersistentRun(client: PoolClient, runId: string) {
+  const run = await loadPersistentRun(client, runId);
+  if (!run) throw new Response("Live run not found", { status: 404 });
+  const next = lifecycleTarget(run.state, "disarm");
+  const pending = await client.query<{ scheduled_start_event_id: string | null }>("select scheduled_start_event_id from live_runs where id = $1", [run.id]);
+  const eventId = pending.rows[0]?.scheduled_start_event_id ?? null;
+  if (eventId) {
+    const cancelled = await client.query<{ id: string }>("update outbox_events set state = 'cancelled', last_error = 'activation_cancelled_by_operator', available_at = now() where id = $1 and state in ('pending', 'failed') returning id", [eventId]);
+    if (!cancelled.rows[0]) throw new Response("Pending activation is already delivering or delivered", { status: 409 });
+  }
+  const updated = await client.query<{ id: string }>("update live_runs set state = $2, scheduled_start_event_id = null, updated_at = now() where id = $1 and state = 'ARMED' and scheduled_start_event_id is not distinct from $3 returning id", [run.id, next, eventId]);
+  if (!updated.rows[0]) throw new Response("Live run changed while cancelling activation", { status: 409 });
+  return { ...run, state: next };
 }
 
 function reservesRuntimeSession(state: LiveRunState) {

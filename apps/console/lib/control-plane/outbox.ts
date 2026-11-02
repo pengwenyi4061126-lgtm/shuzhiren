@@ -5,7 +5,7 @@ import { dispatchMediaCommand, dispatchSpeechCommand } from "@/lib/runtime-gatew
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import type { PoolClient } from "pg";
 
-export type OutboxState = "pending" | "delivering" | "delivered" | "failed";
+export type OutboxState = "pending" | "delivering" | "delivered" | "failed" | "cancelled";
 export type MediaOutboxEvent = { id: string; tenantId: string; type: "media.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: MediaCommand; createdAt: string; deliveredAt?: string; lastError?: string };
 export type SpeechOutboxEvent = { id: string; tenantId: string; type: "speech.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: SpeechCommand; createdAt: string; deliveredAt?: string; lastError?: string };
 export type RuntimeOutboxEvent = MediaOutboxEvent | SpeechOutboxEvent;
@@ -135,6 +135,7 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
     if (!selected.rows[0]) throw new Response("Outbox event not found", { status: 404 });
     const current = persistentEvent(selected.rows[0]);
     if (current.state === "delivered") return { event: current, duplicate: true as const };
+    if (current.state === "cancelled") throw new Response("Outbox event was cancelled", { status: 409 });
     if (current.state === "delivering") throw new Response("Outbox event is already delivering", { status: 409 });
     const updated = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivering', attempts = attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second') where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [eventId, manualDeliveryLeaseSeconds]);
     return { event: persistentEvent(updated.rows[0]), duplicate: false as const };

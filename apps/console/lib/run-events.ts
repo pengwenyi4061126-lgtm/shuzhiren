@@ -13,7 +13,7 @@ export type RunEvent = {
   occurredAt: string;
   title: string;
   detail: string;
-  state?: "accepted" | "pending" | "delivering" | "delivered" | "failed" | "open" | "resolved" | "queued" | "handled";
+  state?: "accepted" | "pending" | "delivering" | "delivered" | "failed" | "cancelled" | "open" | "resolved" | "queued" | "handled";
 };
 
 export async function listRunEvents(context: RequestContext, runId: string) {

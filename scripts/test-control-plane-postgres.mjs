@@ -414,6 +414,16 @@ try {
   const reservationLimitedRun = await seedRun("DEGRADED", "session_entitlement_pending_limit", new Date());
   const blockedByPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${reservationLimitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
   assert.equal(blockedByPendingStart.status, 409, "a pending start acknowledgement must block another activation at the tenant limit");
+  const disarmPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${pendingStartRun.runId}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "disarm" }) });
+  assert.equal(disarmPendingStart.status, 200, "an operator should cancel a pending scheduled activation before it is delivering");
+  assert.equal((await disarmPendingStart.json()).data.state, "PREFLIGHT", "disarming must return the run to preflight");
+  assert.deepEqual((await client.query("select state from outbox_events where id = $1", [pendingStartEvent.rows[0].id])).rows[0], { state: "cancelled" }, "disarming must cancel the pending activation outbox event");
+  const cancelledDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${pendingStartEvent.rows[0].id}/deliver`, { method: "POST", headers: requestHeaders });
+  assert.equal(cancelledDelivery.status, 409, "cancelled activation events must not be manually re-delivered");
+  const afterDisarmEntitlements = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
+  assert.equal(afterDisarmEntitlements.status, 200);
+  assert.equal((await afterDisarmEntitlements.json()).data.find((item) => item.code === "max_concurrent_live_runs")?.used, 3, "disarming a pending activation must release reserved concurrent capacity");
+  assert.equal((await client.query("select count(*) as count from audit_events where resource_id = $1 and event_type = 'live_run.disarm'", [pendingStartRun.runId])).rows[0].count, "1", "disarming must be recorded in the audit chain");
 
   const adapterPort = await availablePort();
   const adapterSigningSecret = "control-plane-integration-adapter-signing-secret";
