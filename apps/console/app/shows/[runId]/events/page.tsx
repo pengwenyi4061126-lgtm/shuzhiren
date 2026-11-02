@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Activity, ArrowLeft, BellRing, ClipboardList, MessageSquareText, RadioTower, ShieldCheck } from "lucide-react";
-import { demoRequestContext } from "@/lib/control-plane/auth-context";
+import { pageRequestContext } from "@/lib/control-plane/page-context";
 import { getRun } from "@/lib/control-plane/store";
 import { listRunEvents, type RunEventCategory } from "@/lib/run-events";
 
@@ -16,7 +16,8 @@ const iconByCategory: Record<RunEventCategory, typeof Activity> = {
 
 export default async function RunEventsPage(props: PageProps<"/shows/[runId]/events">) {
   const { runId } = await props.params;
-  const [run, events] = await Promise.all([getRun(demoRequestContext, runId), listRunEvents(demoRequestContext, runId)]);
+  const actor = await pageRequestContext();
+  const [run, events] = await Promise.all([getRun(actor, runId), listRunEvents(actor, runId)]);
   if (!run || !events) return <main className="empty-page"><h1>场次不存在</h1><Link href="/">返回指挥台</Link></main>;
 
   return <main className="run-events-page">

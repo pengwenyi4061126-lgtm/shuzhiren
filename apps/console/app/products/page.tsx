@@ -1,10 +1,11 @@
-import { demoRequestContext } from "@/lib/control-plane/auth-context";
 import { ProductWorkspace } from "@/components/product-workspace";
+import { pageRequestContext } from "@/lib/control-plane/page-context";
 import { listProducts } from "@/lib/catalog";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProductsPage() {
-  const products = await listProducts(demoRequestContext);
-  return <ProductWorkspace initialProducts={products} canApprove={demoRequestContext.role === "admin" || demoRequestContext.role === "reviewer"} />;
+  const actor = await pageRequestContext();
+  const products = await listProducts(actor);
+  return <ProductWorkspace initialProducts={products} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
 }

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft, BadgeCheck, Clapperboard, ContactRound, MessageSquareText, ShieldAlert } from "lucide-react";
-import { demoRequestContext } from "@/lib/control-plane/auth-context";
+import { pageRequestContext } from "@/lib/control-plane/page-context";
 import { getShowProgram, type ProgramSegmentKind } from "@/lib/show-program";
 import { getRun } from "@/lib/control-plane/store";
 
@@ -13,8 +13,9 @@ const kindMeta: Record<ProgramSegmentKind, { label: string; icon: typeof Clapper
 
 export default async function ProgramPage(props: PageProps<"/shows/[runId]/program">) {
   const { runId } = await props.params;
-  const run = await getRun(demoRequestContext, runId);
-  const program = await getShowProgram(demoRequestContext, runId);
+  const actor = await pageRequestContext();
+  const run = await getRun(actor, runId);
+  const program = await getShowProgram(actor, runId);
   if (!run || !program) return <main className="empty-page"><h1>节目单不存在</h1><Link href="/">返回指挥台</Link></main>;
 
   const totalSeconds = program.segments.reduce((total, segment) => total + segment.durationSeconds, 0);

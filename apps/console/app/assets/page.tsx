@@ -1,10 +1,11 @@
-import { demoRequestContext } from "@/lib/control-plane/auth-context";
 import { AssetWorkspace } from "@/components/asset-workspace";
+import { pageRequestContext } from "@/lib/control-plane/page-context";
 import { listAssets } from "@/lib/assets";
 
 export const dynamic = "force-dynamic";
 
 export default async function AssetsPage() {
-  const assets = await listAssets(demoRequestContext);
-  return <AssetWorkspace initialAssets={assets} canApprove={demoRequestContext.role === "admin" || demoRequestContext.role === "reviewer"} />;
+  const actor = await pageRequestContext();
+  const assets = await listAssets(actor);
+  return <AssetWorkspace initialAssets={assets} canApprove={actor.role === "admin" || actor.role === "reviewer"} />;
 }

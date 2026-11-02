@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { AlertTriangle, ArrowLeft, CheckCircle2, CircleX, ShieldCheck } from "lucide-react";
-import { demoRequestContext } from "@/lib/control-plane/auth-context";
+import { pageRequestContext } from "@/lib/control-plane/page-context";
 import { evaluateRunPreflight, getRun } from "@/lib/control-plane/store";
 
 export default async function PreflightPage(props: PageProps<"/shows/[runId]/preflight">) {
   const { runId } = await props.params;
-  const run = await getRun(demoRequestContext, runId);
+  const actor = await pageRequestContext();
+  const run = await getRun(actor, runId);
   if (!run) return <main className="empty-page"><h1>场次不存在</h1><Link href="/">返回指挥台</Link></main>;
-  const preflight = await evaluateRunPreflight(demoRequestContext, run);
+  const preflight = await evaluateRunPreflight(actor, run);
 
   return (
     <main className="preflight-page">
