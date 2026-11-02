@@ -1,4 +1,6 @@
 import http from "node:http";
+import { readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 
 const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
 const gatewayUrl = requiredUrl("RUNTIME_GATEWAY_URL");
@@ -7,7 +9,7 @@ const pollMs = positiveInt(process.env.RUNTIME_OBSERVER_POLL_MS, 5000);
 const timeoutMs = positiveInt(process.env.RUNTIME_OBSERVER_TIMEOUT_MS, 3000);
 const failClosed = process.env.RUNTIME_OBSERVER_FAIL_CLOSED !== "false";
 const healthPort = positiveInt(process.env.RUNTIME_OBSERVER_PORT, 8084);
-const targets = configuredTargets();
+const targetsFile = optionalAbsolutePath(process.env.RUNTIME_OBSERVER_TARGETS_FILE);
 
 function required(name) {
   const value = process.env[name];
@@ -27,21 +29,33 @@ function positiveInt(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function configuredTargets() {
-  let raw;
-  try { raw = JSON.parse(required("RUNTIME_OBSERVER_TARGETS")); } catch { throw new Error("RUNTIME_OBSERVER_TARGETS must be valid JSON"); }
-  if (!Array.isArray(raw) || raw.length === 0) throw new Error("RUNTIME_OBSERVER_TARGETS must contain at least one target");
-  return raw.map((target, index) => {
-    if (!target || typeof target !== "object" || Array.isArray(target)) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}] must be an object`);
+function optionalAbsolutePath(value) {
+  if (!value) return null;
+  if (!isAbsolute(value)) throw new Error("RUNTIME_OBSERVER_TARGETS_FILE must be an absolute container path");
+  return value;
+}
+
+function configuredTargets(rawText, source) {
+  let parsed;
+  try { parsed = JSON.parse(rawText); } catch { throw new Error(`${source} must be valid JSON`); }
+  if (!Array.isArray(parsed)) throw new Error(`${source} must be a JSON array`);
+  return parsed.map((target, index) => {
+    if (!target || typeof target !== "object" || Array.isArray(target)) throw new Error(`${source}[${index}] must be an object`);
     const value = target;
-    for (const key of ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"]) if (typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 2000) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].${key} is invalid`);
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.sessionId)) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].sessionId is invalid`);
-    if (value.telemetryToken.length < 16) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].telemetryToken is too short`);
-    if (value.outputProbeToken !== undefined && (typeof value.outputProbeToken !== "string" || value.outputProbeToken.length < 16 || value.outputProbeToken.length > 2000)) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].outputProbeToken is invalid`);
+    for (const key of ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"]) if (typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 2000) throw new Error(`${source}[${index}].${key} is invalid`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.sessionId)) throw new Error(`${source}[${index}].sessionId is invalid`);
+    if (value.telemetryToken.length < 16) throw new Error(`${source}[${index}].telemetryToken is too short`);
+    if (value.outputProbeToken !== undefined && (typeof value.outputProbeToken !== "string" || value.outputProbeToken.length < 16 || value.outputProbeToken.length > 2000)) throw new Error(`${source}[${index}].outputProbeToken is invalid`);
     const probeUrl = new URL(value.outputProbeUrl);
-    if (!/^https?:$/.test(probeUrl.protocol) || probeUrl.username || probeUrl.password) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].outputProbeUrl is invalid`);
+    if (!/^https?:$/.test(probeUrl.protocol) || probeUrl.username || probeUrl.password) throw new Error(`${source}[${index}].outputProbeUrl is invalid`);
     return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, outputProbeUrl: probeUrl.toString(), outputProbeToken: value.outputProbeToken };
   });
+}
+
+async function initialTargets() {
+  if (!targetsFile) return configuredTargets(process.env.RUNTIME_OBSERVER_TARGETS ?? "[]", "RUNTIME_OBSERVER_TARGETS");
+  const raw = await readFile(targetsFile, "utf8");
+  return { raw, targets: configuredTargets(raw, "RUNTIME_OBSERVER_TARGETS_FILE") };
 }
 
 function log(event, fields = {}) {
@@ -129,25 +143,55 @@ async function observeTarget(target) {
   }
 }
 
+const initial = await initialTargets();
+let targets = Array.isArray(initial) ? initial : initial.targets;
+let targetsFileContents = Array.isArray(initial) ? null : initial.raw;
+let targetConfigError = null;
 let stopping = false;
 let lastSuccessfulCycleAt = Date.now();
 let lastCycleError = null;
 const healthServer = http.createServer((request, response) => {
   if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { ok: false, error: "not_found" });
   const cycleFresh = Date.now() - lastSuccessfulCycleAt <= Math.max(pollMs * 3, 15_000);
-  return json(response, cycleFresh && !stopping ? 200 : 503, { ok: cycleFresh && !stopping, targetCount: targets.length, lastSuccessfulCycleAt: new Date(lastSuccessfulCycleAt).toISOString(), lastError: lastCycleError });
+  const healthy = cycleFresh && !stopping && !targetConfigError;
+  return json(response, healthy ? 200 : 503, { ok: healthy, targetCount: targets.length, targetConfigSource: targetsFile ? "file" : "environment", targetConfigHealthy: !targetConfigError, lastSuccessfulCycleAt: new Date(lastSuccessfulCycleAt).toISOString(), lastError: lastCycleError, targetConfigError });
 });
 healthServer.listen(healthPort, "0.0.0.0", () => log("observer.health_listening", { port: healthPort }));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("observer.started", { targetCount: targets.length, pollMs, timeoutMs, failClosed, healthPort });
+log("observer.started", { targetCount: targets.length, targetConfigSource: targetsFile ? "file" : "environment", pollMs, timeoutMs, failClosed, healthPort });
+
+async function refreshTargetsFromFile() {
+  if (!targetsFile) return true;
+  try {
+    const raw = await readFile(targetsFile, "utf8");
+    if (raw !== targetsFileContents) {
+      const nextTargets = configuredTargets(raw, "RUNTIME_OBSERVER_TARGETS_FILE");
+      targets = nextTargets;
+      targetsFileContents = raw;
+      log("observer.targets_reloaded", { targetCount: targets.length });
+    }
+    targetConfigError = null;
+    return true;
+  } catch (error) {
+    targetConfigError = error instanceof Error ? error.message : "target_config_read_failed";
+    log("observer.target_config_error", { error: targetConfigError });
+    return false;
+  }
+}
+
 while (!stopping) {
+  if (!(await refreshTargetsFromFile())) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    continue;
+  }
   try {
     await Promise.all(targets.map(observeTarget));
     lastSuccessfulCycleAt = Date.now();
     lastCycleError = null;
   } catch (error) {
-    lastCycleError = error instanceof Error ? error.message : "observer_cycle_failed";
-    log("observer.error", { error: lastCycleError });
+    const message = error instanceof Error ? error.message : "observer_cycle_failed";
+    lastCycleError = message;
+    log("observer.error", { error: message });
   }
   await new Promise((resolve) => setTimeout(resolve, pollMs));
 }

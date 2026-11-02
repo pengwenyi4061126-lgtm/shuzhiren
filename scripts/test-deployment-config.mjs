@@ -52,6 +52,7 @@ function runtime(outputProbeTargets) {
     RUNTIME_SHARED_TOKEN: runtimeToken,
     DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
     CONTROL_PLANE_URL: "https://control-plane.internal",
+    RUNTIME_OBSERVER_TARGETS_DIR: "/srv/shuzhiren/observer-config",
     RUNTIME_OBSERVER_TARGETS: [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }],
     RUNTIME_OBSERVER_POLL_MS: "5000",
     RUNTIME_OBSERVER_TIMEOUT_MS: "3000",

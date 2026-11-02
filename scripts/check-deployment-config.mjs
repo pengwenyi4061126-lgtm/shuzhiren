@@ -72,7 +72,7 @@ const channelAdapter = parseEnv(channelAdapterText);
 const alertNotifier = parseEnv(alertNotifierText);
 
 required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "CONTROL_PLANE_DEMO_MODE", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "RUNTIME_SPEECH_VOICE"]);
-required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
+required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 required(channelAdapter, "渠道适配器", ["DATABASE_URL", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_TARGETS"]);
 required(alertNotifier, "告警通知器", ["DATABASE_URL", "ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS", "ALERT_NOTIFIER_TARGETS"]);
@@ -129,17 +129,18 @@ equal(runtime, "运行时", "STREAM_OUTPUT_MODE", "rtmp");
 equal(runtime, "运行时", "STREAM_FPS", "25");
 
 try {
-  const targets = JSON.parse(runtime.get("RUNTIME_OBSERVER_TARGETS") ?? "");
+  const targets = JSON.parse(runtime.get("RUNTIME_OBSERVER_TARGETS") ?? "[]");
   const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
     && ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"].every((key) => typeof target[key] === "string" && target[key].length > 0)
     && target.telemetryToken.length >= 16
     && (target.outputProbeToken === undefined || (typeof target.outputProbeToken === "string" && target.outputProbeToken.length >= 16))
     && /^https?:\/\//.test(target.outputProbeUrl);
-  if (!Array.isArray(targets) || targets.length === 0 || !targets.every(targetValid)) throw new Error("invalid");
+  if (!Array.isArray(targets) || !targets.every(targetValid)) throw new Error("invalid");
 } catch {
-  const message = "运行时 的 RUNTIME_OBSERVER_TARGETS 必须包含每个直播场次的租户、场次、会话、独立遥测密钥和私网输出探针 URL";
+  const message = "运行时 的 RUNTIME_OBSERVER_TARGETS 必须是可选的有效场次/会话/遥测密钥/私网输出探针数组";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);
 }
+if (!runtime.get("RUNTIME_OBSERVER_TARGETS_DIR")?.startsWith("/")) errors.push("运行时 的 RUNTIME_OBSERVER_TARGETS_DIR 必须是宿主机绝对路径");
 
 try {
   const targets = JSON.parse(runtime.get("OUTPUT_PROBE_TARGETS") ?? "[]");
@@ -222,7 +223,7 @@ try {
   const gatewayDockerfile = path.join(files.sourceRoot, "runtime", "gateway", "Dockerfile");
   const [compose, config, rtmp, cosyVoice, gatewayAppText, gatewayDockerfileText] = await Promise.all([composePath, liveTalkingConfig, liveTalkingRtmp, cosyVoiceServer, gatewayApp, gatewayDockerfile].map((file) => readFile(file, "utf8")));
   for (const expected of ["--transport rtmp", "--model musetalk", "--avatar_id", "--listenport 8010", "--max_session 1", "--fps ${STREAM_FPS:-25}", "--push_url", "COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 缺少受支持的启动契约：${expected}`);
-  for (const expected of ["OUTPUT_PROBE_TARGETS: ${OUTPUT_PROBE_TARGETS:-[]}", "CHANNEL_ADAPTER_TARGETS: ${CHANNEL_ADAPTER_TARGETS:-[]}", "ALERT_NOTIFIER_TARGETS: ${ALERT_NOTIFIER_TARGETS:-[]}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 的可选 profile 解析契约缺失：${expected}`);
+  for (const expected of ["RUNTIME_OBSERVER_TARGETS_FILE: /run/shuzhiren/observer-config/runtime-observer-targets.json", "${RUNTIME_OBSERVER_TARGETS_DIR:-../../config}:/run/shuzhiren/observer-config:ro", "OUTPUT_PROBE_TARGETS: ${OUTPUT_PROBE_TARGETS:-[]}", "CHANNEL_ADAPTER_TARGETS: ${CHANNEL_ADAPTER_TARGETS:-[]}", "ALERT_NOTIFIER_TARGETS: ${ALERT_NOTIFIER_TARGETS:-[]}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 的可选 profile 解析契约缺失：${expected}`);
   for (const expected of ["parser.add_argument('--transport'", "parser.add_argument('--model'", "parser.add_argument('--avatar_id'", "parser.add_argument('--listenport'", "parser.add_argument('--max_session'", "parser.add_argument('--fps'", "parser.add_argument('--push_url'"]) if (!config.includes(expected)) errors.push(`锁定 LiveTalking 源码不再支持 Compose 所需参数：${expected}`);
   if (!rtmp.includes("sc.stream_server = self.push_url")) errors.push("锁定 LiveTalking 源码不再将 push_url 绑定到 RTMP 输出");
   if (!cosyVoice.includes("return StreamingResponse(generate_data(model_output))") || !cosyVoice.includes("tts_speech")) errors.push("锁定 CosyVoice FastAPI 不再输出原始语音 PCM 流");

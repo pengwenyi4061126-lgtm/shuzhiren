@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { spawn } from "node:child_process";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -71,6 +73,45 @@ async function observeOnce(probeMode) {
   }
 }
 
+async function observeReloadedTargets() {
+  const fixture = await startServer("healthy");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "shuzhiren-observer-targets-"));
+  const targetsFile = path.join(directory, "runtime-observer-targets.json");
+  const target = (runId) => [{ tenantId: "tenant_demo", runId, sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }];
+  await writeFile(targetsFile, JSON.stringify(target("run_file_before")));
+  const child = spawn(process.execPath, [observer], {
+    cwd: root,
+    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: "[]", RUNTIME_OBSERVER_TARGETS_FILE: targetsFile, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    await waitFor(() => fixture.samples.some((sample) => sample.runId === "run_file_before"), 5000);
+    await writeFile(targetsFile, "not-json");
+    await waitFor(async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
+        const health = await response.json();
+        return !response.ok && health.targetConfigHealthy === false;
+      } catch {
+        return false;
+      }
+    }, 5000);
+    await writeFile(targetsFile, JSON.stringify(target("run_file_after")));
+    await waitFor(() => fixture.samples.some((sample) => sample.runId === "run_file_after"), 5000);
+    const healthResponse = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
+    const health = await healthResponse.json();
+    assert.equal(healthResponse.ok, true);
+    assert.equal(health.targetConfigSource, "file");
+    assert.equal(health.targetConfigHealthy, true);
+    assert.equal(health.targetCount, 1);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+    await new Promise((resolve) => fixture.server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function waitFor(predicate, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
@@ -88,4 +129,6 @@ assert.deepEqual(silent, { tenantId: "tenant_demo", runId: "run_demo", outputCon
 const failed = await observeOnce("unavailable");
 assert.deepEqual(failed, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, audioActive: false, fallbackReady: false });
 
-console.log("PASS  runtime observer activity-audio and fail-closed paths");
+await observeReloadedTargets();
+
+console.log("PASS  runtime observer activity-audio, fail-closed, and target reload paths");
