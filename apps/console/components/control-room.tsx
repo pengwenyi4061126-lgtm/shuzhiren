@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, CalendarDays, ChartNoAxesCombined, Clapperboard, CircleStop, Clock3, FileText, LoaderCircle, MonitorPlay, Package, Pause, Play, Radio, RotateCcw, ShieldCheck, SquareStack, UserRoundCheck, Users, Volume2 } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { LiveCommand, LiveRun, LiveRunState } from "@/lib/domain";
 import type { RuntimeAlert, RuntimeTelemetry } from "@/lib/monitoring";
@@ -9,7 +10,18 @@ import { canTransition } from "@/lib/live-run";
 type Props = { initialRun: LiveRun; initialTelemetry: RuntimeTelemetry | null; initialAlerts: RuntimeAlert[] };
 type CommandResponse = { data: { command: LiveCommand; run: LiveRun; duplicate: boolean } };
 
-const navigation = [[MonitorPlay, "指挥台"], [CalendarDays, "场次"], [Clapperboard, "内容工坊"], [Package, "商品中心"], [ShieldCheck, "知识与策略"], [ChartNoAxesCombined, "数据中心"], [FileText, "审计中心"], [SquareStack, "系统设置"]] as const;
+type NavigationItem = { icon: typeof MonitorPlay; label: string; href?: string };
+
+const navigation: NavigationItem[] = [
+  { icon: MonitorPlay, label: "指挥台", href: "/" },
+  { icon: CalendarDays, label: "场次" },
+  { icon: Clapperboard, label: "内容工坊", href: "/assets" },
+  { icon: Package, label: "商品中心", href: "/products" },
+  { icon: ShieldCheck, label: "知识与策略" },
+  { icon: ChartNoAxesCombined, label: "运行监控", href: "/monitoring" },
+  { icon: FileText, label: "审计中心", href: "/audit" },
+  { icon: SquareStack, label: "渠道设置", href: "/channels" }
+];
 const stateLabel: Record<LiveRunState, string> = { DRAFT: "草稿", REVIEW: "审核中", APPROVED: "已批准", PREFLIGHT: "预检", ARMED: "待开播", LIVE: "直播中", DEGRADED: "降级运行", ENDED: "已结束", ARCHIVED: "已归档" };
 
 export function ControlRoom({ initialRun, initialTelemetry, initialAlerts }: Props) {
@@ -45,7 +57,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts }: Pro
   }
 
   return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><span className="brand-mark"><Radio size={16} /></span><span>Shuzhiren</span></div><nav aria-label="工作区">{navigation.map(([Icon, label]) => <button className={activeNav === label ? "nav-item active" : "nav-item"} key={label} onClick={() => setActiveNav(label)} type="button"><Icon size={17} />{label}</button>)}</nav><div className="sidebar-footer"><Users size={15} /> 运营组<br /><span>华东直播间</span></div></aside>
+    <aside className="sidebar"><div className="brand"><span className="brand-mark"><Radio size={16} /></span><span>Shuzhiren</span></div><nav aria-label="工作区">{navigation.map(({ icon: Icon, label, href }) => href ? <Link className={activeNav === label ? "nav-item active" : "nav-item"} href={href} key={label} onClick={() => setActiveNav(label)}><Icon size={17} />{label}</Link> : <button className={activeNav === label ? "nav-item active" : "nav-item"} key={label} onClick={() => setActiveNav(label)} type="button"><Icon size={17} />{label}</button>)}</nav><div className="sidebar-footer"><Users size={15} /> 运营组<br /><span>华东直播间</span></div></aside>
     <main className="main-content">
       <header className="topbar"><div><div className="eyebrow">{activeNav}</div><h1>{run.showName}</h1></div><div className="topbar-status"><span className={`state state-${run.state.toLowerCase()}`}>{stateLabel[run.state]} · {elapsed}</span><span className="trace">{run.traceId}</span></div></header>
       <section className="workspace" aria-label="直播指挥台">
