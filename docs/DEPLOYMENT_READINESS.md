@@ -14,7 +14,7 @@
 
 ## 发布判定
 
-1. 先运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --alert-notifier /srv/shuzhiren/alert-notifier.env`。
+1. 先运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --channel-adapter /srv/shuzhiren/channel-adapter.env --alert-notifier /srv/shuzhiren/alert-notifier.env --require-output-probe`。
 2. 主机、权重、账号和密钥就绪后，执行内部试播、故障演练与独立输出探针验证。
 3. 只有 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json` 通过，且所有外部项有可审计证据，才允许真实小规模开播。
 
