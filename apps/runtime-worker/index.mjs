@@ -8,6 +8,9 @@ const pollMs = positiveInt(process.env.OUTBOX_POLL_MS, 1000);
 const schedulerPollMs = positiveInt(process.env.SCHEDULER_POLL_MS, 1000);
 const schedulerBatchSize = positiveInt(process.env.SCHEDULER_BATCH_SIZE, 10);
 const maxAttempts = positiveInt(process.env.OUTBOX_MAX_ATTEMPTS, 6);
+const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
+const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
+const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.OUTBOX_RETRY_MAX_MS, 60000));
 const pool = new Pool({ connectionString: databaseUrl, max: 4 });
 
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
@@ -22,17 +25,18 @@ async function claimEvent() {
       with candidate as (
         select id
         from outbox_events
-        where state in ('pending', 'failed') and available_at <= now() and attempts < $1
-        order by created_at
+        where ((state in ('pending', 'failed') and available_at <= now()) or (state = 'delivering' and available_at <= now()))
+          and attempts < $1
+        order by available_at, created_at
         for update skip locked
         limit 1
       )
       update outbox_events event
-      set state = 'delivering', attempts = event.attempts + 1, last_error = null
+      set state = 'delivering', attempts = event.attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second')
       from candidate
       where event.id = candidate.id
       returning event.id, event.tenant_id, event.event_type, event.payload, event.attempts
-    `, [maxAttempts]);
+    `, [maxAttempts, leaseSeconds]);
     await client.query("commit");
     return result.rows[0] ?? null;
   } catch (error) {
@@ -70,8 +74,16 @@ async function scheduleDueRun() {
   } finally { client.release(); }
 }
 
-async function mark(id, state, lastError = null) {
-  await pool.query("update outbox_events set state = $2, delivered_at = case when $2 = 'delivered' then now() else delivered_at end, last_error = $3 where id = $1", [id, state, lastError]);
+function retryDelayMs(attempts) { return Math.min(retryMaxMs, retryBaseMs * (2 ** Math.max(0, attempts - 1))); }
+
+async function markDelivered(id) {
+  await pool.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1", [id]);
+}
+
+async function markFailed(id, attempts, lastError) {
+  const retryAfterMs = retryDelayMs(attempts);
+  await pool.query("update outbox_events set state = 'failed', available_at = now() + ($3 * interval '1 millisecond'), last_error = $2 where id = $1", [id, lastError, retryAfterMs]);
+  return { exhausted: attempts >= maxAttempts, retryAfterMs };
 }
 
 async function deliver(event) {
@@ -97,19 +109,19 @@ async function tick() {
   if (!event) return;
   try {
     await deliver(event);
-    await mark(event.id, "delivered");
+    await markDelivered(event.id);
     log("outbox.delivered", { eventId: event.id, attempts: event.attempts });
   } catch (error) {
     const message = error instanceof Error ? error.message : "runtime_dispatch_failed";
-    await mark(event.id, "failed", message);
-    log("outbox.failed", { eventId: event.id, attempts: event.attempts, error: message });
+    const retry = await markFailed(event.id, event.attempts, message);
+    log(retry.exhausted ? "outbox.exhausted" : "outbox.failed", { eventId: event.id, attempts: event.attempts, retryAfterMs: retry.retryAfterMs, error: message });
   }
 }
 
 let stopping = false;
 let nextSchedulerPollAt = 0;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, maxAttempts });
+log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs });
 while (!stopping) {
   try { await tick(); } catch (error) { log("worker.error", { error: error instanceof Error ? error.message : "unknown" }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());

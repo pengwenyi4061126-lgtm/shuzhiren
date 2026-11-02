@@ -37,6 +37,9 @@ services:
       SCHEDULER_POLL_MS: 1000
       SCHEDULER_BATCH_SIZE: 10
       OUTBOX_MAX_ATTEMPTS: 6
+      OUTBOX_LEASE_SECONDS: ${OUTBOX_LEASE_SECONDS:-60}
+      OUTBOX_RETRY_BASE_MS: ${OUTBOX_RETRY_BASE_MS:-1000}
+      OUTBOX_RETRY_MAX_MS: ${OUTBOX_RETRY_MAX_MS:-60000}
     depends_on:
       runtime-gateway:
         condition: service_healthy

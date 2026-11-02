@@ -58,6 +58,6 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 - 每个 `POST /v1/media` 必须带来自 outbox 的 `command_id`。Gateway 在有界 TTL 内对相同命令返回先前结果，拒绝同一 ID 的不同载荷，避免网络重试重复执行录制、切换或停止动作；数据库 outbox 仍保存长期投递状态和审计记录。
 - 每个 `live_run` 必须先绑定 LiveTalking 创建时返回的真实 `sessionid`；媒体 outbox 将该绑定值作为下游会话参数，不能将控制面场次 UUID 直接当作 LiveTalking 会话 ID。
 
-媒体命令当前先写入开发态 outbox，再由投递接口发送；状态包含 `pending`、`delivering`、`delivered` 与 `failed`，重复投递保持幂等。生产数据库迁移已包含 `outbox_events`，租机前要将同一 Repository 接到 PostgreSQL，并由独立 Worker 轮询或消费队列。不能把网络调用塞进数据库事务或在状态转换后静默失败。
+媒体命令当前先写入开发态 outbox，再由投递接口发送；状态包含 `pending`、`delivering`、`delivered` 与 `failed`，重复投递保持幂等。生产 worker 将 `available_at` 作为领取租约：崩溃后超过 `OUTBOX_LEASE_SECONDS` 的 `delivering` 事件可被其他 worker 重领；失败按 `OUTBOX_RETRY_BASE_MS` 到 `OUTBOX_RETRY_MAX_MS` 指数退避，达到 `OUTBOX_MAX_ATTEMPTS` 后保留为 `failed` 并记录 `outbox.exhausted`。不能把网络调用塞进数据库事务或在状态转换后静默失败。
 
 `apps/runtime-worker` 是生产投递器：它用 `FOR UPDATE SKIP LOCKED` 从 PostgreSQL 领取待投递事件，调用 Gateway，并记录成功/失败和尝试次数。Worker 使用部署侧数据库连接，仅运行在私有网络，不接受浏览器请求。
