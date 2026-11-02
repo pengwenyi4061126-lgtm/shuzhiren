@@ -106,12 +106,13 @@ try {
   const staleVersion = await staleVersionResponse.json();
   const staleApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${staleVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(staleApproval.status, 409, "stale product source facts must not be approved");
-  const freshFacts = { ...staleFacts, sourceRef: "pim://integration/fresh", sourceSyncedAt: new Date().toISOString(), validFrom: new Date().toISOString() };
+  const freshFacts = { ...staleFacts, unitCostCent: 3500, sourceRef: "pim://integration/fresh", sourceSyncedAt: new Date().toISOString(), validFrom: new Date().toISOString() };
   const freshVersionResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions`, { method: "POST", headers: requestHeaders, body: JSON.stringify(freshFacts) });
   assert.equal(freshVersionResponse.status, 201);
   const freshVersion = await freshVersionResponse.json();
   const freshApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${freshVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(freshApproval.status, 200, "fresh product source facts should be approvable");
+  await client.query("update live_runs set product_version_id = $2 where id = $1", [recoverRunId, freshVersion.data.id]);
   const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();
@@ -239,7 +240,7 @@ try {
   });
   await waitFor(async () => (await fetch(`http://127.0.0.1:${adapterPort}/healthz`)).ok, 10_000, "channel adapter startup");
   const adapterEventId = "adapter-paid-1";
-  const adapterPayload = JSON.stringify({ kind: "commerce", runId: recoverRunId, eventType: "order_paid", orderReference: "adapter-order-1", amountCents: 9900 });
+  const adapterPayload = JSON.stringify({ kind: "commerce", runId: recoverRunId, eventType: "order_paid", orderReference: "adapter-order-1", amountCents: 9900, quantity: 1 });
   const adapterTimestamp = String(Date.now());
   const adapterSignature = `sha256=${createHmac("sha256", adapterSigningSecret).update(`${adapterTimestamp}.${adapterPayload}`).digest("hex")}`;
   const adapterHeaders = { "content-type": "application/json", "x-shuzhiren-event-id": adapterEventId, "x-shuzhiren-timestamp": adapterTimestamp, "x-shuzhiren-signature": adapterSignature };
@@ -254,7 +255,7 @@ try {
   for (const event of [
     { eventId: "view-1", eventType: "view" },
     { eventId: "cart-1", eventType: "add_to_cart" },
-    { eventId: "paid-1", eventType: "order_paid", orderReference: "order-1", amountCents: 19900 },
+    { eventId: "paid-1", eventType: "order_paid", orderReference: "order-1", amountCents: 19900, quantity: 2 },
     { eventId: "refund-1", eventType: "refund", orderReference: "order-1", amountCents: 5000 }
   ]) {
     const response = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-commerce`, {
@@ -267,13 +268,13 @@ try {
   const duplicateCommerce = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-commerce`, {
     method: "POST",
     headers: commerceHeaders,
-    body: JSON.stringify({ tenantId, runId: recoverRunId, channelConnectionId: recoverRun.channelId, eventId: "paid-1", eventType: "order_paid", orderReference: "order-1", amountCents: 19900 })
+    body: JSON.stringify({ tenantId, runId: recoverRunId, channelConnectionId: recoverRun.channelId, eventId: "paid-1", eventType: "order_paid", orderReference: "order-1", amountCents: 19900, quantity: 2 })
   });
   assert.equal(duplicateCommerce.status, 200, "identical commerce retries must be idempotent");
   const summaryResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commerce-summary`, { headers: requestHeaders });
   assert.equal(summaryResponse.status, 200);
   const summary = await summaryResponse.json();
-  assert.deepEqual(summary.data, { runId: recoverRunId, views: 1, productClicks: 0, addToCart: 1, paidOrders: 2, refunds: 1, grossPaidCents: 29800, refundedCents: 5000, netPaidCents: 24800, viewToCartRate: 1, viewToPaidRate: 2, refundRate: 0.5 });
+  assert.deepEqual(summary.data, { runId: recoverRunId, views: 1, productClicks: 0, addToCart: 1, paidOrders: 2, paidUnits: 3, refunds: 1, grossPaidCents: 29800, refundedCents: 5000, netPaidCents: 24800, unitCostCents: 3500, productCostCents: 10500, contributionMarginCents: 14300, viewToCartRate: 1, viewToPaidRate: 2, refundRate: 0.5 });
   const commerceAudit = await client.query("select event_type from audit_events where resource_type = 'commerce_event' order by occurred_at");
   assert.deepEqual(commerceAudit.rows.map((row) => row.event_type), ["commerce_event.order_paid", "commerce_event.order_paid", "commerce_event.refund"]);
 

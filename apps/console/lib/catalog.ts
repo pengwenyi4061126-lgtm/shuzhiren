@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
-export type ProductFacts = { priceCent: number; stock: number; highlights: string[]; faq: string[]; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil?: string };
+export type ProductFacts = { priceCent: number; unitCostCent?: number; stock: number; highlights: string[]; faq: string[]; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil?: string };
 export type ProductVersion = { id: string; revision: number; status: "draft" | "approved" | "rejected"; facts: ProductFacts; createdAt: string; approvedAt?: string };
 export type Product = { id: string; tenantId: string; externalSku: string; name: string; versions: ProductVersion[] };
 
@@ -28,7 +28,7 @@ function catalog(): Catalog {
       id: "product_a102", tenantId: "tenant_demo", externalSku: "A-102", name: "氨基酸洁面慕斯",
       versions: [{
         id: "pv_a102_v1", revision: 1, status: "approved",
-        facts: { priceCent: 9900, stock: 286, highlights: ["氨基酸表活", "按压泡沫"], faq: ["赠旅行装三件套", "48 小时内发货"], sourceRef: "pim://demo/A-102/revision-18", sourceSyncedAt: "2026-11-01T08:00:00.000Z", validFrom: "2026-11-01T08:00:00.000Z", validUntil: "2026-11-03T08:00:00.000Z" },
+        facts: { priceCent: 9900, unitCostCent: 3200, stock: 286, highlights: ["氨基酸表活", "按压泡沫"], faq: ["赠旅行装三件套", "48 小时内发货"], sourceRef: "pim://demo/A-102/revision-18", sourceSyncedAt: "2026-11-01T08:00:00.000Z", validFrom: "2026-11-01T08:00:00.000Z", validUntil: "2026-11-03T08:00:00.000Z" },
         createdAt: "2026-11-01T08:00:00.000Z", approvedAt: "2026-11-01T08:30:00.000Z"
       }]
     }]])

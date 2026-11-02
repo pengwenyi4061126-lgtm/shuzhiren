@@ -29,7 +29,8 @@ function isBody(value: unknown): value is Body {
   if (!body.facts || typeof body.facts !== "object") return false;
   const facts = body.facts as Record<string, unknown>;
   const date = (key: "sourceSyncedAt" | "validFrom" | "validUntil") => facts[key] === undefined || (typeof facts[key] === "string" && !Number.isNaN(Date.parse(facts[key])));
-  return Number.isSafeInteger(facts.priceCent) && (facts.priceCent as number) >= 0 && Number.isSafeInteger(facts.stock) && (facts.stock as number) >= 0
+  const unitCost = facts.unitCostCent === undefined || (Number.isSafeInteger(facts.unitCostCent) && (facts.unitCostCent as number) >= 0);
+  return Number.isSafeInteger(facts.priceCent) && (facts.priceCent as number) >= 0 && unitCost && Number.isSafeInteger(facts.stock) && (facts.stock as number) >= 0
     && Array.isArray(facts.highlights) && Array.isArray(facts.faq) && facts.highlights.every((item) => typeof item === "string" && item.length <= 500) && facts.faq.every((item) => typeof item === "string" && item.length <= 500)
     && typeof facts.sourceRef === "string" && facts.sourceRef.trim().length > 0 && facts.sourceRef.length <= 500 && typeof facts.sourceSyncedAt === "string" && typeof facts.validFrom === "string"
     && date("sourceSyncedAt") && date("validFrom") && date("validUntil") && (facts.validUntil === undefined || Date.parse(facts.validUntil as string) > Date.parse(facts.validFrom));

@@ -37,7 +37,7 @@ const server = http.createServer(async (request, response) => {
     const token = event.kind === "interaction" ? target.interactionToken : target.commerceToken;
     const body = event.kind === "interaction"
       ? { tenantId: target.tenantId, channelConnectionId: target.channelConnectionId, eventId, runId: event.runId, question: event.question }
-      : { tenantId: target.tenantId, channelConnectionId: target.channelConnectionId, eventId, runId: event.runId, eventType: event.eventType, occurredAt: event.occurredAt, orderReference: event.orderReference, amountCents: event.amountCents };
+      : { tenantId: target.tenantId, channelConnectionId: target.channelConnectionId, eventId, runId: event.runId, eventType: event.eventType, occurredAt: event.occurredAt, orderReference: event.orderReference, amountCents: event.amountCents, quantity: event.quantity };
     const forwarded = await fetch(new URL(downstream, controlPlaneUrl), { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(8_000) });
     if (!forwarded.ok) return json(response, 502, { error: "control_plane_rejected", status: forwarded.status });
     await markDelivered(target, eventId);

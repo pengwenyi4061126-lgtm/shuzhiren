@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     if (run.channelConnectionId !== channel.id) return Response.json({ error: "channel_not_bound_to_live_run" }, { status: 409 });
     if (!["LIVE", "DEGRADED", "ENDED"].includes(run.state)) return Response.json({ error: "live_run_not_accepting_commerce_events" }, { status: 409 });
     if (channel.status !== "connected" || !channel.capability.supportsWebhook) return Response.json({ error: "channel_not_enabled_for_commerce_events" }, { status: 409 });
-    const event = await createChannelCommerceEvent(context, { runId: run.id, channelConnectionId: channel.id, externalEventId: body.eventId, eventType: body.eventType, occurredAt: body.occurredAt, orderReference: body.orderReference, amountCents: body.amountCents });
+    const event = await createChannelCommerceEvent(context, { runId: run.id, channelConnectionId: channel.id, externalEventId: body.eventId, eventType: body.eventType, occurredAt: body.occurredAt, orderReference: body.orderReference, amountCents: body.amountCents, quantity: body.quantity });
     return Response.json({ data: event }, { status: event.duplicate ? 200 : 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "channel_commerce_rejected" }, { status: error.status });
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
   }
 }
 
-type ChannelCommerceBody = { tenantId: string; runId: string; channelConnectionId: string; eventId: string; eventType: CommerceEventType; occurredAt?: string; orderReference?: string; amountCents?: number };
+type ChannelCommerceBody = { tenantId: string; runId: string; channelConnectionId: string; eventId: string; eventType: CommerceEventType; occurredAt?: string; orderReference?: string; amountCents?: number; quantity?: number };
 
 function isChannelCommerceEvent(value: unknown): value is ChannelCommerceBody {
   if (!value || typeof value !== "object") return false;
@@ -36,6 +36,9 @@ function isChannelCommerceEvent(value: unknown): value is ChannelCommerceBody {
   if (body.occurredAt !== undefined && (typeof body.occurredAt !== "string" || Number.isNaN(Date.parse(body.occurredAt)))) return false;
   if (body.orderReference !== undefined && (typeof body.orderReference !== "string" || body.orderReference.length > 200)) return false;
   if (body.amountCents !== undefined && (!Number.isSafeInteger(body.amountCents) || (body.amountCents as number) < 0 || (body.amountCents as number) > 1_000_000_000_000)) return false;
+  if (body.quantity !== undefined && (!Number.isSafeInteger(body.quantity) || (body.quantity as number) < 0 || (body.quantity as number) > 100000)) return false;
   const amount = (body.amountCents as number | undefined) ?? 0;
-  return ["order_paid", "refund"].includes(body.eventType as string) ? amount > 0 : amount === 0;
+  const quantity = (body.quantity as number | undefined) ?? (body.eventType === "order_paid" ? 1 : 0);
+  if (["order_paid", "refund"].includes(body.eventType as string)) return amount > 0 && (body.eventType !== "order_paid" || quantity > 0);
+  return amount === 0;
 }

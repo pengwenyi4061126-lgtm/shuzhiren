@@ -43,9 +43,12 @@ export function parseNormalizedEvent(value) {
     if (event.occurredAt !== undefined && (typeof event.occurredAt !== "string" || Number.isNaN(Date.parse(event.occurredAt)))) throw new Error("Invalid occurredAt");
     if (event.orderReference !== undefined && (typeof event.orderReference !== "string" || event.orderReference.length > 200)) throw new Error("Invalid orderReference");
     const amountCents = event.amountCents ?? 0;
+    const quantity = event.quantity ?? (event.eventType === "order_paid" ? 1 : 0);
     if (!Number.isSafeInteger(amountCents) || amountCents < 0 || amountCents > 1_000_000_000_000) throw new Error("Invalid amountCents");
+    if (!Number.isSafeInteger(quantity) || quantity < 0 || quantity > 100000) throw new Error("Invalid quantity");
     if (["order_paid", "refund"].includes(event.eventType) ? amountCents <= 0 : amountCents !== 0) throw new Error("Amount does not match commerce event type");
-    return { kind: "commerce", runId: event.runId, eventType: event.eventType, occurredAt: event.occurredAt, orderReference: event.orderReference, amountCents };
+    if (event.eventType === "order_paid" && quantity === 0) throw new Error("Paid order quantity must be positive");
+    return { kind: "commerce", runId: event.runId, eventType: event.eventType, occurredAt: event.occurredAt, orderReference: event.orderReference, amountCents, quantity };
   }
   throw new Error("Unsupported webhook kind");
 }
