@@ -92,6 +92,7 @@ const gateway = env({
   MODEL_VOLUME_PATH: "/srv/models",
   AVATAR_VOLUME_PATH: "/srv/avatars",
   RECORDINGS_VOLUME_PATH: "/srv/recordings",
+  COSYVOICE_REQUIRED: "true",
   COSYVOICE_SAMPLE_RATE: "24000",
   COSYVOICE_MODEL_DIR: "/opt/CosyVoice/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B-2512",
   STREAM_RTMP_URL: "rtmp://ingest.internal/live",
@@ -129,21 +130,27 @@ const files = {
   alert: path.join(fixtureDirectory, "alert.env")
 };
 
-function check() {
-  return spawnSync(process.execPath, [checker, "--control", files.control, "--runtime", files.runtime, "--gateway", files.gateway, "--channel-adapter", files.channel, "--alert-notifier", files.alert, "--source-root", root, "--require-output-probe"], { cwd: root, encoding: "utf8" });
+function check(options = []) {
+  return spawnSync(process.execPath, [checker, "--control", files.control, "--runtime", files.runtime, "--gateway", files.gateway, "--channel-adapter", files.channel, "--alert-notifier", files.alert, "--source-root", root, "--require-output-probe", ...options], { cwd: root, encoding: "utf8" });
 }
 
 try {
   const validProbeTarget = [{ id: "fixture", streamUrl: "rtmp://relay.internal/live/fixture", avSyncProbeUrl: "https://av-sync.internal/fixture", expectedFps: 25, expectedWidth: 1280, expectedHeight: 720 }];
   await Promise.all([writeFile(files.control, control), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
-  const valid = check();
+  const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  await writeFile(files.gateway, gateway.replace("COSYVOICE_REQUIRED=true", "COSYVOICE_REQUIRED=false"));
+  const missingCosyVoice = check(["--require-cosyvoice"]);
+  assert.notEqual(missingCosyVoice.status, 0, "a realtime speech deployment must require CosyVoice health");
+  assert.match(missingCosyVoice.stderr, /COSYVOICE_REQUIRED/, "missing CosyVoice requirement must identify the gateway gate");
+  await writeFile(files.gateway, gateway);
 
   await writeFile(files.runtime, runtime([{ ...validProbeTarget[0], expectedHeight: undefined }]));
   const invalid = check();
   assert.notEqual(invalid.status, 0, "output probe with only expectedWidth must be rejected");
   assert.match(invalid.stderr, /OUTPUT_PROBE_TARGETS/, "invalid output probe error must identify the deployment gate");
-  console.log("PASS  deployment configuration validates required output-probe targets");
+  console.log("PASS  deployment configuration validates required output-probe and CosyVoice targets");
 } finally {
   await rm(fixtureDirectory, { recursive: true, force: true });
 }
