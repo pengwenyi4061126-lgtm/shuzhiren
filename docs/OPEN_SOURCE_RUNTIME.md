@@ -64,7 +64,7 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 
 媒体与语音命令当前先写入开发态 outbox，再由投递接口发送；状态包含 `pending`、`delivering`、`delivered` 与 `failed`，重复投递保持幂等。`POST /api/v1/live-runs/:runId/speech-dispatches` 仅允许 `admin`/`operator` 发送 `{ question, idempotencyKey }`：控制面只会用冻结的已批准商品事实生成 `ready` 文案；高风险问题返回人工接管而不会创建 outbox。`idempotencyKey` 是安全 ID（UUID 可用）且同时作为语音命令 ID；同一租户重复提交会返回既有事件，而非再次播报。`speech.dispatch` 载荷必须包含运行时会话、命令 ID、播报文本、已批准声线和冻结商品版本证据；worker 只把它投给 Gateway 的 CosyVoice 链路。排期开播和手动 `START` 都不会在创建 outbox 时直接标为 `LIVE`：`live_runs.scheduled_start_event_id` 绑定唯一待确认的启动事件，Gateway 成功确认后才切换状态；失败会保留 `ARMED` 与失败事件，供场控重试，避免“控制台显示已开播而推流没有启动”。生产 worker 将 `available_at` 作为领取租约：崩溃后超过 `OUTBOX_LEASE_SECONDS` 的 `delivering` 事件可被其他 worker 重领；失败按 `OUTBOX_RETRY_BASE_MS` 到 `OUTBOX_RETRY_MAX_MS` 指数退避，达到 `OUTBOX_MAX_ATTEMPTS` 后保留为 `failed` 并记录 `outbox.exhausted`。不能把网络调用塞进数据库事务或在状态转换后静默失败。
 
-`apps/runtime-worker` 是生产投递器：它只从不承载业务数据的 `tenants` 表读取租户 ID，然后在每个领取、排期和状态回写事务中设置 `app.tenant_id`，再使用 `FOR UPDATE SKIP LOCKED` 处理该租户的待投递事件。轮询游标会在租户间轮转，避免一个租户的积压长期饿死其他租户；业务表仍受强制 RLS 保护，worker 不需要也不得拥有 `BYPASSRLS`。它调用 Gateway，并记录成功/失败和尝试次数，仅运行在私有网络，不接受浏览器请求。
+`apps/runtime-worker` 是生产投递器：它只从不承载业务数据的 `tenants` 表读取租户 ID，然后在每个领取、排期、健康看门狗和状态回写事务中设置 `app.tenant_id`，再使用 `FOR UPDATE SKIP LOCKED` 处理该租户的待投递事件。轮询游标会在租户间轮转，避免一个租户的积压长期饿死其他租户；业务表仍受强制 RLS 保护，worker 不需要也不得拥有 `BYPASSRLS`。健康看门狗每 `RUNTIME_WATCHDOG_POLL_MS` 扫描 LIVE 场次，最后遥测超过 `RUNTIME_TELEMETRY_MAX_AGE_SECONDS` 时只执行一次原子降级：打开 `runtime_telemetry_stale` 告警、写审计、并将切备用或人工接管命令写入 outbox。新遥测会关闭该告警，但不会自动把场次恢复为 LIVE。它调用 Gateway，并记录成功/失败和尝试次数，仅运行在私有网络，不接受浏览器请求。
 
 控制台的“投递队列”只展示状态、尝试次数和最后错误，并提供场控确认后的单条“立即投递”。它不是替代 worker 的常规通道：有实际 Gateway 时才可验证人工恢复，重复请求会由 Gateway 的 `command_id` 幂等逻辑折叠。
 

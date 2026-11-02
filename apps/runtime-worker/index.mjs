@@ -7,6 +7,9 @@ const gatewayToken = required("RUNTIME_SHARED_TOKEN");
 const pollMs = positiveInt(process.env.OUTBOX_POLL_MS, 1000);
 const schedulerPollMs = positiveInt(process.env.SCHEDULER_POLL_MS, 1000);
 const schedulerBatchSize = positiveInt(process.env.SCHEDULER_BATCH_SIZE, 10);
+const watchdogPollMs = positiveInt(process.env.RUNTIME_WATCHDOG_POLL_MS, 5000);
+const watchdogBatchSize = positiveInt(process.env.RUNTIME_WATCHDOG_BATCH_SIZE, 10);
+const maxTelemetryAgeSeconds = positiveInt(process.env.RUNTIME_TELEMETRY_MAX_AGE_SECONDS, 60);
 const maxAttempts = positiveInt(process.env.OUTBOX_MAX_ATTEMPTS, 6);
 const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
 const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
@@ -112,6 +115,75 @@ async function scheduleDueRun() {
   return null;
 }
 
+async function degradeStaleLiveRun() {
+  const ids = await tenantIds();
+  const ordered = tenantOrder(ids, nextWatchdogTenantCursor);
+  for (const tenantId of ordered) {
+    const degraded = await inTenantTransaction(tenantId, async (client) => {
+      const stale = await client.query(`
+        select run.id, run.tenant_id, run.trace_id, run.runtime_session_id, sample.sampled_at, sample.fallback_ready
+        from live_runs run
+        left join lateral (
+          select sampled_at, fallback_ready
+          from runtime_health_samples
+          where live_run_id = run.id
+          order by sampled_at desc
+          limit 1
+        ) sample on true
+        where run.state = 'LIVE'
+          and (sample.sampled_at is null or sample.sampled_at < now() - ($1 * interval '1 second'))
+        order by sample.sampled_at nulls first, run.updated_at
+        for update of run skip locked
+        limit 1
+      `, [maxTelemetryAgeSeconds]);
+      const run = stale.rows[0];
+      if (!run) return null;
+
+      await client.query("update live_runs set state = 'DEGRADED', updated_at = now() where id = $1 and state = 'LIVE'", [run.id]);
+      const fallbackReady = run.fallback_ready === true;
+      const action = fallbackReady ? "switch_to_fallback" : "switch_to_human";
+      let eventId = null;
+      if (run.runtime_session_id) {
+        const command = {
+          id: `media_${crypto.randomUUID()}`,
+          runId: run.id,
+          type: action,
+          issuedAt: new Date().toISOString(),
+          traceId: run.trace_id,
+          payload: { controlAction: "RUNTIME_TELEMETRY_STALE", reasons: "runtime_telemetry_stale" }
+        };
+        const event = await client.query(`
+          insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
+          values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)
+          returning id
+        `, [run.tenant_id, run.id, JSON.stringify({ sessionId: run.runtime_session_id, command })]);
+        eventId = event.rows[0].id;
+      }
+
+      const existingAlert = await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale' and status = 'open' for update", [run.id]);
+      if (!existingAlert.rows[0]) {
+        await client.query(
+          "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'runtime_telemetry_stale', $3, 'open')",
+          [run.tenant_id, run.id, `运行时遥测超过 ${maxTelemetryAgeSeconds} 秒未更新`]
+        );
+      }
+      const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-watchdog', '运行时健康看门狗', 'operator'::membership_role) as id", [run.tenant_id]);
+      await client.query(
+        `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+         values ($1, $2, 'runtime_guard.degraded', 'live_run', $3::uuid, $3, $4::jsonb)`,
+        [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ reason: "runtime_telemetry_stale", lastSampledAt: run.sampled_at ? new Date(run.sampled_at).toISOString() : null, fallbackReady, action, outboxEventId: eventId })]
+      );
+      return { runId: run.id, eventId, action, lastSampledAt: run.sampled_at ? new Date(run.sampled_at).toISOString() : null };
+    });
+    if (degraded) {
+      nextWatchdogTenantCursor = (ids.indexOf(tenantId) + 1) % ids.length;
+      return degraded;
+    }
+  }
+  if (ids.length) nextWatchdogTenantCursor = (nextWatchdogTenantCursor + 1) % ids.length;
+  return null;
+}
+
 function retryDelayMs(attempts) { return Math.min(retryMaxMs, retryBaseMs * (2 ** Math.max(0, attempts - 1))); }
 
 async function markDelivered(event) {
@@ -174,6 +246,16 @@ async function tick() {
     }
     nextSchedulerPollAt = Date.now() + schedulerPollMs;
   }
+  if (now >= nextWatchdogPollAt) {
+    let degradedCount = 0;
+    while (degradedCount < watchdogBatchSize) {
+      const degraded = await degradeStaleLiveRun();
+      if (!degraded) break;
+      log("runtime.watchdog.degraded", degraded);
+      degradedCount += 1;
+    }
+    nextWatchdogPollAt = Date.now() + watchdogPollMs;
+  }
   const event = await claimEvent();
   if (!event) return;
   try {
@@ -191,12 +273,15 @@ let stopping = false;
 let nextSchedulerPollAt = 0;
 let nextOutboxTenantCursor = 0;
 let nextSchedulerTenantCursor = 0;
+let nextWatchdogPollAt = 0;
+let nextWatchdogTenantCursor = 0;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs });
+log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs });
 while (!stopping) {
   try { await tick(); } catch (error) { log("worker.error", { error: error instanceof Error ? error.message : "unknown" }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());
-  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs)));
+  const watchdogWaitMs = Math.max(1, nextWatchdogPollAt - Date.now());
+  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs, watchdogWaitMs)));
 }
 await pool.end();
 log("worker.stopped");
