@@ -6,7 +6,7 @@
 
 交付：
 
-- Linux/Docker/CUDA 环境检查清单。
+- Linux/Docker/CUDA 环境检查清单与 `scripts/check-runtime-host.sh` 的可执行主机预检。
 - LiveTalking、MuseTalk、CosyVoice 的固定版本清单。
 - 授权形象素材的本地预览。
 - 测试 RTMP 输出、健康检查和 4 小时连续运行报告。
