@@ -11,17 +11,18 @@
 
 ## 2. 部署前配置
 
-1. 从 `config/*.example.env` 复制三份文件到服务器私有目录，填入真实值。
-2. 控制面使用 `NODE_ENV=production`、`CONTROL_PLANE_DEMO_MODE=false`，并配置 OIDC issuer、audience、JWKS 和 PostgreSQL。浏览器同源调用可以使用 `OIDC_ACCESS_TOKEN_COOKIE`（默认 `shuzhiren_access_token`）承载短期 access token；该 cookie 必须由登录网关以 `HttpOnly`、`Secure`、`SameSite=Lax` 或更严格的属性签发，令牌本身不得写入前端存储。生产 Proxy 会在进入 API handler 前校验令牌租户和角色，包含按动作区分的生命周期权限；无权令牌必须收到 `403 insufficient_permission`，不能依赖前端隐藏按钮。Cookie 身份的写操作还必须携带同源或 `OIDC_ALLOWED_ORIGINS` 白名单中的 `Origin`，否则返回 `403 csrf_origin_rejected`；部署在反向代理后时应显式填写公开控制台域名白名单。
-3. `RUNTIME_SHARED_TOKEN` 必须在运行时与 Gateway 中完全一致；`RUNTIME_TELEMETRY_TOKEN` 只给运行时上报控制面。
-4. 生产单卡保持 `LIVE_MAX_CONCURRENT_AVATARS=1`、`LIVE_ALLOW_LLM_FREEFORM=false`、高风险问题人工接管和 AI 标识开启。
-5. 固定 `runtime/open-source.lock.json` 中的提交；模型权重的许可证、人物和声音授权另行登记。
-6. 在 Gateway 环境中配置 `PROGRAM_AUDIOTYPE`、`FALLBACK_AUDIOTYPE` 与 `HUMAN_HANDOFF_AUDIOTYPE`，并在 LiveTalking 的已批准 Avatar 包中逐项验证动作含义；不能将默认索引当作真实人接管或备用节目。
-7. LiveTalking 建立会话后，将返回的 `sessionid` 通过 `PUT /api/v1/live-runs/{runId}/runtime-session` 绑定到场次；没有绑定运行时会话的场次不得接受媒体控制命令。
-8. runtime worker 会按 `SCHEDULER_POLL_MS` 独立轮询已到排期时间的 `ARMED` 场次。每个场次先在独立数据库事务中创建唯一的 `start_program` outbox 并绑定到场次；只有 Gateway 确认该命令成功后，worker（或场控的单条恢复投递）才将场次切换为 `LIVE`。失败事件会保留为 `failed` 供重试，不会伪造“直播中”，也不会重复创建定时开播命令。每一轮最多领取 `SCHEDULER_BATCH_SIZE` 个，它不会自动武装场次，也不会跳过预检。
-9. 渠道连接只能使用服务端注册的 Adapter 和 `kms://` 或 `secret://` 密钥引用。每次标记为 `connected`、`degraded` 或 `disabled` 都必须记录验证报告/工单引用；开播预检拒绝超过 24 小时的渠道验证。`generic-rtmp` 只证明受控推流通道，不代表已经完成平台 OAuth、评论、商品挂车或 Webhook 集成。
-10. `audit_events` 在数据库层是 append-only：运行时账号不能更新或删除审计记录。用户注销、保留期或隐私请求必须走独立的合规数据处理流程，不能用普通业务 SQL 改写历史事件。
-11. 租户业务表均启用并强制 PostgreSQL RLS。即使部署时应用数据库账号是表所有者，也必须在每个事务内设置 `app.tenant_id`；禁止为应用账号授予 `BYPASSRLS`。runtime worker 只能无范围读取 `tenants.id`，随后对每个租户分别设置该上下文并领取/回写任务，不能对业务表执行无租户范围的扫描。
+1. 使用 `git clone --recurse-submodules` 取得源码；既有工作目录执行 `git submodule update --init --recursive`。三套开源运行时必须保持为锁文件记录的提交，禁止在生产构建目录直接修改 vendor 源码。
+2. 从 `config/*.example.env` 复制三份文件到服务器私有目录，填入真实值。
+3. 控制面使用 `NODE_ENV=production`、`CONTROL_PLANE_DEMO_MODE=false`，并配置 OIDC issuer、audience、JWKS 和 PostgreSQL。浏览器同源调用可以使用 `OIDC_ACCESS_TOKEN_COOKIE`（默认 `shuzhiren_access_token`）承载短期 access token；该 cookie 必须由登录网关以 `HttpOnly`、`Secure`、`SameSite=Lax` 或更严格的属性签发，令牌本身不得写入前端存储。生产 Proxy 会在进入 API handler 前校验令牌租户和角色，包含按动作区分的生命周期权限；无权令牌必须收到 `403 insufficient_permission`，不能依赖前端隐藏按钮。Cookie 身份的写操作还必须携带同源或 `OIDC_ALLOWED_ORIGINS` 白名单中的 `Origin`，否则返回 `403 csrf_origin_rejected`；部署在反向代理后时应显式填写公开控制台域名白名单。
+4. `RUNTIME_SHARED_TOKEN` 必须在运行时与 Gateway 中完全一致；`RUNTIME_TELEMETRY_TOKEN` 只给运行时上报控制面。
+5. 生产单卡保持 `LIVE_MAX_CONCURRENT_AVATARS=1`、`LIVE_ALLOW_LLM_FREEFORM=false`、高风险问题人工接管和 AI 标识开启。
+6. `runtime.example.env` 的 `LIVETALKING_REF`、`MUSETALK_REF`、`COSYVOICE_REF` 必须逐项等于 `runtime/open-source.lock.json`；`npm run deploy:check` 还会读取 `vendor/` 下真实 Git HEAD 并拒绝脏源码。模型权重的许可证、人物和声音授权另行登记。
+7. 在 Gateway 环境中配置 `PROGRAM_AUDIOTYPE`、`FALLBACK_AUDIOTYPE` 与 `HUMAN_HANDOFF_AUDIOTYPE`，并在 LiveTalking 的已批准 Avatar 包中逐项验证动作含义；不能将默认索引当作真实人接管或备用节目。
+8. LiveTalking 建立会话后，将返回的 `sessionid` 通过 `PUT /api/v1/live-runs/{runId}/runtime-session` 绑定到场次；没有绑定运行时会话的场次不得接受媒体控制命令。
+9. runtime worker 会按 `SCHEDULER_POLL_MS` 独立轮询已到排期时间的 `ARMED` 场次。每个场次先在独立数据库事务中创建唯一的 `start_program` outbox 并绑定到场次；只有 Gateway 确认该命令成功后，worker（或场控的单条恢复投递）才将场次切换为 `LIVE`。失败事件会保留为 `failed` 供重试，不会伪造“直播中”，也不会重复创建定时开播命令。每一轮最多领取 `SCHEDULER_BATCH_SIZE` 个，它不会自动武装场次，也不会跳过预检。
+10. 渠道连接只能使用服务端注册的 Adapter 和 `kms://` 或 `secret://` 密钥引用。每次标记为 `connected`、`degraded` 或 `disabled` 都必须记录验证报告/工单引用；开播预检拒绝超过 24 小时的渠道验证。`generic-rtmp` 只证明受控推流通道，不代表已经完成平台 OAuth、评论、商品挂车或 Webhook 集成。
+11. `audit_events` 在数据库层是 append-only：运行时账号不能更新或删除审计记录。用户注销、保留期或隐私请求必须走独立的合规数据处理流程，不能用普通业务 SQL 改写历史事件。
+12. 租户业务表均启用并强制 PostgreSQL RLS。即使部署时应用数据库账号是表所有者，也必须在每个事务内设置 `app.tenant_id`；禁止为应用账号授予 `BYPASSRLS`。runtime worker 只能无范围读取 `tenants.id`，随后对每个租户分别设置该上下文并领取/回写任务，不能对业务表执行无租户范围的扫描。
 
 示例结构检查：
 

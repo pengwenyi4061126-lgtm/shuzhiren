@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +13,8 @@ const files = {
   control: option("--control", "config/control-plane.example.env"),
   runtime: option("--runtime", "config/runtime.example.env"),
   gateway: option("--gateway", "config/runtime-gateway.example.env"),
-  lock: option("--lock", "runtime/open-source.lock.json")
+  lock: option("--lock", "runtime/open-source.lock.json"),
+  sourceRoot: option("--source-root", ".")
 };
 
 const errors = [];
@@ -46,7 +48,11 @@ function equal(values, fileName, key, expected) {
   }
 }
 
-const [controlText, runtimeText, gatewayText, lockText] = await Promise.all(Object.values(files).map((file) => readFile(file, "utf8").catch((error) => { errors.push(`无法读取 ${file}: ${error.message}`); return ""; })));
+function git(directory, args) {
+  return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+const [controlText, runtimeText, gatewayText, lockText] = await Promise.all([files.control, files.runtime, files.gateway, files.lock].map((file) => readFile(file, "utf8").catch((error) => { errors.push(`无法读取 ${file}: ${error.message}`); return ""; })));
 const control = parseEnv(controlText);
 const runtime = parseEnv(runtimeText);
 const gateway = parseEnv(gatewayText);
@@ -73,9 +79,36 @@ if (runtime.get("HUMAN_HANDOFF_AUDIOTYPE") !== gateway.get("HUMAN_HANDOFF_AUDIOT
 try {
   const lock = JSON.parse(lockText);
   if (!Array.isArray(lock.components) || lock.components.length < 3) errors.push("开源运行时锁文件缺少组件");
-  else for (const component of lock.components) {
-    if (!/^[0-9a-f]{40}$/i.test(component.commit ?? "")) errors.push(`${component.name ?? "未知组件"} 没有固定 40 位 Git 提交`);
-    if (!component.license) errors.push(`${component.name ?? "未知组件"} 缺少许可证记录`);
+  else {
+    const envKeys = {
+      MuseTalk: "MUSETALK_REF",
+      CosyVoice: "COSYVOICE_REF",
+      LiveTalking: "LIVETALKING_REF"
+    };
+    const expectedComponents = new Set(Object.keys(envKeys));
+    const lockedNames = new Set();
+    for (const component of lock.components) {
+      const name = component.name ?? "未知组件";
+      lockedNames.add(name);
+      if (!/^[0-9a-f]{40}$/i.test(component.commit ?? "")) {
+        errors.push(`${name} 没有固定 40 位 Git 提交`);
+        continue;
+      }
+      if (!component.license) errors.push(`${name} 缺少许可证记录`);
+      const envKey = envKeys[name];
+      if (!envKey) continue;
+      equal(runtime, "运行时", envKey, component.commit);
+
+      const sourceDirectory = path.join(files.sourceRoot, "vendor", name);
+      try {
+        const actualCommit = git(sourceDirectory, ["rev-parse", "HEAD"]);
+        if (actualCommit !== component.commit) errors.push(`${name} 源码 HEAD ${actualCommit} 与锁定提交 ${component.commit} 不一致`);
+        if (git(sourceDirectory, ["status", "--porcelain"])) errors.push(`${name} 源码目录存在未提交修改，禁止用于生产镜像构建`);
+      } catch (error) {
+        errors.push(`${name} 源码目录不可验证：${error instanceof Error ? error.message : "git 检查失败"}`);
+      }
+    }
+    for (const name of expectedComponents) if (!lockedNames.has(name)) errors.push(`开源运行时锁文件缺少 ${name}`);
   }
 } catch { errors.push("无法解析开源运行时锁文件"); }
 

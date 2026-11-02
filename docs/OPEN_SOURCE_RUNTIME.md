@@ -19,7 +19,7 @@ Console / Policy / Product Truth
 
 ## 已固定的源码
 
-源码快照在 `vendor/`，精确提交和许可证在 `runtime/open-source.lock.json`。当前锁定版本为：
+源码快照以 Git submodule 存放在 `vendor/`，精确提交和许可证在 `runtime/open-source.lock.json`。部署主机必须使用 `git clone --recurse-submodules` 或执行 `git submodule update --init --recursive`；`npm run deploy:check` 会比对环境变量、锁文件和三个实际源码 HEAD，并拒绝未提交的 vendor 修改。当前锁定版本为：
 
 - MuseTalk: `0a89dec45a0192b824e3cf4daf96c239440c5ed8`，MIT。
 - CosyVoice: `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`，Apache-2.0。
