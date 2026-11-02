@@ -63,7 +63,7 @@ export async function revokePolicyProfile(context: RequestContext, profileId: st
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await syncActor(client, context);
-    const result = await client.query<PersistentProfileRow>(`update policy_profiles set approval_status = 'revoked', approved_by = null, approved_at = null, revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [profileId, actor, reason]);
+    const result = await client.query<PersistentProfileRow>(`update policy_profiles set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [profileId, actor, reason]);
     if (!result.rows[0]) throw new Response("Policy profile not found or cannot be revoked", { status: 409 });
     return persistentProfile(result.rows[0]);
   });

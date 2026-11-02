@@ -344,6 +344,9 @@ try {
   assert.equal(acknowledgementAudit.rows.length, 1);
   const revokedProfile = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles/${recoverRun.policyProfileId}/revoke`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ reason: "Integration revocation must fail closed for a bound live run." }) });
   assert.equal(revokedProfile.status, 200, "an approved policy profile should be revocable with a recorded reason");
+  const revokedProfileBody = await revokedProfile.json();
+  assert.ok(revokedProfileBody.data.approvedAt, "revocation must retain the original approval timestamp");
+  assert.ok(revokedProfileBody.data.revokedAt, "revocation must record when the profile was withdrawn");
   const revokedPreflight = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/preflight`, { headers: requestHeaders });
   assert.equal(revokedPreflight.status, 200);
   const revokedPreflightBody = await revokedPreflight.json();
