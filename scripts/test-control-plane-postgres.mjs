@@ -118,6 +118,13 @@ try {
   const createdRun = await createdRunResponse.json();
   const frozenRights = await client.query("select kind from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) order by kind", [createdRun.data.id]);
   assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["music", "portrait", "product_clip", "voice"]);
+  const manifestResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/release-manifest`, { headers: requestHeaders });
+  assert.equal(manifestResponse.status, 200, "operators should read a run's frozen release manifest");
+  const manifest = await manifestResponse.json();
+  assert.equal(manifest.data.product.id, freshVersion.data.id);
+  assert.equal(manifest.data.models.length, 3);
+  assert.deepEqual(manifest.data.assets.map((asset) => asset.kind), ["music", "portrait", "product_clip", "voice"]);
+  assert.match(manifest.data.sha256, /^[a-f0-9]{64}$/, "release manifest must include a reproducible SHA-256 evidence hash");
   const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();
@@ -389,6 +396,9 @@ try {
   assert.equal(assetRevokedPreflight.status, 200);
   const assetRevokedPreflightBody = await assetRevokedPreflight.json();
   assert.equal(assetRevokedPreflightBody.data.checks.find((check) => check.id === "rights")?.status, "blocked", "a revoked frozen media asset must block preflight");
+  const revokedManifestResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/release-manifest`, { headers: requestHeaders });
+  assert.equal(revokedManifestResponse.status, 200);
+  assert.equal((await revokedManifestResponse.json()).data.assets.find((asset) => asset.kind === "voice")?.approval, "revoked", "the release manifest must expose a revoked frozen asset");
   const mediaAssetAudit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'media_asset.revoked'", [recoverRun.mediaAssetIds.voice]);
   assert.equal(mediaAssetAudit.rows.length, 1, "media asset revocation must be audited");
   const auditExport = await fetch(`http://127.0.0.1:${consolePort}/api/v1/audit-events/export`, { headers: requestHeaders });
