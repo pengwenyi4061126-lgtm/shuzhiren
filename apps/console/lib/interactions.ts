@@ -3,6 +3,7 @@ import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { evaluatePolicy, type PolicyDecision } from "@/lib/policy-engine";
+import { policyRulesForRun } from "@/lib/policy-profiles";
 
 export type LiveInteraction = LiveQuestion & {
   tenantId: string;
@@ -61,7 +62,7 @@ export async function listInteractions(context: RequestContext, runId: string, s
 }
 
 export async function createInteraction(context: RequestContext, input: CreateInteractionInput): Promise<LiveInteraction & { duplicate?: boolean }> {
-  const decision = evaluatePolicy(input.question, input.evidenceIds);
+  const decision = evaluatePolicy(input.question, input.evidenceIds, await policyRulesForRun(context, input.runId));
   const detail = interactionDetail(decision);
   if (!databasePool()) {
     const source = input.source ?? "viewer";
@@ -88,7 +89,7 @@ export async function createChannelInteraction(context: RequestContext, input: C
     if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId);
     return interaction;
   }
-  const decision = evaluatePolicy(input.question, input.evidenceIds);
+  const decision = evaluatePolicy(input.question, input.evidenceIds, await policyRulesForRun(context, input.runId));
   return withTenantTransaction(context.tenantId, async (client) => {
     const interaction = await createPersistentInteraction(client, context, input, decision);
     if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId, client);

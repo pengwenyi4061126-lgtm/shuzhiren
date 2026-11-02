@@ -61,7 +61,7 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
   const method = request.method;
 
   if (method === "GET") {
-    if (path === "/api/v1/alerts" || path === "/api/v1/incidents" || path === "/api/v1/entitlements" || path === "/api/v1/recordings" || /^\/api\/v1\/live-runs\/[^/]+\/telemetry$/.test(path) || path === "/api/v1/runtime/outbox") return observerRoles;
+    if (path === "/api/v1/alerts" || path === "/api/v1/incidents" || path === "/api/v1/entitlements" || path === "/api/v1/recordings" || path === "/api/v1/policy/profiles" || /^\/api\/v1\/live-runs\/[^/]+\/telemetry$/.test(path) || path === "/api/v1/runtime/outbox") return observerRoles;
     if (path === "/api/v1/audit-events" || path === "/api/v1/audit-events/verification") return reviewObserverRoles;
     if (path === "/api/v1/channels/connections" || path === "/api/v1/channels/capabilities") return observerRoles;
     if (/^\/api\/v1\/live-runs\/[^/]+\/(events|interactions)$/.test(path) || path === "/api/v1/live-runs") return allRoles;
@@ -74,6 +74,8 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
     if (/^\/api\/v1\/assets\/[^/]+\/approve$/.test(path) || /^\/api\/v1\/releases\/[^/]+\/approve$/.test(path) || /^\/api\/v1\/products\/[^/]+\/versions\/[^/]+\/approve$/.test(path)) return reviewerRoles;
     if (/^\/api\/v1\/channels\/connections\/[^/]+\/verify$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/(commands|interactions|response-drafts|speech-dispatches)$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/interactions\/[^/]+\/handle$/.test(path) || /^\/api\/v1\/alerts\/[^/]+\/acknowledge$/.test(path) || path === "/api/v1/incidents" || /^\/api\/v1\/incidents\/[^/]+\/resolve$/.test(path) || path === "/api/v1/runtime/media" || /^\/api\/v1\/runtime\/outbox\/[^/]+\/deliver$/.test(path)) return operatorRoles;
     if (path === "/api/v1/policy/evaluate") return ["admin", "operator", "reviewer"];
+    if (path === "/api/v1/policy/profiles") return operatorRoles;
+    if (/^\/api\/v1\/policy\/profiles\/[^/]+\/approve$/.test(path)) return reviewerRoles;
     if (/^\/api\/v1\/live-runs\/[^/]+\/lifecycle$/.test(path)) return lifecycleRoles(request);
   }
 

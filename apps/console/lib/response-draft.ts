@@ -1,5 +1,5 @@
 import type { ProductVersion } from "@/lib/catalog";
-import { evaluatePolicy, type PolicyDecision } from "@/lib/policy-engine";
+import { evaluatePolicy, type PolicyDecision, type PolicyRule } from "@/lib/policy-engine";
 
 export type ResponseDraft = {
   status: "ready" | "handoff";
@@ -8,8 +8,8 @@ export type ResponseDraft = {
   evidence: { type: "product_version"; id: string; revision: number }[];
 };
 
-export function createGroundedResponseDraft(question: string, version: ProductVersion): ResponseDraft {
-  const decision = evaluatePolicy(question, ["product_version"]);
+export function createGroundedResponseDraft(question: string, version: ProductVersion, policyRules: PolicyRule[] = []): ResponseDraft {
+  const decision = evaluatePolicy(question, ["product_version"], policyRules);
   const evidence = [{ type: "product_version" as const, id: version.id, revision: version.revision }];
   if (decision.action !== "answer") return { status: "handoff", decision, evidence };
 

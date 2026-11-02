@@ -116,6 +116,26 @@ try {
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();
   assert.equal(policyDecision.data.action, "handoff");
+  const profileCreated = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles`, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify({ name: "Integration candidate policy", version: "1.0.0", rules: [], evidenceRef: "evidence://policy/integration-candidate", validationSummary: "Integration approval workflow validation." })
+  });
+  assert.equal(profileCreated.status, 201, "operator should register a reviewable policy profile");
+  const profile = await profileCreated.json();
+  assert.equal(profile.data.approval, "pending");
+  const profileApproved = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles/${profile.data.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(profileApproved.status, 200, "reviewer workflow should approve a policy profile with evidence");
+  const profileList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles`, { headers: requestHeaders });
+  assert.equal(profileList.status, 200);
+  assert.equal((await profileList.json()).data.some((item) => item.id === profile.data.id && item.approval === "approved"), true);
+  const governedInteraction = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/interactions`, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify({ question: "这是一条集成策略禁播词", source: "integration", evidenceIds: ["product_version"] })
+  });
+  assert.equal(governedInteraction.status, 201, "a live run should evaluate its frozen policy profile");
+  assert.equal((await governedInteraction.json()).data.decision, "refuse", "a bound policy profile rule must block its configured term");
   const policyAudit = await client.query("select detail from audit_events where event_type = 'policy.evaluated'");
   assert.equal(policyAudit.rows.length, 1);
   assert.equal(policyAudit.rows[0].detail.questionSha256.length, 64, "policy audit must retain a hash rather than the raw question");
@@ -343,11 +363,15 @@ try {
 async function seedRun(state, sessionId, sampledAt) {
   const showId = randomUUID();
   const revisionId = randomUUID();
+  const policyProfileId = randomUUID();
   const runId = randomUUID();
   const channelId = randomUUID();
   await client.query("insert into tenants (id, slug, name) values ($1, $2, $3) on conflict (id) do nothing", [tenantId, `integration-${tenantId}`, "Control plane integration"]);
   await client.query("insert into shows (id, tenant_id, name) values ($1, $2, $3)", [showId, tenantId, `Integration show ${runId}`]);
   await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'approved')", [revisionId, tenantId, showId]);
+  const profileRules = [{ id: "integration_block_term", terms: ["集成策略禁播词"], reason: "集成策略包禁止该类提问", action: "refuse", riskLevel: "high", requiredEvidence: [] }];
+  await client.query("insert into policy_profiles (id, tenant_id, name, version, rules, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, '1.0.0', $4::jsonb, 'evidence://integration/seed', 'Seeded binding for integration validation.', 'approved', now())", [policyProfileId, tenantId, `Integration policy ${runId}`, JSON.stringify(profileRules)]);
+  await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
   const capabilities = { channel: "integration-webhook", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
   await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now())", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities)]);
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId]);

@@ -5,6 +5,8 @@ export type PolicyDecision = {
   requiredEvidence: string[];
 };
 
+export type PolicyRule = { id: string; terms: string[]; reason: string; action: PolicyDecision["action"]; riskLevel: PolicyDecision["riskLevel"]; requiredEvidence: string[] };
+
 const rules = [
   { pattern: /忽略.{0,24}(指令|规则)|系统提示|提示词|开发者消息|越狱|jailbreak|角色扮演|不受限制/i, reason: "提示注入或策略绕过尝试", action: "refuse" as const, riskLevel: "high" as const, evidence: [] },
   { pattern: /密钥|密码|token|api[ _-]?key|RTMP|推流码|数据库|连接串/i, reason: "索取系统凭据或内部信息", action: "refuse" as const, riskLevel: "high" as const, evidence: [] },
@@ -16,8 +18,11 @@ const rules = [
   { pattern: /赠品|库存|规格|发货|到手价/i, reason: "需要读取实时商品事实", action: "answer" as const, riskLevel: "medium" as const, evidence: ["product_version"] }
 ];
 
-export function evaluatePolicy(question: string, evidenceIds: string[]): PolicyDecision {
-  const matched = rules.filter((rule) => rule.pattern.test(question));
+export function evaluatePolicy(question: string, evidenceIds: string[], additionalRules: PolicyRule[] = []): PolicyDecision {
+  const matched = [
+    ...rules.filter((rule) => rule.pattern.test(question)).map((rule) => ({ reason: rule.reason, action: rule.action, riskLevel: rule.riskLevel, evidence: rule.evidence })),
+    ...additionalRules.filter((rule) => rule.terms.some((term) => question.toLocaleLowerCase("zh-CN").includes(term.toLocaleLowerCase("zh-CN")))).map((rule) => ({ reason: rule.reason, action: rule.action, riskLevel: rule.riskLevel, evidence: rule.requiredEvidence }))
+  ];
   if (matched.length === 0) return { action: "answer", riskLevel: "low", reasons: [], requiredEvidence: ["product_version"] };
 
   const requiredEvidence = [...new Set(matched.flatMap((rule) => rule.evidence))];

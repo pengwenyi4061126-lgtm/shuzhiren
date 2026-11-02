@@ -3,6 +3,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { findApprovedProductVersion } from "@/lib/catalog";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
+import { policyRulesForRun } from "@/lib/policy-profiles";
 import { createGroundedResponseDraft } from "@/lib/response-draft";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   if (!run.productVersionId) return Response.json({ error: "approved_product_version_required" }, { status: 409 });
   const version = await findApprovedProductVersion(actor, run.productVersionId);
   if (!version) return Response.json({ error: "approved_product_version_required" }, { status: 409 });
-  const draft = createGroundedResponseDraft(body.question.trim(), version);
+  const draft = createGroundedResponseDraft(body.question.trim(), version, await policyRulesForRun(actor, run.id));
   await recordAuditEvent(actor, { type: draft.status === "ready" ? "response_draft.created" : "response_draft.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: createHash("sha256").update(body.question.trim()).digest("hex") } });
   return Response.json({ data: draft }, { status: draft.status === "ready" ? 200 : 202 });
 }

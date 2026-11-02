@@ -18,6 +18,8 @@ import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import { createGroundedResponseDraft, type ResponseDraft } from "@/lib/response-draft";
 import { createSpeechCommand } from "@/lib/speech-protocol";
 import { assertLiveActivationAllowed } from "@/lib/entitlements";
+import { latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
+import type { PolicyRule } from "@/lib/policy-engine";
 
 export type StoredRun = LiveRun & {
   tenantId: string;
@@ -133,10 +135,13 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     const frozenReleases = new Map<ReleaseComponent, string>();
     for (const release of releases.rows) if (!frozenReleases.has(release.component)) frozenReleases.set(release.component, release.id);
     if (!requiredProductionReleaseComponents.every((component) => frozenReleases.has(component))) throw new Response("Approved runtime, lip-sync, and voice releases are required", { status: 409 });
+    const policyProfile = await latestApprovedPolicyProfile(client);
+    if (!policyProfile) throw new Response("An approved policy profile is required", { status: 409 });
     const show = await client.query<{ id: string }>("insert into shows (tenant_id, name) values ($1, $2) returning id", [context.tenantId, input.showName]);
-    const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'approved') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId, modelReleaseIds: Object.fromEntries(frozenReleases) })]);
+    const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'approved') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId, modelReleaseIds: Object.fromEntries(frozenReleases), policyProfileId: policyProfile.id })]);
     await client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [context.tenantId, revision.rows[0].id, input.productVersionId]);
     for (const component of requiredProductionReleaseComponents) await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, frozenReleases.get(component), component]);
+    await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [context.tenantId, revision.rows[0].id, policyProfile.id]);
     const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, $6, true, true, true, false, $7, $8, $9::timestamptz) returning id, tenant_id, show_revision_id, $10::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, await hasApprovedLiveRights(context), input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
     return persistentRun(run.rows[0], []);
@@ -267,23 +272,24 @@ export async function issueCommand(context: RequestContext, runId: string, input
 }
 
 export async function enqueueGroundedSpeech(context: RequestContext, runId: string, question: string, voice: string, idempotencyKey: string): Promise<GroundedSpeechDispatch> {
+  const policyRules = await policyRulesForRun(context, runId);
   if (!databasePool()) {
     const run = getDemoRun(context, runId);
     if (!run) throw new Response("Live run not found", { status: 404 });
-    return enqueueDemoGroundedSpeech(context, run, question, voice, idempotencyKey);
+    return enqueueDemoGroundedSpeech(context, run, question, voice, idempotencyKey, policyRules);
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const run = await loadPersistentRun(client, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
-    return enqueueGroundedSpeechInTransaction(client, context, run, question, voice, idempotencyKey);
+    return enqueueGroundedSpeechInTransaction(client, context, run, question, voice, idempotencyKey, policyRules);
   });
 }
 
-async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun, question: string, voice: string, idempotencyKey: string): Promise<GroundedSpeechDispatch> {
+async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun, question: string, voice: string, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
   assertSpeechReadyRun(run);
   const version = run.productVersionId ? await findApprovedProductVersion(context, run.productVersionId) : null;
   if (!version) throw new Response("Approved frozen product version is required", { status: 409 });
-  const draft = createGroundedResponseDraft(question, version);
+  const draft = createGroundedResponseDraft(question, version, policyRules);
   if (draft.status !== "ready" || !draft.text) {
     await recordAuditEvent(context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
@@ -293,14 +299,14 @@ async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun
   return { status: "queued", draft, event: queued.event, duplicate: queued.duplicate };
 }
 
-async function enqueueGroundedSpeechInTransaction(client: PoolClient, context: RequestContext, run: StoredRun, question: string, voice: string, idempotencyKey: string): Promise<GroundedSpeechDispatch> {
+async function enqueueGroundedSpeechInTransaction(client: PoolClient, context: RequestContext, run: StoredRun, question: string, voice: string, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
   assertSpeechReadyRun(run);
   if (!run.productVersionId) throw new Response("Approved frozen product version is required", { status: 409 });
   const versionResult = await client.query<PersistentProductVersionRow>("select id, revision, approval_status, facts, created_at, approved_at from product_versions where id = $1 and approval_status = 'approved'", [run.productVersionId]);
   const versionRow = versionResult.rows[0];
   if (!versionRow) throw new Response("Approved frozen product version is required", { status: 409 });
   const version = { id: versionRow.id, revision: versionRow.revision, status: versionRow.approval_status, facts: versionRow.facts as import("@/lib/catalog").ProductFacts, createdAt: new Date(versionRow.created_at).toISOString(), approvedAt: versionRow.approved_at ? new Date(versionRow.approved_at).toISOString() : undefined };
-  const draft = createGroundedResponseDraft(question, version);
+  const draft = createGroundedResponseDraft(question, version, policyRules);
   if (draft.status !== "ready" || !draft.text) {
     await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
