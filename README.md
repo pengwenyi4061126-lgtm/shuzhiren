@@ -15,6 +15,8 @@
 
 开源运行时已按源码锁定并接入统一网关；具体目录、接口和 4090 部署步骤见 [docs/OPEN_SOURCE_RUNTIME.md](docs/OPEN_SOURCE_RUNTIME.md)。
 
+4090 服务器的部署前配置校验、启动顺序与试播阻断项见 [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md)。真实环境变量准备好后先运行 `npm run deploy:check`，再启动服务。
+
 ## 一张 4090 的生产边界
 
 | 能做 | 不应承诺 |

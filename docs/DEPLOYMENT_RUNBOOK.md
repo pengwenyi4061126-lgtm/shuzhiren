@@ -1,0 +1,45 @@
+# 4090 部署运行手册
+
+本手册只覆盖 P0 内部试播。没有完成肖像、声音、脚本、商品和音乐的书面授权，不得部署到真实直播间。
+
+## 1. 服务器基线
+
+- Ubuntu 22.04 或兼容 Linux，单张 RTX 4090，建议至少 64 GB 内存和 1 TB NVMe。
+- 已安装可用的 NVIDIA 驱动、Docker Engine、Docker Compose GPU 支持；`nvidia-smi` 必须可见 GPU。
+- 仅对反向代理公开控制台；PostgreSQL、MinIO、Redis、Gateway 与 Worker 位于私网。
+- 将模型、头像、录屏目录分别挂载到独立磁盘路径，不将权重、录屏或流密钥写入 Git。
+
+## 2. 部署前配置
+
+1. 从 `config/*.example.env` 复制三份文件到服务器私有目录，填入真实值。
+2. 控制面使用 `NODE_ENV=production`、`CONTROL_PLANE_DEMO_MODE=false`，并配置 OIDC issuer、audience、JWKS 和 PostgreSQL。
+3. `RUNTIME_SHARED_TOKEN` 必须在运行时与 Gateway 中完全一致；`RUNTIME_TELEMETRY_TOKEN` 只给运行时上报控制面。
+4. 生产单卡保持 `LIVE_MAX_CONCURRENT_AVATARS=1`、`LIVE_ALLOW_LLM_FREEFORM=false`、高风险问题人工接管和 AI 标识开启。
+5. 固定 `runtime/open-source.lock.json` 中的提交；模型权重的许可证、人物和声音授权另行登记。
+
+示例结构检查：
+
+```powershell
+npm run deploy:check -- --allow-placeholders
+```
+
+真实配置检查：
+
+```powershell
+npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env
+```
+
+## 3. 启动顺序
+
+1. 启动 PostgreSQL、Redis、MinIO，运行 `npm run db:migrate`。
+2. 启动控制台和 OIDC 配置，确认 `/api/health` 与数据库健康接口正常。
+3. 启动 Gateway、LiveTalking、CosyVoice（如启用）和 runtime worker。
+4. 用非公开推流地址进行 30 分钟内部试播；确认遥测到达、媒体 outbox 可投递、录屏生成和人工接管成功。
+5. 执行 4 小时连续试播与断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音演练后，才允许真实小规模场次。
+
+## 4. 上线阻断项
+
+- 控制台预检存在任一阻塞项。
+- 运行时遥测缺失，或输出帧率低于 24 FPS、音画同步超过 120 ms、备用节目未就绪。
+- 任何人物、声音、音乐、商品资料或脚本缺少授权与批准状态。
+- 高风险问题没有人工场控值守与接管路径。
