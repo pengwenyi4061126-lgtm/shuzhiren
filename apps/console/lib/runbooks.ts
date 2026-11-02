@@ -79,3 +79,16 @@ export const runbookSeverityLabel: Record<RunbookSeverity, string> = {
   P2: "P2 优先处理",
   P3: "P3 计划修复"
 };
+
+const alertRunbookIds: Record<string, Runbook["id"]> = {
+  output_disconnected: "rtmp-rejected",
+  output_fps_low: "black-frame",
+  av_sync_high: "model-tts-timeout",
+  bitrate_low: "rtmp-rejected",
+  fallback_not_ready: "black-frame"
+};
+
+export function runbookForAlertCode(code: string) {
+  const id = alertRunbookIds[code];
+  return id ? runbooks.find((runbook) => runbook.id === id) : undefined;
+}

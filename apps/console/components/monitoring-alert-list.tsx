@@ -1,8 +1,10 @@
 "use client";
 
 import { Check, LoaderCircle, ShieldAlert } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import type { RuntimeAlert } from "@/lib/monitoring";
+import { runbookForAlertCode } from "@/lib/runbooks";
 
 export function MonitoringAlertList({ initialAlerts, initialIncidentAlertIds = [], canAcknowledge }: { initialAlerts: RuntimeAlert[]; initialIncidentAlertIds?: string[]; canAcknowledge: boolean }) {
   const [alerts, setAlerts] = useState(initialAlerts);
@@ -35,5 +37,5 @@ export function MonitoringAlertList({ initialAlerts, initialIncidentAlertIds = [
   }
 
   if (!alerts.length) return <div className="no-alerts"><Check size={20} />没有未解决告警</div>;
-  return <><ul className="alert-list">{alerts.map((alert) => <li key={alert.id}><div><strong>{alert.code}</strong><span>{alert.message}</span>{alert.acknowledgedAt ? <small>已由 {alert.acknowledgedBy ?? "场控"} 于 {new Date(alert.acknowledgedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 接手</small> : <small>尚未确认接手</small>}</div>{canAcknowledge ? <aside className="alert-actions">{!alert.acknowledgedAt ? <button className="alert-acknowledge" type="button" onClick={() => acknowledge(alert.id)} disabled={busy === alert.id}>{busy === alert.id ? <LoaderCircle className="button-spinner" size={14} /> : <Check size={14} />}{busy === alert.id ? "确认中" : "确认接手"}</button> : null}{incidentAlertIds.has(alert.id) ? <span className="alert-incident-open">事故单已建立</span> : <button className="alert-incident" type="button" onClick={() => openIncident(alert.id)} disabled={busy === `incident:${alert.id}`}>{busy === `incident:${alert.id}` ? <LoaderCircle className="button-spinner" size={14} /> : <ShieldAlert size={14} />}{busy === `incident:${alert.id}` ? "创建中" : "建立事故单"}</button>}</aside> : null}</li>)}</ul>{error ? <p className="monitoring-error" role="alert">{error}</p> : null}</>;
+  return <><ul className="alert-list">{alerts.map((alert) => { const runbook = runbookForAlertCode(alert.code); return <li key={alert.id}><div><strong>{alert.code}</strong><span>{alert.message}</span>{runbook ? <Link className="alert-runbook" href={`/runbooks#${runbook.id}`}>查看处置：{runbook.title}</Link> : null}{alert.acknowledgedAt ? <small>已由 {alert.acknowledgedBy ?? "场控"} 于 {new Date(alert.acknowledgedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 接手</small> : <small>尚未确认接手</small>}</div>{canAcknowledge ? <aside className="alert-actions">{!alert.acknowledgedAt ? <button className="alert-acknowledge" type="button" onClick={() => acknowledge(alert.id)} disabled={busy === alert.id}>{busy === alert.id ? <LoaderCircle className="button-spinner" size={14} /> : <Check size={14} />}{busy === alert.id ? "确认中" : "确认接手"}</button> : null}{incidentAlertIds.has(alert.id) ? <span className="alert-incident-open">事故单已建立</span> : <button className="alert-incident" type="button" onClick={() => openIncident(alert.id)} disabled={busy === `incident:${alert.id}`}>{busy === `incident:${alert.id}` ? <LoaderCircle className="button-spinner" size={14} /> : <ShieldAlert size={14} />}{busy === `incident:${alert.id}` ? "创建中" : "建立事故单"}</button>}</aside> : null}</li>; })}</ul>{error ? <p className="monitoring-error" role="alert">{error}</p> : null}</>;
 }
