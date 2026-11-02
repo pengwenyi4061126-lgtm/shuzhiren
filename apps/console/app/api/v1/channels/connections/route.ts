@@ -1,5 +1,6 @@
 import { createChannelConnection, isChannelProvider, listChannelConnections, type CreateChannelConnectionInput } from "@/lib/channels";
 import { recordAuditEvent } from "@/lib/audit";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,9 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const context = await requestContextFrom(request);
   requireRole(context, ["admin", "operator"]);
-  const body: unknown = await request.json().catch(() => null);
+  let body: unknown;
+  try { body = await readBoundedJson(request); }
+  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
   if (!isConnectionInput(body)) return Response.json({ error: "invalid_channel_connection" }, { status: 400 });
   try {
     const connection = await createChannelConnection(context, body);
