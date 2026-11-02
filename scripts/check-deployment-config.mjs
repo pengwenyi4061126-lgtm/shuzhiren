@@ -70,7 +70,7 @@ const channelAdapter = parseEnv(channelAdapterText);
 const alertNotifier = parseEnv(alertNotifierText);
 
 required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "CONTROL_PLANE_DEMO_MODE", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "RUNTIME_SPEECH_VOICE"]);
-required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
+required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 required(channelAdapter, "渠道适配器", ["DATABASE_URL", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_TARGETS"]);
 required(alertNotifier, "告警通知器", ["DATABASE_URL", "ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS", "ALERT_NOTIFIER_TARGETS"]);
@@ -123,6 +123,7 @@ equal(runtime, "运行时", "LIVE_ALLOW_LLM_FREEFORM", "false");
 equal(runtime, "运行时", "LIVE_REQUIRE_HUMAN_HANDOFF_FOR_HIGH_RISK", "true");
 equal(runtime, "运行时", "LIVE_REQUIRE_AI_DISCLOSURE", "true");
 equal(runtime, "运行时", "LLM_MODE", "external");
+equal(runtime, "运行时", "STREAM_OUTPUT_MODE", "rtmp");
 equal(runtime, "运行时", "STREAM_FPS", "25");
 
 try {
@@ -202,8 +203,8 @@ try {
   const gatewayApp = path.join(files.sourceRoot, "runtime", "gateway", "app.py");
   const gatewayDockerfile = path.join(files.sourceRoot, "runtime", "gateway", "Dockerfile");
   const [compose, config, rtmp, cosyVoice, gatewayAppText, gatewayDockerfileText] = await Promise.all([composePath, liveTalkingConfig, liveTalkingRtmp, cosyVoiceServer, gatewayApp, gatewayDockerfile].map((file) => readFile(file, "utf8")));
-  for (const expected of ["--transport rtmp", "--model musetalk", "--avatar_id", "--listenport 8010", "--max_session 1", "--push_url", "COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 缺少受支持的启动契约：${expected}`);
-  for (const expected of ["parser.add_argument('--transport'", "parser.add_argument('--model'", "parser.add_argument('--avatar_id'", "parser.add_argument('--listenport'", "parser.add_argument('--max_session'", "parser.add_argument('--push_url'"]) if (!config.includes(expected)) errors.push(`锁定 LiveTalking 源码不再支持 Compose 所需参数：${expected}`);
+  for (const expected of ["--transport rtmp", "--model musetalk", "--avatar_id", "--listenport 8010", "--max_session 1", "--fps ${STREAM_FPS:-25}", "--push_url", "COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 缺少受支持的启动契约：${expected}`);
+  for (const expected of ["parser.add_argument('--transport'", "parser.add_argument('--model'", "parser.add_argument('--avatar_id'", "parser.add_argument('--listenport'", "parser.add_argument('--max_session'", "parser.add_argument('--fps'", "parser.add_argument('--push_url'"]) if (!config.includes(expected)) errors.push(`锁定 LiveTalking 源码不再支持 Compose 所需参数：${expected}`);
   if (!rtmp.includes("sc.stream_server = self.push_url")) errors.push("锁定 LiveTalking 源码不再将 push_url 绑定到 RTMP 输出");
   if (!cosyVoice.includes("return StreamingResponse(generate_data(model_output))") || !cosyVoice.includes("tts_speech")) errors.push("锁定 CosyVoice FastAPI 不再输出原始语音 PCM 流");
   if (!gatewayAppText.includes('COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))') || !gatewayAppText.includes("pcm_s16le_to_wav")) errors.push("Gateway 未以 24 kHz 配置封装 CosyVoice PCM");
@@ -211,8 +212,6 @@ try {
 } catch (error) {
   errors.push(`开源运行时启动契约不可验证：${error instanceof Error ? error.message : "读取失败"}`);
 }
-
-if (runtime.get("STREAM_OUTPUT_MODE") !== "rtmp") warnings.push("当前检查只验证 RTMP 输出；若使用 SRT，需要先扩展 Gateway 和验收脚本。");
 
 for (const warning of warnings) console.warn(`WARN  ${warning}`);
 if (errors.length) {
