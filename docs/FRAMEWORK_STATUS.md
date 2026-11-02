@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Web 控制台 | 可运行，生产 API 强制 OIDC JWT 并从 claims 解析租户和角色；指挥台已接入场次、遥测、告警与服务端命令 | 配置真实 OIDC 提供商、SSO 和成员同步 |
 | 控制面命令 | 直播场次、状态迁移、幂等命令与媒体 outbox 均具备开发内存/PostgreSQL Repository 双模式；接管、恢复、暂停和结束会在同一控制面事务中生成媒体指令 | 在 PostgreSQL 上做并发、断网和重试集成测试；后续接 Redis 队列 |
-| 商品事实与预检 | 商品、版本创建、审批、批准版本查询、节目段落和预检硬校验均具备开发内存/PostgreSQL Repository 双模式 | 接 ERP/PIM、审核后台，并在 PostgreSQL 上做并发版本创建测试 |
+| 商品事实与预检 | 商品、版本创建、审批、批准版本查询、节目段落和预检硬校验均具备开发内存/PostgreSQL Repository 双模式；受控回复草稿仅引用已批准版本事实并附带证据版本 | 接 ERP/PIM、审核后台，并在 PostgreSQL 上做并发版本创建测试 |
 | 策略引擎 | 互动问题可租户隔离持久化，基于规则与证据判定回答或转人工；场控处理与审计留痕已建立 | 增加策略包、检索证据和红队测试集 |
 | 渠道适配 | 渠道连接、能力矩阵、密钥引用与预检校验已建立 | 每个平台实现独立 Adapter、OAuth/Webhook 与商品同步 |
 | 媒体运行时 | Runtime Gateway、源码锁定、LiveTalking/CosyVoice 音频链路和 GPU Compose 已建立 | 租机后下载受许可权重，完成 4090 端到端压测与 durable outbox 投递 |

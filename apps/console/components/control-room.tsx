@@ -31,6 +31,8 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
   const [selectedQuestion, setSelectedQuestion] = useState<string | null>(null);
   const [interactions, setInteractions] = useState(initialInteractions);
   const [handlingInteractionId, setHandlingInteractionId] = useState<string | null>(null);
+  const [draftReply, setDraftReply] = useState<string | null>(null);
+  const [draftLoading, setDraftLoading] = useState(false);
   const [activeNav, setActiveNav] = useState("指挥台");
   const [pendingAction, setPendingAction] = useState<LiveCommand["action"] | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
@@ -75,6 +77,22 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
     }
   }
 
+  async function createDraftReply() {
+    if (!selectedInteraction || draftLoading) return;
+    setDraftLoading(true);
+    setCommandError(null);
+    try {
+      const response = await fetch(`/api/v1/live-runs/${encodeURIComponent(run.id)}/response-drafts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: selectedInteraction.text }) });
+      const payload = await response.json().catch(() => null) as { data?: { status: string; text?: string } } | { error?: string } | null;
+      if (!response.ok || !payload || !("data" in payload) || !payload.data) throw new Error(payload && "error" in payload ? payload.error : "回复草稿生成失败");
+      setDraftReply(payload.data.status === "ready" ? payload.data.text ?? "未生成可播报文案" : "此问题需要人工接管，系统不会生成自动播报文案。");
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : "回复草稿生成失败");
+    } finally {
+      setDraftLoading(false);
+    }
+  }
+
   return <div className="app-shell">
     <aside className="sidebar"><div className="brand"><span className="brand-mark"><Radio size={16} /></span><span>Shuzhiren</span></div><nav aria-label="工作区">{navigation.map(({ icon: Icon, label, href }) => href ? <Link className={activeNav === label ? "nav-item active" : "nav-item"} href={href} key={label} onClick={() => setActiveNav(label)}><Icon size={17} />{label}</Link> : <button className={activeNav === label ? "nav-item active" : "nav-item"} key={label} onClick={() => setActiveNav(label)} type="button"><Icon size={17} />{label}</button>)}</nav><div className="sidebar-footer"><Users size={15} /> 运营组<br /><span>华东直播间</span></div></aside>
     <main className="main-content">
@@ -88,7 +106,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
             <div className="control-row"><CommandButton action="START" icon={Play} label="开始" run={run} pendingAction={pendingAction} onDispatch={dispatch} /><CommandButton action="PAUSE" icon={Pause} label="暂停" run={run} pendingAction={pendingAction} onDispatch={dispatch} /><CommandButton action="HANDOFF" icon={UserRoundCheck} label="人工接管" run={run} pendingAction={pendingAction} onDispatch={dispatch} /><CommandButton action="RECOVER" icon={RotateCcw} label="恢复运行" run={run} pendingAction={pendingAction} onDispatch={dispatch} /><CommandButton action="END" icon={CircleStop} label="结束" run={run} pendingAction={pendingAction} onDispatch={dispatch} danger /></div>
             {commandError ? <p className="command-error" role="alert">命令未执行：{commandError}</p> : null}
           </section>
-          <section className="panel queue-panel"><div className="panel-header"><div><h2>互动与风险</h2><span>高风险问题必须人工确认</span></div><AlertTriangle size={18} className="warning-icon" /></div><div className="queue-list">{interactions.length ? interactions.map((interaction) => <button className={selectedQuestion === interaction.id ? "question selected" : "question"} key={interaction.id} onClick={() => setSelectedQuestion(interaction.id)} type="button"><span className={`risk ${interaction.risk}`}>{interaction.risk === "high" ? "需人工确认" : interaction.risk === "medium" ? "需商品证据" : "有证据"}</span><strong>{interaction.text}</strong><small>{interaction.detail}</small></button>) : <div className="queue-empty">暂无待处理互动</div>}</div><div className="handoff-box"><Volume2 size={16} /><span>{selectedInteraction ? `${selectedInteraction.decision === "handoff" ? "建议人工接管后" : "已核验策略后"}处理此问题` : initialAlerts.length ? `有 ${initialAlerts.length} 条运行告警待处理` : "选择一条互动查看处理建议"}</span>{selectedInteraction ? <button className="handle-interaction" disabled={Boolean(handlingInteractionId)} onClick={handleSelectedInteraction} type="button">{handlingInteractionId ? "处理中" : "标记已处理"}</button> : null}</div></section>
+          <section className="panel queue-panel"><div className="panel-header"><div><h2>互动与风险</h2><span>高风险问题必须人工确认</span></div><AlertTriangle size={18} className="warning-icon" /></div><div className="queue-list">{interactions.length ? interactions.map((interaction) => <button className={selectedQuestion === interaction.id ? "question selected" : "question"} key={interaction.id} onClick={() => { setSelectedQuestion(interaction.id); setDraftReply(null); }} type="button"><span className={`risk ${interaction.risk}`}>{interaction.risk === "high" ? "需人工确认" : interaction.risk === "medium" ? "需商品证据" : "有证据"}</span><strong>{interaction.text}</strong><small>{interaction.detail}</small></button>) : <div className="queue-empty">暂无待处理互动</div>}</div><div className="handoff-box"><Volume2 size={16} /><div><span>{selectedInteraction ? `${selectedInteraction.decision === "handoff" ? "建议人工接管后" : "已核验策略后"}处理此问题` : initialAlerts.length ? `有 ${initialAlerts.length} 条运行告警待处理` : "选择一条互动查看处理建议"}</span>{draftReply ? <small className="draft-reply">{draftReply}</small> : null}</div>{selectedInteraction?.decision === "answer" ? <button className="handle-interaction" disabled={draftLoading} onClick={createDraftReply} type="button">{draftLoading ? "生成中" : "生成草稿"}</button> : null}{selectedInteraction ? <button className="handle-interaction" disabled={Boolean(handlingInteractionId)} onClick={handleSelectedInteraction} type="button">{handlingInteractionId ? "处理中" : "标记已处理"}</button> : null}</div></section>
         </div>
         <section className="panel timeline-panel"><div className="panel-header"><div><h2>节目单与命令记录</h2><span>命令使用幂等键与预期状态校验</span></div><Clock3 size={17} /></div><div className="timeline-content"><div className="program-track"><span className="segment preset">预制讲品 · A-102</span><span className="segment live">实时问答</span><span className="segment queued">成分讲解 · A-103</span></div><div className="command-list">{commands.slice(0, 3).map((command) => <div className="command" key={command.id}><span>{command.action}</span><small>{command.actorName} · {new Date(command.issuedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small><b>{command.result}</b></div>)}</div></div></section>
       </section>
