@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { quarantineLiveRunsForRevocationInTransaction } from "@/lib/control-plane/governance-quarantine";
 
 export type AssetKind = "portrait" | "voice" | "product_clip" | "music";
 export type AssetApproval = "pending" | "approved" | "revoked";
@@ -109,6 +110,7 @@ export async function revokeMediaAsset(context: RequestContext, assetId: string,
     const actor = await syncActor(client, context);
     const result = await client.query<PersistentAssetRow>(`update media_assets set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [assetId, actor, reason]);
     if (!result.rows[0]) throw new Response("Media asset not found or cannot be revoked", { status: 409 });
+    await quarantineLiveRunsForRevocationInTransaction(client, context, "media_asset", assetId, reason);
     return persistentAsset(result.rows[0]);
   });
 }

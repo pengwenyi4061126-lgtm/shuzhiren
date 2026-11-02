@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { quarantineLiveRunsForRevocationInTransaction } from "@/lib/control-plane/governance-quarantine";
 
 export type ReleaseComponent = "runtime" | "avatar" | "lip_sync" | "voice";
 export type ReleaseApproval = "pending" | "approved" | "revoked";
@@ -69,6 +70,7 @@ export async function revokeModelRelease(context: RequestContext, releaseId: str
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentReleaseRow>(`update model_releases set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [releaseId, actor.rows[0].id, reason]);
     if (!result.rows[0]) throw new Response("Model release not found or cannot be revoked", { status: 409 });
+    await quarantineLiveRunsForRevocationInTransaction(client, context, "model_release", releaseId, reason);
     return persistentRelease(result.rows[0]);
   });
 }
