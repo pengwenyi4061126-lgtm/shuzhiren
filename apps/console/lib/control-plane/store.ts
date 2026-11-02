@@ -108,7 +108,7 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
   const runtime = evaluateRuntimeReadiness(context, run.id);
   return evaluatePreflight({
     ...run,
-    hasApprovedRights: persistent ? run.hasApprovedRights : hasApprovedLiveRights(context),
+    hasApprovedRights: await hasApprovedLiveRights(context),
     hasApprovedSkuVersion: Boolean(run.productVersionId && await findApprovedProductVersion(context, run.productVersionId)),
     hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id),
     channelReady: channel.passed,

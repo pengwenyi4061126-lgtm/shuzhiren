@@ -1,27 +1,127 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type AssetKind = "portrait" | "voice" | "product_clip" | "music";
 export type AssetApproval = "pending" | "approved" | "revoked";
-export type MediaAsset = { id: string; tenantId: string; kind: AssetKind; name: string; approval: AssetApproval; expiresAt?: string; rightsScope: string; source: string };
+export type MediaAsset = {
+  id: string;
+  tenantId: string;
+  kind: AssetKind;
+  name: string;
+  approval: AssetApproval;
+  expiresAt?: string;
+  rightsScope: string;
+  source: string;
+  objectKey: string;
+  checksum: string;
+  approvedAt?: string;
+};
+export type CreateMediaAssetInput = Pick<MediaAsset, "kind" | "name" | "rightsScope" | "source" | "objectKey" | "checksum"> & { expiresAt?: string };
+
 type AssetStore = { assets: Map<string, MediaAsset> };
+type PersistentAssetRow = {
+  id: string;
+  tenant_id: string;
+  kind: AssetKind;
+  name: string;
+  approval_status: AssetApproval;
+  expires_at: Date | string | null;
+  rights_scope: string;
+  source_ref: string;
+  object_key: string;
+  checksum: string;
+  approved_at: Date | string | null;
+};
 
 declare global { var shuzhirenAssetStore: AssetStore | undefined; }
 
 function assetStore(): AssetStore {
   globalThis.shuzhirenAssetStore ??= { assets: new Map([
-    ["asset_portrait_demo", { id: "asset_portrait_demo", tenantId: "tenant_demo", kind: "portrait", name: "主播肖像授权素材", approval: "approved", expiresAt: "2027-10-31", rightsScope: "直播与录播数字人驱动", source: "授权书 #POR-2026-001" }],
-    ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004" }],
-    ["asset_clip_a102", { id: "asset_clip_a102", tenantId: "tenant_demo", kind: "product_clip", name: "洁面慕斯预制讲品", approval: "approved", rightsScope: "A-102 商品讲解", source: "内容审核 #CLP-2026-019" }],
-    ["asset_bgm_demo", { id: "asset_bgm_demo", tenantId: "tenant_demo", kind: "music", name: "直播间背景音乐", approval: "approved", expiresAt: "2027-03-31", rightsScope: "店播背景音乐", source: "音乐授权 #MUS-2026-011" }]
+    ["asset_portrait_demo", { id: "asset_portrait_demo", tenantId: "tenant_demo", kind: "portrait", name: "主播肖像授权素材", approval: "approved", expiresAt: "2027-10-31", rightsScope: "直播与录播数字人驱动", source: "授权书 #POR-2026-001", objectKey: "demo/portrait.mp4", checksum: "demo-portrait", approvedAt: "2026-11-01T08:30:00.000Z" }],
+    ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004", objectKey: "demo/voice.wav", checksum: "demo-voice", approvedAt: "2026-11-01T08:30:00.000Z" }],
+    ["asset_clip_a102", { id: "asset_clip_a102", tenantId: "tenant_demo", kind: "product_clip", name: "洁面慕斯预制讲品", approval: "approved", rightsScope: "A-102 商品讲解", source: "内容审核 #CLP-2026-019", objectKey: "demo/a102.mp4", checksum: "demo-clip", approvedAt: "2026-11-01T08:30:00.000Z" }],
+    ["asset_bgm_demo", { id: "asset_bgm_demo", tenantId: "tenant_demo", kind: "music", name: "直播间背景音乐", approval: "approved", expiresAt: "2027-03-31", rightsScope: "店播背景音乐", source: "音乐授权 #MUS-2026-011", objectKey: "demo/bgm.mp3", checksum: "demo-music", approvedAt: "2026-11-01T08:30:00.000Z" }]
   ]) };
   return globalThis.shuzhirenAssetStore;
 }
 
-export function listAssets(context: RequestContext) { return [...assetStore().assets.values()].filter((asset) => asset.tenantId === context.tenantId); }
+export async function listAssets(context: RequestContext) {
+  if (!databasePool()) return demoAssets(context);
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<PersistentAssetRow>(
+      "select id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at from media_assets order by created_at desc",
+    );
+    return result.rows.map(persistentAsset);
+  });
+}
 
-export function hasApprovedLiveRights(context: RequestContext) {
-  const assets = listAssets(context);
+export async function createMediaAsset(context: RequestContext, input: CreateMediaAssetInput) {
+  if (!databasePool()) {
+    const asset: MediaAsset = { id: `asset_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input };
+    assetStore().assets.set(asset.id, asset);
+    return asset;
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<PersistentAssetRow>(
+      "insert into media_assets (tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8::date) returning id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at",
+      [context.tenantId, input.kind, input.name, input.objectKey, input.checksum, input.rightsScope, input.source, input.expiresAt ?? null]
+    );
+    return persistentAsset(result.rows[0]);
+  });
+}
+
+export async function approveMediaAsset(context: RequestContext, assetId: string) {
+  if (!databasePool()) {
+    const asset = assetStore().assets.get(assetId);
+    if (!asset || asset.tenantId !== context.tenantId) throw new Response("Media asset not found", { status: 404 });
+    asset.approval = "approved";
+    asset.approvedAt = new Date().toISOString();
+    return asset;
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
+    const result = await client.query<PersistentAssetRow>(
+      "update media_assets set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 returning id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at",
+      [assetId, actor.rows[0].id]
+    );
+    if (!result.rows[0]) throw new Response("Media asset not found", { status: 404 });
+    return persistentAsset(result.rows[0]);
+  });
+}
+
+export async function hasApprovedLiveRights(context: RequestContext) {
+  if (!databasePool()) return rightsAreComplete(demoAssets(context));
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<{ kind: AssetKind }>(
+      "select distinct kind from media_assets where approval_status = 'approved' and (expires_at is null or expires_at >= current_date) and kind = any($1::media_asset_kind[])",
+      [["portrait", "voice", "product_clip", "music"]]
+    );
+    return result.rows.length === 4;
+  });
+}
+
+function demoAssets(context: RequestContext) {
+  return [...assetStore().assets.values()].filter((asset) => asset.tenantId === context.tenantId);
+}
+
+function rightsAreComplete(assets: MediaAsset[]) {
   const needed: AssetKind[] = ["portrait", "voice", "product_clip", "music"];
   const today = new Date().toISOString().slice(0, 10);
   return needed.every((kind) => assets.some((asset) => asset.kind === kind && asset.approval === "approved" && (!asset.expiresAt || asset.expiresAt >= today)));
+}
+
+function persistentAsset(row: PersistentAssetRow): MediaAsset {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    kind: row.kind,
+    name: row.name,
+    approval: row.approval_status,
+    expiresAt: row.expires_at ? new Date(row.expires_at).toISOString().slice(0, 10) : undefined,
+    rightsScope: row.rights_scope,
+    source: row.source_ref,
+    objectKey: row.object_key,
+    checksum: row.checksum,
+    approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined
+  };
 }
