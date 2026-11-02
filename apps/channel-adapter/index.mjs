@@ -22,7 +22,6 @@ const server = http.createServer(async (request, response) => {
     if (!match) return json(response, 404, { error: "not_found" });
     const target = targets.get(decodeURIComponent(match[1]));
     if (!target) return json(response, 404, { error: "unknown_channel" });
-    if (!allowRequest(target.channelConnectionId)) return json(response, 429, { error: "channel_rate_limited" });
     const rawBody = await readBody(request);
     const eventId = request.headers["x-shuzhiren-event-id"];
     const timestamp = request.headers["x-shuzhiren-timestamp"];
@@ -33,6 +32,10 @@ const server = http.createServer(async (request, response) => {
     const replay = await reserveReplay(target, eventId, payloadSha256(rawBody));
     if (replay.state === "delivered") return json(response, 200, { accepted: true, duplicate: true });
     if (!replay.claimed) return json(response, 202, { accepted: true, processing: true });
+    if (!allowRequest(target.channelConnectionId)) {
+      await releaseReplay(target, eventId);
+      return json(response, 429, { error: "channel_rate_limited" });
+    }
     const downstream = event.kind === "interaction" ? "/api/v1/runtime/channel-interactions" : "/api/v1/runtime/channel-commerce";
     const token = event.kind === "interaction" ? target.interactionToken : target.commerceToken;
     const body = event.kind === "interaction"
@@ -44,7 +47,8 @@ const server = http.createServer(async (request, response) => {
     return json(response, 202, { accepted: true, duplicate: false });
   } catch (error) {
     const message = error instanceof Error ? error.message : "webhook_processing_failed";
-    return json(response, message.startsWith("Invalid") || message.includes("required") || message.includes("Unsupported") ? 400 : 500, { error: message });
+    const status = message === "webhook_body_too_large" ? 413 : error instanceof SyntaxError || message.startsWith("Invalid") || message.includes("required") || message.includes("Unsupported") ? 400 : 500;
+    return json(response, status, { error: message });
   }
 });
 
@@ -67,6 +71,7 @@ async function reserveReplay(target, eventId, hash) {
   } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
 }
 async function markDelivered(target, eventId) { const client = await pool.connect(); try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]); await client.query("update channel_webhook_replays set state = 'delivered', delivered_at = now(), lease_expires_at = null where channel_connection_id = $1 and external_event_id = $2", [target.channelConnectionId, eventId]); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); } }
+async function releaseReplay(target, eventId) { const client = await pool.connect(); try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]); await client.query("update channel_webhook_replays set state = 'pending', lease_expires_at = null where channel_connection_id = $1 and external_event_id = $2 and state = 'delivering'", [target.channelConnectionId, eventId]); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); } }
 function asHeader(value) { return typeof value === "string" ? value : ""; }
 function requiredUrl(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return new URL(value); }
 function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }

@@ -315,6 +315,7 @@ try {
       DATABASE_URL: databaseUrl,
       CONTROL_PLANE_URL: `http://127.0.0.1:${consolePort}`,
       CHANNEL_ADAPTER_PORT: String(adapterPort),
+      CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE: "1",
       CHANNEL_ADAPTER_TARGETS: JSON.stringify([{ tenantId, channelConnectionId: recoverRun.channelId, signingSecret: adapterSigningSecret, interactionToken: "control-plane-integration-interaction-token", commerceToken }])
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -325,12 +326,25 @@ try {
   const adapterTimestamp = String(Date.now());
   const adapterSignature = `sha256=${createHmac("sha256", adapterSigningSecret).update(`${adapterTimestamp}.${adapterPayload}`).digest("hex")}`;
   const adapterHeaders = { "content-type": "application/json", "x-shuzhiren-event-id": adapterEventId, "x-shuzhiren-timestamp": adapterTimestamp, "x-shuzhiren-signature": adapterSignature };
+  const malformedPayload = "{not-json";
+  const malformedSignature = `sha256=${createHmac("sha256", adapterSigningSecret).update(`${adapterTimestamp}.${malformedPayload}`).digest("hex")}`;
+  const malformedAdapterEvent = await fetch(`http://127.0.0.1:${adapterPort}/v1/webhooks/${recoverRun.channelId}`, { method: "POST", headers: { ...adapterHeaders, "x-shuzhiren-event-id": "adapter-malformed-1", "x-shuzhiren-signature": malformedSignature }, body: malformedPayload });
+  assert.equal(malformedAdapterEvent.status, 400, "signed malformed webhook bodies must be reported as client errors");
+  const adapterInvalidSignature = await fetch(`http://127.0.0.1:${adapterPort}/v1/webhooks/${recoverRun.channelId}`, { method: "POST", headers: { ...adapterHeaders, "x-shuzhiren-signature": "sha256=invalid" }, body: adapterPayload });
+  assert.equal(adapterInvalidSignature.status, 401, "invalid signatures must be rejected before consuming channel rate capacity");
   const adapterDelivery = await fetch(`http://127.0.0.1:${adapterPort}/v1/webhooks/${recoverRun.channelId}`, { method: "POST", headers: adapterHeaders, body: adapterPayload });
   assert.equal(adapterDelivery.status, 202, "signed adapter commerce event should be forwarded");
   const adapterDuplicate = await fetch(`http://127.0.0.1:${adapterPort}/v1/webhooks/${recoverRun.channelId}`, { method: "POST", headers: adapterHeaders, body: adapterPayload });
   assert.equal(adapterDuplicate.status, 200, "delivered adapter event should be deduplicated before forwarding");
   const adapterReplay = await client.query("select state from channel_webhook_replays where channel_connection_id = $1 and external_event_id = $2", [recoverRun.channelId, adapterEventId]);
   assert.deepEqual(adapterReplay.rows[0], { state: "delivered" });
+  const limitedAdapterEventId = "adapter-paid-limited-1";
+  const limitedAdapterPayload = JSON.stringify({ kind: "commerce", runId: recoverRunId, eventType: "order_paid", orderReference: "adapter-order-limited-1", amountCents: 9900, quantity: 1 });
+  const limitedAdapterSignature = `sha256=${createHmac("sha256", adapterSigningSecret).update(`${adapterTimestamp}.${limitedAdapterPayload}`).digest("hex")}`;
+  const limitedAdapterDelivery = await fetch(`http://127.0.0.1:${adapterPort}/v1/webhooks/${recoverRun.channelId}`, { method: "POST", headers: { "content-type": "application/json", "x-shuzhiren-event-id": limitedAdapterEventId, "x-shuzhiren-timestamp": adapterTimestamp, "x-shuzhiren-signature": limitedAdapterSignature }, body: limitedAdapterPayload });
+  assert.equal(limitedAdapterDelivery.status, 429, "a second verified event must be rate limited after capacity is exhausted");
+  const releasedReplay = await client.query("select state, lease_expires_at is null as released from channel_webhook_replays where channel_connection_id = $1 and external_event_id = $2", [recoverRun.channelId, limitedAdapterEventId]);
+  assert.deepEqual(releasedReplay.rows[0], { state: "pending", released: true }, "rate limiting must release a claimed replay so platform retries are not blocked by a false in-flight lease");
 
   const commerceHeaders = { "content-type": "application/json", authorization: `Bearer ${commerceToken}` };
   for (const event of [
