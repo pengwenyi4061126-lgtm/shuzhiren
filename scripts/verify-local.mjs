@@ -1,6 +1,13 @@
 import { spawnSync } from "node:child_process";
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const pythonIndex = process.argv.indexOf("--python");
+const python = pythonIndex >= 0 ? process.argv[pythonIndex + 1] : undefined;
+const withGateway = process.argv.includes("--with-gateway");
+if (withGateway && !python) {
+  console.error("ERROR --with-gateway requires --python /absolute/path/to/python");
+  process.exit(1);
+}
 const checks = [
   ["run", "deploy:check", "--", "--allow-placeholders"],
   ["run", "deploy:check:test"],
@@ -42,4 +49,16 @@ for (const entrypoint of nodeEntrypoints) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-console.log(`PASS  local verification completed (${checks.length + nodeEntrypoints.length} checks; PostgreSQL, Docker, GPU, Python runtime dependencies, and platform acceptance are intentionally external)`);
+const gatewayChecks = withGateway ? [
+  ["-m", "py_compile", "runtime/gateway/app.py", "runtime/gateway/audio.py"],
+  ["scripts/test-runtime-gateway-audio.py"],
+  ["scripts/test-runtime-gateway-concurrency.py"]
+] : [];
+for (const args of gatewayChecks) {
+  console.log(`RUN   ${python} ${args.join(" ")}`);
+  const result = spawnSync(python, args, { stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+console.log(`PASS  local verification completed (${checks.length + nodeEntrypoints.length + gatewayChecks.length} checks; PostgreSQL, Docker, GPU, and platform acceptance are intentionally external${withGateway ? "" : "; add --with-gateway --python after installing runtime/gateway/requirements.txt to verify Gateway Python"})`);
