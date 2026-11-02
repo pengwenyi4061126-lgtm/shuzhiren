@@ -193,6 +193,24 @@ try {
   errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);
 }
 
+try {
+  const composePath = path.join(files.sourceRoot, "infra", "compose", "docker-compose.runtime.yml");
+  const liveTalkingConfig = path.join(files.sourceRoot, "vendor", "LiveTalking", "config.py");
+  const liveTalkingRtmp = path.join(files.sourceRoot, "vendor", "LiveTalking", "streamout", "rtmp.py");
+  const cosyVoiceServer = path.join(files.sourceRoot, "vendor", "CosyVoice", "runtime", "python", "fastapi", "server.py");
+  const gatewayApp = path.join(files.sourceRoot, "runtime", "gateway", "app.py");
+  const gatewayDockerfile = path.join(files.sourceRoot, "runtime", "gateway", "Dockerfile");
+  const [compose, config, rtmp, cosyVoice, gatewayAppText, gatewayDockerfileText] = await Promise.all([composePath, liveTalkingConfig, liveTalkingRtmp, cosyVoiceServer, gatewayApp, gatewayDockerfile].map((file) => readFile(file, "utf8")));
+  for (const expected of ["--transport rtmp", "--model musetalk", "--avatar_id", "--listenport 8010", "--max_session 1", "--push_url", "COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 缺少受支持的启动契约：${expected}`);
+  for (const expected of ["parser.add_argument('--transport'", "parser.add_argument('--model'", "parser.add_argument('--avatar_id'", "parser.add_argument('--listenport'", "parser.add_argument('--max_session'", "parser.add_argument('--push_url'"]) if (!config.includes(expected)) errors.push(`锁定 LiveTalking 源码不再支持 Compose 所需参数：${expected}`);
+  if (!rtmp.includes("sc.stream_server = self.push_url")) errors.push("锁定 LiveTalking 源码不再将 push_url 绑定到 RTMP 输出");
+  if (!cosyVoice.includes("return StreamingResponse(generate_data(model_output))") || !cosyVoice.includes("tts_speech")) errors.push("锁定 CosyVoice FastAPI 不再输出原始语音 PCM 流");
+  if (!gatewayAppText.includes('COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))') || !gatewayAppText.includes("pcm_s16le_to_wav")) errors.push("Gateway 未以 24 kHz 配置封装 CosyVoice PCM");
+  if (!gatewayDockerfileText.includes("COPY app.py audio.py .")) errors.push("Gateway 镜像缺少 PCM/WAV 封装模块");
+} catch (error) {
+  errors.push(`开源运行时启动契约不可验证：${error instanceof Error ? error.message : "读取失败"}`);
+}
+
 if (runtime.get("STREAM_OUTPUT_MODE") !== "rtmp") warnings.push("当前检查只验证 RTMP 输出；若使用 SRT，需要先扩展 Gateway 和验收脚本。");
 
 for (const warning of warnings) console.warn(`WARN  ${warning}`);
