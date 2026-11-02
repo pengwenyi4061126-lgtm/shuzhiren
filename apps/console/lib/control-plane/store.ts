@@ -234,12 +234,16 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (run.state !== input.expectedState) throw new Response("Live run state changed", { status: 409 });
     if (!canTransition(run.state, input.action)) throw new Response("Command is not allowed in current state", { status: 409 });
     if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
+    const requiresRuntimeConfirmation = input.action === "START" || input.action === "RECOVER";
     if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
       throw new Response("Preflight requirements are not satisfied", { status: 409 });
     }
-    if (input.action === "START") {
+    if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
+      throw new Response("Runtime health is not ready for recovery", { status: 409 });
+    }
+    if (requiresRuntimeConfirmation) {
       const pending = await client.query<{ scheduled_start_event_id: string | null }>("select scheduled_start_event_id from live_runs where id = $1", [run.id]);
-      if (pending.rows[0]?.scheduled_start_event_id) throw new Response("A start command is already pending runtime confirmation", { status: 409 });
+      if (pending.rows[0]?.scheduled_start_event_id) throw new Response("A runtime activation command is already pending confirmation", { status: 409 });
     }
 
     const nextState = nextStateFor(run.state, input.action);
@@ -250,8 +254,8 @@ export async function issueCommand(context: RequestContext, runId: string, input
     );
     const command = persistentCommand(inserted.rows[0]);
     const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action)), run.runtimeSessionId);
-    if (input.action === "START") {
-      await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = 'ARMED' and scheduled_start_event_id is null", [run.id, mediaEvent.id]);
+    if (requiresRuntimeConfirmation) {
+      await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = $3 and scheduled_start_event_id is null", [run.id, mediaEvent.id, run.state]);
       return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
     }
     await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, nextState]);
@@ -321,6 +325,9 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
   if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
     throw new Response("Preflight requirements are not satisfied", { status: 409 });
+  }
+  if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
+    throw new Response("Runtime health is not ready for recovery", { status: 409 });
   }
 
   const command: LiveCommand = {

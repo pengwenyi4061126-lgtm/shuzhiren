@@ -144,9 +144,9 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent)
     const result = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [input.id]);
     if (!result.rows[0]) throw new Error("Outbox event disappeared during delivery");
     const event = persistentEvent(result.rows[0]);
-    if (event.type === "media.dispatch" && ["SCHEDULED_START", "START"].includes(event.command.payload.controlAction)) {
+    if (event.type === "media.dispatch" && ["SCHEDULED_START", "START", "RECOVER"].includes(event.command.payload.controlAction)) {
       await client.query(
-        "update live_runs set state = 'LIVE', updated_at = now() where id = $1 and state = 'ARMED' and scheduled_start_event_id = $2",
+        "update live_runs set state = 'LIVE', updated_at = now() where id = $1 and state in ('ARMED', 'DEGRADED') and scheduled_start_event_id = $2",
         [event.command.runId, event.id]
       );
     }
