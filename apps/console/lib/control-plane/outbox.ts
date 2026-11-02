@@ -19,6 +19,10 @@ const manualDeliveryLeaseSeconds = (() => {
   const configured = Number.parseInt(process.env.OUTBOX_LEASE_SECONDS ?? "60", 10);
   return Number.isInteger(configured) && configured > 0 ? configured : 60;
 })();
+const outboxMaxAttempts = (() => {
+  const configured = Number.parseInt(process.env.OUTBOX_MAX_ATTEMPTS ?? "6", 10);
+  return Number.isInteger(configured) && configured > 0 ? configured : 6;
+})();
 
 function outboxStore(): OutboxStore { globalThis.shuzhirenOutboxStore ??= { events: new Map(), speechCommandEvents: new Map() }; return globalThis.shuzhirenOutboxStore; }
 
@@ -109,7 +113,7 @@ export async function deliverOutboxEvent(context: RequestContext, eventId: strin
     const event = await markDelivered(context, claimed.event);
     return { event, duplicate: false as const, result };
   } catch (error) {
-    await markFailed(context, claimed.event.id, error instanceof Error ? error.message : "runtime_dispatch_failed");
+    await markFailed(context, claimed.event, error instanceof Error ? error.message : "runtime_dispatch_failed");
     throw error;
   }
 }
@@ -166,13 +170,34 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent)
   });
 }
 
-async function markFailed(context: RequestContext, eventId: string, lastError: string) {
+async function markFailed(context: RequestContext, input: RuntimeOutboxEvent, lastError: string) {
   if (!databasePool()) {
-    const event = outboxStore().events.get(eventId);
+    const event = outboxStore().events.get(input.id);
     if (event) { event.state = "failed"; event.lastError = lastError; }
     return;
   }
-  await withTenantTransaction(context.tenantId, async (client) => { await client.query("update outbox_events set state = 'failed', last_error = $2 where id = $1", [eventId, lastError]); });
+  await withTenantTransaction(context.tenantId, async (client) => {
+    await client.query("update outbox_events set state = 'failed', last_error = $2 where id = $1", [input.id, lastError]);
+    if (input.attempts >= outboxMaxAttempts) await openDeliveryExhaustedAlert(client, context, input, lastError);
+  });
+}
+
+async function openDeliveryExhaustedAlert(client: PoolClient, context: RequestContext, event: RuntimeOutboxEvent, lastError: string) {
+  const severity = event.type === "media.dispatch" ? "critical" : "warning";
+  const code = "runtime_command_delivery_exhausted";
+  const existing = await client.query<{ id: string }>("select id from runtime_alerts where live_run_id = $1 and code = $2 and status = 'open' for update", [event.command.runId, code]);
+  if (existing.rows[0]) return;
+  const error = String(lastError).replace(/[\r\n\t]+/g, " ").slice(0, 500);
+  const opened = await client.query<{ id: string }>(
+    "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') returning id",
+    [context.tenantId, event.command.runId, severity, code, `运行时 ${event.type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`]
+  );
+  const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
+  await client.query(
+    `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+     values ($1, $2, 'runtime_command.delivery_exhausted', 'runtime_alert', $3::uuid, $3, $4::jsonb)`,
+    [context.tenantId, actor.rows[0].id, opened.rows[0].id, JSON.stringify({ runId: event.command.runId, outboxEventId: event.id, eventType: event.type, attempts: event.attempts, severity, deliveryMode: "manual" })]
+  );
 }
 
 function persistentEvent(row: PersistentOutboxRow): RuntimeOutboxEvent {

@@ -79,6 +79,7 @@ try {
       RUNTIME_GATEWAY_URL: mock.baseUrl,
       RUNTIME_SHARED_TOKEN: gatewayToken,
       RUNTIME_GATEWAY_DEMO_MODE: "false",
+      OUTBOX_MAX_ATTEMPTS: "1",
       OIDC_ISSUER_URL: issuer,
       OIDC_AUDIENCE: "shuzhiren-integration",
       OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
@@ -318,6 +319,19 @@ try {
   assert.deepEqual(deliveredEnd.rows[0], { state: "ENDED", pending_media_event_id: null }, "runtime stop acknowledgement must atomically end the run and release its pending reservation");
   assert.equal(mock.mediaCommands.at(-1)?.action, "stop_program");
 
+  const manualFailureRun = await seedRun("LIVE", "session_manual_delivery_failure", new Date());
+  const manualFailureEvent = await client.query(`insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
+    values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id`, [tenantId, manualFailureRun.runId, JSON.stringify({
+      sessionId: "session_manual_delivery_failure",
+      command: { id: `fail_media_${randomUUID()}`, runId: manualFailureRun.runId, type: "switch_to_human", issuedAt: new Date().toISOString(), traceId: `trace_${manualFailureRun.runId}`, payload: { controlAction: "MANUAL_OUTBOX_FAILURE_TEST" } }
+    })]);
+  const manualFailureDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${manualFailureEvent.rows[0].id}/deliver`, { method: "POST", headers: requestHeaders });
+  assert.equal(manualFailureDelivery.status, 503, "manual runtime delivery should surface gateway failure");
+  const manualFailureAlert = await client.query("select severity, status from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted'", [manualFailureRun.runId]);
+  assert.deepEqual(manualFailureAlert.rows[0], { severity: "critical", status: "open" }, "manual terminal delivery failure should create a critical alert");
+  const manualFailureAudit = await client.query("select detail from audit_events where event_type = 'runtime_command.delivery_exhausted' and resource_key = (select id::text from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted')", [manualFailureRun.runId]);
+  assert.equal(manualFailureAudit.rows[0].detail.deliveryMode, "manual", "manual terminal delivery failure must record its delivery mode");
+
   const recordingInput = {
     tenantId,
     runId: recoverRunId,
@@ -501,9 +515,8 @@ try {
     stdio: ["ignore", "pipe", "pipe"]
   });
   await waitFor(async () => (await fetch(`http://127.0.0.1:${notifierPort}/healthz`)).ok, 10_000, "alert notifier startup");
-  await waitFor(() => mock.alertNotifications.length === 1, 10_000, "runtime alert webhook delivery");
-  assert.equal(mock.alertNotifications[0].payload.alert.id, alertId);
-  assert.equal(mock.alertNotifications[0].payload.alert.code, "runtime_telemetry_stale");
+  await waitFor(() => mock.alertNotifications.some((notification) => notification.payload.alert.id === alertId), 10_000, "runtime alert webhook delivery");
+  assert.equal(mock.alertNotifications.find((notification) => notification.payload.alert.id === alertId)?.payload.alert.code, "runtime_telemetry_stale");
   const notificationDelivery = await client.query("select state, attempts from alert_notification_deliveries where runtime_alert_id = $1", [alertId]);
   assert.deepEqual(notificationDelivery.rows[0], { state: "delivered", attempts: 1 });
 
