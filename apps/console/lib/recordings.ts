@@ -55,12 +55,17 @@ export async function registerRecording(context: RequestContext, input: Register
     const store = recordingStore();
     const key = `${context.tenantId}:${input.idempotencyKey}`;
     const existingId = store.idempotency.get(key);
-    if (existingId) return { recording: store.recordings.get(existingId)!, duplicate: true };
+    if (existingId) {
+      const existing = store.recordings.get(existingId)!;
+      if (!sameRecording(existing, input)) throw new Response("Recording idempotency key was already used with different content", { status: 409 });
+      return { recording: existing, duplicate: true };
+    }
     const recording: RecordingEvidence = { id: `recording_${crypto.randomUUID()}`, tenantId: context.tenantId, recordedAt: new Date().toISOString(), ...input };
     store.recordings.set(recording.id, recording);
     store.idempotency.set(key, recording.id);
     return { recording, duplicate: false };
   }
+  if (!isUuid(input.runId)) throw new Response("Live run not found", { status: 404 });
   return withTenantTransaction(context.tenantId, async (client) => {
     const run = await client.query("select id from live_runs where id = $1::uuid", [input.runId]);
     if (!run.rows[0]) throw new Response("Live run not found", { status: 404 });
@@ -68,7 +73,11 @@ export async function registerRecording(context: RequestContext, input: Register
       "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until from recording_evidence where idempotency_key = $1",
       [input.idempotencyKey],
     );
-    if (existing.rows[0]) return { recording: persistentRecording(existing.rows[0]), duplicate: true };
+    if (existing.rows[0]) {
+      const recording = persistentRecording(existing.rows[0]);
+      if (!sameRecording(recording, input)) throw new Response("Recording idempotency key was already used with different content", { status: 409 });
+      return { recording, duplicate: true };
+    }
     const result = await client.query<PersistentRecordingRow>(
       `insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, retention_until, idempotency_key)
        values ($1, $2::uuid, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9::date, $10)
@@ -81,7 +90,11 @@ export async function registerRecording(context: RequestContext, input: Register
       "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until from recording_evidence where idempotency_key = $1",
       [input.idempotencyKey],
     );
-    if (conflicted.rows[0]) return { recording: persistentRecording(conflicted.rows[0]), duplicate: true };
+    if (conflicted.rows[0]) {
+      const recording = persistentRecording(conflicted.rows[0]);
+      if (!sameRecording(recording, input)) throw new Response("Recording idempotency key was already used with different content", { status: 409 });
+      return { recording, duplicate: true };
+    }
     throw new Response("Recording object key is already registered", { status: 409 });
   });
 }
@@ -103,3 +116,23 @@ function persistentRecording(row: PersistentRecordingRow): RecordingEvidence {
 }
 
 function timestamp(value: Date | string | null) { return value ? new Date(value).toISOString() : undefined; }
+
+function sameRecording(existing: RecordingEvidence, input: RegisterRecordingInput) {
+  return existing.runId === input.runId
+    && existing.objectKey === input.objectKey
+    && existing.checksumSha256 === input.checksumSha256
+    && existing.bytes === input.bytes
+    && existing.durationSeconds === input.durationSeconds
+    && sameTimestamp(existing.startedAt, input.startedAt)
+    && sameTimestamp(existing.endedAt, input.endedAt)
+    && (existing.retentionUntil ?? undefined) === (input.retentionUntil ?? undefined);
+}
+
+function sameTimestamp(existing: string | undefined, input: string | undefined) {
+  if (!existing || !input) return existing === input;
+  return Date.parse(existing) === Date.parse(input);
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}

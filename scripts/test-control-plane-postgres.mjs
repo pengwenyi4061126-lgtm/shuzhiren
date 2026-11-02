@@ -303,6 +303,10 @@ try {
   assert.equal(recordingRegistered.status, 201, "verified recording evidence should be accepted once");
   const recordingRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify(recordingInput) });
   assert.equal(recordingRetry.status, 200, "recording evidence retries must be idempotent");
+  const recordingConflict = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify({ ...recordingInput, checksumSha256: "b".repeat(64) }) });
+  assert.equal(recordingConflict.status, 409, "recording idempotency keys must reject different evidence");
+  const malformedRecording = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify({ ...recordingInput, runId: "not-a-uuid", idempotencyKey: "recording-invalid-run" }) });
+  assert.equal(malformedRecording.status, 404, "malformed recording run IDs must not surface PostgreSQL UUID cast errors");
   const recordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/recordings`, { headers: requestHeaders });
   assert.equal(recordings.status, 200);
   const recordingsBody = await recordings.json();
