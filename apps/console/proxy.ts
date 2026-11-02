@@ -13,6 +13,7 @@ export async function proxy(request: NextRequest) {
   if (process.env.NODE_ENV !== "production" || request.nextUrl.pathname === "/api/v1/runtime/telemetry") return NextResponse.next();
   const token = accessTokenFrom(request);
   if (!token) return error("missing_bearer_token", 401);
+  if (usesCookieAuth(request) && isUnsafeMethod(request.method) && !hasTrustedOrigin(request)) return error("csrf_origin_rejected", 403);
   const issuer = process.env.OIDC_ISSUER_URL;
   const audience = process.env.OIDC_AUDIENCE;
   const jwksUrl = process.env.OIDC_JWKS_URL;
@@ -35,6 +36,24 @@ function accessTokenFrom(request: NextRequest) {
   const authorization = request.headers.get("authorization");
   if (authorization?.startsWith("Bearer ")) return authorization.slice(7);
   return request.cookies.get(process.env.OIDC_ACCESS_TOKEN_COOKIE ?? "shuzhiren_access_token")?.value;
+}
+
+function usesCookieAuth(request: NextRequest) {
+  return !request.headers.get("authorization")?.startsWith("Bearer ") && Boolean(request.cookies.get(process.env.OIDC_ACCESS_TOKEN_COOKIE ?? "shuzhiren_access_token")?.value);
+}
+
+function isUnsafeMethod(method: string) { return !["GET", "HEAD", "OPTIONS"].includes(method); }
+
+function hasTrustedOrigin(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  const configured = process.env.OIDC_ALLOWED_ORIGINS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
+  try {
+    if (new URL(origin).host === request.headers.get("host")) return true;
+  } catch {
+    return false;
+  }
+  return configured.includes(origin);
 }
 
 async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> {
