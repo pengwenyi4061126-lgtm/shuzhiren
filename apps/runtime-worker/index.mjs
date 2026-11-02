@@ -104,7 +104,7 @@ async function scheduleDueRun() {
       let blockedCode = null;
       for (const entitlement of entitlements.rows) {
         if (entitlement.code === "max_concurrent_live_runs") {
-          const active = await client.query("select count(*) from live_runs where state = 'LIVE' and id <> $1", [run.id]);
+          const active = await client.query("select count(*) from live_runs where state in ('LIVE', 'DEGRADED') and id <> $1", [run.id]);
           if (Number(active.rows[0].count) >= Number(entitlement.limit_value)) blockedCode = "max_concurrent_live_runs";
         }
         if (entitlement.code === "monthly_live_minutes") {

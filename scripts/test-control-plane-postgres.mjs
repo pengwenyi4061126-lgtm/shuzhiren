@@ -357,14 +357,15 @@ try {
   const isolatedProductFact = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${isolatedPimToken}` }, body: JSON.stringify({ ...productFactInput, tenantId: isolatedTenantId }) });
   assert.equal(isolatedProductFact.status, 202, "the same external PIM event ID may be used independently by another tenant");
 
-  const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1 }) });
+  await seedRun("DEGRADED", "session_entitlement_degraded_active", new Date());
+  const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 2 }) });
   assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");
   const minuteEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/monthly_live_minutes`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1000 }) });
   assert.equal(minuteEntitlementUpdate.status, 200, "admin should configure tenant live-minute entitlement");
   const entitlementList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
   assert.equal(entitlementList.status, 200);
   const entitlementBody = await entitlementList.json();
-  assert.equal(entitlementBody.data.find((item) => item.code === "max_concurrent_live_runs")?.used, 1);
+  assert.equal(entitlementBody.data.find((item) => item.code === "max_concurrent_live_runs")?.used, 2, "degraded runs must consume concurrent live-run capacity");
   assert.equal(entitlementBody.data.find((item) => item.code === "monthly_live_minutes")?.limitValue, 1000);
   const limitedRun = await seedRun("DEGRADED", "session_entitlement_limit", new Date());
   const blockedRecovery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${limitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
