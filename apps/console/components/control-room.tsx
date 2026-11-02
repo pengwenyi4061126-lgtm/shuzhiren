@@ -19,7 +19,7 @@ const navigation: NavigationItem[] = [
   { icon: Clapperboard, label: "内容工坊", href: "/assets" },
   { icon: Package, label: "商品中心", href: "/products" },
   { icon: PackageCheck, label: "发布治理", href: "/releases" },
-  { icon: ShieldCheck, label: "知识与策略" },
+  { icon: ShieldCheck, label: "知识与策略", href: "/policy" },
   { icon: ChartNoAxesCombined, label: "运行监控", href: "/monitoring" },
   { icon: Send, label: "投递队列", href: "/outbox" },
   { icon: FileText, label: "审计中心", href: "/audit" },
