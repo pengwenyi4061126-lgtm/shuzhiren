@@ -37,6 +37,7 @@ jobs:
       - run: npm run preflight:check
       - run: npm run start:ack:check
       - run: npm run runtime:watchdog:check
+      - run: npm run runtime:acceptance:test
       - run: npm run observer:runtime:test
       - run: npm run output-probe:test
       - run: npm run channel-adapter:test
