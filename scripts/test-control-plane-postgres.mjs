@@ -260,6 +260,11 @@ try {
   assert.equal(secondDelivery.status, 202);
   await waitFor(async () => (await client.query("select state, scheduled_start_event_id from live_runs where id = $1", [recoverRunId])).rows[0]?.state === "LIVE" && (await client.query("select scheduled_start_event_id from live_runs where id = $1", [recoverRunId])).rows[0]?.scheduled_start_event_id === null, 5_000, "second recovery acknowledgement");
   assert.equal(mock.mediaCommands.length, 2, "a later recovery should dispatch one additional media command");
+  const speechDispatch = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/speech-dispatches`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款商品价格是多少？", idempotencyKey: randomUUID() }) });
+  assert.equal(speechDispatch.status, 202, "a grounded speech request should be accepted for a live run");
+  const speechBody = await speechDispatch.json();
+  assert.equal(speechBody.data.status, "queued");
+  assert.equal(speechBody.data.event.command.voice, "integration_approved_voice", "speech must use the runtime voice frozen with the run's approved voice asset");
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '30 seconds'), ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '15 seconds')", [tenantId, recoverRunId]);
   const samplingSloResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/slo`, { headers: requestHeaders });
   assert.equal(samplingSloResponse.status, 200, "operators should read a run's sampling quality SLO");
