@@ -46,6 +46,22 @@ services:
       runtime-gateway:
         condition: service_healthy
 
+  runtime-observer:
+    build:
+      context: ../..
+      dockerfile: apps/runtime-observer/Dockerfile
+    environment:
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set-in-runtime-env}
+      RUNTIME_GATEWAY_URL: http://runtime-gateway:8090
+      RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
+      RUNTIME_OBSERVER_TARGETS: ${RUNTIME_OBSERVER_TARGETS:?set-in-runtime-env}
+      RUNTIME_OBSERVER_POLL_MS: ${RUNTIME_OBSERVER_POLL_MS:-5000}
+      RUNTIME_OBSERVER_TIMEOUT_MS: ${RUNTIME_OBSERVER_TIMEOUT_MS:-3000}
+      RUNTIME_OBSERVER_FAIL_CLOSED: ${RUNTIME_OBSERVER_FAIL_CLOSED:-true}
+    depends_on:
+      runtime-gateway:
+        condition: service_healthy
+
   livetalking:
     build:
       context: ../..

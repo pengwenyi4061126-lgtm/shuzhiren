@@ -58,7 +58,7 @@ const runtime = parseEnv(runtimeText);
 const gateway = parseEnv(gatewayText);
 
 required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "CONTROL_PLANE_DEMO_MODE", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "RUNTIME_TELEMETRY_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "RUNTIME_SPEECH_VOICE"]);
-required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_RTMP_URL", "STREAM_KEY", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS"]);
+required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_RTMP_URL", "STREAM_KEY", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 equal(control, "控制面", "NODE_ENV", "production");
 equal(control, "控制面", "CONTROL_PLANE_DEMO_MODE", "false");
@@ -78,6 +78,18 @@ equal(runtime, "运行时", "LIVE_ALLOW_LLM_FREEFORM", "false");
 equal(runtime, "运行时", "LIVE_REQUIRE_HUMAN_HANDOFF_FOR_HIGH_RISK", "true");
 equal(runtime, "运行时", "LIVE_REQUIRE_AI_DISCLOSURE", "true");
 equal(runtime, "运行时", "LLM_MODE", "external");
+
+try {
+  const targets = JSON.parse(runtime.get("RUNTIME_OBSERVER_TARGETS") ?? "");
+  const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
+    && ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"].every((key) => typeof target[key] === "string" && target[key].length > 0)
+    && target.telemetryToken.length >= 16
+    && /^https?:\/\//.test(target.outputProbeUrl);
+  if (!Array.isArray(targets) || targets.length === 0 || !targets.every(targetValid)) throw new Error("invalid");
+} catch {
+  const message = "运行时 的 RUNTIME_OBSERVER_TARGETS 必须包含每个直播场次的租户、场次、会话、独立遥测密钥和私网输出探针 URL";
+  if (allowPlaceholders) warnings.push(message); else errors.push(message);
+}
 
 if (runtime.get("NVIDIA_VISIBLE_DEVICES") !== gateway.get("NVIDIA_VISIBLE_DEVICES")) errors.push("运行时与 Gateway 的 NVIDIA_VISIBLE_DEVICES 必须一致");
 if (runtime.get("RUNTIME_SHARED_TOKEN") !== gateway.get("RUNTIME_SHARED_TOKEN")) errors.push("运行时与 Gateway 的 RUNTIME_SHARED_TOKEN 必须一致");

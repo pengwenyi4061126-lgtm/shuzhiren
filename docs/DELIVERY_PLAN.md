@@ -10,6 +10,7 @@
 - PostgreSQL 归档备份、校验与隔离恢复演练；录屏落盘到受控主机路径并站外复制。
 - LiveTalking、MuseTalk、CosyVoice 的固定版本清单。
 - 以外置补丁导出 LiveTalking 会话、录制、推理/输出 FPS 与 RTMP writer 观测，并在真实平台目的端补充独立回执、实测码率与音画同步探针。
+- 每场次以私网 runtime-observer 绑定租户级遥测密钥、真实会话与输出探针；完成探针失效后的 fail-closed 降级演练。
 - 授权形象素材的本地预览。
 - 测试 RTMP 输出、健康检查和 4 小时连续运行报告。
 
