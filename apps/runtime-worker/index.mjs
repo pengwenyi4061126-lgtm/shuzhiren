@@ -120,6 +120,12 @@ async function scheduleDueRun() {
         }
         return null;
       }
+      const resolvedEntitlementAlert = await client.query("update runtime_alerts set status = 'resolved', resolved_at = now() where live_run_id = $1 and code = 'entitlement_exhausted' and status = 'open' returning id", [run.id]);
+      if (resolvedEntitlementAlert.rows[0]) {
+        const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-scheduler', '运行时排期器', 'operator'::membership_role) as id", [run.tenant_id]);
+        await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+          values ($1, $2, 'runtime_alert.resolved', 'runtime_alert', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, resolvedEntitlementAlert.rows[0].id, JSON.stringify({ runId: run.id, code: "entitlement_exhausted" })]);
+      }
       const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START" } };
       const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
