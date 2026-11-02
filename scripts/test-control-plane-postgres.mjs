@@ -354,6 +354,12 @@ try {
   assert.equal(revokedPreflightBody.data.checks.find((check) => check.id === "policy_profile")?.status, "blocked", "a revoked frozen policy profile must block preflight");
   const interactionAfterRevocation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/interactions`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "撤销后不应继续自动问答", evidenceIds: ["product_version"] }) });
   assert.equal(interactionAfterRevocation.status, 409, "a revoked frozen policy profile must fail closed for new interactions");
+  const auditExport = await fetch(`http://127.0.0.1:${consolePort}/api/v1/audit-events/export`, { headers: requestHeaders });
+  assert.equal(auditExport.status, 200, "authorized reviewers should export tenant audit evidence");
+  assert.match(auditExport.headers.get("content-disposition") ?? "", /attachment; filename="shuzhiren-audit-evidence-/);
+  const auditExportBody = await auditExport.json();
+  assert.equal(auditExportBody.chain.verified, true, "export must include a verified audit chain result");
+  assert.equal(auditExportBody.events.some((event) => event.type === "audit.exported" && typeof event.eventHash === "string" && event.eventHash.length === 64), true, "audit evidence export must record and include its own sealed access event");
   const auditChain = await client.query("select verified, sealed_events, legacy_events from verify_audit_chain($1::uuid)", [tenantId]);
   assert.equal(auditChain.rows[0].verified, true, "new audit events must form a valid tenant hash chain");
   assert.ok(Number(auditChain.rows[0].sealed_events) > 0);

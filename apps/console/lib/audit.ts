@@ -13,6 +13,8 @@ export type AuditEvent = {
   detail: Record<string, string | number | boolean | null>;
 };
 export type AuditChainVerification = { verified: boolean; sealedEvents: number; legacyEvents: number; detail: string };
+export type AuditEvidenceEvent = AuditEvent & { chainSequence: number | null; previousHash: string | null; eventHash: string | null };
+export type AuditEvidenceExport = { generatedAt: string; chain: AuditChainVerification; events: AuditEvidenceEvent[] };
 
 type AuditStore = { events: AuditEvent[] };
 type PersistentAuditRow = {
@@ -25,6 +27,9 @@ type PersistentAuditRow = {
   actor_name: string | null;
   occurred_at: Date | string;
   detail: unknown;
+  chain_sequence?: number | string | null;
+  previous_hash?: string | null;
+  event_hash?: string | null;
 };
 
 declare global { var shuzhirenAuditStore: AuditStore | undefined; }
@@ -75,6 +80,26 @@ export async function verifyAuditChain(context: RequestContext): Promise<AuditCh
     const row = result.rows[0];
     if (!row) throw new Error("Audit chain verification returned no result");
     return { verified: row.verified, sealedEvents: Number(row.sealed_events), legacyEvents: Number(row.legacy_events), detail: row.detail };
+  });
+}
+
+export async function exportAuditEvidence(context: RequestContext): Promise<AuditEvidenceExport> {
+  await recordAuditEvent(context, { type: "audit.exported", resource: "audit_evidence_export", resourceId: `audit-export:${crypto.randomUUID()}`, detail: { format: "json", scope: "tenant_chain" } });
+  const [chain, events] = await Promise.all([verifyAuditChain(context), listAuditEvidenceEvents(context)]);
+  return { generatedAt: new Date().toISOString(), chain, events };
+}
+
+async function listAuditEvidenceEvents(context: RequestContext): Promise<AuditEvidenceEvent[]> {
+  if (!databasePool()) return auditStore().events.filter((event) => event.tenantId === context.tenantId).map((event) => ({ ...event, chainSequence: null, previousHash: null, eventHash: null })).slice(0, 10000);
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<PersistentAuditRow>(
+      `select a.id, a.tenant_id, a.event_type, a.resource_type, a.resource_key,
+        u.external_subject, u.display_name as actor_name, a.occurred_at, a.detail,
+        a.chain_sequence, a.previous_hash, a.event_hash
+       from audit_events a left join users u on u.id = a.actor_id
+       order by a.chain_sequence asc nulls first, a.occurred_at asc limit 10000`
+    );
+    return result.rows.map((row) => ({ ...persistentAuditEvent(row), chainSequence: row.chain_sequence === null || row.chain_sequence === undefined ? null : Number(row.chain_sequence), previousHash: row.previous_hash ?? null, eventHash: row.event_hash ?? null }));
   });
 }
 
