@@ -48,3 +48,6 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      - run: npm run control-plane:integration
+        env:
+          RUN_CONTROL_PLANE_INTEGRATION_TESTS: "true"
