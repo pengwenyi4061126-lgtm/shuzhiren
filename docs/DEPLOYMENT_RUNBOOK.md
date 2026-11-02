@@ -11,9 +11,14 @@
 - 仅对反向代理公开控制台；PostgreSQL、MinIO、Redis、Gateway 与 Worker 位于私网。
 - 将模型、头像、录屏目录分别挂载到独立磁盘路径，不将权重、录屏或流密钥写入 Git。
 
-先在仓库根目录执行只读主机预检。它检查 GPU 名称/显存、Docker NVIDIA runtime 和用于模型、镜像、录屏的可用磁盘空间；不会安装软件、拉取镜像或启动容器。
+先在仓库根目录执行只读主机预检。它检查 GPU 名称/显存、Docker NVIDIA runtime 和用于模型、镜像、录屏的可用磁盘空间；不会安装软件、拉取镜像或启动容器。默认只检查当前仓库所在磁盘；生产环境必须把模型、Avatar 和录屏的实际宿主机目录一并传入。
 
 ```bash
+bash scripts/check-runtime-host.sh
+```
+
+```bash
+REQUIRED_STORAGE_PATHS='/srv/shuzhiren:/srv/shuzhiren/models:/srv/shuzhiren/avatars:/srv/shuzhiren/recordings' \
 bash scripts/check-runtime-host.sh
 ```
 

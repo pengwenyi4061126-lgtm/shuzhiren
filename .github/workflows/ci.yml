@@ -32,6 +32,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: bash -n scripts/check-runtime-host.sh
+      - run: bash scripts/check-runtime-host.sh --help
       - run: npm run deploy:check -- --allow-placeholders
       - run: npm run deploy:check:test
       - run: npm run policy:red-team

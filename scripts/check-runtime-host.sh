@@ -6,6 +6,7 @@ required_gpu_name="${REQUIRED_GPU_NAME:-RTX 4090}"
 minimum_gpu_memory_mib="${MIN_GPU_MEMORY_MIB:-22000}"
 minimum_free_gib="${MIN_FREE_GIB:-150}"
 workspace_root="${WORKSPACE_ROOT:-$PWD}"
+required_storage_paths="${REQUIRED_STORAGE_PATHS:-$workspace_root}"
 run_container_smoke=false
 
 usage() {
@@ -14,6 +15,7 @@ Usage: bash scripts/check-runtime-host.sh [--container-smoke]
 
 Environment:
   WORKSPACE_ROOT         Repository root to use for the disk-space check (default: current directory)
+  REQUIRED_STORAGE_PATHS Colon-separated host paths that each require MIN_FREE_GIB free (default: WORKSPACE_ROOT)
   REQUIRED_GPU_NAME      Required GPU name substring (default: RTX 4090)
   MIN_GPU_MEMORY_MIB     Minimum GPU memory in MiB (default: 22000)
   MIN_FREE_GIB           Minimum free disk space in GiB (default: 150)
@@ -60,11 +62,15 @@ docker_runtimes="$(docker info --format '{{range $name, $_ := .Runtimes}}{{$name
 [[ " $docker_runtimes " == *" nvidia "* ]] || fail "Docker nvidia runtime unavailable; install/configure NVIDIA Container Toolkit"
 pass "Docker nvidia runtime available"
 
-[[ -d "$workspace_root" ]] || fail "WORKSPACE_ROOT does not exist: $workspace_root"
-free_gib="$(df -Pk "$workspace_root" | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
-[[ "$free_gib" =~ ^[0-9]+$ ]] || fail "cannot determine free disk space for $workspace_root"
-(( free_gib >= minimum_free_gib )) || fail "only ${free_gib} GiB free at $workspace_root; at least ${minimum_free_gib} GiB is required for images, weights, and recordings"
-pass "disk capacity accepted: ${free_gib} GiB free"
+IFS=':' read -r -a storage_paths <<< "$required_storage_paths"
+for storage_path in "${storage_paths[@]}"; do
+  [[ -n "$storage_path" ]] || fail "REQUIRED_STORAGE_PATHS contains an empty path"
+  [[ -d "$storage_path" ]] || fail "required storage path does not exist: $storage_path"
+  free_gib="$(df -Pk "$storage_path" | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
+  [[ "$free_gib" =~ ^[0-9]+$ ]] || fail "cannot determine free disk space for $storage_path"
+  (( free_gib >= minimum_free_gib )) || fail "only ${free_gib} GiB free at $storage_path; at least ${minimum_free_gib} GiB is required"
+  pass "disk capacity accepted: ${free_gib} GiB free at $storage_path"
+done
 
 if "$run_container_smoke"; then
   smoke_image="${GPU_SMOKE_IMAGE:-}"
