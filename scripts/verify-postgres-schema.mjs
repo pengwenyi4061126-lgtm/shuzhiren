@@ -16,7 +16,8 @@ if (!databaseUrl) {
 }
 
 const requiredTables = ["tenants", "users", "memberships", "products", "product_versions", "shows", "show_revisions", "live_runs", "live_commands", "preflight_checks", "show_revision_product_versions", "audit_events", "outbox_events", "show_revision_segments", "media_assets", "channel_connections", "runtime_health_samples", "runtime_alerts", "live_interactions", "model_releases", "show_revision_model_releases"];
-const requiredColumns = { live_runs: ["scheduled_start_event_id"], model_releases: ["evidence_ref", "validation_summary"], channel_connections: ["verification_evidence_ref", "verified_by"] };
+const requiredColumns = { live_runs: ["scheduled_start_event_id"], model_releases: ["evidence_ref", "validation_summary"], channel_connections: ["verification_evidence_ref", "verified_by"], live_interactions: ["external_event_id"] };
+const requiredIndexes = ["live_interactions_external_event_id_idx"];
 const rlsTables = new Set(["products", "product_versions", "shows", "show_revisions", "live_runs", "live_commands", "preflight_checks", "show_revision_product_versions", "audit_events", "outbox_events", "show_revision_segments", "media_assets", "channel_connections", "runtime_health_samples", "runtime_alerts", "live_interactions", "model_releases", "show_revision_model_releases"]);
 const requiredPolicies = ["tenant_isolation_products", "tenant_isolation_product_versions", "tenant_isolation_shows", "tenant_isolation_show_revisions", "tenant_isolation_live_runs", "tenant_isolation_live_commands", "tenant_isolation_preflight_checks", "tenant_isolation_show_revision_product_versions", "tenant_isolation_audit_events", "tenant_isolation_outbox_events", "tenant_isolation_show_revision_segments", "tenant_isolation_media_assets", "tenant_isolation_channel_connections", "tenant_isolation_runtime_health_samples", "tenant_isolation_runtime_alerts", "tenant_isolation_live_interactions", "tenant_isolation_model_releases", "tenant_isolation_show_revision_model_releases"];
 const requiredTriggers = ["audit_events_append_only"];
@@ -46,6 +47,9 @@ try {
 
   const columns = new Set((await client.query("select table_name || '.' || column_name as name from information_schema.columns where table_schema = 'public'")).rows.map((row) => row.name));
   for (const [table, names] of Object.entries(requiredColumns)) for (const name of names) if (!columns.has(`${table}.${name}`)) errors.push(`缺少关键列：${table}.${name}`);
+
+  const indexes = new Set((await client.query("select indexname from pg_indexes where schemaname = 'public'")).rows.map((row) => row.indexname));
+  for (const index of requiredIndexes) if (!indexes.has(index)) errors.push(`缺少关键索引：${index}`);
 
   const policies = new Set((await client.query("select policyname from pg_policies where schemaname = 'public'")).rows.map((row) => row.policyname));
   for (const policy of requiredPolicies) if (!policies.has(policy)) errors.push(`缺少租户隔离策略：${policy}`);

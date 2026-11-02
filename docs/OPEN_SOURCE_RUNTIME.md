@@ -64,3 +64,9 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 `apps/runtime-worker` 是生产投递器：它只从不承载业务数据的 `tenants` 表读取租户 ID，然后在每个领取、排期和状态回写事务中设置 `app.tenant_id`，再使用 `FOR UPDATE SKIP LOCKED` 处理该租户的待投递事件。轮询游标会在租户间轮转，避免一个租户的积压长期饿死其他租户；业务表仍受强制 RLS 保护，worker 不需要也不得拥有 `BYPASSRLS`。它调用 Gateway，并记录成功/失败和尝试次数，仅运行在私有网络，不接受浏览器请求。
 
 控制台的“投递队列”只展示状态、尝试次数和最后错误，并提供场控确认后的单条“立即投递”。它不是替代 worker 的常规通道：有实际 Gateway 时才可验证人工恢复，重复请求会由 Gateway 的 `command_id` 幂等逻辑折叠。
+
+## 平台评论接入边界
+
+平台 Adapter 必须在自己的私网服务中完成平台要求的 Webhook 签名、时间戳、重放和限流验证，再使用独立的 `CHANNEL_INGEST_TOKEN` 调用控制面的 `POST /api/v1/runtime/channel-interactions`。该入口只接受租户、场次、已绑定渠道、平台事件 ID 和评论文本；它会验证场次正在 `LIVE` 或 `DEGRADED`、渠道已连接且声明支持评论 Webhook，并以 `tenant + run + channel source + event ID` 数据库唯一索引去重。重复投递返回既有互动，不能产生第二次播报或审计噪声。
+
+首个 `normalized-webhook-rtmp` Adapter 只是受控的标准化桥接契约，不能被描述成已完成某个平台的 OAuth、评论或商品 API 集成。实际接入每个平台时仍必须分别实现签名校验、重放保护、错误码映射、限流、审核要求和验收证据。

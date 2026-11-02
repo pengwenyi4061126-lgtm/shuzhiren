@@ -18,7 +18,9 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   const body: unknown = await request.json().catch(() => null);
   if (!isInteractionInput(body)) return Response.json({ error: "invalid_interaction" }, { status: 400 });
   const { runId } = await context.params;
-  if (!await getRun(actor, runId)) return Response.json({ error: "not_found" }, { status: 404 });
+  const run = await getRun(actor, runId);
+  if (!run) return Response.json({ error: "not_found" }, { status: 404 });
+  if (run.state !== "LIVE" && run.state !== "DEGRADED") return Response.json({ error: "live_run_not_accepting_interactions" }, { status: 409 });
   const interaction = await createInteraction(actor, { runId, question: body.question.trim(), source: body.source, evidenceIds: body.evidenceIds });
   await recordAuditEvent(actor, { type: "interaction.received", resource: "live_interaction", resourceId: interaction.id, detail: { runId, risk: interaction.risk, decision: interaction.decision } });
   if (interaction.decision === "handoff") await recordAuditEvent(actor, { type: "interaction.handoff_required", resource: "live_interaction", resourceId: interaction.id, detail: { runId, reasons: interaction.reasons.join(";") } });
