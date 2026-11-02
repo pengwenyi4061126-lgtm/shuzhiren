@@ -183,11 +183,19 @@ try {
   await waitFor(async () => (await client.query("select state from live_runs where id = $1", [staleRunId])).rows[0]?.state === "DEGRADED", 10_000, "stale telemetry watchdog");
   const alert = await client.query("select code, status from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId]);
   assert.deepEqual(alert.rows[0], { code: "runtime_telemetry_stale", status: "open" });
+  const alertId = (await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId])).rows[0].id;
+  const acknowledgement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/alerts/${alertId}/acknowledge`, { method: "POST", headers: requestHeaders });
+  assert.equal(acknowledgement.status, 200, "operator should be able to acknowledge an open runtime alert");
+  const acknowledgedAlert = await client.query("select acknowledged_at, acknowledged_by from runtime_alerts where id = $1", [alertId]);
+  assert.ok(acknowledgedAlert.rows[0].acknowledged_at);
+  assert.ok(acknowledgedAlert.rows[0].acknowledged_by);
+  const acknowledgementAudit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'runtime_alert.acknowledged'", [alertId]);
+  assert.equal(acknowledgementAudit.rows.length, 1);
   const audit = await client.query("select event_type from audit_events where resource_key = $1 and event_type = 'runtime_guard.degraded'", [staleRunId]);
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(workerProcess);
   await stop(adapterProcess);

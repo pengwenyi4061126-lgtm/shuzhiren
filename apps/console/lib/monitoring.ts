@@ -3,13 +3,13 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; fallbackReady: boolean };
 export type RuntimeTelemetryInput = Omit<RuntimeTelemetry, "tenantId" | "sampledAt"> & { sampledAt?: string };
-export type RuntimeAlert = { id: string; tenantId: string; runId: string; severity: "warning" | "critical"; code: string; message: string; status: "open" | "resolved"; openedAt: string; resolvedAt?: string };
+export type RuntimeAlert = { id: string; tenantId: string; runId: string; severity: "warning" | "critical"; code: string; message: string; status: "open" | "resolved"; openedAt: string; resolvedAt?: string; acknowledgedAt?: string; acknowledgedBy?: string };
 const maxTelemetryAgeMs = 60_000;
 
 type MonitoringStore = { telemetry: Map<string, RuntimeTelemetry>; alerts: Map<string, RuntimeAlert> };
 type AlertCondition = Pick<RuntimeAlert, "severity" | "code" | "message">;
 type PersistentTelemetryRow = { tenant_id: string; live_run_id: string; sampled_at: Date | string; output_connected: boolean; inference_fps: number | string; output_fps: number | string; av_sync_ms: number; bitrate_mbps: number | string; gpu_utilization: number; gpu_memory_mib: number; fallback_ready: boolean };
-type PersistentAlertRow = { id: string; tenant_id: string; live_run_id: string; severity: RuntimeAlert["severity"]; code: string; message: string; status: RuntimeAlert["status"]; opened_at: Date | string; resolved_at: Date | string | null };
+type PersistentAlertRow = { id: string; tenant_id: string; live_run_id: string; severity: RuntimeAlert["severity"]; code: string; message: string; status: RuntimeAlert["status"]; opened_at: Date | string; resolved_at: Date | string | null; acknowledged_at: Date | string | null; acknowledged_by_name: string | null };
 
 declare global { var shuzhirenMonitoringStore: MonitoringStore | undefined; }
 
@@ -32,7 +32,7 @@ export async function getTelemetry(context: RequestContext, runId: string) {
 export async function listAlerts(context: RequestContext, runId?: string) {
   if (!databasePool()) return [...monitoringStore().alerts.values()].filter((alert) => alert.tenantId === context.tenantId && (!runId || alert.runId === runId)).sort((left, right) => right.openedAt.localeCompare(left.openedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentAlertRow>(`select id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at from runtime_alerts where ($1::uuid is null or live_run_id = $1) order by opened_at desc limit 500`, [runId ?? null]);
+    const result = await client.query<PersistentAlertRow>(`select a.id, a.tenant_id, a.live_run_id, a.severity, a.code, a.message, a.status, a.opened_at, a.resolved_at, a.acknowledged_at, u.display_name as acknowledged_by_name from runtime_alerts a left join users u on u.id = a.acknowledged_by where ($1::uuid is null or a.live_run_id = $1) order by a.opened_at desc limit 500`, [runId ?? null]);
     return result.rows.map(persistentAlert);
   });
 }
@@ -47,21 +47,43 @@ export async function ingestTelemetry(context: RequestContext, input: RuntimeTel
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     await client.query(`insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [context.tenantId, telemetry.runId, telemetry.outputConnected, telemetry.inferenceFps, telemetry.outputFps, telemetry.avSyncMs, telemetry.bitrateMbps, telemetry.gpuUtilization, telemetry.gpuMemoryMiB, telemetry.fallbackReady, telemetry.sampledAt]);
-    const existing = await client.query<PersistentAlertRow>(`select id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at from runtime_alerts where live_run_id = $1 for update`, [telemetry.runId]);
+    const existing = await client.query<PersistentAlertRow>(`select id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name from runtime_alerts where live_run_id = $1 for update`, [telemetry.runId]);
     const active = new Map(alertConditions(telemetry).map((condition) => [condition.code, condition]));
     const changed: RuntimeAlert[] = [];
     for (const alert of existing.rows) {
       if (alert.status === "open" && !active.has(alert.code)) {
-        const resolved = await client.query<PersistentAlertRow>(`update runtime_alerts set status = 'resolved', resolved_at = $2 where id = $1 returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at`, [alert.id, telemetry.sampledAt]);
+        const resolved = await client.query<PersistentAlertRow>(`update runtime_alerts set status = 'resolved', resolved_at = $2 where id = $1 returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name`, [alert.id, telemetry.sampledAt]);
         changed.push(persistentAlert(resolved.rows[0]));
       }
     }
     for (const condition of active.values()) {
       if (existing.rows.some((alert) => alert.code === condition.code && alert.status === "open")) continue;
-      const opened = await client.query<PersistentAlertRow>(`insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status, opened_at) values ($1, $2, $3, $4, $5, 'open', $6) returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at`, [context.tenantId, telemetry.runId, condition.severity, condition.code, condition.message, telemetry.sampledAt]);
+      const opened = await client.query<PersistentAlertRow>(`insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status, opened_at) values ($1, $2, $3, $4, $5, 'open', $6) returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name`, [context.tenantId, telemetry.runId, condition.severity, condition.code, condition.message, telemetry.sampledAt]);
       changed.push(persistentAlert(opened.rows[0]));
     }
     return { telemetry, alerts: changed };
+  });
+}
+
+export async function acknowledgeAlert(context: RequestContext, alertId: string) {
+  if (!databasePool()) {
+    const alert = monitoringStore().alerts.get(alertId);
+    if (!alert || alert.tenantId !== context.tenantId) throw new Response("Runtime alert not found", { status: 404 });
+    if (alert.status !== "open") throw new Response("Resolved alerts cannot be acknowledged", { status: 409 });
+    if (alert.acknowledgedAt) return { alert, duplicate: true as const };
+    const acknowledged = { ...alert, acknowledgedAt: new Date().toISOString(), acknowledgedBy: context.actorName };
+    monitoringStore().alerts.set(alertId, acknowledged);
+    return { alert: acknowledged, duplicate: false as const };
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const existing = await client.query<PersistentAlertRow>(`select a.id, a.tenant_id, a.live_run_id, a.severity, a.code, a.message, a.status, a.opened_at, a.resolved_at, a.acknowledged_at, u.display_name as acknowledged_by_name from runtime_alerts a left join users u on u.id = a.acknowledged_by where a.id = $1 for update of a`, [alertId]);
+    if (!existing.rows[0]) throw new Response("Runtime alert not found", { status: 404 });
+    const current = persistentAlert(existing.rows[0]);
+    if (current.status !== "open") throw new Response("Resolved alerts cannot be acknowledged", { status: 409 });
+    if (current.acknowledgedAt) return { alert: current, duplicate: true as const };
+    const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
+    const updated = await client.query<PersistentAlertRow>(`update runtime_alerts set acknowledged_at = now(), acknowledged_by = $2 where id = $1 returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, $3::text as acknowledged_by_name`, [alertId, actor.rows[0].id, context.actorName]);
+    return { alert: persistentAlert(updated.rows[0]), duplicate: false as const };
   });
 }
 
@@ -103,4 +125,4 @@ export async function evaluateRuntimeReadiness(context: RequestContext, runId: s
 }
 
 function persistentTelemetry(row: PersistentTelemetryRow): RuntimeTelemetry { return { runId: row.live_run_id, tenantId: row.tenant_id, sampledAt: new Date(row.sampled_at).toISOString(), outputConnected: row.output_connected, inferenceFps: Number(row.inference_fps), outputFps: Number(row.output_fps), avSyncMs: Number(row.av_sync_ms), bitrateMbps: Number(row.bitrate_mbps), gpuUtilization: Number(row.gpu_utilization), gpuMemoryMiB: Number(row.gpu_memory_mib), fallbackReady: row.fallback_ready }; }
-function persistentAlert(row: PersistentAlertRow): RuntimeAlert { return { id: row.id, tenantId: row.tenant_id, runId: row.live_run_id, severity: row.severity, code: row.code, message: row.message, status: row.status, openedAt: new Date(row.opened_at).toISOString(), resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : undefined }; }
+function persistentAlert(row: PersistentAlertRow): RuntimeAlert { return { id: row.id, tenantId: row.tenant_id, runId: row.live_run_id, severity: row.severity, code: row.code, message: row.message, status: row.status, openedAt: new Date(row.opened_at).toISOString(), resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : undefined, acknowledgedAt: row.acknowledged_at ? new Date(row.acknowledged_at).toISOString() : undefined, acknowledgedBy: row.acknowledged_by_name ?? undefined }; }
