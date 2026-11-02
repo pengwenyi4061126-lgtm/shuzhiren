@@ -43,6 +43,14 @@ try {
     .setIssuedAt()
     .setExpirationTime("5m")
     .sign(privateKey);
+  const operatorToken = await new SignJWT({ tenant_id: tenantId, role: "operator", name: "Integration Operator" })
+    .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
+    .setSubject("integration-second-operator")
+    .setIssuer(issuer)
+    .setAudience("shuzhiren-integration")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
 
   const recoverRun = await seedRun("DEGRADED", "session_recover", new Date());
   const staleRun = await seedRun("LIVE", "session_stale", new Date(Date.now() - 120_000));
@@ -206,6 +214,22 @@ try {
   assert.equal(mock.alertNotifications[0].payload.alert.code, "runtime_telemetry_stale");
   const notificationDelivery = await client.query("select state, attempts from alert_notification_deliveries where runtime_alert_id = $1", [alertId]);
   assert.deepEqual(notificationDelivery.rows[0], { state: "delivered", attempts: 1 });
+  const incidentOpen = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ alertId }) });
+  assert.equal(incidentOpen.status, 201, "operator should be able to create an incident from a runtime alert");
+  const incidentPayload = await incidentOpen.json();
+  const incidentId = incidentPayload.data.incident.id;
+  const duplicateIncident = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ alertId }) });
+  assert.equal(duplicateIncident.status, 200, "one runtime alert must map to a single incident");
+  const foreignResolve = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents/${incidentId}/resolve`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${operatorToken}` }, body: JSON.stringify({ resolution: "非责任人不应当能够关闭其他场控的事故单。" }) });
+  assert.equal(foreignResolve.status, 403, "a non-owner operator must not resolve another operator's incident");
+  const incidentResolve = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents/${incidentId}/resolve`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ resolution: "切换备用节目后，已核验输出恢复并完成值班复核。" }) });
+  assert.equal(incidentResolve.status, 200, "operator should record a resolution before closing an incident");
+  const incidentRow = await client.query("select status, resolution, resolved_by from incidents where id = $1", [incidentId]);
+  assert.equal(incidentRow.rows[0].status, "resolved");
+  assert.ok(incidentRow.rows[0].resolution);
+  assert.ok(incidentRow.rows[0].resolved_by);
+  const incidentAudit = await client.query("select event_type from audit_events where resource_key = $1 order by occurred_at", [incidentId]);
+  assert.deepEqual(incidentAudit.rows.map((row) => row.event_type), ["incident.opened", "incident.resolved"]);
   const acknowledgement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/alerts/${alertId}/acknowledge`, { method: "POST", headers: requestHeaders });
   assert.equal(acknowledgement.status, 200, "operator should be able to acknowledge an open runtime alert");
   const acknowledgedAlert = await client.query("select acknowledged_at, acknowledged_by from runtime_alerts where id = $1", [alertId]);
@@ -217,7 +241,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, durably notifies and acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
   await stop(workerProcess);
