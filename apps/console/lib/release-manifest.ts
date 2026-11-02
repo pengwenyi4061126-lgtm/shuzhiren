@@ -22,6 +22,7 @@ export type RunReleaseManifest = {
   models: FrozenModel[];
   assets: FrozenAsset[];
   sha256: string;
+  frozenSha256?: string;
 };
 
 type ManifestRunRow = {
@@ -41,6 +42,7 @@ type ManifestRunRow = {
   policy_approval: PolicyProfileApproval | null;
   policy_evidence_ref: string | null;
   policy_validation_summary: string | null;
+  frozen_manifest_sha256: string | null;
 };
 type ManifestModelRow = { id: string; component: ReleaseComponent; name: string; version: string; approval_status: ReleaseApproval; source_commit: string; artifact_hash: string; evidence_ref: string };
 type ManifestAssetRow = { id: string; kind: AssetKind; name: string; approval_status: AssetApproval; expires_at: Date | string | null; object_key: string; checksum: string; rights_scope: string; source_ref: string };
@@ -50,6 +52,13 @@ export async function getRunReleaseManifest(context: RequestContext, runId: stri
   return withTenantTransaction(context.tenantId, async (client) => persistentManifest(client, runId));
 }
 
+export async function createReleaseManifestSnapshotInTransaction(client: PoolClient, input: { tenantId: string; revisionId: string; runId: string }) {
+  const manifest = await persistentManifest(client, input.runId);
+  if (!manifest) throw new Error("Cannot snapshot a missing live run release manifest");
+  await client.query("insert into show_revision_release_manifest_snapshots (tenant_id, show_revision_id, manifest, manifest_sha256) values ($1, $2, $3::jsonb, $4)", [input.tenantId, input.revisionId, JSON.stringify(manifest), manifest.sha256]);
+  return manifest;
+}
+
 async function persistentManifest(client: PoolClient, runId: string): Promise<RunReleaseManifest | null> {
   const runResult = await client.query<ManifestRunRow>(
     `select r.id as run_id, sr.id as revision_id, s.name as show_name, sr.created_at as frozen_at,
@@ -57,7 +66,8 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
       p.external_sku, p.name as product_name,
       policy.id as policy_id, policy.name as policy_name, policy.version as policy_version,
       policy.approval_status as policy_approval, policy.evidence_ref as policy_evidence_ref,
-      policy.validation_summary as policy_validation_summary
+      policy.validation_summary as policy_validation_summary,
+      snapshot.manifest_sha256 as frozen_manifest_sha256
      from live_runs r
      join show_revisions sr on sr.id = r.show_revision_id
      join shows s on s.id = sr.show_id
@@ -66,6 +76,7 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
      left join products p on p.id = pv.product_id
      left join show_revision_policy_profiles policy_binding on policy_binding.show_revision_id = sr.id
      left join policy_profiles policy on policy.id = policy_binding.policy_profile_id
+     left join show_revision_release_manifest_snapshots snapshot on snapshot.show_revision_id = sr.id
      where r.id = $1`,
     [runId]
   );
@@ -75,7 +86,7 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
     client.query<ManifestModelRow>(`select release.id, binding.component, release.name, release.version, release.approval_status, release.source_commit, release.artifact_hash, release.evidence_ref from show_revision_model_releases binding join model_releases release on release.id = binding.model_release_id where binding.show_revision_id = $1 order by binding.component`, [row.revision_id]),
     client.query<ManifestAssetRow>(`select asset.id, binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.object_key, asset.checksum, asset.rights_scope, asset.source_ref from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 order by binding.kind`, [row.revision_id])
   ]);
-  return hashedManifest({
+  const manifest = hashedManifest({
     runId: row.run_id,
     revisionId: row.revision_id,
     showName: row.show_name,
@@ -85,6 +96,7 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
     models: models.rows.map((model) => ({ id: model.id, component: model.component, name: model.name, version: model.version, approval: model.approval_status, sourceCommit: model.source_commit, artifactHash: model.artifact_hash, evidenceRef: model.evidence_ref })),
     assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined, objectKey: asset.object_key, checksum: asset.checksum, rightsScope: asset.rights_scope, source: asset.source_ref }))
   });
+  return { ...manifest, frozenSha256: row.frozen_manifest_sha256 ?? undefined };
 }
 
 async function demoManifest(context: RequestContext, runId: string): Promise<RunReleaseManifest | null> {
@@ -103,7 +115,7 @@ async function demoManifest(context: RequestContext, runId: string): Promise<Run
   });
 }
 
-function hashedManifest(manifest: Omit<RunReleaseManifest, "sha256">): RunReleaseManifest {
+function hashedManifest(manifest: Omit<RunReleaseManifest, "sha256" | "frozenSha256">): RunReleaseManifest {
   return { ...manifest, sha256: createHash("sha256").update(JSON.stringify(manifest)).digest("hex") };
 }
 
