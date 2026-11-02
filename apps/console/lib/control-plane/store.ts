@@ -8,7 +8,7 @@ import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { hasApprovedFallbackProgram } from "@/lib/show-program";
 import { registerDemoProgram, type ShowProgram } from "@/lib/show-program";
 import { hasApprovedLiveRights } from "@/lib/assets";
-import { hasApprovedProductionReleases, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
+import { activeModelReleaseStatus, activeModelReleaseStatusInTransaction, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
 import { validateChannelConnection } from "@/lib/channels";
 import { evaluateRuntimeReadiness } from "@/lib/monitoring";
 import { databasePool, withTenantTransaction } from "@/lib/database";
@@ -193,15 +193,17 @@ function getDemoRun(context: RequestContext, runId: string) {
 }
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
-  const [channel, runtime, policyProfile] = await Promise.all([
+  const [channel, runtime, policyProfile, modelRelease] = await Promise.all([
     validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled }),
     evaluateRuntimeReadiness(context, run.id),
-    activePolicyProfileStatusForRun(context, run.id)
+    activePolicyProfileStatusForRun(context, run.id),
+    activeModelReleaseStatus(context, run.revisionId)
   ]);
   return evaluatePreflight({
     ...run,
     hasApprovedRights: await hasApprovedLiveRights(context),
-    hasApprovedModelReleases: await hasApprovedProductionReleases(context, run.revisionId),
+    hasApprovedModelReleases: modelRelease.active,
+    modelReleaseDetail: modelRelease.detail,
     hasApprovedPolicyProfile: policyProfile.active,
     policyProfileDetail: policyProfile.detail,
     hasApprovedSkuVersion: Boolean(run.productVersionId && await findApprovedProductVersion(context, run.productVersionId)),
@@ -250,6 +252,9 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
       throw new Response("Preflight requirements are not satisfied", { status: 409 });
     }
+    if (input.action === "RECOVER" && !(await activeModelReleaseStatusInTransaction(client, run.revisionId)).active) {
+      throw new Response("Frozen model releases are not active for recovery", { status: 409 });
+    }
     if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
       throw new Response("Runtime health is not ready for recovery", { status: 409 });
     }
@@ -281,11 +286,13 @@ export async function enqueueGroundedSpeech(context: RequestContext, runId: stri
   if (!databasePool()) {
     const run = getDemoRun(context, runId);
     if (!run) throw new Response("Live run not found", { status: 404 });
+    if (!(await activeModelReleaseStatus(context, run.revisionId)).active) throw new Response("Frozen model releases are not active for speech dispatch", { status: 409 });
     return enqueueDemoGroundedSpeech(context, run, question, voice, idempotencyKey, policyRules);
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const run = await loadPersistentRun(client, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
+    if (!(await activeModelReleaseStatusInTransaction(client, run.revisionId)).active) throw new Response("Frozen model releases are not active for speech dispatch", { status: 409 });
     return enqueueGroundedSpeechInTransaction(client, context, run, question, voice, idempotencyKey, policyRules);
   });
 }
@@ -341,6 +348,9 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
   if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
     throw new Response("Preflight requirements are not satisfied", { status: 409 });
+  }
+  if (input.action === "RECOVER" && !(await activeModelReleaseStatus(context, run.revisionId)).active) {
+    throw new Response("Frozen model releases are not active for recovery", { status: 409 });
   }
   if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
     throw new Response("Runtime health is not ready for recovery", { status: 409 });

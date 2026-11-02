@@ -5,10 +5,10 @@ export type PreflightCheck = {
   detail: string;
 };
 
-export function evaluatePreflight(input: { hasApprovedRights: boolean; hasApprovedModelReleases: boolean; hasApprovedPolicyProfile: boolean; policyProfileDetail: string; hasOperator: boolean; hasApprovedSkuVersion: boolean; hasFallbackProgram: boolean; channelReady: boolean; channelDetail: string; outputReady: boolean; outputDetail: string; runtimeSessionReady: boolean; runtimeSessionDetail: string; aiDisclosureEnabled: boolean }) {
+export function evaluatePreflight(input: { hasApprovedRights: boolean; hasApprovedModelReleases: boolean; modelReleaseDetail: string; hasApprovedPolicyProfile: boolean; policyProfileDetail: string; hasOperator: boolean; hasApprovedSkuVersion: boolean; hasFallbackProgram: boolean; channelReady: boolean; channelDetail: string; outputReady: boolean; outputDetail: string; runtimeSessionReady: boolean; runtimeSessionDetail: string; aiDisclosureEnabled: boolean }) {
   const checks: PreflightCheck[] = [
     { id: "rights", label: "人物与声音授权", status: input.hasApprovedRights ? "passed" : "blocked", detail: input.hasApprovedRights ? "肖像、声音、商品视频和音乐授权有效" : "缺少已批准或未过期的媒体授权" },
-    { id: "model_release", label: "模型与运行时发布包", status: input.hasApprovedModelReleases ? "passed" : "blocked", detail: input.hasApprovedModelReleases ? "运行时、口型驱动与语音模型均有已批准发布包" : "缺少已批准的运行时、口型驱动或语音模型发布包" },
+    { id: "model_release", label: "模型与运行时发布包", status: input.hasApprovedModelReleases ? "passed" : "blocked", detail: input.modelReleaseDetail },
     { id: "policy_profile", label: "策略包版本", status: input.hasApprovedPolicyProfile ? "passed" : "blocked", detail: input.policyProfileDetail },
     { id: "sku", label: "SKU 与资质审核", status: input.hasApprovedSkuVersion ? "passed" : "blocked", detail: input.hasApprovedSkuVersion ? "商品版本已批准" : "缺少已批准的商品版本" },
     { id: "program", label: "节目单与降级策略", status: input.hasFallbackProgram ? "passed" : "blocked", detail: input.hasFallbackProgram ? "已批准的节目单包含备用或人工接管段" : "节目单缺少可用的降级段" },
