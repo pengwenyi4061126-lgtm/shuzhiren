@@ -31,6 +31,16 @@ const rlsProbeTenantA = randomUUID();
 const rlsProbeTenantB = randomUUID();
 const rlsProbeProductA = randomUUID();
 const rlsProbeProductB = randomUUID();
+const rlsProbeShowA = randomUUID();
+const rlsProbeShowB = randomUUID();
+const rlsProbeRevisionA = randomUUID();
+const rlsProbeRevisionB = randomUUID();
+const rlsProbeRunA = randomUUID();
+const rlsProbeRunB = randomUUID();
+const rlsProbeChannelA = randomUUID();
+const rlsProbeChannelB = randomUUID();
+const rlsProbeCommerceA = randomUUID();
+const rlsProbeCommerceB = randomUUID();
 try {
   await client.connect();
   connected = true;
@@ -93,9 +103,14 @@ async function verifyRlsPolicyWithUnprivilegedRole() {
   try {
     await client.query(`create role ${role} nologin`);
     await client.query(`grant usage on schema public to ${role}`);
-    await client.query(`grant select on products to ${role}`);
+    await client.query(`grant select on products, commerce_events to ${role}`);
     await client.query("insert into tenants (id, slug, name) values ($1, $2, $3), ($4, $5, $6)", [rlsProbeTenantA, `rls-probe-a-${rlsProbeTenantA}`, "RLS probe A", rlsProbeTenantB, `rls-probe-b-${rlsProbeTenantB}`, "RLS probe B"]);
     await client.query("insert into products (id, tenant_id, external_sku, name) values ($1, $2, $3, $4), ($5, $6, $7, $8)", [rlsProbeProductA, rlsProbeTenantA, "rls-probe-a", "RLS probe A", rlsProbeProductB, rlsProbeTenantB, "rls-probe-b", "RLS probe B"]);
+    await client.query("insert into shows (id, tenant_id, name) values ($1, $2, 'RLS commerce A'), ($3, $4, 'RLS commerce B')", [rlsProbeShowA, rlsProbeTenantA, rlsProbeShowB, rlsProbeTenantB]);
+    await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'approved'), ($4, $5, $6, 1, '{}'::jsonb, 'approved')", [rlsProbeRevisionA, rlsProbeTenantA, rlsProbeShowA, rlsProbeRevisionB, rlsProbeTenantB, rlsProbeShowB]);
+    await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities) values ($1, $2, 'RLS channel A', 'generic-rtmp', 'connected', 'rtmp', 'secret://rls/a', '{}'::jsonb), ($3, $4, 'RLS channel B', 'generic-rtmp', 'connected', 'rtmp', 'secret://rls/b', '{}'::jsonb)", [rlsProbeChannelA, rlsProbeTenantA, rlsProbeChannelB, rlsProbeTenantB]);
+    await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, channel_connection_id) values ($1, $2, $3, 'ENDED', $4, $5), ($6, $7, $8, 'ENDED', $9, $10)", [rlsProbeRunA, rlsProbeTenantA, rlsProbeRevisionA, `rls-commerce-a-${rlsProbeRunA}`, rlsProbeChannelA, rlsProbeRunB, rlsProbeTenantB, rlsProbeRevisionB, `rls-commerce-b-${rlsProbeRunB}`, rlsProbeChannelB]);
+    await client.query("insert into commerce_events (id, tenant_id, live_run_id, channel_connection_id, external_event_id, event_type, amount_cents) values ($1, $2, $3, $4, 'rls-commerce-a', 'order_paid', 100), ($5, $6, $7, $8, 'rls-commerce-b', 'order_paid', 200)", [rlsProbeCommerceA, rlsProbeTenantA, rlsProbeRunA, rlsProbeChannelA, rlsProbeCommerceB, rlsProbeTenantB, rlsProbeRunB, rlsProbeChannelB]);
 
     await client.query("begin");
     try {
@@ -103,10 +118,17 @@ async function verifyRlsPolicyWithUnprivilegedRole() {
       await client.query("select set_config('app.tenant_id', $1, true)", [rlsProbeTenantA]);
       const visible = await client.query("select id from products order by id");
       if (visible.rows.length !== 1 || visible.rows[0]?.id !== rlsProbeProductA) errors.push("RLS 策略未隔离非特权账号的跨租户产品记录");
+      const commerce = await client.query("select id, amount_cents from commerce_events order by id");
+      if (commerce.rows.length !== 1 || commerce.rows[0]?.id !== rlsProbeCommerceA || Number(commerce.rows[0]?.amount_cents) !== 100) errors.push("RLS 策略未隔离非特权账号的跨租户交易记录");
     } finally {
       await client.query("rollback");
     }
   } finally {
+    await client.query("delete from commerce_events where id in ($1, $2)", [rlsProbeCommerceA, rlsProbeCommerceB]).catch(() => undefined);
+    await client.query("delete from live_runs where id in ($1, $2)", [rlsProbeRunA, rlsProbeRunB]).catch(() => undefined);
+    await client.query("delete from channel_connections where id in ($1, $2)", [rlsProbeChannelA, rlsProbeChannelB]).catch(() => undefined);
+    await client.query("delete from show_revisions where id in ($1, $2)", [rlsProbeRevisionA, rlsProbeRevisionB]).catch(() => undefined);
+    await client.query("delete from shows where id in ($1, $2)", [rlsProbeShowA, rlsProbeShowB]).catch(() => undefined);
     await client.query("delete from products where id in ($1, $2)", [rlsProbeProductA, rlsProbeProductB]).catch(() => undefined);
     await client.query("delete from tenants where id in ($1, $2)", [rlsProbeTenantA, rlsProbeTenantB]).catch(() => undefined);
     await client.query(`drop role if exists ${role}`).catch(() => undefined);
