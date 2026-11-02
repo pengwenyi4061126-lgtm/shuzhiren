@@ -7,7 +7,7 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @shuzhiren/console",
+    "dev": "npm run dev --workspace @shuzhiren/console --",
     "build": "npm run build --workspace @shuzhiren/console",
     "lint": "npm run lint --workspace @shuzhiren/console",
     "typecheck": "npm run typecheck --workspace @shuzhiren/console",
