@@ -2,6 +2,7 @@ import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { dispatchMediaCommand } from "@/lib/runtime-gateway";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import type { PoolClient } from "pg";
 
 export type OutboxState = "pending" | "delivering" | "delivered" | "failed";
 export type MediaOutboxEvent = { id: string; tenantId: string; type: "media.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: MediaCommand; createdAt: string; deliveredAt?: string; lastError?: string };
@@ -20,10 +21,15 @@ export async function enqueueMediaCommand(context: RequestContext, input: Omit<M
     return event;
   }
 
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentOutboxRow>("insert into outbox_events (tenant_id, event_type, aggregate_type, payload) values ($1, $2, $3, $4::jsonb) returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [context.tenantId, "media.dispatch", "live_run", JSON.stringify({ sessionId: input.sessionId, command })]);
-    return persistentEvent(result.rows[0]);
-  });
+  return withTenantTransaction(context.tenantId, async (client) => enqueueMediaCommandInTransaction(client, context, command, input.sessionId));
+}
+
+export async function enqueueMediaCommandInTransaction(client: PoolClient, context: RequestContext, command: MediaCommand, sessionId: string) {
+  const result = await client.query<PersistentOutboxRow>(
+    "insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, $2, $3, $4::uuid, $5::jsonb) returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error",
+    [context.tenantId, "media.dispatch", "live_run", command.runId, JSON.stringify({ sessionId, command })]
+  );
+  return persistentEvent(result.rows[0]);
 }
 
 export async function getOutboxEvent(context: RequestContext, eventId: string) {

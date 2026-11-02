@@ -17,7 +17,10 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
 
   try {
     const result = await issueCommand(requestContext, runId, body);
-    if (!result.duplicate) await recordAuditEvent(requestContext, { type: "live_command.accepted", resource: "live_run", resourceId: runId, detail: { action: body.action, commandId: result.command.id } });
+    if (!result.duplicate) {
+      await recordAuditEvent(requestContext, { type: "live_command.accepted", resource: "live_run", resourceId: runId, detail: { action: body.action, commandId: result.command.id } });
+      await recordAuditEvent(requestContext, { type: "media_command.enqueued", resource: "outbox_event", resourceId: result.mediaEvent.id, detail: { mediaCommandId: result.mediaEvent.command.id, commandType: result.mediaEvent.command.type, controlAction: body.action } });
+    }
     return Response.json({ data: result }, { status: result.duplicate ? 200 : 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "command_rejected" }, { status: error.status });

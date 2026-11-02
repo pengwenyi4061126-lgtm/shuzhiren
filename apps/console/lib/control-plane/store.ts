@@ -9,6 +9,8 @@ import { hasApprovedLiveRights } from "@/lib/assets";
 import { validateChannelConnection } from "@/lib/channels";
 import { evaluateRuntimeReadiness } from "@/lib/monitoring";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { enqueueMediaCommand, enqueueMediaCommandInTransaction } from "@/lib/control-plane/outbox";
+import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 
 export type StoredRun = LiveRun & {
   tenantId: string;
@@ -137,7 +139,8 @@ export async function issueCommand(context: RequestContext, runId: string, input
     );
     await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, nextState]);
     const command = persistentCommand(inserted.rows[0]);
-    return { command, run: { ...run, state: nextState, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action)), run.id);
+    return { command, mediaEvent, run: { ...run, state: nextState, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
   });
 }
 
@@ -162,10 +165,16 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
     expectedState: input.expectedState,
     result: "accepted"
   };
+  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action), sessionId: run.id });
   run.state = nextStateFor(run.state, input.action);
   run.commandHistory.unshift(command);
   activeStore.idempotency.set(`${context.tenantId}:${input.idempotencyKey}`, command);
-  return { command, run, duplicate: false as const };
+  return { command, mediaEvent, run, duplicate: false as const };
+}
+
+function mediaCommandFor(run: StoredRun, action: LiveCommandAction): Omit<MediaCommand, "id" | "issuedAt"> {
+  const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program" } as const;
+  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action } };
 }
 
 async function loadPersistentRun(client: PoolClient, runId: string, lock = false) {
