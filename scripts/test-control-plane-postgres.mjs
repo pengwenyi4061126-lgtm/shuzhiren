@@ -149,6 +149,15 @@ try {
   }
   const armAudit = await client.query("select event_type from audit_events where resource_id = $1 and event_type = 'live_run.arm'", [createdRun.data.id]);
   assert.equal(armAudit.rows.length, 1, "arming a preflight-ready run must leave an audit record");
+  const competingRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration competing runtime session run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "0", aiDisclosureEnabled: true }) });
+  assert.equal(competingRunResponse.status, 201, "a future draft may reference the same single-session runtime");
+  const competingRun = await competingRunResponse.json();
+  for (const action of ["submit_review", "approve"]) {
+    const lifecycleResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${competingRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action }) });
+    assert.equal(lifecycleResponse.status, 200, `competing run action ${action} should remain valid before reserving the runtime session`);
+  }
+  const competingPreflight = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${competingRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "begin_preflight" }) });
+  assert.equal(competingPreflight.status, 409, "only one active run may reserve the same runtime session");
   const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();

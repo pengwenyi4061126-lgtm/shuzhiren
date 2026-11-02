@@ -159,6 +159,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     if (!run) throw new Response("Live run not found", { status: 404 });
     const next = lifecycleTarget(run.state, action);
     if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
+    if (reservesRuntimeSession(next) && run.runtimeSessionId && [...store().runs.values()].some((candidate) => candidate.id !== run.id && candidate.tenantId === context.tenantId && candidate.runtimeSessionId === run.runtimeSessionId && reservesRuntimeSession(candidate.state))) throw new Response("Runtime session is already reserved by another active run", { status: 409 });
     run.state = next;
     return run;
   }
@@ -167,7 +168,12 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     if (!run) throw new Response("Live run not found", { status: 404 });
     const next = lifecycleTarget(run.state, action);
     if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
-    await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, next]);
+    try {
+      await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, next]);
+    } catch (error) {
+      if (isUniqueConstraintError(error)) throw new Response("Runtime session is already reserved by another active run", { status: 409 });
+      throw error;
+    }
     return { ...run, state: next };
   });
 }
@@ -176,6 +182,15 @@ function lifecycleTarget(state: LiveRunState, action: RunLifecycleAction): LiveR
   const target = ({ DRAFT: { submit_review: "REVIEW" }, REVIEW: { approve: "APPROVED" }, APPROVED: { begin_preflight: "PREFLIGHT" }, PREFLIGHT: { arm: "ARMED" } } as Partial<Record<LiveRunState, Partial<Record<RunLifecycleAction, LiveRunState>>>>)[state]?.[action];
   if (!target) throw new Response("Lifecycle action is not allowed in current state", { status: 409 });
   return target;
+}
+
+function reservesRuntimeSession(state: LiveRunState) {
+  return state === "PREFLIGHT" || state === "ARMED" || state === "LIVE" || state === "DEGRADED";
+}
+
+function isUniqueConstraintError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  return "code" in error && (error as { code?: unknown }).code === "23505";
 }
 
 async function createDemoRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean }) {
