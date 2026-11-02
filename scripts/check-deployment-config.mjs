@@ -84,6 +84,7 @@ try {
   const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
     && ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"].every((key) => typeof target[key] === "string" && target[key].length > 0)
     && target.telemetryToken.length >= 16
+    && (target.outputProbeToken === undefined || (typeof target.outputProbeToken === "string" && target.outputProbeToken.length >= 16))
     && /^https?:\/\//.test(target.outputProbeUrl);
   if (!Array.isArray(targets) || targets.length === 0 || !targets.every(targetValid)) throw new Error("invalid");
 } catch {

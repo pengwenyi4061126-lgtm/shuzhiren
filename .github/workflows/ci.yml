@@ -38,9 +38,11 @@ jobs:
       - run: npm run start:ack:check
       - run: npm run runtime:watchdog:check
       - run: npm run observer:runtime:test
+      - run: npm run output-probe:test
       - run: python3 -m py_compile runtime/gateway/app.py
       - run: node --check apps/runtime-worker/index.mjs
       - run: node --check apps/runtime-observer/index.mjs
+      - run: node --check apps/output-probe/index.mjs
       - run: npm run db:migrate
       - run: npm run db:verify -- --allow-privileged
       - run: npm run typecheck

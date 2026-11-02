@@ -34,9 +34,10 @@ function configuredTargets() {
     for (const key of ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"]) if (typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 2000) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].${key} is invalid`);
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.sessionId)) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].sessionId is invalid`);
     if (value.telemetryToken.length < 16) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].telemetryToken is too short`);
+    if (value.outputProbeToken !== undefined && (typeof value.outputProbeToken !== "string" || value.outputProbeToken.length < 16 || value.outputProbeToken.length > 2000)) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].outputProbeToken is invalid`);
     const probeUrl = new URL(value.outputProbeUrl);
     if (!/^https?:$/.test(probeUrl.protocol) || probeUrl.username || probeUrl.password) throw new Error(`RUNTIME_OBSERVER_TARGETS[${index}].outputProbeUrl is invalid`);
-    return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, outputProbeUrl: probeUrl.toString() };
+    return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, outputProbeUrl: probeUrl.toString(), outputProbeToken: value.outputProbeToken };
   });
 }
 
@@ -101,7 +102,7 @@ async function observeTarget(target) {
   try {
     const [observation, probeRaw] = await Promise.all([
       fetchJson(`${gatewayUrl}/v1/observations/${encodeURIComponent(target.sessionId)}`, { headers: { authorization: `Bearer ${gatewayToken}` } }),
-      fetchJson(target.outputProbeUrl),
+      fetchJson(target.outputProbeUrl, target.outputProbeToken ? { headers: { authorization: `Bearer ${target.outputProbeToken}` } } : undefined),
     ]);
     const probe = validProbe(probeRaw);
     if (!probe) throw new Error("output_probe_payload_invalid");
