@@ -15,7 +15,7 @@ export type LiveQuestion = {
   id: string;
   text: string;
   detail: string;
-  risk: "low" | "high";
+  risk: "low" | "medium" | "high";
 };
 
 export type LiveRun = {
