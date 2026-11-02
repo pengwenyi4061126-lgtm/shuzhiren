@@ -2,6 +2,7 @@ import { getChannelConnection } from "@/lib/channels";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
 import { createChannelInteraction } from "@/lib/interactions";
+import { isControlledPolicyQuestion } from "@/lib/policy-engine";
 import { requireChannelIngestService } from "@/lib/runtime-service-auth";
 
 export const dynamic = "force-dynamic";
@@ -40,5 +41,5 @@ function isChannelInteraction(value: unknown): value is ChannelInteractionBody {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
   return ["tenantId", "runId", "channelConnectionId", "eventId"].every((key) => typeof body[key] === "string" && body[key].length > 0 && body[key].length <= 200)
-    && typeof body.question === "string" && body.question.trim().length > 0 && body.question.trim().length <= 1000;
+    && typeof body.question === "string" && isControlledPolicyQuestion(body.question);
 }

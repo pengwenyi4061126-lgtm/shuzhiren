@@ -2,6 +2,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
 import { createInteraction, listInteractions } from "@/lib/interactions";
+import { isControlledPolicyQuestion } from "@/lib/policy-engine";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +36,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
 function isInteractionInput(value: unknown): value is { question: string; source?: string; evidenceIds: string[] } {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
-  return typeof input.question === "string" && input.question.trim().length > 0 && input.question.trim().length <= 1000
+  return typeof input.question === "string" && isControlledPolicyQuestion(input.question)
     && (input.source === undefined || typeof input.source === "string")
     && Array.isArray(input.evidenceIds) && input.evidenceIds.every((item) => typeof item === "string");
 }

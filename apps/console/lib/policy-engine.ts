@@ -7,6 +7,8 @@ export type PolicyDecision = {
 
 export type PolicyRule = { id: string; terms: string[]; reason: string; action: PolicyDecision["action"]; riskLevel: PolicyDecision["riskLevel"]; requiredEvidence: string[] };
 
+export const maxPolicyQuestionLength = 1000;
+
 const rules = [
   { pattern: /忽略.{0,24}(指令|规则)|系统提示|提示词|开发者消息|越狱|jailbreak|角色扮演|不受限制/i, reason: "提示注入或策略绕过尝试", action: "refuse" as const, riskLevel: "high" as const, evidence: [] },
   { pattern: /密钥|密码|token|api[ _-]?key|RTMP|推流码|数据库|连接串/i, reason: "索取系统凭据或内部信息", action: "refuse" as const, riskLevel: "high" as const, evidence: [] },
@@ -19,9 +21,11 @@ const rules = [
 ];
 
 export function evaluatePolicy(question: string, evidenceIds: string[], additionalRules: PolicyRule[] = []): PolicyDecision {
+  const normalizedQuestion = normalizePolicyText(question);
+  if (normalizedQuestion.length > maxPolicyQuestionLength) return { action: "handoff", riskLevel: "high", reasons: ["互动内容超过受控长度限制"], requiredEvidence: [] };
   const matched = [
-    ...rules.filter((rule) => rule.pattern.test(question)).map((rule) => ({ reason: rule.reason, action: rule.action, riskLevel: rule.riskLevel, evidence: rule.evidence })),
-    ...additionalRules.filter((rule) => rule.terms.some((term) => question.toLocaleLowerCase("zh-CN").includes(term.toLocaleLowerCase("zh-CN")))).map((rule) => ({ reason: rule.reason, action: rule.action, riskLevel: rule.riskLevel, evidence: rule.requiredEvidence }))
+    ...rules.filter((rule) => rule.pattern.test(normalizedQuestion)).map((rule) => ({ reason: rule.reason, action: rule.action, riskLevel: rule.riskLevel, evidence: rule.evidence })),
+    ...additionalRules.filter((rule) => rule.terms.some((term) => normalizedQuestion.includes(normalizePolicyText(term)))).map((rule) => ({ reason: rule.reason, action: rule.action, riskLevel: rule.riskLevel, evidence: rule.requiredEvidence }))
   ];
   if (matched.length === 0) return { action: "answer", riskLevel: "low", reasons: [], requiredEvidence: ["product_version"] };
 
@@ -30,4 +34,13 @@ export function evaluatePolicy(question: string, evidenceIds: string[], addition
   const highest = matched.find((rule) => rule.riskLevel === "high") ?? matched[0];
   if (missingEvidence.length > 0) return { action: "handoff", riskLevel: "high", reasons: [...matched.map((rule) => rule.reason), "缺少必要证据"], requiredEvidence };
   return { action: highest.action, riskLevel: highest.riskLevel, reasons: matched.map((rule) => rule.reason), requiredEvidence };
+}
+
+export function isControlledPolicyQuestion(question: string) {
+  const trimmed = question.trim();
+  return trimmed.length > 0 && trimmed.length <= maxPolicyQuestionLength;
+}
+
+function normalizePolicyText(text: string) {
+  return text.normalize("NFKC").replace(/[\s\u200B-\u200D\uFEFF]+/g, "").toLocaleLowerCase("zh-CN");
 }

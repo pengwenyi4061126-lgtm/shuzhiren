@@ -2,7 +2,7 @@ import type { LiveQuestion } from "@/lib/domain";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { databasePool, withTenantTransaction } from "@/lib/database";
-import { evaluatePolicy, type PolicyDecision } from "@/lib/policy-engine";
+import { evaluatePolicy, isControlledPolicyQuestion, type PolicyDecision } from "@/lib/policy-engine";
 import { policyRulesForRun } from "@/lib/policy-profiles";
 
 export type LiveInteraction = LiveQuestion & {
@@ -62,6 +62,7 @@ export async function listInteractions(context: RequestContext, runId: string, s
 }
 
 export async function createInteraction(context: RequestContext, input: CreateInteractionInput): Promise<LiveInteraction & { duplicate?: boolean }> {
+  if (!isControlledPolicyQuestion(input.question)) throw new Response("Interaction question must be between 1 and 1000 characters", { status: 400 });
   const decision = evaluatePolicy(input.question, input.evidenceIds, await policyRulesForRun(context, input.runId));
   const detail = interactionDetail(decision);
   if (!databasePool()) {
@@ -84,6 +85,7 @@ export async function createInteraction(context: RequestContext, input: CreateIn
 }
 
 export async function createChannelInteraction(context: RequestContext, input: CreateInteractionInput & { channelConnectionId: string }): Promise<LiveInteraction & { duplicate?: boolean }> {
+  if (!isControlledPolicyQuestion(input.question)) throw new Response("Interaction question must be between 1 and 1000 characters", { status: 400 });
   if (!databasePool()) {
     const interaction = await createInteraction(context, input);
     if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId);

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { recordAuditEvent } from "@/lib/audit";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
-import { evaluatePolicy } from "@/lib/policy-engine";
+import { evaluatePolicy, isControlledPolicyQuestion } from "@/lib/policy-engine";
 
 export const dynamic = "force-dynamic";
 
@@ -18,5 +18,5 @@ export async function POST(request: Request) {
 function isPolicyInput(value: unknown): value is { question: string; evidenceIds: string[] } {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
-  return typeof input.question === "string" && input.question.length > 0 && Array.isArray(input.evidenceIds) && input.evidenceIds.every((item) => typeof item === "string");
+  return typeof input.question === "string" && isControlledPolicyQuestion(input.question) && Array.isArray(input.evidenceIds) && input.evidenceIds.every((item) => typeof item === "string");
 }

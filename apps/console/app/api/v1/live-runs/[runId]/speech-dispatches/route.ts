@@ -2,6 +2,7 @@ import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-contex
 import { configuredSpeechVoice } from "@/lib/control-plane/speech-config";
 import { enqueueGroundedSpeech } from "@/lib/control-plane/store";
 import { isSafeSpeechCommandId } from "@/lib/speech-protocol";
+import { isControlledPolicyQuestion } from "@/lib/policy-engine";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,6 @@ function isSpeechInput(value: unknown): value is { question: string; idempotency
     && typeof value === "object"
     && typeof (value as Record<string, unknown>).question === "string"
     && typeof (value as Record<string, unknown>).idempotencyKey === "string"
-    && (value as Record<string, string>).question.trim().length > 0
-    && (value as Record<string, string>).question.trim().length <= 1000
+    && isControlledPolicyQuestion((value as Record<string, string>).question)
     && isSafeSpeechCommandId((value as Record<string, string>).idempotencyKey);
 }

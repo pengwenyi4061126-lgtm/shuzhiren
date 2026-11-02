@@ -4,6 +4,7 @@ import { findApprovedProductVersion } from "@/lib/catalog";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
 import { policyRulesForRun } from "@/lib/policy-profiles";
+import { isControlledPolicyQuestion } from "@/lib/policy-engine";
 import { createGroundedResponseDraft } from "@/lib/response-draft";
 
 export const dynamic = "force-dynamic";
@@ -30,5 +31,5 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
 }
 
 function isDraftInput(value: unknown): value is { question: string } {
-  return Boolean(value) && typeof value === "object" && typeof (value as Record<string, unknown>).question === "string" && (value as Record<string, string>).question.trim().length > 0 && (value as Record<string, string>).question.trim().length <= 1000;
+  return Boolean(value) && typeof value === "object" && typeof (value as Record<string, unknown>).question === "string" && isControlledPolicyQuestion((value as Record<string, string>).question);
 }
