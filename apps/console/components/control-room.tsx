@@ -6,12 +6,13 @@ import { useEffect, useMemo, useState } from "react";
 import type { LiveCommand, LiveRun, LiveRunState } from "@/lib/domain";
 import type { RuntimeAlert, RuntimeTelemetry } from "@/lib/monitoring";
 import type { LiveInteraction } from "@/lib/interactions";
+import type { RuntimeOutboxEvent } from "@/lib/control-plane/outbox";
 import { canTransition } from "@/lib/live-run";
 
 type Props = { initialRun: LiveRun; initialTelemetry: RuntimeTelemetry | null; initialAlerts: RuntimeAlert[]; initialInteractions: LiveInteraction[]; canOperate: boolean };
-type CommandResponse = { data: { command: LiveCommand; run: LiveRun; duplicate: boolean } };
+type CommandResponse = { data: { command: LiveCommand; run: LiveRun; mediaEvent: Pick<RuntimeOutboxEvent, "id" | "state">; duplicate: boolean } };
 type GatewayConfirmedAction = Extract<LiveCommand["action"], "START" | "RECOVER" | "END">;
-type GatewayConfirmation = { action: GatewayConfirmedAction; waitingState: LiveRunState };
+type GatewayConfirmation = { action: GatewayConfirmedAction; waitingState: LiveRunState; eventId: string };
 
 type NavigationItem = { icon: typeof MonitorPlay; label: string; href?: string };
 
@@ -98,10 +99,22 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
     let active = true;
     const refresh = async () => {
       try {
-        const response = await fetch(`/api/v1/live-runs/${encodeURIComponent(run.id)}`, { cache: "no-store" });
-        const payload = await response.json().catch(() => null) as { data?: LiveRun } | null;
+        const [response, outboxResponse] = await Promise.all([
+          fetch(`/api/v1/live-runs/${encodeURIComponent(run.id)}`, { cache: "no-store" }),
+          fetch("/api/v1/runtime/outbox", { cache: "no-store" })
+        ]);
+        const [payload, outboxPayload] = await Promise.all([
+          response.json().catch(() => null) as Promise<{ data?: LiveRun } | null>,
+          outboxResponse.json().catch(() => null) as Promise<{ data?: RuntimeOutboxEvent[] } | null>
+        ]);
         if (!response.ok || !payload?.data || !active) return;
         setRun(payload.data);
+        const event = outboxPayload?.data?.find((candidate) => candidate.id === gatewayConfirmation.eventId);
+        if (event?.state === "failed") {
+          setGatewayConfirmation(null);
+          setCommandError(`运行时投递失败：${event.lastError ?? "未知错误"}。请前往投递队列确认后重试。`);
+          return;
+        }
         const confirmed = gatewayConfirmation.action === "END" ? payload.data.state === "ENDED" : payload.data.state !== gatewayConfirmation.waitingState;
         if (confirmed) {
           setGatewayConfirmation(null);
@@ -133,7 +146,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
       setRun(payload.data.run);
       setCommands((current) => [payload.data.command, ...current.filter((item) => item.id !== payload.data.command.id)].slice(0, 8));
       if ((action === "START" && payload.data.run.state === "ARMED") || (action === "RECOVER" && payload.data.run.state === "DEGRADED") || (action === "END" && (payload.data.run.state === "LIVE" || payload.data.run.state === "DEGRADED"))) {
-        setGatewayConfirmation({ action, waitingState: payload.data.run.state });
+        setGatewayConfirmation({ action, waitingState: payload.data.run.state, eventId: payload.data.mediaEvent.id });
         setCommandNotice(action === "END" ? "停止命令已进入队列，正在等待 Gateway 确认。请勿关闭值守。" : "运行时激活命令已进入队列，正在等待 Gateway 确认。请勿重复点击。");
       }
     } catch (error) {
