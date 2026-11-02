@@ -17,6 +17,7 @@ const checks = [
   ["run", "runtime:watchdog:check"],
   ["run", "entitlement:check"],
   ["run", "runtime:media:check"],
+  ["run", "runtime:voice:check"],
   ["run", "runtime:acceptance:test"],
   ["run", "observer:runtime:test"],
   ["run", "observer:targets:test"],

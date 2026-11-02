@@ -1,5 +1,4 @@
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
-import { configuredSpeechVoice } from "@/lib/control-plane/speech-config";
 import { enqueueGroundedSpeech } from "@/lib/control-plane/store";
 import { isSafeSpeechCommandId } from "@/lib/speech-protocol";
 import { isControlledPolicyQuestion } from "@/lib/policy-engine";
@@ -14,7 +13,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
     const body = await readBoundedJson(request);
     if (!isSpeechInput(body)) return Response.json({ error: "invalid_question" }, { status: 400 });
     const { runId } = await context.params;
-    const result = await enqueueGroundedSpeech(actor, runId, body.question.trim(), configuredSpeechVoice(), body.idempotencyKey);
+    const result = await enqueueGroundedSpeech(actor, runId, body.question.trim(), body.idempotencyKey);
     return Response.json({ data: result }, { status: 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "speech_dispatch_rejected" }, { status: error.status });

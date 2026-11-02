@@ -34,8 +34,7 @@ const control = env({
   RUNTIME_RECORDING_TENANT_TOKENS: { [tenantId]: "recording-token-at-least-32-bytes" },
   PIM_INGEST_TENANT_TOKENS: { [tenantId]: "pim-ingest-token-at-least-32-bytes" },
   CHANNEL_INGEST_TENANT_TOKENS: { [tenantId]: "channel-ingest-token-at-least-32-bytes" },
-  CHANNEL_COMMERCE_TENANT_TOKENS: { [tenantId]: "commerce-ingest-token-at-least-32-bytes" },
-  RUNTIME_SPEECH_VOICE: "approved-voice-fixture"
+  CHANNEL_COMMERCE_TENANT_TOKENS: { [tenantId]: "commerce-ingest-token-at-least-32-bytes" }
 });
 
 function runtime(outputProbeTargets) {

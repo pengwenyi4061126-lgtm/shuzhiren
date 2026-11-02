@@ -17,11 +17,12 @@ export type MediaAsset = {
   source: string;
   objectKey: string;
   checksum: string;
+  runtimeVoiceId?: string;
   approvedAt?: string;
   revokedAt?: string;
   revocationReason?: string;
 };
-export type CreateMediaAssetInput = Pick<MediaAsset, "kind" | "name" | "rightsScope" | "source" | "objectKey" | "checksum"> & { expiresAt?: string };
+export type CreateMediaAssetInput = Pick<MediaAsset, "kind" | "name" | "rightsScope" | "source" | "objectKey" | "checksum" | "runtimeVoiceId"> & { expiresAt?: string };
 export type MediaAssetRevocation = { asset: MediaAsset; impact: GovernanceQuarantineImpact };
 
 type AssetStore = { assets: Map<string, MediaAsset> };
@@ -36,25 +37,26 @@ type PersistentAssetRow = {
   source_ref: string;
   object_key: string;
   checksum: string;
+  runtime_voice_id: string | null;
   approved_at: Date | string | null;
   revoked_at: Date | string | null;
   revocation_reason: string | null;
 };
-type BoundAssetRow = Pick<PersistentAssetRow, "kind" | "name" | "approval_status" | "expires_at">;
+type BoundAssetRow = Pick<PersistentAssetRow, "kind" | "name" | "approval_status" | "expires_at" | "runtime_voice_id">;
 
 declare global { var shuzhirenAssetStore: AssetStore | undefined; }
 
 function assetStore(): AssetStore {
   globalThis.shuzhirenAssetStore ??= { assets: new Map([
     ["asset_portrait_demo", { id: "asset_portrait_demo", tenantId: "tenant_demo", kind: "portrait", name: "主播肖像授权素材", approval: "approved", expiresAt: "2027-10-31", rightsScope: "直播与录播数字人驱动", source: "授权书 #POR-2026-001", objectKey: "demo/portrait.mp4", checksum: "demo-portrait", approvedAt: "2026-11-01T08:30:00.000Z" }],
-    ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004", objectKey: "demo/voice.wav", checksum: "demo-voice", approvedAt: "2026-11-01T08:30:00.000Z" }],
+    ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004", objectKey: "demo/voice.wav", checksum: "demo-voice", runtimeVoiceId: "approved_voice_demo", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_clip_a102", { id: "asset_clip_a102", tenantId: "tenant_demo", kind: "product_clip", name: "洁面慕斯预制讲品", approval: "approved", rightsScope: "A-102 商品讲解", source: "内容审核 #CLP-2026-019", objectKey: "demo/a102.mp4", checksum: "demo-clip", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_bgm_demo", { id: "asset_bgm_demo", tenantId: "tenant_demo", kind: "music", name: "直播间背景音乐", approval: "approved", expiresAt: "2027-03-31", rightsScope: "店播背景音乐", source: "音乐授权 #MUS-2026-011", objectKey: "demo/bgm.mp3", checksum: "demo-music", approvedAt: "2026-11-01T08:30:00.000Z" }]
   ]) };
   return globalThis.shuzhirenAssetStore;
 }
 
-const columns = "id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, approved_at, revoked_at, revocation_reason";
+const columns = "id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, runtime_voice_id, approved_at, revoked_at, revocation_reason";
 
 export async function listAssets(context: RequestContext) {
   if (!databasePool()) return demoAssets(context);
@@ -74,8 +76,8 @@ export async function createMediaAsset(context: RequestContext, input: CreateMed
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentAssetRow>(
-      `insert into media_assets (tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8::date) returning ${columns}`,
-      [context.tenantId, input.kind, input.name, input.objectKey, input.checksum, input.rightsScope, input.source, input.expiresAt ?? null]
+      `insert into media_assets (tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, expires_at, runtime_voice_id) values ($1, $2, $3, $4, $5, $6, $7, $8::date, $9) returning ${columns}`,
+      [context.tenantId, input.kind, input.name, input.objectKey, input.checksum, input.rightsScope, input.source, input.expiresAt ?? null, input.runtimeVoiceId ?? null]
     );
     return persistentAsset(result.rows[0]);
   });
@@ -139,13 +141,14 @@ export async function activeMediaAssetStatusInTransaction(client: PoolClient, re
     const missing = requiredLiveAssetKinds.filter((kind) => !assets.has(kind));
     return missing.length === 0 ? { active: true, detail: "肖像、声线、商品视频和音乐授权均有效" } : { active: false, detail: `缺少有效授权：${missing.join("、")}` };
   }
-  const result = await client.query<BoundAssetRow>("select binding.kind, asset.name, asset.approval_status, asset.expires_at from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = any($2::media_asset_kind[])", [revisionId, requiredLiveAssetKinds]);
+  const result = await client.query<BoundAssetRow>("select binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.runtime_voice_id from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = any($2::media_asset_kind[])", [revisionId, requiredLiveAssetKinds]);
   const failures = requiredLiveAssetKinds.flatMap((kind) => {
     const matches = result.rows.filter((asset) => asset.kind === kind);
     if (matches.length !== 1) return [`${kind} 缺少唯一冻结授权素材`];
     const asset = matches[0];
     const expiresAt = asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined;
     const expired = Boolean(expiresAt && expiresAt < new Date().toISOString().slice(0, 10));
+    if (kind === "voice" && !isRuntimeVoiceId(asset.runtime_voice_id)) return [`voice ${asset.name} 缺少有效运行时声线标识`];
     return asset.approval_status === "approved" && !expired ? [] : [`${kind} ${asset.name} 已撤销、未批准或授权已到期`];
   });
   return failures.length === 0 ? { active: true, detail: "已冻结肖像、声线、商品视频和音乐授权均有效" } : { active: false, detail: failures.join("；") };
@@ -172,10 +175,30 @@ function persistentAsset(row: PersistentAssetRow): MediaAsset {
     source: row.source_ref,
     objectKey: row.object_key,
     checksum: row.checksum,
+    runtimeVoiceId: row.runtime_voice_id ?? undefined,
     approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined,
     revokedAt: row.revoked_at ? new Date(row.revoked_at).toISOString() : undefined,
     revocationReason: row.revocation_reason ?? undefined
   };
 }
+
+export async function runtimeVoiceForRun(context: RequestContext, revisionId: string) {
+  if (!databasePool()) {
+    const voice = demoAssets(context).find((asset) => asset.kind === "voice" && asset.approval === "approved" && isRuntimeVoiceId(asset.runtimeVoiceId));
+    if (!voice?.runtimeVoiceId) throw new Response("Frozen voice asset has no approved runtime voice", { status: 409 });
+    return voice.runtimeVoiceId;
+  }
+  return withTenantTransaction(context.tenantId, async (client) => runtimeVoiceForRunInTransaction(client, revisionId));
+}
+
+export async function runtimeVoiceForRunInTransaction(client: PoolClient, revisionId: string) {
+  const result = await client.query<BoundAssetRow>("select binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.runtime_voice_id from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = 'voice'", [revisionId]);
+  const asset = result.rows[0];
+  const expired = asset?.expires_at && new Date(asset.expires_at).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10);
+  if (!asset || asset.approval_status !== "approved" || expired || !isRuntimeVoiceId(asset.runtime_voice_id)) throw new Response("Frozen voice asset is not approved for runtime speech", { status: 409 });
+  return asset.runtime_voice_id;
+}
+
+export function isRuntimeVoiceId(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 
 async function syncActor(client: PoolClient, context: RequestContext) { return (await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role])).rows[0].id; }

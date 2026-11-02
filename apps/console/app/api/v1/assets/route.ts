@@ -1,7 +1,7 @@
 import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
-import { createMediaAsset, listAssets, type CreateMediaAssetInput } from "@/lib/assets";
+import { createMediaAsset, isRuntimeVoiceId, listAssets, type CreateMediaAssetInput } from "@/lib/assets";
 import { isSafeObjectKey, isSha256Digest } from "@/lib/governance-input";
 
 export const dynamic = "force-dynamic";
@@ -29,5 +29,7 @@ function isAssetInput(value: unknown): value is CreateMediaAssetInput {
   return typeof input.kind === "string" && kinds.has(input.kind)
     && ["name", "rightsScope", "source"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0)
     && isSafeObjectKey(input.objectKey) && isSha256Digest(input.checksum)
+    && (input.kind !== "voice" || isRuntimeVoiceId(input.runtimeVoiceId))
+    && (input.kind === "voice" || input.runtimeVoiceId === undefined)
     && (input.expiresAt === undefined || (typeof input.expiresAt === "string" && !Number.isNaN(Date.parse(input.expiresAt))));
 }

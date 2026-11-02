@@ -42,6 +42,7 @@ jobs:
       - run: npm run runtime:watchdog:check
       - run: npm run entitlement:check
       - run: npm run runtime:media:check
+      - run: npm run runtime:voice:check
       - run: npm run runtime:acceptance:test
       - run: npm run observer:runtime:test
       - run: npm run observer:targets:test
