@@ -19,6 +19,7 @@
 6. 在 Gateway 环境中配置 `PROGRAM_AUDIOTYPE`、`FALLBACK_AUDIOTYPE` 与 `HUMAN_HANDOFF_AUDIOTYPE`，并在 LiveTalking 的已批准 Avatar 包中逐项验证动作含义；不能将默认索引当作真实人接管或备用节目。
 7. LiveTalking 建立会话后，将返回的 `sessionid` 通过 `PUT /api/v1/live-runs/{runId}/runtime-session` 绑定到场次；没有绑定运行时会话的场次不得接受媒体控制命令。
 8. runtime worker 会按 `SCHEDULER_POLL_MS` 独立轮询已到排期时间的 `ARMED` 场次。每个场次都在独立数据库事务内切换为 `LIVE` 并写入 `start_program` outbox；每一轮最多领取 `SCHEDULER_BATCH_SIZE` 个，既不会重复开播，也不会让大批到期场次按单条轮询周期逐个积压。它不会自动武装场次，也不会跳过预检。
+9. 渠道连接只能使用服务端注册的 Adapter 和 `kms://` 或 `secret://` 密钥引用。每次标记为 `connected`、`degraded` 或 `disabled` 都必须记录验证报告/工单引用；开播预检拒绝超过 24 小时的渠道验证。`generic-rtmp` 只证明受控推流通道，不代表已经完成平台 OAuth、评论、商品挂车或 Webhook 集成。
 
 示例结构检查：
 
@@ -46,4 +47,5 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 - 运行时遥测缺失，或输出帧率低于 24 FPS、音画同步超过 120 ms、备用节目未就绪。
 - 直播中发生推流断开、输出帧率低于 24 FPS 或备用节目未就绪时，控制面会将场次切为 `DEGRADED` 并写入降级媒体指令；恢复直播必须由场控确认后执行，禁止自动反复恢复。
 - 任何人物、声音、音乐、商品资料或脚本缺少授权与批准状态。
+- 渠道连接未验证、验证无可审计证据，或最后验证超过 24 小时。
 - 高风险问题没有人工场控值守与接管路径。

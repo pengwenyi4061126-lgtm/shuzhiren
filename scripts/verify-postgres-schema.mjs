@@ -15,6 +15,7 @@ if (!databaseUrl) {
 }
 
 const requiredTables = ["tenants", "users", "memberships", "products", "product_versions", "shows", "show_revisions", "live_runs", "live_commands", "preflight_checks", "show_revision_product_versions", "audit_events", "outbox_events", "show_revision_segments", "media_assets", "channel_connections", "runtime_health_samples", "runtime_alerts", "live_interactions", "model_releases", "show_revision_model_releases"];
+const requiredColumns = { model_releases: ["evidence_ref", "validation_summary"], channel_connections: ["verification_evidence_ref", "verified_by"] };
 const rlsTables = new Set(["products", "product_versions", "shows", "show_revisions", "live_runs", "live_commands", "preflight_checks", "show_revision_product_versions", "audit_events", "outbox_events", "show_revision_segments", "media_assets", "channel_connections", "runtime_health_samples", "runtime_alerts", "live_interactions", "model_releases", "show_revision_model_releases"]);
 const requiredPolicies = ["tenant_isolation_products", "tenant_isolation_product_versions", "tenant_isolation_shows", "tenant_isolation_show_revisions", "tenant_isolation_live_runs", "tenant_isolation_live_commands", "tenant_isolation_preflight_checks", "tenant_isolation_show_revision_product_versions", "tenant_isolation_audit_events", "tenant_isolation_outbox_events", "tenant_isolation_show_revision_segments", "tenant_isolation_media_assets", "tenant_isolation_channel_connections", "tenant_isolation_runtime_health_samples", "tenant_isolation_runtime_alerts", "tenant_isolation_live_interactions", "tenant_isolation_model_releases", "tenant_isolation_show_revision_model_releases"];
 const expectedMigrations = (await readdir(migrationsDirectory)).filter((name) => name.endsWith(".sql")).sort();
@@ -34,6 +35,9 @@ try {
     if (!row) errors.push(`缺少关键表：${table}`);
     else if (rlsTables.has(table) && !row.relrowsecurity) errors.push(`关键表未启用 RLS：${table}`);
   }
+
+  const columns = new Set((await client.query("select table_name || '.' || column_name as name from information_schema.columns where table_schema = 'public'")).rows.map((row) => row.name));
+  for (const [table, names] of Object.entries(requiredColumns)) for (const name of names) if (!columns.has(`${table}.${name}`)) errors.push(`缺少关键列：${table}.${name}`);
 
   const policies = new Set((await client.query("select policyname from pg_policies where schemaname = 'public'")).rows.map((row) => row.policyname));
   for (const policy of requiredPolicies) if (!policies.has(policy)) errors.push(`缺少租户隔离策略：${policy}`);

@@ -1,4 +1,4 @@
-import { createChannelConnection, isChannelCapability, listChannelConnections, type CreateChannelConnectionInput } from "@/lib/channels";
+import { createChannelConnection, isChannelProvider, listChannelConnections, type CreateChannelConnectionInput } from "@/lib/channels";
 import { recordAuditEvent } from "@/lib/audit";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 
@@ -28,7 +28,8 @@ export async function POST(request: Request) {
 function isConnectionInput(value: unknown): value is CreateChannelConnectionInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
-  return ["name", "provider", "secretRef"].every((key) => typeof input[key] === "string" && input[key].length > 0)
+  return ["name", "secretRef"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0)
+    && isChannelProvider(input.provider)
     && (input.outputProtocol === "rtmp" || input.outputProtocol === "srt")
-    && isChannelCapability(input.capability);
+    && Object.keys(input).every((key) => ["name", "provider", "secretRef", "outputProtocol"].includes(key));
 }
