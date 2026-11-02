@@ -21,6 +21,7 @@ const alertNotifier = path.join(root, "apps", "alert-notifier", "index.mjs");
 const tenantId = randomUUID();
 const isolatedTenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
+const telemetryToken = "control-plane-integration-telemetry-token";
 const commerceToken = "control-plane-integration-commerce-token";
 const recordingToken = "control-plane-integration-recording-token";
 const pimToken = "control-plane-integration-pim-token";
@@ -81,6 +82,7 @@ try {
       OIDC_ISSUER_URL: issuer,
       OIDC_AUDIENCE: "shuzhiren-integration",
       OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
+      RUNTIME_TELEMETRY_TENANT_TOKENS: JSON.stringify({ [tenantId]: telemetryToken }),
       CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken }),
       RUNTIME_RECORDING_TENANT_TOKENS: JSON.stringify({ [tenantId]: recordingToken }),
       PIM_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: pimToken, [isolatedTenantId]: isolatedPimToken })
@@ -196,13 +198,24 @@ try {
   await waitFor(async () => (await client.query("select state from live_runs where id = $1", [recoverRunId])).rows[0]?.state === "LIVE", 5_000, "recovery acknowledgement");
   assert.equal(mock.mediaCommands.length, 1);
   assert.equal(mock.mediaCommands[0].action, "start_program");
-  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, now() - interval '30 seconds'), ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, now() - interval '15 seconds')", [tenantId, recoverRunId]);
+  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '30 seconds'), ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '15 seconds')", [tenantId, recoverRunId]);
   const samplingSloResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/slo`, { headers: requestHeaders });
   assert.equal(samplingSloResponse.status, 200, "operators should read a run's sampling quality SLO");
   const samplingSlo = await samplingSloResponse.json();
   assert.equal(samplingSlo.data.status, "met");
   assert.equal(samplingSlo.data.sampleCount, 3);
   assert.equal(samplingSlo.data.healthRate, 1);
+
+  const audioRun = await seedRun("LIVE", "session_audio_silence", new Date());
+  const audioTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` },
+    body: JSON.stringify({ tenantId, runId: audioRun.runId, outputConnected: true, inferenceFps: 30, outputFps: 25, avSyncMs: 20, bitrateMbps: 4, gpuUtilization: 70, gpuMemoryMiB: 12000, audioActive: false, fallbackReady: true })
+  });
+  assert.equal(audioTelemetry.status, 202, "runtime telemetry should accept a verified silent-output sample");
+  assert.equal((await audioTelemetry.json()).data.alerts.some((alert) => alert.code === "audio_silence" && alert.severity === "critical"), true, "silent output must open a critical alert");
+  assert.equal((await client.query("select state from live_runs where id = $1", [audioRun.runId])).rows[0].state, "DEGRADED", "silent output must degrade the live run");
+  assert.equal((await client.query("select status from runtime_alerts where live_run_id = $1 and code = 'audio_silence'", [audioRun.runId])).rows[0].status, "open");
 
   const recordingInput = {
     tenantId,
@@ -473,7 +486,7 @@ async function seedRun(state, sessionId, sampledAt) {
   const capabilities = { channel: "integration-webhook", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
   await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now())", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities)]);
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id, product_version_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7, $8)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId, productVersionId]);
-  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, $3)", [tenantId, runId, sampledAt]);
+  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, $3)", [tenantId, runId, sampledAt]);
   return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
 }
 

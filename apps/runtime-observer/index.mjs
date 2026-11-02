@@ -62,12 +62,13 @@ function validProbe(value) {
   const outputFps = finiteNonNegative(value.outputFps);
   const avSyncMs = finiteNonNegative(value.avSyncMs);
   const bitrateMbps = finiteNonNegative(value.bitrateMbps);
-  if (typeof outputConnected !== "boolean" || typeof fallbackReady !== "boolean" || outputFps === null || avSyncMs === null || bitrateMbps === null) return null;
-  return { outputConnected, outputFps, avSyncMs, bitrateMbps, fallbackReady };
+  const audioActive = value.audioActive;
+  if (typeof outputConnected !== "boolean" || typeof fallbackReady !== "boolean" || typeof audioActive !== "boolean" || outputFps === null || avSyncMs === null || bitrateMbps === null) return null;
+  return { outputConnected, outputFps, avSyncMs, bitrateMbps, audioActive, fallbackReady };
 }
 
 function failedSample(target) {
-  return { runId: target.runId, outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, fallbackReady: false };
+  return { runId: target.runId, outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, audioActive: false, fallbackReady: false };
 }
 
 function telemetryFromObservation(target, observation, probe) {
@@ -85,6 +86,7 @@ function telemetryFromObservation(target, observation, probe) {
     bitrateMbps: probe.bitrateMbps,
     gpuUtilization: finiteNonNegative(gpu?.utilization_percent) ?? 0,
     gpuMemoryMiB: finiteNonNegative(gpu?.memory_used_mib) ?? 0,
+    audioActive: probe.audioActive,
     fallbackReady: probe.fallbackReady,
   };
 }

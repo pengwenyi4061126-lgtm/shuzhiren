@@ -9,7 +9,7 @@ const observer = path.join(root, "apps", "runtime-observer", "index.mjs");
 const telemetryToken = "observer-tenant-token-at-least-16";
 const gatewayToken = "gateway-shared-token-at-least-16";
 
-async function startServer(probeHealthy) {
+async function startServer(probeMode) {
   const samples = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -18,8 +18,8 @@ async function startServer(probeHealthy) {
       return json(response, 200, { session: { id: "session_demo", active: true }, gpu: { available: true, utilization_percent: 71, memory_used_mib: 14200 }, quality: { writer_accepting_frames: true, inference_fps: 28.5 } });
     }
     if (url.pathname === "/probe") {
-      if (!probeHealthy) return json(response, 503, { error: "probe_unavailable" });
-      return json(response, 200, { outputConnected: true, outputFps: 25, avSyncMs: 19, bitrateMbps: 4.1, fallbackReady: true });
+      if (probeMode === "unavailable") return json(response, 503, { error: "probe_unavailable" });
+      return json(response, 200, { outputConnected: true, outputFps: 25, avSyncMs: 19, bitrateMbps: 4.1, audioActive: probeMode !== "silent", fallbackReady: true });
     }
     if (url.pathname === "/api/v1/runtime/telemetry" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${telemetryToken}`);
@@ -45,8 +45,8 @@ async function requestBody(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function observeOnce(probeHealthy) {
-  const fixture = await startServer(probeHealthy);
+async function observeOnce(probeMode) {
+  const fixture = await startServer(probeMode);
   const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
   const child = spawn(process.execPath, [observer], {
     cwd: root,
@@ -71,10 +71,13 @@ async function waitFor(predicate, timeoutMs) {
   }
 }
 
-const healthy = await observeOnce(true);
-assert.deepEqual(healthy, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: true, inferenceFps: 28.5, outputFps: 25, avSyncMs: 19, bitrateMbps: 4.1, gpuUtilization: 71, gpuMemoryMiB: 14200, fallbackReady: true });
+const healthy = await observeOnce("healthy");
+assert.deepEqual(healthy, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: true, inferenceFps: 28.5, outputFps: 25, avSyncMs: 19, bitrateMbps: 4.1, gpuUtilization: 71, gpuMemoryMiB: 14200, audioActive: true, fallbackReady: true });
 
-const failed = await observeOnce(false);
-assert.deepEqual(failed, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, fallbackReady: false });
+const silent = await observeOnce("silent");
+assert.deepEqual(silent, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: true, inferenceFps: 28.5, outputFps: 25, avSyncMs: 19, bitrateMbps: 4.1, gpuUtilization: 71, gpuMemoryMiB: 14200, audioActive: false, fallbackReady: true });
 
-console.log("PASS  runtime observer normal and fail-closed paths");
+const failed = await observeOnce("unavailable");
+assert.deepEqual(failed, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, audioActive: false, fallbackReady: false });
+
+console.log("PASS  runtime observer activity-audio and fail-closed paths");

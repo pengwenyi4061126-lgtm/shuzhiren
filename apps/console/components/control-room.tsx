@@ -47,7 +47,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const [activationAwaitingConfirmation, setActivationAwaitingConfirmation] = useState<Extract<LiveCommand["action"], "START" | "RECOVER"> | null>(null);
   const elapsed = useMemo(() => (run.state === "LIVE" ? "01:24:17" : run.state === "DEGRADED" ? "已降级" : "未开始"), [run.state]);
-  const telemetryHealthy = Boolean(initialTelemetry?.outputConnected && initialTelemetry.outputFps >= 24 && initialTelemetry.avSyncMs <= 120 && initialTelemetry.bitrateMbps >= 2 && initialTelemetry.fallbackReady);
+  const telemetryHealthy = Boolean(initialTelemetry?.outputConnected && initialTelemetry.outputFps >= 24 && initialTelemetry.avSyncMs <= 120 && initialTelemetry.bitrateMbps >= 2 && initialTelemetry.audioActive && initialTelemetry.fallbackReady);
   const selectedInteraction = interactions.find((interaction) => interaction.id === selectedQuestion) ?? null;
 
   useEffect(() => {

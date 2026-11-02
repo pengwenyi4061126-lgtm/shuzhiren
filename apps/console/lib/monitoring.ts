@@ -1,7 +1,7 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
-export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; fallbackReady: boolean };
+export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; audioActive: boolean; fallbackReady: boolean };
 export type RuntimeTelemetryInput = Omit<RuntimeTelemetry, "tenantId" | "sampledAt"> & { sampledAt?: string };
 export type RuntimeAlert = { id: string; tenantId: string; runId: string; severity: "warning" | "critical"; code: string; message: string; status: "open" | "resolved"; openedAt: string; resolvedAt?: string; acknowledgedAt?: string; acknowledgedBy?: string };
 export type RuntimeSamplingSlo = { runId: string; windowMinutes: number; objective: number; sampleCount: number; healthySamples: number; healthRate: number | null; status: "met" | "breached" | "insufficient"; detail: string };
@@ -12,13 +12,13 @@ const samplingSloMinimumSamples = 3;
 
 type MonitoringStore = { telemetry: Map<string, RuntimeTelemetry>; alerts: Map<string, RuntimeAlert> };
 type AlertCondition = Pick<RuntimeAlert, "severity" | "code" | "message">;
-type PersistentTelemetryRow = { tenant_id: string; live_run_id: string; sampled_at: Date | string; output_connected: boolean; inference_fps: number | string; output_fps: number | string; av_sync_ms: number; bitrate_mbps: number | string; gpu_utilization: number; gpu_memory_mib: number; fallback_ready: boolean };
+type PersistentTelemetryRow = { tenant_id: string; live_run_id: string; sampled_at: Date | string; output_connected: boolean; inference_fps: number | string; output_fps: number | string; av_sync_ms: number; bitrate_mbps: number | string; gpu_utilization: number; gpu_memory_mib: number; audio_active: boolean; fallback_ready: boolean };
 type PersistentAlertRow = { id: string; tenant_id: string; live_run_id: string; severity: RuntimeAlert["severity"]; code: string; message: string; status: RuntimeAlert["status"]; opened_at: Date | string; resolved_at: Date | string | null; acknowledged_at: Date | string | null; acknowledged_by_name: string | null };
 
 declare global { var shuzhirenMonitoringStore: MonitoringStore | undefined; }
 
 function monitoringStore(): MonitoringStore {
-  globalThis.shuzhirenMonitoringStore ??= { telemetry: new Map([["run_20261101_001", { runId: "run_20261101_001", tenantId: "tenant_demo", sampledAt: "2026-11-01T14:40:00.000Z", outputConnected: true, inferenceFps: 31.8, outputFps: 25, avSyncMs: 31, bitrateMbps: 4.2, gpuUtilization: 72, gpuMemoryMiB: 14820, fallbackReady: true }]]), alerts: new Map() };
+  globalThis.shuzhirenMonitoringStore ??= { telemetry: new Map([["run_20261101_001", { runId: "run_20261101_001", tenantId: "tenant_demo", sampledAt: "2026-11-01T14:40:00.000Z", outputConnected: true, inferenceFps: 31.8, outputFps: 25, avSyncMs: 31, bitrateMbps: 4.2, gpuUtilization: 72, gpuMemoryMiB: 14820, audioActive: true, fallbackReady: true }]]), alerts: new Map() };
   return globalThis.shuzhirenMonitoringStore;
 }
 
@@ -28,7 +28,7 @@ export async function getTelemetry(context: RequestContext, runId: string) {
     return telemetry?.tenantId === context.tenantId ? telemetry : null;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready from runtime_health_samples where live_run_id = $1 order by sampled_at desc limit 1`, [runId]);
+    const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready from runtime_health_samples where live_run_id = $1 order by sampled_at desc limit 1`, [runId]);
     return result.rows[0] ? persistentTelemetry(result.rows[0]) : null;
   });
 }
@@ -39,7 +39,7 @@ export async function getRuntimeSamplingSlo(context: RequestContext, runId: stri
     return summarizeRuntimeSamplingSlo(runId, telemetry ? [telemetry] : []);
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready from runtime_health_samples where live_run_id = $1 and sampled_at >= now() - ($2::text || ' minutes')::interval order by sampled_at asc limit 2000`, [runId, samplingSloWindowMinutes]);
+    const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready from runtime_health_samples where live_run_id = $1 and sampled_at >= now() - ($2::text || ' minutes')::interval order by sampled_at asc limit 2000`, [runId, samplingSloWindowMinutes]);
     return summarizeRuntimeSamplingSlo(runId, result.rows.map(persistentTelemetry));
   });
 }
@@ -61,7 +61,7 @@ export async function ingestTelemetry(context: RequestContext, input: RuntimeTel
     return { telemetry, alerts: reconcileDemoAlerts(state, telemetry) };
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    await client.query(`insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [context.tenantId, telemetry.runId, telemetry.outputConnected, telemetry.inferenceFps, telemetry.outputFps, telemetry.avSyncMs, telemetry.bitrateMbps, telemetry.gpuUtilization, telemetry.gpuMemoryMiB, telemetry.fallbackReady, telemetry.sampledAt]);
+    await client.query(`insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`, [context.tenantId, telemetry.runId, telemetry.outputConnected, telemetry.inferenceFps, telemetry.outputFps, telemetry.avSyncMs, telemetry.bitrateMbps, telemetry.gpuUtilization, telemetry.gpuMemoryMiB, telemetry.audioActive, telemetry.fallbackReady, telemetry.sampledAt]);
     const existing = await client.query<PersistentAlertRow>(`select id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name from runtime_alerts where live_run_id = $1 for update`, [telemetry.runId]);
     const active = new Map(alertConditions(telemetry).map((condition) => [condition.code, condition]));
     const changed: RuntimeAlert[] = [];
@@ -117,6 +117,7 @@ function alertConditions(telemetry: RuntimeTelemetry): AlertCondition[] {
   if (telemetry.outputFps < 24) conditions.push({ severity: "critical", code: "output_fps_low", message: `输出帧率过低：${telemetry.outputFps} FPS` });
   if (telemetry.avSyncMs > 120) conditions.push({ severity: "warning", code: "av_sync_high", message: `音画同步超阈值：${telemetry.avSyncMs} ms` });
   if (telemetry.bitrateMbps < 2) conditions.push({ severity: "warning", code: "bitrate_low", message: `输出码率过低：${telemetry.bitrateMbps} Mbps` });
+  if (!telemetry.audioActive) conditions.push({ severity: "critical", code: "audio_silence", message: "输出音频静音或无法确认活动音频" });
   if (!telemetry.fallbackReady) conditions.push({ severity: "critical", code: "fallback_not_ready", message: "备用节目未就绪" });
   return conditions;
 }
@@ -145,9 +146,10 @@ export async function evaluateRuntimeReadiness(context: RequestContext, runId: s
   if (telemetry.outputFps < 24) return { passed: false, detail: `输出帧率过低：${telemetry.outputFps} FPS` };
   if (telemetry.avSyncMs > 120) return { passed: false, detail: `音画同步超阈值：${telemetry.avSyncMs} ms` };
   if (telemetry.bitrateMbps < 2) return { passed: false, detail: `输出码率过低：${telemetry.bitrateMbps} Mbps` };
+  if (!telemetry.audioActive) return { passed: false, detail: "输出音频静音或无法确认活动音频" };
   if (!telemetry.fallbackReady) return { passed: false, detail: "备用节目未就绪" };
-  return { passed: true, detail: `输出 ${telemetry.outputFps} FPS · 音画同步 ${telemetry.avSyncMs} ms · ${telemetry.bitrateMbps} Mbps` };
+  return { passed: true, detail: `输出 ${telemetry.outputFps} FPS · 音画同步 ${telemetry.avSyncMs} ms · ${telemetry.bitrateMbps} Mbps · 音频活动` };
 }
 
-function persistentTelemetry(row: PersistentTelemetryRow): RuntimeTelemetry { return { runId: row.live_run_id, tenantId: row.tenant_id, sampledAt: new Date(row.sampled_at).toISOString(), outputConnected: row.output_connected, inferenceFps: Number(row.inference_fps), outputFps: Number(row.output_fps), avSyncMs: Number(row.av_sync_ms), bitrateMbps: Number(row.bitrate_mbps), gpuUtilization: Number(row.gpu_utilization), gpuMemoryMiB: Number(row.gpu_memory_mib), fallbackReady: row.fallback_ready }; }
+function persistentTelemetry(row: PersistentTelemetryRow): RuntimeTelemetry { return { runId: row.live_run_id, tenantId: row.tenant_id, sampledAt: new Date(row.sampled_at).toISOString(), outputConnected: row.output_connected, inferenceFps: Number(row.inference_fps), outputFps: Number(row.output_fps), avSyncMs: Number(row.av_sync_ms), bitrateMbps: Number(row.bitrate_mbps), gpuUtilization: Number(row.gpu_utilization), gpuMemoryMiB: Number(row.gpu_memory_mib), audioActive: row.audio_active, fallbackReady: row.fallback_ready }; }
 function persistentAlert(row: PersistentAlertRow): RuntimeAlert { return { id: row.id, tenantId: row.tenant_id, runId: row.live_run_id, severity: row.severity, code: row.code, message: row.message, status: row.status, openedAt: new Date(row.opened_at).toISOString(), resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : undefined, acknowledgedAt: row.acknowledged_at ? new Date(row.acknowledged_at).toISOString() : undefined, acknowledgedBy: row.acknowledged_by_name ?? undefined }; }

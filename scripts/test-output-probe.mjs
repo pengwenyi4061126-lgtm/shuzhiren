@@ -6,13 +6,17 @@ const ffprobePayload = JSON.stringify({ streams: [{ codec_type: "video", avg_fra
 let inspectCount = 0;
 const result = await probeTarget(target, {
   execute: async () => { inspectCount += 1; return { stdout: ffprobePayload, stderr: "" }; },
-  fetchImpl: async () => new Response(JSON.stringify({ avSyncMs: 18.6 }), { status: 200 })
+  fetchImpl: async () => new Response(JSON.stringify({ avSyncMs: 18.6, audioActive: true }), { status: 200 })
 });
-assert.deepEqual(result, { outputConnected: true, outputFps: 25, avSyncMs: 18.6, bitrateMbps: 4.1, fallbackReady: true });
+assert.deepEqual(result, { outputConnected: true, outputFps: 25, avSyncMs: 18.6, bitrateMbps: 4.1, audioActive: true, fallbackReady: true });
 assert.equal(inspectCount, 2);
 
 await assert.rejects(
-  () => probeTarget({ ...target, fallbackStreamUrl: null }, { execute: async () => ({ stdout: JSON.stringify({ streams: [{ codec_type: "video", avg_frame_rate: "25/1" }], format: { bit_rate: "4100000" } }) }), fetchImpl: async () => new Response(JSON.stringify({ avSyncMs: 20 }), { status: 200 }) }),
+  () => probeTarget({ ...target, fallbackStreamUrl: null }, { execute: async () => ({ stdout: JSON.stringify({ streams: [{ codec_type: "video", avg_frame_rate: "25/1" }], format: { bit_rate: "4100000" } }) }), fetchImpl: async () => new Response(JSON.stringify({ avSyncMs: 20, audioActive: true }), { status: 200 }) }),
   /primary_stream_measurement_incomplete/
+);
+await assert.rejects(
+  () => probeTarget({ ...target, fallbackStreamUrl: null }, { execute: async () => ({ stdout: ffprobePayload }), fetchImpl: async () => new Response(JSON.stringify({ avSyncMs: 20 }), { status: 200 }) }),
+  /audio_activity_probe_payload_invalid/
 );
 console.log("PASS  output probe measures streams without fabricating missing audio/video metrics");

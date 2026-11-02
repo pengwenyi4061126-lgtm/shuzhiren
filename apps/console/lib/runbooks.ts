@@ -43,6 +43,16 @@ export const runbooks: Runbook[] = [
     evidence: ["黑帧探针结果或截图", "输出视频时间线与编码器状态", "备用节目切换与恢复审计记录"]
   },
   {
+    id: "audio-silence",
+    severity: "P1",
+    title: "静音或活动音频无法确认",
+    trigger: "独立输出质量探针报告 audioActive=false，或活动音频事实缺失。",
+    owner: "直播值班员；音频/媒体运行工程师升级处理",
+    responseTarget: "2 分钟内恢复已验证的活动音频",
+    steps: ["立即停止依赖当前音频的互动和成交引导，切换至带已批准音频的备用节目。", "检查 TTS、混音、编码器音频轨与平台输出音轨，禁止只凭本机监听判定已恢复。", "待独立探针连续返回活动音频并核对音画同步后，才可尝试恢复主节目。", "若无法恢复，维持人工接管或结束场次，并创建 P1 事故单。"],
+    evidence: ["独立探针的 audioActive、音画同步与采样时间", "TTS/混音/编码器日志和输出音轨诊断", "备用节目切换及恢复后连续采样"]
+  },
+  {
     id: "rtmp-rejected",
     severity: "P1",
     title: "RTMP 连接被拒绝或推流中断",
@@ -85,6 +95,7 @@ const alertRunbookIds: Record<string, Runbook["id"]> = {
   output_fps_low: "black-frame",
   av_sync_high: "model-tts-timeout",
   bitrate_low: "rtmp-rejected",
+  audio_silence: "audio-silence",
   fallback_not_ready: "black-frame"
 };
 

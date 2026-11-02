@@ -28,13 +28,13 @@ function safeHttpUrl(value, label) {
 }
 
 export async function probeTarget(target, { ffprobePath = "ffprobe", timeoutMs = 5000, fetchImpl = fetch, execute = execFileAsync } = {}) {
-  const [primary, fallback, avSyncMs] = await Promise.all([
+  const [primary, fallback, quality] = await Promise.all([
     inspectStream(target.streamUrl, { ffprobePath, timeoutMs, execute }),
     target.fallbackStreamUrl ? inspectStream(target.fallbackStreamUrl, { ffprobePath, timeoutMs, execute }).then(() => true).catch(() => false) : Promise.resolve(false),
-    fetchAvSync(target.avSyncProbeUrl, { timeoutMs, fetchImpl })
+    fetchOutputQuality(target.avSyncProbeUrl, { timeoutMs, fetchImpl })
   ]);
   if (!primary.hasAudio || !primary.hasVideo || primary.outputFps === null || primary.bitrateMbps === null) throw new Error("primary_stream_measurement_incomplete");
-  return { outputConnected: true, outputFps: primary.outputFps, avSyncMs, bitrateMbps: primary.bitrateMbps, fallbackReady: fallback };
+  return { outputConnected: true, outputFps: primary.outputFps, avSyncMs: quality.avSyncMs, bitrateMbps: primary.bitrateMbps, audioActive: quality.audioActive, fallbackReady: fallback };
 }
 
 async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
@@ -48,13 +48,14 @@ async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
   return { hasVideo: Boolean(video), hasAudio, outputFps, bitrateMbps: bitrate === null ? null : round(bitrate / 1_000_000) };
 }
 
-async function fetchAvSync(url, { timeoutMs, fetchImpl }) {
+async function fetchOutputQuality(url, { timeoutMs, fetchImpl }) {
   const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`av_sync_probe_http_${response.status}`);
   const payload = await response.json();
   const value = payload?.avSyncMs;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error("av_sync_probe_payload_invalid");
-  return round(value);
+  if (typeof payload?.audioActive !== "boolean") throw new Error("audio_activity_probe_payload_invalid");
+  return { avSyncMs: round(value), audioActive: payload.audioActive };
 }
 
 function frameRate(value) {

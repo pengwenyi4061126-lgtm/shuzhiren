@@ -25,6 +25,7 @@ export async function POST(request: Request) {
       bitrateMbps: body.bitrateMbps,
       gpuUtilization: body.gpuUtilization,
       gpuMemoryMiB: body.gpuMemoryMiB,
+      audioActive: body.audioActive,
       fallbackReady: body.fallbackReady
     };
     const result = await ingestTelemetry(serviceContext, input);
@@ -59,7 +60,7 @@ type RuntimeTelemetryBody = RuntimeTelemetryInput & { tenantId: string };
 function isTelemetryBody(value: unknown): value is RuntimeTelemetryBody {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
-  const booleans = ["outputConnected", "fallbackReady"];
+  const booleans = ["outputConnected", "audioActive", "fallbackReady"];
   const numbers = ["inferenceFps", "outputFps", "avSyncMs", "bitrateMbps", "gpuUtilization", "gpuMemoryMiB"];
   return typeof body.tenantId === "string" && body.tenantId.length > 0
     && typeof body.runId === "string" && body.runId.length > 0
