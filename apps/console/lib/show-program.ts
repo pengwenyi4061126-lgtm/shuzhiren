@@ -70,6 +70,10 @@ export async function getShowProgram(context: RequestContext, runId: string) {
   });
 }
 
+export function registerDemoProgram(program: ShowProgram) {
+  programStore().programs.set(program.runId, program);
+}
+
 export async function hasApprovedFallbackProgram(context: RequestContext, runId: string) {
   const program = await getShowProgram(context, runId);
   return Boolean(program?.status === "approved" && program.segments.some((segment) => segment.fallback));

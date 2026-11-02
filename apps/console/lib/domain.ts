@@ -23,6 +23,7 @@ export type LiveRun = {
   showName: string;
   state: LiveRunState;
   traceId: string;
+  scheduledAt?: string;
   commandHistory: LiveCommand[];
   questions: LiveQuestion[];
 };

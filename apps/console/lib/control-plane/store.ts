@@ -5,6 +5,7 @@ import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { findApprovedProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { hasApprovedFallbackProgram } from "@/lib/show-program";
+import { registerDemoProgram, type ShowProgram } from "@/lib/show-program";
 import { hasApprovedLiveRights } from "@/lib/assets";
 import { validateChannelConnection } from "@/lib/channels";
 import { evaluateRuntimeReadiness } from "@/lib/monitoring";
@@ -25,6 +26,7 @@ export type StoredRun = LiveRun & {
   outputReady: boolean;
   aiDisclosureEnabled: boolean;
   runtimeSessionId?: string;
+  scheduledAt?: string;
 };
 
 type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
@@ -46,6 +48,7 @@ type PersistentRunRow = {
   output_ready: boolean;
   ai_disclosure_enabled: boolean;
   runtime_session_id: string | null;
+  scheduled_at: Date | string | null;
 };
 type PersistentCommandRow = {
   id: string;
@@ -94,6 +97,39 @@ function store() {
 export async function getRun(context: RequestContext, runId: string) {
   if (!databasePool()) return getDemoRun(context, runId);
   return withTenantTransaction(context.tenantId, async (client) => loadPersistentRun(client, runId));
+}
+
+export async function listRuns(context: RequestContext) {
+  if (!databasePool()) return [...store().runs.values()].filter((run) => run.tenantId === context.tenantId).sort((left, right) => (left.scheduledAt ?? "").localeCompare(right.scheduledAt ?? ""));
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<PersistentRunRow>(`select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id, r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved, r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready, r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at from live_runs r join show_revisions sr on sr.id = r.show_revision_id join shows s on s.id = sr.show_id order by r.scheduled_at asc nulls last, r.created_at desc`);
+    return result.rows.map((row) => persistentRun(row, []));
+  });
+}
+
+export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean }) {
+  const product = await findApprovedProductVersion(context, input.productVersionId);
+  if (!product) throw new Response("An approved product version is required", { status: 409 });
+  const channel = await validateChannelConnection(context, input.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: input.aiDisclosureEnabled });
+  if (!channel.passed) throw new Response(`Channel is not ready: ${channel.detail}`, { status: 409 });
+  if (!databasePool()) return createDemoRun(context, input);
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const show = await client.query<{ id: string }>("insert into shows (tenant_id, name) values ($1, $2) returning id", [context.tenantId, input.showName]);
+    const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'approved') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner" })]);
+    const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, $6, true, true, true, false, $7, $8, $9::timestamptz) returning id, tenant_id, show_revision_id, $10::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, await hasApprovedLiveRights(context), input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
+    await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
+    return persistentRun(run.rows[0], []);
+  });
+}
+
+async function createDemoRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean }) {
+  const id = `run_${crypto.randomUUID()}`;
+  const revisionId = `show_revision_${crypto.randomUUID()}`;
+  const run: StoredRun = { id, tenantId: context.tenantId, revisionId, channelConnectionId: input.channelConnectionId, productVersionId: input.productVersionId, showName: input.showName, state: "DRAFT", traceId: id, scheduledAt: input.scheduledAt, hasOperator: true, hasApprovedRights: await hasApprovedLiveRights(context), hasApprovedSkuVersion: true, hasFallbackProgram: true, channelReady: true, outputReady: false, aiDisclosureEnabled: input.aiDisclosureEnabled, runtimeSessionId: input.runtimeSessionId, commandHistory: [], questions: [] };
+  store().runs.set(id, run);
+  const program: ShowProgram = { runId: id, tenantId: context.tenantId, revisionId, status: "approved", segments: [{ id: `${id}_product`, position: 1, kind: "prepared_product", title: "商品讲解", durationSeconds: 180, productVersionId: input.productVersionId, purpose: "受审核商品事实", fallback: false }, { id: `${id}_interactive`, position: 2, kind: "interactive", title: "受控互动", durationSeconds: 120, productVersionId: input.productVersionId, purpose: "仅低风险可追溯问答", fallback: false }, { id: `${id}_fallback`, position: 3, kind: "fallback", title: "备用节目", durationSeconds: 150, productVersionId: input.productVersionId, purpose: "运行异常降级", fallback: true }, { id: `${id}_handoff`, position: 4, kind: "human_handoff", title: "人工接管", durationSeconds: 0, purpose: "高风险人工处理", fallback: true }] };
+  registerDemoProgram(program);
+  return run;
 }
 
 function getDemoRun(context: RequestContext, runId: string) {
@@ -196,7 +232,7 @@ export async function bindRuntimeSession(context: RequestContext, runId: string,
       `update live_runs set runtime_session_id = $2, updated_at = now() where id = $1
        returning id, tenant_id, show_revision_id, ''::text as show_name, state, trace_id,
          channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version,
-         has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id`,
+         has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`,
       [runId, runtimeSessionId]
     );
     if (!result.rows[0]) throw new Response("Live run not found", { status: 404 });
@@ -211,7 +247,7 @@ async function loadPersistentRun(client: PoolClient, runId: string, lock = false
     `select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id,
       r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved,
       r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready,
-      r.ai_disclosure_enabled, r.runtime_session_id
+      r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at
      from live_runs r
      join show_revisions sr on sr.id = r.show_revision_id
      join shows s on s.id = sr.show_id
@@ -257,6 +293,7 @@ function persistentRun(row: PersistentRunRow, commandHistory: LiveCommand[]): St
     outputReady: row.output_ready,
     aiDisclosureEnabled: row.ai_disclosure_enabled,
     runtimeSessionId: row.runtime_session_id ?? undefined,
+    scheduledAt: row.scheduled_at ? new Date(row.scheduled_at).toISOString() : undefined,
     commandHistory,
     questions: []
   };
