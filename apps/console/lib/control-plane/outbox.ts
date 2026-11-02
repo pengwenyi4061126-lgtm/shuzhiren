@@ -80,10 +80,15 @@ export async function enqueueSpeechCommandInTransaction(client: PoolClient, cont
 
 export async function getOutboxEvent(context: RequestContext, eventId: string) {
   if (!databasePool()) { const event = outboxStore().events.get(eventId); return event?.tenantId === context.tenantId ? event : null; }
+  if (!isUuid(eventId)) return null;
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentOutboxRow>("select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error from outbox_events where id = $1", [eventId]);
     return result.rows[0] ? persistentEvent(result.rows[0]) : null;
   });
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export async function listOutboxEvents(context: RequestContext) {
