@@ -2,20 +2,19 @@ import asyncio
 import os
 import re
 import time
-import wave
 from collections import OrderedDict
-from io import BytesIO
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from audio import pcm_s16le_to_wav
 
 app = FastAPI(title="Shuzhiren Runtime Gateway", version="0.1.0")
 LIVE_TALKING_URL = os.environ.get("LIVETALKING_BASE_URL", "http://livetalking:8010").rstrip("/")
 COSYVOICE_URL = os.environ.get("COSYVOICE_BASE_URL", "http://cosyvoice:50000").rstrip("/")
-COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "22050"))
+COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))
 RUNTIME_TOKEN = os.environ.get("RUNTIME_SHARED_TOKEN", "")
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("RUNTIME_REQUEST_TIMEOUT_SECONDS", "15"))
 COSYVOICE_REQUIRED = os.environ.get("COSYVOICE_REQUIRED", "false").lower() == "true"
@@ -93,15 +92,6 @@ def prune_runtime_command_cache(now: float) -> None:
             break
         runtime_command_cache.pop(oldest_id)
 
-def pcm_to_wav(pcm: bytes) -> bytes:
-    output = BytesIO()
-    with wave.open(output, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(COSYVOICE_SAMPLE_RATE)
-        wav.writeframes(pcm)
-    return output.getvalue()
-
 def gpu_observation() -> dict:
     try:
         from pynvml import nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates, nvmlInit, nvmlShutdown
@@ -125,7 +115,7 @@ async def cosyvoice_synthesize(text: str, speaker: str) -> bytes:
             response.raise_for_status()
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail=f"CosyVoice request failed: {error}") from error
-    return pcm_to_wav(response.content)
+    return pcm_s16le_to_wav(response.content, COSYVOICE_SAMPLE_RATE)
 
 async def livetalking_audio(session_id: str, audio: bytes) -> None:
     try:
