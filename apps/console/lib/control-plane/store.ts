@@ -30,6 +30,7 @@ export type StoredRun = LiveRun & {
 };
 
 type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
+export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm";
 type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, LiveCommand> };
 type PersistentRunRow = {
   id: string;
@@ -120,6 +121,31 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
     return persistentRun(run.rows[0], []);
   });
+}
+
+export async function advanceRunLifecycle(context: RequestContext, runId: string, action: RunLifecycleAction) {
+  if (!databasePool()) {
+    const run = getDemoRun(context, runId);
+    if (!run) throw new Response("Live run not found", { status: 404 });
+    const next = lifecycleTarget(run.state, action);
+    if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
+    run.state = next;
+    return run;
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const run = await loadPersistentRun(client, runId, true);
+    if (!run) throw new Response("Live run not found", { status: 404 });
+    const next = lifecycleTarget(run.state, action);
+    if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
+    await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, next]);
+    return { ...run, state: next };
+  });
+}
+
+function lifecycleTarget(state: LiveRunState, action: RunLifecycleAction): LiveRunState {
+  const target = ({ DRAFT: { submit_review: "REVIEW" }, REVIEW: { approve: "APPROVED" }, APPROVED: { begin_preflight: "PREFLIGHT" }, PREFLIGHT: { arm: "ARMED" } } as Partial<Record<LiveRunState, Partial<Record<RunLifecycleAction, LiveRunState>>>>)[state]?.[action];
+  if (!target) throw new Response("Lifecycle action is not allowed in current state", { status: 409 });
+  return target;
 }
 
 async function createDemoRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean }) {
