@@ -15,7 +15,7 @@ type NavigationItem = { icon: typeof MonitorPlay; label: string; href?: string }
 
 const navigation: NavigationItem[] = [
   { icon: MonitorPlay, label: "指挥台", href: "/" },
-  { icon: CalendarDays, label: "场次" },
+  { icon: CalendarDays, label: "场次", href: "/shows" },
   { icon: Clapperboard, label: "内容工坊", href: "/assets" },
   { icon: Package, label: "商品中心", href: "/products" },
   { icon: ShieldCheck, label: "知识与策略" },
