@@ -22,7 +22,7 @@ const requireNumber = (value, label, minimum) => {
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 if (!isObject(evidence)) errors.push("evidence must be a JSON object");
-if (evidence?.schemaVersion !== 1) errors.push("schemaVersion must be 1");
+if (evidence?.schemaVersion !== 2) errors.push("schemaVersion must be 2");
 requireString(evidence?.completedAt, "completedAt");
 if (Number.isNaN(Date.parse(evidence?.completedAt ?? ""))) errors.push("completedAt must be an ISO timestamp");
 requireString(evidence?.operator, "operator");
@@ -42,11 +42,15 @@ if (!isObject(trial)) errors.push("trial must be an object");
 requireNumber(trial?.durationMinutes, "trial.durationMinutes", 240);
 if (trial?.maxConcurrentAvatars !== 1) errors.push("trial.maxConcurrentAvatars must be exactly 1 for the approved single-4090 profile");
 requireNumber(trial?.minimumOutputFps, "trial.minimumOutputFps", 24);
+requireNumber(trial?.minimumOutputWidth, "trial.minimumOutputWidth", 1280);
+requireNumber(trial?.minimumOutputHeight, "trial.minimumOutputHeight", 720);
+requireNumber(trial?.minimumBitrateMbps, "trial.minimumBitrateMbps", 2);
 if (!Number.isFinite(trial?.maximumAvSyncMs) || trial.maximumAvSyncMs > 120 || trial.maximumAvSyncMs < 0) errors.push("trial.maximumAvSyncMs must be between 0 and 120");
 if (trial?.outputProbeVerified !== true) errors.push("trial.outputProbeVerified must be true");
 if (trial?.audioActivityProbeVerified !== true) errors.push("trial.audioActivityProbeVerified must be true");
 if (trial?.recordingVerified !== true) errors.push("trial.recordingVerified must be true");
 requireString(trial?.runtimeObservationEvidence, "trial.runtimeObservationEvidence");
+requireString(trial?.outputProbeEvidence, "trial.outputProbeEvidence");
 requireString(trial?.audioActivityEvidence, "trial.audioActivityEvidence");
 requireString(trial?.recordingEvidence, "trial.recordingEvidence");
 
@@ -60,4 +64,4 @@ if (errors.length) {
   for (const error of errors) console.error(`ERROR ${error}`);
   process.exit(1);
 }
-console.log(`PASS  4090 runtime acceptance evidence verified for ${host.hostname}; ${trial.durationMinutes} minutes, ${trial.minimumOutputFps} FPS minimum, ${trial.maximumAvSyncMs} ms maximum A/V sync`);
+console.log(`PASS  4090 runtime acceptance evidence verified for ${host.hostname}; ${trial.durationMinutes} minutes, ${trial.minimumOutputFps} FPS, ${trial.minimumOutputWidth}x${trial.minimumOutputHeight}, ${trial.minimumBitrateMbps} Mbps minimum, ${trial.maximumAvSyncMs} ms maximum A/V sync`);

@@ -115,7 +115,7 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json
 ```
 
-该门禁要求至少 240 分钟单路试播、单路数字人、最低输出 24 FPS、最高音画偏差 120 ms、有效输出探针、录屏证据，以及断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音六类演练全部通过。模板占位符、口头结论或 `/healthz` 不能通过该校验。此文件是发布证据索引，不应写入流密钥、访问令牌、买家信息、原始音视频或私人 URL。
+该门禁要求至少 240 分钟单路试播、单路数字人、最低输出 24 FPS、1280x720、2 Mbps、最高音画偏差 120 ms、有效输出探针及其独立证据、录屏证据，以及断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音六类演练全部通过。模板占位符、口头结论或 `/healthz` 不能通过该校验。此文件是发布证据索引，不应写入流密钥、访问令牌、买家信息、原始音视频或私人 URL。
 ### 输出音频活动事实
 
 从 2026-11-03 的运行时协议起，`runtime-observer` 的输出探针 JSON 必须包含布尔 `audioActive`。该值必须由独立输出音频分析器给出，不可由数字人或 TTS 进程自行声明；缺失、`false` 或探针不可达时均会 fail-closed，生成严重静音告警并受控降级。

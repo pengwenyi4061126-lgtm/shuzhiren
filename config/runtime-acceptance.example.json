@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "completedAt": "2026-11-03T12:00:00.000Z",
   "operator": "replace-with-duty-operator",
   "releaseManifestSha256": "replace-with-64-character-release-manifest-sha256",
@@ -14,11 +14,15 @@
     "durationMinutes": 240,
     "maxConcurrentAvatars": 1,
     "minimumOutputFps": 25,
+    "minimumOutputWidth": 1280,
+    "minimumOutputHeight": 720,
+    "minimumBitrateMbps": 2,
     "maximumAvSyncMs": 120,
     "outputProbeVerified": true,
     "audioActivityProbeVerified": true,
     "recordingVerified": true,
     "runtimeObservationEvidence": "replace-with-private-observation-report-id",
+    "outputProbeEvidence": "replace-with-private-output-probe-report-id",
     "audioActivityEvidence": "replace-with-private-audio-activity-report-id",
     "recordingEvidence": "replace-with-immutable-recording-evidence-id"
   },
