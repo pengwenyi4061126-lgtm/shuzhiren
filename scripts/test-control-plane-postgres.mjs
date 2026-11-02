@@ -123,6 +123,7 @@ try {
   assert.equal(manifestResponse.status, 200, "operators should read a run's frozen release manifest");
   const manifest = await manifestResponse.json();
   assert.equal(manifest.data.product.id, freshVersion.data.id);
+  assert.equal(manifest.data.product.facts.sourceRef, freshFacts.sourceRef, "release manifest must include the frozen product fact provenance");
   assert.equal(manifest.data.models.length, 3);
   assert.deepEqual(manifest.data.assets.map((asset) => asset.kind), ["music", "portrait", "product_clip", "voice"]);
   assert.match(manifest.data.sha256, /^[a-f0-9]{64}$/, "release manifest must include a reproducible SHA-256 evidence hash");

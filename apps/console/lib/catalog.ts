@@ -30,12 +30,17 @@ function catalog(): Catalog {
       id: "product_a102", tenantId: "tenant_demo", externalSku: "A-102", name: "氨基酸洁面慕斯",
       versions: [{
         id: "pv_a102_v1", revision: 1, status: "approved",
-        facts: { priceCent: 9900, unitCostCent: 3200, stock: 286, highlights: ["氨基酸表活", "按压泡沫"], faq: ["赠旅行装三件套", "48 小时内发货"], sourceRef: "pim://demo/A-102/revision-18", sourceSyncedAt: "2026-11-01T08:00:00.000Z", validFrom: "2026-11-01T08:00:00.000Z", validUntil: "2026-11-03T08:00:00.000Z" },
+        facts: demoProductFacts(),
         createdAt: "2026-11-01T08:00:00.000Z", approvedAt: "2026-11-01T08:30:00.000Z"
       }]
     }]])
   };
   return globalThis.shuzhirenCatalog;
+}
+
+function demoProductFacts(): ProductFacts {
+  const now = new Date();
+  return { priceCent: 9900, unitCostCent: 3200, stock: 286, highlights: ["氨基酸表活", "按压泡沫"], faq: ["赠旅行装三件套", "48 小时内发货"], sourceRef: "pim://demo/A-102/revision-current", sourceSyncedAt: now.toISOString(), validFrom: new Date(now.getTime() - 5 * 60_000).toISOString(), validUntil: new Date(now.getTime() + 7 * 24 * 60 * 60_000).toISOString() };
 }
 
 export async function listProducts(context: RequestContext) {
