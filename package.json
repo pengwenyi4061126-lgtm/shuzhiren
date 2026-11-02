@@ -14,7 +14,8 @@
     "db:migrate": "npm run db:migrate --workspace @shuzhiren/console",
     "db:verify": "node scripts/verify-postgres-schema.mjs",
     "worker:runtime": "npm run start --workspace @shuzhiren/runtime-worker",
-    "deploy:check": "node scripts/check-deployment-config.mjs"
+    "deploy:check": "node scripts/check-deployment-config.mjs",
+    "policy:red-team": "node scripts/check-policy-redteam.mjs"
   },
   "engines": {
     "node": ">=20.9.0"

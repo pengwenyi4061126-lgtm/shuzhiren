@@ -6,6 +6,9 @@ export type PolicyDecision = {
 };
 
 const rules = [
+  { pattern: /忽略.{0,24}(指令|规则)|系统提示|提示词|开发者消息|越狱|jailbreak|角色扮演|不受限制/i, reason: "提示注入或策略绕过尝试", action: "refuse" as const, riskLevel: "high" as const, evidence: [] },
+  { pattern: /密钥|密码|token|api[ _-]?key|RTMP|推流码|数据库|连接串/i, reason: "索取系统凭据或内部信息", action: "refuse" as const, riskLevel: "high" as const, evidence: [] },
+  { pattern: /改价|降价|设置.{0,12}价格|修改.{0,12}(库存|价格)/i, reason: "价格或库存修改请求", action: "handoff" as const, riskLevel: "high" as const, evidence: ["price_policy"] },
   { pattern: /治愈|治疗|药效|疾病|医疗|处方/i, reason: "医疗或功效承诺", action: "handoff" as const, riskLevel: "high" as const, evidence: ["regulated_claim_approval"] },
   { pattern: /最低价|全网最低|保价|永久有效/i, reason: "价格或营销承诺", action: "handoff" as const, riskLevel: "high" as const, evidence: ["price_policy"] },
   { pattern: /退款|投诉|假货|维权|举报/i, reason: "售后或投诉处理", action: "handoff" as const, riskLevel: "high" as const, evidence: ["after_sales_policy"] },
