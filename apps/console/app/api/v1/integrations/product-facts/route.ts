@@ -1,4 +1,5 @@
 import { recordAuditEvent } from "@/lib/audit";
+import { readBoundedJson } from "@/lib/bounded-json";
 import type { ProductFacts } from "@/lib/catalog";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { ingestProductFacts } from "@/lib/product-ingest";
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json().catch(() => null);
+    const body = await readBoundedJson(request);
     if (!isBody(body)) return Response.json({ error: "invalid_product_fact_ingest" }, { status: 400 });
     requirePimIngestService(request, body.tenantId);
     const context: RequestContext = { tenantId: body.tenantId, actorId: "pim-ingest-service", actorName: "PIM 商品事实接入服务", role: "operator" };

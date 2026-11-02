@@ -1,4 +1,5 @@
 import { getChannelConnection } from "@/lib/channels";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { commerceEventTypes, createChannelCommerceEvent, type CommerceEventType } from "@/lib/commerce";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json().catch(() => null);
+    const body = await readBoundedJson(request);
     if (!isChannelCommerceEvent(body)) return Response.json({ error: "invalid_channel_commerce_event" }, { status: 400 });
     requireChannelCommerceService(request, body.tenantId);
     const context: RequestContext = { tenantId: body.tenantId, actorId: "channel-commerce-service", actorName: "渠道交易接入服务", role: "operator" };

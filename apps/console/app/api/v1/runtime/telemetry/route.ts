@@ -1,4 +1,5 @@
 import { recordAuditEvent } from "@/lib/audit";
+import { readBoundedJson } from "@/lib/bounded-json";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { degradeRunFromRuntime, getRun } from "@/lib/control-plane/store";
 import { ingestTelemetry, requiresRuntimeIntervention, type RuntimeTelemetryInput } from "@/lib/monitoring";
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json().catch(() => null);
+    const body = await readBoundedJson(request);
     if (!isTelemetryBody(body)) return Response.json({ error: "invalid_telemetry" }, { status: 400 });
     requireRuntimeService(request, body.tenantId);
 

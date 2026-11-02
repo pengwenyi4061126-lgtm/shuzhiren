@@ -1,4 +1,5 @@
 import { recordAuditEvent } from "@/lib/audit";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
 import { enqueueMediaCommand } from "@/lib/control-plane/outbox";
@@ -10,7 +11,9 @@ const mediaTypes = new Set(["start_program", "switch_to_fallback", "switch_to_hu
 export async function POST(request: Request) {
   const context = await requestContextFrom(request);
   requireRole(context, ["admin", "operator"]);
-  const body: unknown = await request.json().catch(() => null);
+  let body: unknown;
+  try { body = await readBoundedJson(request); }
+  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
   if (!isMediaInput(body)) return Response.json({ error: "invalid_media_command" }, { status: 400 });
   const run = await getRun(context, body.runId);
   if (!run) return Response.json({ error: "not_found" }, { status: 404 });

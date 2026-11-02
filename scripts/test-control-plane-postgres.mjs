@@ -209,6 +209,12 @@ try {
   assert.equal(samplingSlo.data.healthRate, 1);
 
   const audioRun = await seedRun("LIVE", "session_audio_silence", new Date());
+  const oversizedRuntimeTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` },
+    body: JSON.stringify({ tenantId, runId: audioRun.runId, padding: "x".repeat(20_000) })
+  });
+  assert.equal(oversizedRuntimeTelemetry.status, 413, "runtime telemetry must reject oversized request bodies before JSON parsing");
   const audioTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` },

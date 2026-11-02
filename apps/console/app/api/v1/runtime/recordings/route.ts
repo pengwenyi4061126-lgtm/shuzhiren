@@ -1,4 +1,5 @@
 import { recordAuditEvent } from "@/lib/audit";
+import { readBoundedJson } from "@/lib/bounded-json";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { registerRecording, type RegisterRecordingInput } from "@/lib/recordings";
 import { requireRuntimeRecordingService } from "@/lib/runtime-service-auth";
@@ -7,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json().catch(() => null);
+    const body = await readBoundedJson(request);
     if (!isRecordingBody(body)) return Response.json({ error: "invalid_recording_evidence" }, { status: 400 });
     requireRuntimeRecordingService(request, body.tenantId);
     const context: RequestContext = { tenantId: body.tenantId, actorId: "runtime-recording-service", actorName: "运行时录制归档服务", role: "operator" };
