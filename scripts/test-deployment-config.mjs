@@ -30,6 +30,7 @@ const control = env({
   OIDC_ISSUER_URL: "https://issuer.internal",
   OIDC_AUDIENCE: "shuzhiren-console",
   OIDC_JWKS_URL: "https://issuer.internal/jwks.json",
+  OUTBOX_MAX_ATTEMPTS: "6",
   RUNTIME_TELEMETRY_TENANT_TOKENS: { [tenantId]: telemetryToken },
   RUNTIME_RECORDING_TENANT_TOKENS: { [tenantId]: "recording-token-at-least-32-bytes" },
   PIM_INGEST_TENANT_TOKENS: { [tenantId]: "pim-ingest-token-at-least-32-bytes" },
@@ -139,6 +140,12 @@ try {
   await Promise.all([writeFile(files.control, control), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  await writeFile(files.control, control.replace("OUTBOX_MAX_ATTEMPTS=6", "OUTBOX_MAX_ATTEMPTS=4"));
+  const mismatchedOutboxAttempts = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedOutboxAttempts.status, 0, "control-plane and runtime retry limits must match");
+  assert.match(mismatchedOutboxAttempts.stderr, /OUTBOX_MAX_ATTEMPTS/, "retry-limit mismatch must identify the shared outbox gate");
+  await writeFile(files.control, control);
 
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
   const demoGateway = check(["--require-cosyvoice"]);
