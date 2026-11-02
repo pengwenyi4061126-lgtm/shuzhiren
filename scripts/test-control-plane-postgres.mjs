@@ -31,7 +31,7 @@ try {
   mock = await startMockServer();
   const consolePort = await availablePort();
   const issuer = `${mock.baseUrl}/issuer`;
-  const token = await new SignJWT({ tenant_id: tenantId, role: "operator", name: "Integration Operator" })
+  const token = await new SignJWT({ tenant_id: tenantId, role: "admin", name: "Integration Admin" })
     .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
     .setSubject("integration-operator")
     .setIssuer(issuer)
@@ -63,6 +63,26 @@ try {
   await waitFor(async () => (await fetch(`http://127.0.0.1:${consolePort}/api/health`)).ok, 20_000, "control plane startup");
 
   const requestHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
+  const productResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products`, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify({ externalSku: `integration-sku-${tenantId}`, name: "Integration product" })
+  });
+  assert.equal(productResponse.status, 201);
+  const product = await productResponse.json();
+  const staleFacts = { priceCent: 9900, stock: 20, highlights: ["事实卖点"], faq: ["事实 FAQ"], sourceRef: "pim://integration/stale", sourceSyncedAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString(), validFrom: new Date(Date.now() - 26 * 60 * 60_000).toISOString() };
+  const staleVersionResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions`, { method: "POST", headers: requestHeaders, body: JSON.stringify(staleFacts) });
+  assert.equal(staleVersionResponse.status, 201);
+  const staleVersion = await staleVersionResponse.json();
+  const staleApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${staleVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(staleApproval.status, 409, "stale product source facts must not be approved");
+  const freshFacts = { ...staleFacts, sourceRef: "pim://integration/fresh", sourceSyncedAt: new Date().toISOString(), validFrom: new Date().toISOString() };
+  const freshVersionResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions`, { method: "POST", headers: requestHeaders, body: JSON.stringify(freshFacts) });
+  assert.equal(freshVersionResponse.status, 201);
+  const freshVersion = await freshVersionResponse.json();
+  const freshApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${freshVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(freshApproval.status, 200, "fresh product source facts should be approvable");
+
   const commandResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, {
     method: "POST",
     headers: requestHeaders,
@@ -139,7 +159,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane gates recovery, records idempotent commerce facts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, and degrades stale LIVE telemetry");
 } finally {
   await stop(workerProcess);
   await stop(next);
