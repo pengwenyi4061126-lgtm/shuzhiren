@@ -1,13 +1,14 @@
 import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
-import { quarantineLiveRunsForRevocationInTransaction } from "@/lib/control-plane/governance-quarantine";
+import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 
 export type ReleaseComponent = "runtime" | "avatar" | "lip_sync" | "voice";
 export type ReleaseApproval = "pending" | "approved" | "revoked";
 export const requiredProductionReleaseComponents: ReleaseComponent[] = ["runtime", "lip_sync", "voice"];
 export type ModelRelease = { id: string; tenantId: string; name: string; version: string; component: ReleaseComponent; sourceCommit: string; imageDigest: string; artifactHash: string; driverVersion: string; license: string; rightsScope: string; evidenceRef: string; validationSummary: string; notes?: string; approval: ReleaseApproval; approvedAt?: string; revokedAt?: string; revocationReason?: string };
 export type CreateModelReleaseInput = Omit<ModelRelease, "id" | "tenantId" | "approval" | "approvedAt" | "revokedAt" | "revocationReason">;
+export type ModelReleaseRevocation = { release: ModelRelease; impact: GovernanceQuarantineImpact };
 type ReleaseStore = { releases: Map<string, ModelRelease> };
 type PersistentReleaseRow = { id: string; tenant_id: string; name: string; version: string; component: ReleaseComponent; source_commit: string; image_digest: string; artifact_hash: string; driver_version: string; license: string; rights_scope: string; evidence_ref: string; validation_summary: string; notes: string | null; approval_status: ReleaseApproval; approved_at: Date | string | null; revoked_at: Date | string | null; revocation_reason: string | null };
 
@@ -64,14 +65,14 @@ export async function revokeModelRelease(context: RequestContext, releaseId: str
     const release = releaseStore().releases.get(releaseId);
     if (!release || release.tenantId !== context.tenantId || release.approval !== "approved") throw new Response("Model release not found or cannot be revoked", { status: 409 });
     release.approval = "revoked"; release.revokedAt = new Date().toISOString(); release.revocationReason = reason;
-    return release;
+    return { release, impact: { liveRunIds: [], humanHandoffQueuedRunIds: [] } } satisfies ModelReleaseRevocation;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentReleaseRow>(`update model_releases set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [releaseId, actor.rows[0].id, reason]);
     if (!result.rows[0]) throw new Response("Model release not found or cannot be revoked", { status: 409 });
-    await quarantineLiveRunsForRevocationInTransaction(client, context, "model_release", releaseId, reason);
-    return persistentRelease(result.rows[0]);
+    const impact = await quarantineLiveRunsForRevocationInTransaction(client, context, "model_release", releaseId, reason);
+    return { release: persistentRelease(result.rows[0]), impact } satisfies ModelReleaseRevocation;
   });
 }
 

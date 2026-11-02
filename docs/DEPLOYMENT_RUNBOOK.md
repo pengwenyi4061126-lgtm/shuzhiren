@@ -119,3 +119,7 @@ npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-
 从 2026-11-03 的运行时协议起，`runtime-observer` 的输出探针 JSON 必须包含布尔 `audioActive`。该值必须由独立输出音频分析器给出，不可由数字人或 TTS 进程自行声明；缺失、`false` 或探针不可达时均会 fail-closed，生成严重静音告警并受控降级。
 
 仓库内 `output-probe` 已内置活动音频测量：它用 `ffmpeg silencedetect` 对配置的受控回放/中继流采样，并将结果作为 `audioActive` 返回给 observer。`avSyncProbeUrl` 仍必须由独立分析器提供真实 `avSyncMs`；不要让同一数字人进程同时充当被测媒体源和质量判定源。
+
+### 已直播场次的模型/素材撤销
+
+对已冻结在直播场次中的模型发布包或授权素材执行撤销，不只是阻止下一次预检：生产控制面会立即将所有仍为 `LIVE` 的关联场次隔离到 `DEGRADED`。已绑定运行时会话的场次会写入受控 `switch_to_human` 指令；撤销结果页面显示隔离数和实际入队接管数。值班人员应从场次时间线确认 `live_run.governance_quarantined` 审计事件和 outbox 投递结果，再依照对应的人工接管处置手册完成现场处置。没有绑定运行时会话的场次仍会被降级并记录审计，但不能把“没有可投递会话”误报为已完成接管。

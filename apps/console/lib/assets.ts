@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
-import { quarantineLiveRunsForRevocationInTransaction } from "@/lib/control-plane/governance-quarantine";
+import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 
 export type AssetKind = "portrait" | "voice" | "product_clip" | "music";
 export type AssetApproval = "pending" | "approved" | "revoked";
@@ -22,6 +22,7 @@ export type MediaAsset = {
   revocationReason?: string;
 };
 export type CreateMediaAssetInput = Pick<MediaAsset, "kind" | "name" | "rightsScope" | "source" | "objectKey" | "checksum"> & { expiresAt?: string };
+export type MediaAssetRevocation = { asset: MediaAsset; impact: GovernanceQuarantineImpact };
 
 type AssetStore = { assets: Map<string, MediaAsset> };
 type PersistentAssetRow = {
@@ -104,14 +105,14 @@ export async function revokeMediaAsset(context: RequestContext, assetId: string,
     const asset = assetStore().assets.get(assetId);
     if (!asset || asset.tenantId !== context.tenantId || asset.approval !== "approved") throw new Response("Media asset not found or cannot be revoked", { status: 409 });
     asset.approval = "revoked"; asset.revokedAt = new Date().toISOString(); asset.revocationReason = reason;
-    return asset;
+    return { asset, impact: { liveRunIds: [], humanHandoffQueuedRunIds: [] } } satisfies MediaAssetRevocation;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await syncActor(client, context);
     const result = await client.query<PersistentAssetRow>(`update media_assets set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [assetId, actor, reason]);
     if (!result.rows[0]) throw new Response("Media asset not found or cannot be revoked", { status: 409 });
-    await quarantineLiveRunsForRevocationInTransaction(client, context, "media_asset", assetId, reason);
-    return persistentAsset(result.rows[0]);
+    const impact = await quarantineLiveRunsForRevocationInTransaction(client, context, "media_asset", assetId, reason);
+    return { asset: persistentAsset(result.rows[0]), impact } satisfies MediaAssetRevocation;
   });
 }
 

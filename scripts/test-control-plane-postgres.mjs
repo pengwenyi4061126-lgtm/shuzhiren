@@ -410,6 +410,7 @@ try {
   const revokedReleaseBody = await revokedRelease.json();
   assert.ok(revokedReleaseBody.data.approvedAt, "model release revocation must retain the original approval timestamp");
   assert.ok(revokedReleaseBody.data.revokedAt, "model release revocation must record when the release was withdrawn");
+  assert.deepEqual(revokedReleaseBody.meta, { quarantinedLiveRunCount: 1, humanHandoffQueuedCount: 1 }, "model release revocation must report its live governance impact");
   assert.equal((await client.query("select state from live_runs where id = $1", [recoverRunId])).rows[0].state, "DEGRADED", "revoking a frozen live release must quarantine the active run");
   const governanceHandoff = await client.query("select payload #>> '{command,type}' as action, payload #>> '{command,payload,controlAction}' as control_action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [recoverRunId]);
   assert.deepEqual(governanceHandoff.rows[0], { action: "switch_to_human", control_action: "GOVERNANCE_REVOCATION" }, "revocation quarantine must enqueue a human-handoff media command");
@@ -429,6 +430,7 @@ try {
   const revokedAssetBody = await revokedAsset.json();
   assert.ok(revokedAssetBody.data.approvedAt, "media asset revocation must retain the original approval timestamp");
   assert.ok(revokedAssetBody.data.revokedAt, "media asset revocation must record when the asset was withdrawn");
+  assert.deepEqual(revokedAssetBody.meta, { quarantinedLiveRunCount: 0, humanHandoffQueuedCount: 0 }, "an already-quarantined run must not be counted twice when another binding is revoked");
   const assetRevokedPreflight = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/preflight`, { headers: requestHeaders });
   assert.equal(assetRevokedPreflight.status, 200);
   const assetRevokedPreflightBody = await assetRevokedPreflight.json();
