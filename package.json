@@ -17,6 +17,7 @@
     "observer:runtime": "npm run start --workspace @shuzhiren/runtime-observer",
     "observer:runtime:test": "node scripts/test-runtime-observer.mjs",
     "output-probe:test": "node scripts/test-output-probe.mjs",
+    "channel-adapter:test": "node scripts/test-channel-adapter.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
