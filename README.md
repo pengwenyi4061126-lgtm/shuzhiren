@@ -60,9 +60,11 @@
 2. 再做 P1：加入商品编排、字幕、录屏、人工切换和故障恢复。
 3. 仅在 P1 的真实成交与合规指标合格后，加入实时 RAG 问答。
 
-## 开发状态
+## 当前实现状态
 
-阶段化实施见 [docs/IMPLEMENTATION_ROADMAP.md](docs/IMPLEMENTATION_ROADMAP.md)。当前已开始阶段 1，控制台代码位于 `apps/console`。
+阶段 1 已完成；阶段 2 至 6 的控制面、治理、Gateway、观测、告警、渠道标准化接入、用量门禁和多租户框架已经落在仓库中。控制台代码位于 `apps/console`，开源运行时入口位于 `runtime/gateway` 与 `infra/compose`。真实 ERP/PIM、平台 OAuth/Webhook、OIDC 成员同步、对象存储、4090 试播和结算对账仍是部署方必须接入并留存证据的外部工作，不能用开发态或模拟服务替代。
+
+完整阶段状态见 [docs/IMPLEMENTATION_ROADMAP.md](docs/IMPLEMENTATION_ROADMAP.md)，代码和外部上线条件见 [docs/DEPLOYMENT_READINESS.md](docs/DEPLOYMENT_READINESS.md)。
 
 本地依赖安装完成后使用：
 
