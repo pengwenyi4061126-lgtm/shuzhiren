@@ -34,6 +34,8 @@ const stateLabel: Record<LiveRunState, string> = { DRAFT: "草稿", REVIEW: "审
 export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initialInteractions, canOperate }: Props) {
   const [run, setRun] = useState(initialRun);
   const [commands, setCommands] = useState<LiveCommand[]>(initialRun.commandHistory);
+  const [telemetry, setTelemetry] = useState<RuntimeTelemetry | null>(initialTelemetry);
+  const [alerts, setAlerts] = useState<RuntimeAlert[]>(initialAlerts);
   const [selectedQuestion, setSelectedQuestion] = useState<string | null>(null);
   const [interactions, setInteractions] = useState(initialInteractions);
   const [handlingInteractionId, setHandlingInteractionId] = useState<string | null>(null);
@@ -47,8 +49,47 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const [activationAwaitingConfirmation, setActivationAwaitingConfirmation] = useState<Extract<LiveCommand["action"], "START" | "RECOVER"> | null>(null);
   const elapsed = useMemo(() => (run.state === "LIVE" ? "01:24:17" : run.state === "DEGRADED" ? "已降级" : "未开始"), [run.state]);
-  const telemetryHealthy = Boolean(initialTelemetry?.outputConnected && initialTelemetry.outputFps >= 24 && initialTelemetry.avSyncMs <= 120 && initialTelemetry.bitrateMbps >= 2 && initialTelemetry.audioActive && initialTelemetry.fallbackReady);
+  const telemetryHealthy = Boolean(telemetry?.outputConnected && telemetry.outputFps >= 24 && telemetry.avSyncMs <= 120 && telemetry.bitrateMbps >= 2 && telemetry.audioActive && telemetry.fallbackReady);
   const selectedInteraction = interactions.find((interaction) => interaction.id === selectedQuestion) ?? null;
+
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    const refreshOperationalState = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const encodedRunId = encodeURIComponent(run.id);
+        const [runResponse, telemetryResponse, alertsResponse, interactionsResponse] = await Promise.all([
+          fetch(`/api/v1/live-runs/${encodedRunId}`, { cache: "no-store" }),
+          fetch(`/api/v1/live-runs/${encodedRunId}/telemetry`, { cache: "no-store" }),
+          fetch(`/api/v1/alerts?runId=${encodedRunId}`, { cache: "no-store" }),
+          fetch(`/api/v1/live-runs/${encodedRunId}/interactions`, { cache: "no-store" })
+        ]);
+        const [runPayload, telemetryPayload, alertsPayload, interactionsPayload] = await Promise.all([
+          runResponse.json().catch(() => null) as Promise<{ data?: LiveRun } | null>,
+          telemetryResponse.json().catch(() => null) as Promise<{ data?: RuntimeTelemetry } | null>,
+          alertsResponse.json().catch(() => null) as Promise<{ data?: RuntimeAlert[] } | null>,
+          interactionsResponse.json().catch(() => null) as Promise<{ data?: LiveInteraction[] } | null>
+        ]);
+        if (!active) return;
+        if (runResponse.ok && runPayload?.data) {
+          setRun(runPayload.data);
+          setCommands(runPayload.data.commandHistory);
+        }
+        if (telemetryResponse.ok && telemetryPayload?.data) setTelemetry(telemetryPayload.data);
+        if (alertsResponse.ok && alertsPayload?.data) setAlerts(alertsPayload.data);
+        if (interactionsResponse.ok && interactionsPayload?.data) setInteractions(interactionsPayload.data);
+      } catch {
+        // The latest successful server snapshot remains visible while a refresh retries.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refreshOperationalState();
+    const timer = window.setInterval(() => void refreshOperationalState(), 5_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [run.id]);
 
   useEffect(() => {
     if (!activationAwaitingConfirmation) return;
@@ -163,14 +204,14 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
       <section className="workspace" aria-label="直播指挥台">
         <div className="primary-grid">
           <section className="panel stage-panel">
-            <div className="panel-header"><div><h2>直播预览</h2><span>主运行时 · 720p · {initialTelemetry?.outputFps ?? "--"} FPS</span></div><span className={telemetryHealthy && !initialAlerts.length ? "healthy" : "unhealthy"}><span />{telemetryHealthy && !initialAlerts.length ? "输出健康" : `待处理 ${initialAlerts.length} 项`}</span></div>
+            <div className="panel-header"><div><h2>直播预览</h2><span>主运行时 · 720p · {telemetry?.outputFps ?? "--"} FPS</span></div><span className={telemetryHealthy && !alerts.length ? "healthy" : "unhealthy"}><span />{telemetryHealthy && !alerts.length ? "输出健康" : `待处理 ${alerts.length} 项`}</span></div>
             <div className="preview" aria-label="数字人直播预览"><div className="live-badge"><span />{run.state === "LIVE" ? "LIVE" : stateLabel[run.state]}</div><div className="avatar" aria-hidden="true" /><div className="caption">现在下单，赠旅行装三件套</div></div>
-            <div className="stage-metrics"><Metric label="视频帧率" value={initialTelemetry ? initialTelemetry.outputFps.toFixed(1) : "--"} unit="FPS" /><Metric label="音画同步" value={initialTelemetry ? String(initialTelemetry.avSyncMs) : "--"} unit="ms" /><Metric label="输出码率" value={initialTelemetry ? String(initialTelemetry.bitrateMbps) : "--"} unit="Mbps" /><Metric label="备用节目" value={initialTelemetry?.fallbackReady ? "就绪" : "未就绪"} unit="" /></div>
+            <div className="stage-metrics"><Metric label="视频帧率" value={telemetry ? telemetry.outputFps.toFixed(1) : "--"} unit="FPS" /><Metric label="音画同步" value={telemetry ? String(telemetry.avSyncMs) : "--"} unit="ms" /><Metric label="输出码率" value={telemetry ? String(telemetry.bitrateMbps) : "--"} unit="Mbps" /><Metric label="备用节目" value={telemetry?.fallbackReady ? "就绪" : "未就绪"} unit="" /></div>
             <div className="control-row"><CommandButton action="START" icon={Play} label="开始" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="PAUSE" icon={Pause} label="暂停" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="HANDOFF" icon={UserRoundCheck} label="人工接管" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="RECOVER" icon={RotateCcw} label="恢复运行" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} /><CommandButton action="END" icon={CircleStop} label="结束" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} activationAwaitingConfirmation={activationAwaitingConfirmation} danger /></div>
             {commandNotice ? <p className="command-notice" role="status">{commandNotice}</p> : null}
             {commandError ? <p className="command-error" role="alert">命令未执行：{commandError}</p> : null}
           </section>
-          <section className="panel queue-panel"><div className="panel-header"><div><h2>互动与风险</h2><span>高风险问题必须人工确认</span></div><AlertTriangle size={18} className="warning-icon" /></div><div className="queue-list">{interactions.length ? interactions.map((interaction) => <button className={selectedQuestion === interaction.id ? "question selected" : "question"} key={interaction.id} onClick={() => { setSelectedQuestion(interaction.id); setDraftReply(null); setSpeechStatus(null); }} type="button"><span className={`risk ${interaction.risk}`}>{interaction.risk === "high" ? "需人工确认" : interaction.risk === "medium" ? "需商品证据" : "有证据"}</span><strong>{interaction.text}</strong><small>{interaction.detail}</small></button>) : <div className="queue-empty">暂无待处理互动</div>}</div><div className="handoff-box"><Volume2 size={16} /><div><span>{selectedInteraction ? `${selectedInteraction.decision === "handoff" ? "建议人工接管后" : "已核验策略后"}处理此问题` : initialAlerts.length ? `有 ${initialAlerts.length} 条运行告警待处理` : "选择一条互动查看处理建议"}</span>{draftReply ? <small className="draft-reply">{draftReply}</small> : null}{speechStatus ? <small className="speech-status">{speechStatus}</small> : null}</div>{canOperate && selectedInteraction?.decision === "answer" ? <button className="handle-interaction" disabled={draftLoading || speechLoading} onClick={createDraftReply} type="button">{draftLoading ? "生成中" : "生成草稿"}</button> : null}{canOperate && selectedInteraction?.decision === "answer" && draftReply ? <button className="handle-interaction" disabled={speechLoading} onClick={dispatchGroundedSpeech} type="button">{speechLoading ? "入队中" : "确认播报"}</button> : null}{canOperate && selectedInteraction ? <button className="handle-interaction" disabled={Boolean(handlingInteractionId)} onClick={handleSelectedInteraction} type="button">{handlingInteractionId ? "处理中" : "标记已处理"}</button> : null}</div></section>
+          <section className="panel queue-panel"><div className="panel-header"><div><h2>互动与风险</h2><span>高风险问题必须人工确认</span></div><AlertTriangle size={18} className="warning-icon" /></div><div className="queue-list">{interactions.length ? interactions.map((interaction) => <button className={selectedQuestion === interaction.id ? "question selected" : "question"} key={interaction.id} onClick={() => { setSelectedQuestion(interaction.id); setDraftReply(null); setSpeechStatus(null); }} type="button"><span className={`risk ${interaction.risk}`}>{interaction.risk === "high" ? "需人工确认" : interaction.risk === "medium" ? "需商品证据" : "有证据"}</span><strong>{interaction.text}</strong><small>{interaction.detail}</small></button>) : <div className="queue-empty">暂无待处理互动</div>}</div><div className="handoff-box"><Volume2 size={16} /><div><span>{selectedInteraction ? `${selectedInteraction.decision === "handoff" ? "建议人工接管后" : "已核验策略后"}处理此问题` : alerts.length ? `有 ${alerts.length} 条运行告警待处理` : "选择一条互动查看处理建议"}</span>{draftReply ? <small className="draft-reply">{draftReply}</small> : null}{speechStatus ? <small className="speech-status">{speechStatus}</small> : null}</div>{canOperate && selectedInteraction?.decision === "answer" ? <button className="handle-interaction" disabled={draftLoading || speechLoading} onClick={createDraftReply} type="button">{draftLoading ? "生成中" : "生成草稿"}</button> : null}{canOperate && selectedInteraction?.decision === "answer" && draftReply ? <button className="handle-interaction" disabled={speechLoading} onClick={dispatchGroundedSpeech} type="button">{speechLoading ? "入队中" : "确认播报"}</button> : null}{canOperate && selectedInteraction ? <button className="handle-interaction" disabled={Boolean(handlingInteractionId)} onClick={handleSelectedInteraction} type="button">{handlingInteractionId ? "处理中" : "标记已处理"}</button> : null}</div></section>
         </div>
         <section className="panel timeline-panel"><div className="panel-header"><div><h2>节目单与命令记录</h2><span>命令使用幂等键与预期状态校验</span></div><Clock3 size={17} /></div><div className="timeline-content"><div className="program-track"><span className="segment preset">预制讲品 · A-102</span><span className="segment live">实时问答</span><span className="segment queued">成分讲解 · A-103</span></div><div className="command-list">{commands.slice(0, 3).map((command) => <div className="command" key={command.id}><span>{command.action}</span><small>{command.actorName} · {new Date(command.issuedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small><b>{command.result}</b></div>)}</div></div></section>
       </section>
