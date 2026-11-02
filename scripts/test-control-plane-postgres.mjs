@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
@@ -16,6 +16,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const consoleRoot = path.join(root, "apps", "console");
 const nextCli = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const worker = path.join(root, "apps", "runtime-worker", "index.mjs");
+const channelAdapter = path.join(root, "apps", "channel-adapter", "index.mjs");
 const tenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const commerceToken = "control-plane-integration-commerce-token";
@@ -25,6 +26,7 @@ const client = new Client({ connectionString: databaseUrl });
 let mock;
 let next;
 let workerProcess;
+let adapterProcess;
 
 try {
   await client.connect();
@@ -109,6 +111,32 @@ try {
   assert.equal(mock.mediaCommands.length, 1);
   assert.equal(mock.mediaCommands[0].action, "start_program");
 
+  const adapterPort = await availablePort();
+  const adapterSigningSecret = "control-plane-integration-adapter-signing-secret";
+  adapterProcess = spawn(process.execPath, [channelAdapter], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      CONTROL_PLANE_URL: `http://127.0.0.1:${consolePort}`,
+      CHANNEL_ADAPTER_PORT: String(adapterPort),
+      CHANNEL_ADAPTER_TARGETS: JSON.stringify([{ tenantId, channelConnectionId: recoverRun.channelId, signingSecret: adapterSigningSecret, interactionToken: "control-plane-integration-interaction-token", commerceToken }])
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  await waitFor(async () => (await fetch(`http://127.0.0.1:${adapterPort}/healthz`)).ok, 10_000, "channel adapter startup");
+  const adapterEventId = "adapter-paid-1";
+  const adapterPayload = JSON.stringify({ kind: "commerce", runId: recoverRunId, eventType: "order_paid", orderReference: "adapter-order-1", amountCents: 9900 });
+  const adapterTimestamp = String(Date.now());
+  const adapterSignature = `sha256=${createHmac("sha256", adapterSigningSecret).update(`${adapterTimestamp}.${adapterPayload}`).digest("hex")}`;
+  const adapterHeaders = { "content-type": "application/json", "x-shuzhiren-event-id": adapterEventId, "x-shuzhiren-timestamp": adapterTimestamp, "x-shuzhiren-signature": adapterSignature };
+  const adapterDelivery = await fetch(`http://127.0.0.1:${adapterPort}/v1/webhooks/${recoverRun.channelId}`, { method: "POST", headers: adapterHeaders, body: adapterPayload });
+  assert.equal(adapterDelivery.status, 202, "signed adapter commerce event should be forwarded");
+  const adapterDuplicate = await fetch(`http://127.0.0.1:${adapterPort}/v1/webhooks/${recoverRun.channelId}`, { method: "POST", headers: adapterHeaders, body: adapterPayload });
+  assert.equal(adapterDuplicate.status, 200, "delivered adapter event should be deduplicated before forwarding");
+  const adapterReplay = await client.query("select state from channel_webhook_replays where channel_connection_id = $1 and external_event_id = $2", [recoverRun.channelId, adapterEventId]);
+  assert.deepEqual(adapterReplay.rows[0], { state: "delivered" });
+
   const commerceHeaders = { "content-type": "application/json", authorization: `Bearer ${commerceToken}` };
   for (const event of [
     { eventId: "view-1", eventType: "view" },
@@ -132,9 +160,9 @@ try {
   const summaryResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commerce-summary`, { headers: requestHeaders });
   assert.equal(summaryResponse.status, 200);
   const summary = await summaryResponse.json();
-  assert.deepEqual(summary.data, { runId: recoverRunId, views: 1, productClicks: 0, addToCart: 1, paidOrders: 1, refunds: 1, grossPaidCents: 19900, refundedCents: 5000, netPaidCents: 14900, viewToCartRate: 1, viewToPaidRate: 1, refundRate: 1 });
+  assert.deepEqual(summary.data, { runId: recoverRunId, views: 1, productClicks: 0, addToCart: 1, paidOrders: 2, refunds: 1, grossPaidCents: 29800, refundedCents: 5000, netPaidCents: 24800, viewToCartRate: 1, viewToPaidRate: 2, refundRate: 0.5 });
   const commerceAudit = await client.query("select event_type from audit_events where resource_type = 'commerce_event' order by occurred_at");
-  assert.deepEqual(commerceAudit.rows.map((row) => row.event_type), ["commerce_event.order_paid", "commerce_event.refund"]);
+  assert.deepEqual(commerceAudit.rows.map((row) => row.event_type), ["commerce_event.order_paid", "commerce_event.order_paid", "commerce_event.refund"]);
 
   workerProcess = spawn(process.execPath, [worker], {
     cwd: root,
@@ -162,6 +190,7 @@ try {
   console.log("PASS  PostgreSQL control plane rejects stale product facts, gates recovery, records idempotent commerce facts, and degrades stale LIVE telemetry");
 } finally {
   await stop(workerProcess);
+  await stop(adapterProcess);
   await stop(next);
   if (mock) await new Promise((resolve) => mock.server.close(resolve));
   await client.end();
