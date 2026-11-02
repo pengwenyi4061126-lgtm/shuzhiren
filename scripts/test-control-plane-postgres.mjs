@@ -93,6 +93,10 @@ try {
 
   const requestHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
   const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
+  const forgedMediaSession = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/media`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ runId: recoverRunId, sessionId: "another_livetalking_session", type: "switch_to_human" }) });
+  assert.equal(forgedMediaSession.status, 400, "runtime media commands must reject caller-provided session IDs");
+  const lifecycleBypass = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/media`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ runId: recoverRunId, type: "start_program" }) });
+  assert.equal(lifecycleBypass.status, 400, "runtime media commands must reject start actions that bypass lifecycle gates");
   const foreignRunRead = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}`, { headers: isolatedRequestHeaders });
   assert.equal(foreignRunRead.status, 404, "one tenant must not read another tenant's live run");
   const invalidAsset = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ kind: "voice", name: "Invalid asset", rightsScope: "test", source: "test", objectKey: "../outside.wav", checksum: "not-a-digest" }) });

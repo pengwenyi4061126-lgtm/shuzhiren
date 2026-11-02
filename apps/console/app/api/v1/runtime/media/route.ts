@@ -1,12 +1,11 @@
 import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
-import { getRun } from "@/lib/control-plane/store";
-import { enqueueMediaCommand } from "@/lib/control-plane/outbox";
+import { degradeRunFromRuntime, getRun } from "@/lib/control-plane/store";
 
 export const dynamic = "force-dynamic";
 
-const mediaTypes = new Set(["start_program", "switch_to_fallback", "switch_to_human", "stop_program"]);
+const mediaTypes = new Set(["switch_to_fallback", "switch_to_human"]);
 
 export async function POST(request: Request) {
   const context = await requestContextFrom(request);
@@ -17,13 +16,17 @@ export async function POST(request: Request) {
   if (!isMediaInput(body)) return Response.json({ error: "invalid_media_command" }, { status: 400 });
   const run = await getRun(context, body.runId);
   if (!run) return Response.json({ error: "not_found" }, { status: 404 });
-  const event = await enqueueMediaCommand(context, { runId: run.id, traceId: run.traceId, type: body.type, payload: {}, sessionId: body.sessionId });
-  await recordAuditEvent(context, { type: "media_command.enqueued", resource: "outbox_event", resourceId: event.id, detail: { mediaCommandId: event.command.id, commandType: body.type } });
-  return Response.json({ data: event }, { status: 202 });
+  if (!run.runtimeSessionId) return Response.json({ error: "runtime_session_not_bound" }, { status: 409 });
+  if (run.state !== "LIVE") return Response.json({ error: "manual_media_action_requires_live_run" }, { status: 409 });
+  const result = await degradeRunFromRuntime(context, run.id, { fallbackReady: body.type === "switch_to_fallback", reasons: ["manual_operator_media_action"] });
+  if (!result.changed || !result.mediaEvent) return Response.json({ error: "manual_media_action_rejected" }, { status: 409 });
+  await recordAuditEvent(context, { type: "media_command.enqueued", resource: "outbox_event", resourceId: result.mediaEvent.id, detail: { mediaCommandId: result.mediaEvent.command.id, commandType: result.mediaType, reason: "manual_operator_media_action" } });
+  return Response.json({ data: result }, { status: 202 });
 }
 
-function isMediaInput(value: unknown): value is { runId: string; sessionId: string; type: "start_program" | "switch_to_fallback" | "switch_to_human" | "stop_program" } {
+function isMediaInput(value: unknown): value is { runId: string; type: "switch_to_fallback" | "switch_to_human" } {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
-  return typeof input.runId === "string" && input.runId.length > 0 && typeof input.sessionId === "string" && input.sessionId.length > 0 && typeof input.type === "string" && mediaTypes.has(input.type);
+  if ("sessionId" in input) return false;
+  return typeof input.runId === "string" && input.runId.length > 0 && typeof input.type === "string" && mediaTypes.has(input.type);
 }
