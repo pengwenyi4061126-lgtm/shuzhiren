@@ -64,8 +64,12 @@ function isTelemetryBody(value: unknown): value is RuntimeTelemetryBody {
   const booleans = ["outputConnected", "audioActive", "fallbackReady"];
   const numbers = ["inferenceFps", "outputFps", "avSyncMs", "bitrateMbps", "gpuUtilization", "gpuMemoryMiB"];
   return typeof body.tenantId === "string" && body.tenantId.length > 0
-    && typeof body.runId === "string" && body.runId.length > 0
+    && typeof body.runId === "string" && isUuid(body.runId)
     && (body.sampledAt === undefined || typeof body.sampledAt === "string")
     && booleans.every((key) => typeof body[key] === "boolean")
     && numbers.every((key) => typeof body[key] === "number" && Number.isFinite(body[key]) && body[key] >= 0);
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }

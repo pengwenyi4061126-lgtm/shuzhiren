@@ -271,6 +271,12 @@ try {
     body: JSON.stringify({ tenantId, runId: audioRun.runId, padding: "x".repeat(20_000) })
   });
   assert.equal(oversizedRuntimeTelemetry.status, 413, "runtime telemetry must reject oversized request bodies before JSON parsing");
+  const malformedRuntimeTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` },
+    body: JSON.stringify({ tenantId, runId: "not-a-uuid", outputConnected: true, inferenceFps: 30, outputFps: 25, avSyncMs: 20, bitrateMbps: 4, gpuUtilization: 70, gpuMemoryMiB: 12000, audioActive: true, fallbackReady: true })
+  });
+  assert.equal(malformedRuntimeTelemetry.status, 400, "runtime telemetry must reject malformed run IDs before PostgreSQL UUID casting");
   const audioTelemetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/telemetry`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` },
