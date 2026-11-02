@@ -107,6 +107,8 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 
 代码、Compose 和本地开发页面通过不等于单卡 4090 可以真实开播。完成内部试播后，从 `config/runtime-acceptance.example.json` 创建仅存于受控服务器的证据文件，填入真实主机信息、场次发布清单 SHA-256、连续试播观测、录屏证据和故障演练记录，然后执行：
 
+验收证据还必须包含独立输出音频活动探针的验证结论及其证据引用；只证明输出流存在音频轨不足以通过静音演练。
+
 ```bash
 npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json
 ```

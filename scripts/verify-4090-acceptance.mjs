@@ -44,8 +44,10 @@ if (trial?.maxConcurrentAvatars !== 1) errors.push("trial.maxConcurrentAvatars m
 requireNumber(trial?.minimumOutputFps, "trial.minimumOutputFps", 24);
 if (!Number.isFinite(trial?.maximumAvSyncMs) || trial.maximumAvSyncMs > 120 || trial.maximumAvSyncMs < 0) errors.push("trial.maximumAvSyncMs must be between 0 and 120");
 if (trial?.outputProbeVerified !== true) errors.push("trial.outputProbeVerified must be true");
+if (trial?.audioActivityProbeVerified !== true) errors.push("trial.audioActivityProbeVerified must be true");
 if (trial?.recordingVerified !== true) errors.push("trial.recordingVerified must be true");
 requireString(trial?.runtimeObservationEvidence, "trial.runtimeObservationEvidence");
+requireString(trial?.audioActivityEvidence, "trial.audioActivityEvidence");
 requireString(trial?.recordingEvidence, "trial.recordingEvidence");
 
 for (const name of ["networkLoss", "rtmpRejected", "gpuOom", "ttsTimeout", "blackFrame", "silence"]) {

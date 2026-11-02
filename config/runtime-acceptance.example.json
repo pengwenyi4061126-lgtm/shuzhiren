@@ -16,8 +16,10 @@
     "minimumOutputFps": 25,
     "maximumAvSyncMs": 120,
     "outputProbeVerified": true,
+    "audioActivityProbeVerified": true,
     "recordingVerified": true,
     "runtimeObservationEvidence": "replace-with-private-observation-report-id",
+    "audioActivityEvidence": "replace-with-private-audio-activity-report-id",
     "recordingEvidence": "replace-with-immutable-recording-evidence-id"
   },
   "drills": {
