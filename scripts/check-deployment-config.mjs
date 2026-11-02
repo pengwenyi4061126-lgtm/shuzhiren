@@ -2,9 +2,11 @@ import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateTarget as validateOutputProbeTarget } from "../apps/output-probe/lib.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const allowPlaceholders = process.argv.includes("--allow-placeholders");
+const requireOutputProbe = process.argv.includes("--require-output-probe");
 const option = (name, fallback) => {
   const index = process.argv.indexOf(name);
   return index >= 0 && process.argv[index + 1] ? path.resolve(process.argv[index + 1]) : path.resolve(root, fallback);
@@ -137,6 +139,22 @@ try {
 } catch {
   const message = "运行时 的 RUNTIME_OBSERVER_TARGETS 必须包含每个直播场次的租户、场次、会话、独立遥测密钥和私网输出探针 URL";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);
+}
+
+try {
+  const targets = JSON.parse(runtime.get("OUTPUT_PROBE_TARGETS") ?? "[]");
+  if (!Array.isArray(targets)) throw new Error("invalid");
+  if (requireOutputProbe && targets.length === 0) throw new Error("missing");
+  targets.forEach((target, index) => validateOutputProbeTarget(target, index));
+  if (targets.length > 0) {
+    const token = runtime.get("OUTPUT_PROBE_SHARED_TOKEN");
+    if (!token || (!allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(token))) throw new Error("token");
+  }
+} catch {
+  const message = requireOutputProbe
+    ? "启用 output-probe 时，OUTPUT_PROBE_TARGETS 必须包含有效目标，且 OUTPUT_PROBE_SHARED_TOKEN 必须为独立非占位符密钥"
+    : "OUTPUT_PROBE_TARGETS 必须为有效的探针目标数组；启用 output-probe 时还必须提供独立密钥";
+  if (allowPlaceholders && !requireOutputProbe) warnings.push(message); else errors.push(message);
 }
 
 if (runtime.get("NVIDIA_VISIBLE_DEVICES") !== gateway.get("NVIDIA_VISIBLE_DEVICES")) errors.push("运行时与 Gateway 的 NVIDIA_VISIBLE_DEVICES 必须一致");
