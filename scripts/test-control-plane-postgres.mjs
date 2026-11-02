@@ -21,6 +21,7 @@ const alertNotifier = path.join(root, "apps", "alert-notifier", "index.mjs");
 const tenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const commerceToken = "control-plane-integration-commerce-token";
+const recordingToken = "control-plane-integration-recording-token";
 const { publicKey, privateKey } = await generateKeyPair("RS256");
 const jwk = { ...(await exportJWK(publicKey)), kid: "integration-key", alg: "RS256", use: "sig" };
 const client = new Client({ connectionString: databaseUrl });
@@ -68,7 +69,8 @@ try {
       OIDC_ISSUER_URL: issuer,
       OIDC_AUDIENCE: "shuzhiren-integration",
       OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
-      CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken })
+      CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken }),
+      RUNTIME_RECORDING_TENANT_TOKENS: JSON.stringify({ [tenantId]: recordingToken })
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -120,6 +122,31 @@ try {
   await waitFor(async () => (await client.query("select state from live_runs where id = $1", [recoverRunId])).rows[0]?.state === "LIVE", 5_000, "recovery acknowledgement");
   assert.equal(mock.mediaCommands.length, 1);
   assert.equal(mock.mediaCommands[0].action, "start_program");
+
+  const recordingInput = {
+    tenantId,
+    runId: recoverRunId,
+    objectKey: `recordings/${tenantId}/${recoverRunId}/program.mp4`,
+    checksumSha256: "a".repeat(64),
+    bytes: 125_000_000,
+    durationSeconds: 3720,
+    startedAt: new Date(Date.now() - 3_720_000).toISOString(),
+    endedAt: new Date().toISOString(),
+    retentionUntil: "2027-11-02",
+    idempotencyKey: "recording-program-v1"
+  };
+  const recordingHeaders = { "content-type": "application/json", authorization: `Bearer ${recordingToken}` };
+  const recordingRegistered = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify(recordingInput) });
+  assert.equal(recordingRegistered.status, 201, "verified recording evidence should be accepted once");
+  const recordingRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify(recordingInput) });
+  assert.equal(recordingRetry.status, 200, "recording evidence retries must be idempotent");
+  const recordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/recordings`, { headers: requestHeaders });
+  assert.equal(recordings.status, 200);
+  const recordingsBody = await recordings.json();
+  assert.equal(recordingsBody.data.length, 1);
+  assert.equal(recordingsBody.data[0].objectKey, recordingInput.objectKey);
+  const recordingAudit = await client.query("select event_type from audit_events where resource_type = 'recording_evidence'");
+  assert.deepEqual(recordingAudit.rows.map((row) => row.event_type), ["recording_evidence.registered"]);
 
   const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1 }) });
   assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");

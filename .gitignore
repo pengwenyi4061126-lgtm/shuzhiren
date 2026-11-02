@@ -9,7 +9,7 @@ secrets/
 assets/raw/
 assets/voice/
 assets/portraits/
-recordings/
+/recordings/
 exports/
 
 # Model weights and runtime caches
