@@ -138,6 +138,8 @@ try {
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();
   assert.equal(policyDecision.data.action, "handoff");
+  const oversizedPolicyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "普通商品咨询".repeat(200), evidenceIds: ["product_version"] }) });
+  assert.equal(oversizedPolicyEvaluation.status, 400, "policy evaluation must reject oversized input before it reaches an evaluator");
   const profileCreated = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles`, {
     method: "POST",
     headers: requestHeaders,
@@ -151,6 +153,12 @@ try {
   const profileList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles`, { headers: requestHeaders });
   assert.equal(profileList.status, 200);
   assert.equal((await profileList.json()).data.some((item) => item.id === profile.data.id && item.approval === "approved"), true);
+  const oversizedInteraction = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/interactions`, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify({ question: "普通商品咨询".repeat(200), source: "integration", evidenceIds: ["product_version"] })
+  });
+  assert.equal(oversizedInteraction.status, 400, "live interaction intake must reject oversized content before persistence");
   const governedInteraction = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/interactions`, {
     method: "POST",
     headers: requestHeaders,
