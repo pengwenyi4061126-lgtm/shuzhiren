@@ -1,4 +1,5 @@
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { resolveIncident } from "@/lib/incidents";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +9,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/inci
     const actor = await requestContextFrom(request);
     requireRole(actor, ["admin", "operator"]);
     const { incidentId } = await context.params;
-    const body = await request.json() as { resolution?: unknown };
+    const body = (await readBoundedJson(request) ?? {}) as { resolution?: unknown };
     if (typeof body.resolution !== "string") return Response.json({ error: "resolution is required" }, { status: 400 });
     return Response.json({ data: await resolveIncident(actor, incidentId, body.resolution) });
   } catch (error) {
