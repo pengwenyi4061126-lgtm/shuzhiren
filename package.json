@@ -30,6 +30,7 @@
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "start:ack:check": "node scripts/check-start-ack-gate.mjs",
     "runtime:watchdog:check": "node scripts/check-runtime-watchdog.mjs",
+    "runtime:outbox:check": "node scripts/check-runtime-outbox-alerting.mjs",
     "entitlement:check": "node scripts/check-entitlement-concurrency.mjs",
     "runtime:media:check": "node scripts/check-bound-runtime-media.mjs",
     "runtime:voice:check": "node scripts/check-frozen-runtime-voice.mjs",

@@ -15,6 +15,7 @@ const checks = [
   ["run", "preflight:check"],
   ["run", "start:ack:check"],
   ["run", "runtime:watchdog:check"],
+  ["run", "runtime:outbox:check"],
   ["run", "entitlement:check"],
   ["run", "runtime:media:check"],
   ["run", "runtime:voice:check"],

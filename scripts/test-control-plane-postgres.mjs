@@ -473,7 +473,10 @@ try {
       RUNTIME_WATCHDOG_POLL_MS: "10",
       RUNTIME_WATCHDOG_BATCH_SIZE: "1",
       RUNTIME_TELEMETRY_MAX_AGE_SECONDS: "60",
-      USAGE_METER_POLL_MS: "10"
+      USAGE_METER_POLL_MS: "10",
+      OUTBOX_MAX_ATTEMPTS: "2",
+      OUTBOX_RETRY_BASE_MS: "10",
+      OUTBOX_RETRY_MAX_MS: "20"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -503,6 +506,21 @@ try {
   assert.equal(mock.alertNotifications[0].payload.alert.code, "runtime_telemetry_stale");
   const notificationDelivery = await client.query("select state, attempts from alert_notification_deliveries where runtime_alert_id = $1", [alertId]);
   assert.deepEqual(notificationDelivery.rows[0], { state: "delivered", attempts: 1 });
+
+  const exhaustedRun = await seedRun("LIVE", "session_outbox_exhausted", new Date());
+  const exhaustedCommandId = `fail_media_${randomUUID()}`;
+  const exhaustedEvent = await client.query(`insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
+    values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id`, [tenantId, exhaustedRun.runId, JSON.stringify({
+      sessionId: "session_outbox_exhausted",
+      command: { id: exhaustedCommandId, runId: exhaustedRun.runId, type: "switch_to_human", issuedAt: new Date().toISOString(), traceId: `trace_${exhaustedRun.runId}`, payload: { controlAction: "OUTBOX_FAILURE_TEST" } }
+    })]);
+  const exhaustedEventId = exhaustedEvent.rows[0].id;
+  await waitFor(async () => (await client.query("select status from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted'", [exhaustedRun.runId])).rows[0]?.status === "open", 10_000, "exhausted runtime command alert");
+  const exhaustedAlert = await client.query("select severity, status from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted'", [exhaustedRun.runId]);
+  assert.deepEqual(exhaustedAlert.rows[0], { severity: "critical", status: "open" }, "exhausted media dispatch should create a critical alert");
+  const exhaustedAudit = await client.query("select detail from audit_events where event_type = 'runtime_command.delivery_exhausted' and resource_key = (select id::text from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted')", [exhaustedRun.runId]);
+  assert.equal(exhaustedAudit.rows[0].detail.outboxEventId, exhaustedEventId, "terminal delivery failure audit must preserve the outbox event id");
+  await waitFor(() => mock.alertNotifications.some((notification) => notification.payload.alert.code === "runtime_command_delivery_exhausted"), 10_000, "exhausted runtime command notification");
   const incidentOpen = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ alertId }) });
   assert.equal(incidentOpen.status, 201, "operator should be able to create an incident from a runtime alert");
   const incidentPayload = await incidentOpen.json();
@@ -647,7 +665,9 @@ async function startMockServer() {
     }
     if (url.pathname === "/v1/media" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
-      mediaCommands.push(await requestBody(request));
+      const command = await requestBody(request);
+      mediaCommands.push(command);
+      if (command.command_id.startsWith("fail_media_")) return json(response, 503, { error: "injected_delivery_failure" });
       return json(response, 200, { accepted: true });
     }
     if (url.pathname === "/alert-webhook" && request.method === "POST") {

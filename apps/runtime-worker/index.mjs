@@ -69,7 +69,7 @@ async function claimEvent() {
       set state = 'delivering', attempts = event.attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second')
       from candidate
       where event.id = candidate.id
-      returning event.id, event.tenant_id, event.event_type, event.payload, event.attempts
+      returning event.id, event.tenant_id, event.event_type, event.aggregate_id, event.payload, event.attempts
     `, [maxAttempts, leaseSeconds]);
       return result.rows[0] ?? null;
     });
@@ -256,10 +256,33 @@ async function markDelivered(event) {
 
 async function markFailed(event, lastError) {
   const retryAfterMs = retryDelayMs(event.attempts);
+  const exhausted = event.attempts >= maxAttempts;
   await inTenantTransaction(event.tenant_id, async (client) => {
     await client.query("update outbox_events set state = 'failed', available_at = now() + ($3 * interval '1 millisecond'), last_error = $2 where id = $1", [event.id, lastError, retryAfterMs]);
+    if (exhausted) await openDeliveryExhaustedAlert(client, event, lastError);
   });
-  return { exhausted: event.attempts >= maxAttempts, retryAfterMs };
+  return { exhausted, retryAfterMs };
+}
+
+async function openDeliveryExhaustedAlert(client, event, lastError) {
+  if (!event.aggregate_id || !["media.dispatch", "speech.dispatch"].includes(event.event_type)) return;
+  const run = await client.query("select id from live_runs where id = $1 for update", [event.aggregate_id]);
+  if (!run.rows[0]) return;
+  const severity = event.event_type === "media.dispatch" ? "critical" : "warning";
+  const code = "runtime_command_delivery_exhausted";
+  const existing = await client.query("select id from runtime_alerts where live_run_id = $1 and code = $2 and status = 'open' for update", [event.aggregate_id, code]);
+  if (existing.rows[0]) return;
+  const error = String(lastError).replace(/[\r\n\t]+/g, " ").slice(0, 500);
+  const opened = await client.query(
+    "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') returning id",
+    [event.tenant_id, event.aggregate_id, severity, code, `运行时 ${event.event_type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`]
+  );
+  const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-worker', '运行时投递器', 'operator'::membership_role) as id", [event.tenant_id]);
+  await client.query(
+    `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+     values ($1, $2, 'runtime_command.delivery_exhausted', 'runtime_alert', $3::uuid, $3, $4::jsonb)`,
+    [event.tenant_id, actor.rows[0].id, opened.rows[0].id, JSON.stringify({ runId: event.aggregate_id, outboxEventId: event.id, eventType: event.event_type, attempts: event.attempts, severity })]
+  );
 }
 
 async function deliver(event) {
