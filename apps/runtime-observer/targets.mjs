@@ -14,3 +14,8 @@ export function parseObserverTargets(rawText, source) {
     return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, outputProbeUrl: probeUrl.toString(), outputProbeToken: value.outputProbeToken };
   });
 }
+
+export function requireOutputProbeToken(targets, expectedToken) {
+  if (typeof expectedToken !== "string" || expectedToken.length < 16) throw new Error("OUTPUT_PROBE_SHARED_TOKEN is missing or too short");
+  if (!targets.every((target) => target.outputProbeToken === expectedToken)) throw new Error("every observer target must provide the configured OUTPUT_PROBE_SHARED_TOKEN");
+}

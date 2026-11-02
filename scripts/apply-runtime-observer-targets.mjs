@@ -1,6 +1,6 @@
 import { chmod, lstat, readFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { parseObserverTargets } from "../apps/runtime-observer/targets.mjs";
+import { parseObserverTargets, requireOutputProbeToken } from "../apps/runtime-observer/targets.mjs";
 
 function option(name) {
   const index = process.argv.indexOf(name);
@@ -9,10 +9,11 @@ function option(name) {
 
 const candidate = option("--candidate");
 const destination = option("--destination");
+const runtimeEnv = option("--runtime-env");
 const requireTargets = process.argv.includes("--require-targets");
 
 if (!candidate || !destination) {
-  console.error("ERROR Usage: node scripts/apply-runtime-observer-targets.mjs --candidate /secure/path/runtime-observer-targets.next.json --destination /secure/path/runtime-observer-targets.json [--require-targets]");
+  console.error("ERROR Usage: node scripts/apply-runtime-observer-targets.mjs --candidate /secure/path/runtime-observer-targets.next.json --destination /secure/path/runtime-observer-targets.json [--require-targets] [--runtime-env /secure/path/runtime.env]");
   process.exit(1);
 }
 
@@ -30,6 +31,7 @@ try {
 
   const targets = parseObserverTargets(await readFile(candidatePath, "utf8"), candidatePath);
   if (requireTargets && targets.length === 0) throw new Error("target file must contain at least one target");
+  if (runtimeEnv) requireOutputProbeToken(targets, outputProbeToken(await readFile(path.resolve(runtimeEnv), "utf8")));
 
   // Tokens are present in this file. Preserve owner-only access while replacing it atomically.
   await chmod(candidatePath, 0o600);
@@ -38,4 +40,14 @@ try {
 } catch (error) {
   console.error(`ERROR Runtime observer target file was not applied: ${error instanceof Error ? error.message : "invalid target file"}`);
   process.exitCode = 1;
+}
+
+function outputProbeToken(text) {
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator > 0 && line.slice(0, separator).trim() === "OUTPUT_PROBE_SHARED_TOKEN") return line.slice(separator + 1).trim();
+  }
+  return "";
 }
