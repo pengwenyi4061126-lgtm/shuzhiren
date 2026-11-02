@@ -30,7 +30,7 @@ function isRecordingBody(value: unknown): value is RecordingBody {
   return typeof body.tenantId === "string" && body.tenantId.length > 0
     && typeof body.runId === "string" && body.runId.length > 0
     && objectKey.length > 0 && objectKey.length <= 512 && !objectKey.startsWith("/") && !objectKey.includes("\\") && !objectKey.includes("..") && !/^[a-z][a-z0-9+.-]*:/i.test(objectKey)
-    && typeof body.checksumSha256 === "string" && /^[0-9a-f]{64}$/i.test(body.checksumSha256)
+    && typeof body.checksumSha256 === "string" && /^[0-9a-f]{64}$/.test(body.checksumSha256)
     && typeof body.bytes === "number" && Number.isSafeInteger(body.bytes) && body.bytes >= 0
     && typeof body.durationSeconds === "number" && Number.isSafeInteger(body.durationSeconds) && body.durationSeconds >= 0
     && typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0 && body.idempotencyKey.length <= 200
