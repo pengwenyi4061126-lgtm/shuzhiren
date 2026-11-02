@@ -2,21 +2,27 @@ import http from "node:http";
 import pg from "pg";
 import { parseNormalizedEvent, parseTargets, payloadSha256, verifyWebhook } from "./lib.mjs";
 
-const port = positiveInt(process.env.CHANNEL_ADAPTER_PORT, 8082);
+const port = positiveInt(process.env.CHANNEL_ADAPTER_PORT, 8082, "CHANNEL_ADAPTER_PORT");
 const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
 const targets = parseTargets(process.env.CHANNEL_ADAPTER_TARGETS);
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for durable webhook replay protection");
-const replayLeaseSeconds = positiveInt(process.env.CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS, 60);
+const replayLeaseSeconds = positiveInt(process.env.CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS, 60, "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS");
+const maxRequestsPerMinute = positiveInt(process.env.CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE, 120, "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE");
 const pool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
+const rateWindows = new Map();
 
 const server = http.createServer(async (request, response) => {
   try {
-    if (request.method === "GET" && request.url === "/healthz") return json(response, 200, { ok: true, channels: targets.size });
+    if (request.method === "GET" && request.url === "/healthz") {
+      await pool.query("select 1");
+      return json(response, 200, { ok: true, channels: targets.size });
+    }
     const match = request.method === "POST" ? new URL(request.url ?? "/", "http://localhost").pathname.match(/^\/v1\/webhooks\/([^/]+)$/) : null;
     if (!match) return json(response, 404, { error: "not_found" });
     const target = targets.get(decodeURIComponent(match[1]));
     if (!target) return json(response, 404, { error: "unknown_channel" });
+    if (!allowRequest(target.channelConnectionId)) return json(response, 429, { error: "channel_rate_limited" });
     const rawBody = await readBody(request);
     const eventId = request.headers["x-shuzhiren-event-id"];
     const timestamp = request.headers["x-shuzhiren-timestamp"];
@@ -63,6 +69,14 @@ async function reserveReplay(target, eventId, hash) {
 async function markDelivered(target, eventId) { const client = await pool.connect(); try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]); await client.query("update channel_webhook_replays set state = 'delivered', delivered_at = now(), lease_expires_at = null where channel_connection_id = $1 and external_event_id = $2", [target.channelConnectionId, eventId]); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); } }
 function asHeader(value) { return typeof value === "string" ? value : ""; }
 function requiredUrl(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return new URL(value); }
-function positiveInt(value, fallback) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error("CHANNEL_ADAPTER_PORT must be a positive integer"); return parsed; }
+function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); }
 async function readBody(request) { const chunks = []; let size = 0; for await (const chunk of request) { size += chunk.length; if (size > 128 * 1024) throw new Error("webhook_body_too_large"); chunks.push(chunk); } return Buffer.concat(chunks).toString("utf8"); }
+function allowRequest(channelConnectionId, now = Date.now()) {
+  const windowStart = now - 60_000;
+  const attempts = (rateWindows.get(channelConnectionId) ?? []).filter((at) => at > windowStart);
+  if (attempts.length >= maxRequestsPerMinute) { rateWindows.set(channelConnectionId, attempts); return false; }
+  attempts.push(now);
+  rateWindows.set(channelConnectionId, attempts);
+  return true;
+}
