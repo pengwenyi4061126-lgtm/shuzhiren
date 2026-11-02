@@ -33,8 +33,8 @@ export async function requestContextFrom(request: Request): Promise<RequestConte
 }
 
 async function contextFromBearerToken(request: Request): Promise<RequestContext> {
-  const authorization = request.headers.get("authorization");
-  if (!authorization?.startsWith("Bearer ")) throw new Response("Missing bearer token", { status: 401 });
+  const token = accessTokenFrom(request);
+  if (!token) throw new Response("Missing bearer token", { status: 401 });
   const issuer = process.env.OIDC_ISSUER_URL;
   const audience = process.env.OIDC_AUDIENCE;
   const jwksUrl = process.env.OIDC_JWKS_URL;
@@ -42,7 +42,7 @@ async function contextFromBearerToken(request: Request): Promise<RequestContext>
 
   try {
     const keys = createRemoteJWKSet(new URL(jwksUrl));
-    const { payload } = await jwtVerify(authorization.slice(7), keys, { issuer, audience });
+    const { payload } = await jwtVerify(token, keys, { issuer, audience });
     const tenantId = stringClaim(payload, "tenant_id");
     const role = stringClaim(payload, "role");
     const actorId = stringClaim(payload, "sub");
@@ -53,6 +53,15 @@ async function contextFromBearerToken(request: Request): Promise<RequestContext>
     if (error instanceof Response) throw error;
     throw new Response("Bearer token verification failed", { status: 401 });
   }
+}
+
+function accessTokenFrom(request: Request) {
+  const authorization = request.headers.get("authorization");
+  if (authorization?.startsWith("Bearer ")) return authorization.slice(7);
+  const cookieName = process.env.OIDC_ACCESS_TOKEN_COOKIE ?? "shuzhiren_access_token";
+  const encoded = request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+  if (!encoded) return undefined;
+  try { return decodeURIComponent(encoded); } catch { return undefined; }
 }
 
 function stringClaim(payload: Record<string, unknown>, claim: string) {
