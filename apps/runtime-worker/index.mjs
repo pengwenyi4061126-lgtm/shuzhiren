@@ -241,7 +241,7 @@ async function markDelivered(event) {
     await client.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1", [event.id]);
     if (["SCHEDULED_START", "START", "RECOVER"].includes(event.payload?.command?.payload?.controlAction)) {
       await client.query(
-        "update live_runs set state = 'LIVE', updated_at = now() where id = $1 and tenant_id = $2 and state in ('ARMED', 'DEGRADED') and scheduled_start_event_id = $3",
+        "update live_runs set state = 'LIVE', scheduled_start_event_id = null, updated_at = now() where id = $1 and tenant_id = $2 and state in ('ARMED', 'DEGRADED') and scheduled_start_event_id = $3",
         [event.payload.command.runId, event.tenant_id, event.id]
       );
     }
