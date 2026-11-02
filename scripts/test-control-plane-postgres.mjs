@@ -142,6 +142,8 @@ try {
   assert.equal(policyDecision.data.action, "handoff");
   const oversizedPolicyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "普通商品咨询".repeat(200), evidenceIds: ["product_version"] }) });
   assert.equal(oversizedPolicyEvaluation.status, 400, "policy evaluation must reject oversized input before it reaches an evaluator");
+  const excessivePolicyBody = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "普通商品咨询".repeat(4000), evidenceIds: ["product_version"] }) });
+  assert.equal(excessivePolicyBody.status, 413, "policy evaluation must reject oversized request bodies before JSON parsing");
   const profileCreated = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/profiles`, {
     method: "POST",
     headers: requestHeaders,

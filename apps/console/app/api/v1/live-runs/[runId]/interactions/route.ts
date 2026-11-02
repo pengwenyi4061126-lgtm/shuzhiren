@@ -3,6 +3,7 @@ import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-contex
 import { getRun } from "@/lib/control-plane/store";
 import { createInteraction, listInteractions } from "@/lib/interactions";
 import { isControlledPolicyQuestion } from "@/lib/policy-engine";
+import { readBoundedJson } from "@/lib/bounded-json";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   try {
     const actor = await requestContextFrom(request);
     requireRole(actor, ["admin", "operator"]);
-    const body: unknown = await request.json().catch(() => null);
+    const body = await readBoundedJson(request);
     if (!isInteractionInput(body)) return Response.json({ error: "invalid_interaction" }, { status: 400 });
     const { runId } = await context.params;
     const run = await getRun(actor, runId);

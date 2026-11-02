@@ -3,13 +3,14 @@ import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
 import { createChannelInteraction } from "@/lib/interactions";
 import { isControlledPolicyQuestion } from "@/lib/policy-engine";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { requireChannelIngestService } from "@/lib/runtime-service-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json().catch(() => null);
+    const body = await readBoundedJson(request);
     if (!isChannelInteraction(body)) return Response.json({ error: "invalid_channel_interaction" }, { status: 400 });
     requireChannelIngestService(request, body.tenantId);
 

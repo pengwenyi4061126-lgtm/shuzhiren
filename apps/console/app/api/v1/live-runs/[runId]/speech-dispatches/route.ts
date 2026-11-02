@@ -3,6 +3,7 @@ import { configuredSpeechVoice } from "@/lib/control-plane/speech-config";
 import { enqueueGroundedSpeech } from "@/lib/control-plane/store";
 import { isSafeSpeechCommandId } from "@/lib/speech-protocol";
 import { isControlledPolicyQuestion } from "@/lib/policy-engine";
+import { readBoundedJson } from "@/lib/bounded-json";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   try {
     const actor = await requestContextFrom(request);
     requireRole(actor, ["admin", "operator"]);
-    const body: unknown = await request.json().catch(() => null);
+    const body = await readBoundedJson(request);
     if (!isSpeechInput(body)) return Response.json({ error: "invalid_question" }, { status: 400 });
     const { runId } = await context.params;
     const result = await enqueueGroundedSpeech(actor, runId, body.question.trim(), configuredSpeechVoice(), body.idempotencyKey);

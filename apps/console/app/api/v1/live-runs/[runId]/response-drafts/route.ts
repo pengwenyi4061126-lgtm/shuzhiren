@@ -5,6 +5,7 @@ import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-contex
 import { getRun } from "@/lib/control-plane/store";
 import { policyRulesForRun } from "@/lib/policy-profiles";
 import { isControlledPolicyQuestion } from "@/lib/policy-engine";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { createGroundedResponseDraft } from "@/lib/response-draft";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   try {
   const actor = await requestContextFrom(request);
   requireRole(actor, ["admin", "operator"]);
-  const body: unknown = await request.json().catch(() => null);
+  const body = await readBoundedJson(request);
   if (!isDraftInput(body)) return Response.json({ error: "invalid_question" }, { status: 400 });
   const { runId } = await context.params;
   const run = await getRun(actor, runId);
