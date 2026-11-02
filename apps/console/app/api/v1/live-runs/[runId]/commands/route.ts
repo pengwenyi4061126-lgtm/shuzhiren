@@ -1,4 +1,5 @@
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { issueCommand } from "@/lib/control-plane/store";
 import type { LiveCommandAction, LiveRunState } from "@/lib/domain";
 import { recordAuditEvent } from "@/lib/audit";
@@ -11,7 +12,9 @@ const states = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"
 export async function POST(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/commands">) {
   const requestContext = await requestContextFrom(request);
   requireRole(requestContext, ["admin", "operator"]);
-  const body: unknown = await request.json().catch(() => null);
+  let body: unknown;
+  try { body = await readBoundedJson(request); }
+  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
   if (!isCommandBody(body)) return Response.json({ error: "invalid_command" }, { status: 400 });
   const { runId } = await context.params;
 

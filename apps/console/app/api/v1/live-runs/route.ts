@@ -1,4 +1,5 @@
 import { recordAuditEvent } from "@/lib/audit";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { createLiveRun, listRuns } from "@/lib/control-plane/store";
 
@@ -13,7 +14,9 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const actor = await requestContextFrom(request);
   requireRole(actor, ["admin", "operator"]);
-  const body: unknown = await request.json().catch(() => null);
+  let body: unknown;
+  try { body = await readBoundedJson(request); }
+  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
   if (!isInput(body)) return Response.json({ error: "invalid_live_run" }, { status: 400 });
   try {
     const run = await createLiveRun(actor, body);

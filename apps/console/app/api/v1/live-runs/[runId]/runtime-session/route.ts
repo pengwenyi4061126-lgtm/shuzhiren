@@ -1,4 +1,5 @@
 import { recordAuditEvent } from "@/lib/audit";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { bindRuntimeSession } from "@/lib/control-plane/store";
 
@@ -7,7 +8,9 @@ export const dynamic = "force-dynamic";
 export async function PUT(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/runtime-session">) {
   const actor = await requestContextFrom(request);
   requireRole(actor, ["admin", "operator"]);
-  const body: unknown = await request.json().catch(() => null);
+  let body: unknown;
+  try { body = await readBoundedJson(request); }
+  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
   if (!isBinding(body)) return Response.json({ error: "invalid_runtime_session" }, { status: 400 });
   const { runId } = await context.params;
   try {
