@@ -14,9 +14,11 @@ assert.equal(verifyWebhook({ rawBody: raw, timestamp: String(now - 300_001), sig
 assert.equal(payloadSha256(raw).length, 64);
 
 assert.deepEqual(parseNormalizedEvent(JSON.parse(raw)), { kind: "interaction", runId: "run_1", question: "现在有赠品吗？" });
-assert.deepEqual(parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 9900, orderReference: "order_1" }), { kind: "commerce", runId: "run_1", eventType: "order_paid", occurredAt: undefined, orderReference: "order_1", amountCents: 9900 });
+assert.deepEqual(parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 9900, orderReference: "order_1" }), { kind: "commerce", runId: "run_1", eventType: "order_paid", occurredAt: undefined, orderReference: "order_1", amountCents: 9900, quantity: 1 });
+assert.deepEqual(parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 19800, quantity: 2 }), { kind: "commerce", runId: "run_1", eventType: "order_paid", occurredAt: undefined, orderReference: undefined, amountCents: 19800, quantity: 2 });
 assert.throws(() => parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "view", amountCents: 1 }), /Amount does not match/);
 assert.throws(() => parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 0 }), /Amount does not match/);
+assert.throws(() => parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 9900, quantity: 0 }), /Paid order quantity/);
 
 const validTarget = { tenantId: "123e4567-e89b-12d3-a456-426614174000", channelConnectionId: "223e4567-e89b-12d3-a456-426614174000", signingSecret: secret, interactionToken: "interaction-token-123", commerceToken: "commerce-token-1234" };
 assert.equal(parseTargets(JSON.stringify([validTarget])).size, 1);
