@@ -7,6 +7,7 @@ import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { hasApprovedFallbackProgram } from "@/lib/show-program";
 import { registerDemoProgram, type ShowProgram } from "@/lib/show-program";
 import { hasApprovedLiveRights } from "@/lib/assets";
+import { hasApprovedProductionReleases } from "@/lib/releases";
 import { validateChannelConnection } from "@/lib/channels";
 import { evaluateRuntimeReadiness } from "@/lib/monitoring";
 import { databasePool, withTenantTransaction } from "@/lib/database";
@@ -174,6 +175,7 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
   return evaluatePreflight({
     ...run,
     hasApprovedRights: await hasApprovedLiveRights(context),
+    hasApprovedModelReleases: await hasApprovedProductionReleases(context),
     hasApprovedSkuVersion: Boolean(run.productVersionId && await findApprovedProductVersion(context, run.productVersionId)),
     hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id),
     channelReady: channel.passed,
