@@ -9,6 +9,7 @@ const maxTelemetryAgeMs = 60_000;
 const samplingSloWindowMinutes = 15;
 const samplingSloObjective = 0.95;
 const samplingSloMinimumSamples = 3;
+const telemetryAlertCodes = new Set(["output_disconnected", "output_fps_low", "av_sync_high", "bitrate_low", "audio_silence", "fallback_not_ready"]);
 
 type MonitoringStore = { telemetry: Map<string, RuntimeTelemetry>; alerts: Map<string, RuntimeAlert> };
 type AlertCondition = Pick<RuntimeAlert, "severity" | "code" | "message">;
@@ -66,7 +67,7 @@ export async function ingestTelemetry(context: RequestContext, input: RuntimeTel
     const active = new Map(alertConditions(telemetry).map((condition) => [condition.code, condition]));
     const changed: RuntimeAlert[] = [];
     for (const alert of existing.rows) {
-      if (alert.status === "open" && !active.has(alert.code)) {
+      if (alert.status === "open" && isTelemetryAlertCode(alert.code) && !active.has(alert.code)) {
         const resolved = await client.query<PersistentAlertRow>(`update runtime_alerts set status = 'resolved', resolved_at = $2 where id = $1 returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name`, [alert.id, telemetry.sampledAt]);
         changed.push(persistentAlert(resolved.rows[0]));
       }
@@ -106,7 +107,7 @@ function reconcileDemoAlerts(state: MonitoringStore, telemetry: RuntimeTelemetry
   const active = new Map(alertConditions(telemetry).map((condition) => [condition.code, condition]));
   const matching = [...state.alerts.values()].filter((alert) => alert.tenantId === telemetry.tenantId && alert.runId === telemetry.runId);
   const changed: RuntimeAlert[] = [];
-  for (const alert of matching) if (alert.status === "open" && !active.has(alert.code)) { const resolved = { ...alert, status: "resolved" as const, resolvedAt: telemetry.sampledAt }; state.alerts.set(resolved.id, resolved); changed.push(resolved); }
+  for (const alert of matching) if (alert.status === "open" && isTelemetryAlertCode(alert.code) && !active.has(alert.code)) { const resolved = { ...alert, status: "resolved" as const, resolvedAt: telemetry.sampledAt }; state.alerts.set(resolved.id, resolved); changed.push(resolved); }
   for (const condition of active.values()) if (!matching.some((alert) => alert.code === condition.code && alert.status === "open")) { const alert: RuntimeAlert = { id: `alert_${crypto.randomUUID()}`, tenantId: telemetry.tenantId, runId: telemetry.runId, status: "open", openedAt: telemetry.sampledAt, ...condition }; state.alerts.set(alert.id, alert); changed.push(alert); }
   return changed;
 }
@@ -121,6 +122,8 @@ function alertConditions(telemetry: RuntimeTelemetry): AlertCondition[] {
   if (!telemetry.fallbackReady) conditions.push({ severity: "critical", code: "fallback_not_ready", message: "备用节目未就绪" });
   return conditions;
 }
+
+function isTelemetryAlertCode(code: string) { return telemetryAlertCodes.has(code); }
 
 function summarizeRuntimeSamplingSlo(runId: string, samples: RuntimeTelemetry[]): RuntimeSamplingSlo {
   const healthySamples = samples.filter(isHealthyTelemetry).length;

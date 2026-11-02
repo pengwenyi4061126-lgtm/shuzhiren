@@ -16,6 +16,7 @@ const checks = [
   ["run", "start:ack:check"],
   ["run", "runtime:watchdog:check"],
   ["run", "runtime:outbox:check"],
+  ["run", "runtime:telemetry-alerts:check"],
   ["run", "entitlement:check"],
   ["run", "runtime:media:check"],
   ["run", "runtime:voice:check"],
