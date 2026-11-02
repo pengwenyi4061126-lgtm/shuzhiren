@@ -93,6 +93,10 @@ try {
   const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
   const foreignRunRead = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}`, { headers: isolatedRequestHeaders });
   assert.equal(foreignRunRead.status, 404, "one tenant must not read another tenant's live run");
+  const invalidAsset = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ kind: "voice", name: "Invalid asset", rightsScope: "test", source: "test", objectKey: "../outside.wav", checksum: "not-a-digest" }) });
+  assert.equal(invalidAsset.status, 400, "media assets must reject unsafe object keys and invalid checksums");
+  const invalidRelease = await fetch(`http://127.0.0.1:${consolePort}/api/v1/releases`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ component: "voice", name: "Invalid release", version: "1", sourceCommit: "not-a-commit", imageDigest: "sha256:bad", artifactHash: "sha256:bad", driverVersion: "570", license: "Apache-2.0", rightsScope: "test", evidenceRef: "evidence://integration/invalid", validationSummary: "should not be stored" }) });
+  assert.equal(invalidRelease.status, 400, "model releases must reject invalid source and artifact digests");
   const productResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products`, {
     method: "POST",
     headers: requestHeaders,

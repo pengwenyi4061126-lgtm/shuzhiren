@@ -1,6 +1,7 @@
 import { recordAuditEvent } from "@/lib/audit";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { createMediaAsset, listAssets, type CreateMediaAssetInput } from "@/lib/assets";
+import { isSafeObjectKey, isSha256Digest } from "@/lib/governance-input";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ function isAssetInput(value: unknown): value is CreateMediaAssetInput {
   const input = value as Record<string, unknown>;
   const kinds = new Set(["portrait", "voice", "product_clip", "music"]);
   return typeof input.kind === "string" && kinds.has(input.kind)
-    && ["name", "rightsScope", "source", "objectKey", "checksum"].every((key) => typeof input[key] === "string" && input[key].length > 0)
+    && ["name", "rightsScope", "source"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0)
+    && isSafeObjectKey(input.objectKey) && isSha256Digest(input.checksum)
     && (input.expiresAt === undefined || (typeof input.expiresAt === "string" && !Number.isNaN(Date.parse(input.expiresAt))));
 }
