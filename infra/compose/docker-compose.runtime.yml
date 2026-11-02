@@ -92,6 +92,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set-in-control-plane-env}
       CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set-in-runtime-env}
       CHANNEL_ADAPTER_PORT: ${CHANNEL_ADAPTER_PORT:-8082}
+      CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS: ${CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS:-60}
       CHANNEL_ADAPTER_TARGETS: ${CHANNEL_ADAPTER_TARGETS:?set-in-channel-adapter-env}
     expose:
       - "8082"
