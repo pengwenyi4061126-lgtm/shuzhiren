@@ -102,7 +102,7 @@ function getDemoRun(context: RequestContext, runId: string) {
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
   const channel = await validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled });
-  const runtime = evaluateRuntimeReadiness(context, run.id);
+  const runtime = await evaluateRuntimeReadiness(context, run.id);
   return evaluatePreflight({
     ...run,
     hasApprovedRights: await hasApprovedLiveRights(context),

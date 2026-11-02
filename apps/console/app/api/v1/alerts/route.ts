@@ -6,5 +6,5 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const actor = await requestContextFrom(request);
   requireRole(actor, ["admin", "operator", "analyst"]);
-  return Response.json({ data: listAlerts(actor, new URL(request.url).searchParams.get("runId") ?? undefined) });
+  return Response.json({ data: await listAlerts(actor, new URL(request.url).searchParams.get("runId") ?? undefined) });
 }

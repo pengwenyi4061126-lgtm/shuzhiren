@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   const body: unknown = await request.json().catch(() => null);
   if (!isAssetInput(body)) return Response.json({ error: "invalid_media_asset" }, { status: 400 });
   const asset = await createMediaAsset(context, body);
-  recordAuditEvent(context, { type: "media_asset.created", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectKey: asset.objectKey } });
+  await recordAuditEvent(context, { type: "media_asset.created", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectKey: asset.objectKey } });
   return Response.json({ data: asset }, { status: 201 });
 }
 

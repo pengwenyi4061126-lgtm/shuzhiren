@@ -27,9 +27,9 @@ export async function POST(request: Request) {
       gpuMemoryMiB: body.gpuMemoryMiB,
       fallbackReady: body.fallbackReady
     };
-    const result = ingestTelemetry(serviceContext, input);
+    const result = await ingestTelemetry(serviceContext, input);
     for (const alert of result.alerts) {
-      recordAuditEvent(serviceContext, {
+      await recordAuditEvent(serviceContext, {
         type: alert.status === "open" ? "runtime_alert.opened" : "runtime_alert.resolved",
         resource: "runtime_alert",
         resourceId: alert.id,

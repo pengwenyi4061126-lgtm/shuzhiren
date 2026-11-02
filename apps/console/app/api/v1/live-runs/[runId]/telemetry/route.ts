@@ -7,6 +7,6 @@ export async function GET(request: Request, context: RouteContext<"/api/v1/live-
   const actor = await requestContextFrom(request);
   requireRole(actor, ["admin", "operator", "analyst"]);
   const { runId } = await context.params;
-  const telemetry = getTelemetry(actor, runId);
+  const telemetry = await getTelemetry(actor, runId);
   return telemetry ? Response.json({ data: telemetry }) : Response.json({ error: "not_found" }, { status: 404 });
 }

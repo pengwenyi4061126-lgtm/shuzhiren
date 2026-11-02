@@ -6,5 +6,5 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const context = await requestContextFrom(request);
   requireRole(context, ["admin", "reviewer", "analyst"]);
-  return Response.json({ data: listAuditEvents(context) });
+  return Response.json({ data: await listAuditEvents(context) });
 }

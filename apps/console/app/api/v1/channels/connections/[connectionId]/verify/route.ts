@@ -14,7 +14,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/chan
   const { connectionId } = await context.params;
   try {
     const connection = await recordChannelVerification(actor, connectionId, (body as { status: ChannelStatus }).status);
-    recordAuditEvent(actor, { type: "channel_connection.verified", resource: "channel_connection", resourceId: connection.id, detail: { status: connection.status, protocol: connection.outputProtocol } });
+    await recordAuditEvent(actor, { type: "channel_connection.verified", resource: "channel_connection", resourceId: connection.id, detail: { status: connection.status, protocol: connection.outputProtocol } });
     return Response.json({ data: connection });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText }, { status: error.status });

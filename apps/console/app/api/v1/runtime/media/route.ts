@@ -15,7 +15,7 @@ export async function POST(request: Request) {
   const run = await getRun(context, body.runId);
   if (!run) return Response.json({ error: "not_found" }, { status: 404 });
   const event = await enqueueMediaCommand(context, { runId: run.id, traceId: run.traceId, type: body.type, payload: {}, sessionId: body.sessionId });
-  recordAuditEvent(context, { type: "media_command.enqueued", resource: "outbox_event", resourceId: event.id, detail: { mediaCommandId: event.command.id, commandType: body.type } });
+  await recordAuditEvent(context, { type: "media_command.enqueued", resource: "outbox_event", resourceId: event.id, detail: { mediaCommandId: event.command.id, commandType: body.type } });
   return Response.json({ data: event }, { status: 202 });
 }
 
