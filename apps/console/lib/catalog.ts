@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
-export type ProductFacts = { priceCent: number; stock: number; highlights: string[]; faq: string[] };
+export type ProductFacts = { priceCent: number; stock: number; highlights: string[]; faq: string[]; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil?: string };
 export type ProductVersion = { id: string; revision: number; status: "draft" | "approved" | "rejected"; facts: ProductFacts; createdAt: string; approvedAt?: string };
 export type Product = { id: string; tenantId: string; externalSku: string; name: string; versions: ProductVersion[] };
 
@@ -28,7 +28,7 @@ function catalog(): Catalog {
       id: "product_a102", tenantId: "tenant_demo", externalSku: "A-102", name: "氨基酸洁面慕斯",
       versions: [{
         id: "pv_a102_v1", revision: 1, status: "approved",
-        facts: { priceCent: 9900, stock: 286, highlights: ["氨基酸表活", "按压泡沫"], faq: ["赠旅行装三件套", "48 小时内发货"] },
+        facts: { priceCent: 9900, stock: 286, highlights: ["氨基酸表活", "按压泡沫"], faq: ["赠旅行装三件套", "48 小时内发货"], sourceRef: "pim://demo/A-102/revision-18", sourceSyncedAt: "2026-11-01T08:00:00.000Z", validFrom: "2026-11-01T08:00:00.000Z", validUntil: "2026-11-03T08:00:00.000Z" },
         createdAt: "2026-11-01T08:00:00.000Z", approvedAt: "2026-11-01T08:30:00.000Z"
       }]
     }]])
@@ -96,11 +96,15 @@ export async function approveProductVersion(context: RequestContext, productId: 
     const product = await findProduct(context, productId);
     const version = product?.versions.find((candidate) => candidate.id === versionId);
     if (!version) throw new Response("Product version not found", { status: 404 });
+    if (!isProductFactsCurrent(version.facts)) throw new Response("Product source facts are stale or outside their valid period", { status: 409 });
     version.status = "approved";
     version.approvedAt = new Date().toISOString();
     return version;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
+    const candidate = await client.query<{ facts: unknown }>("select facts from product_versions where id = $1 and product_id = $2 for update", [versionId, productId]);
+    if (!candidate.rows[0]) throw new Response("Product version not found", { status: 404 });
+    if (!isProductFactsCurrent(candidate.rows[0].facts as ProductFacts)) throw new Response("Product source facts are stale or outside their valid period", { status: 409 });
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<{ id: string; revision: number; approval_status: ProductVersion["status"]; facts: unknown; created_at: Date | string; approved_at: Date | string | null }>(
       "update product_versions set approval_status = 'approved', approved_by = $3, approved_at = now() where id = $1 and product_id = $2 returning id, revision, approval_status, facts, created_at, approved_at",
@@ -115,14 +119,15 @@ export async function findApprovedProductVersion(context: RequestContext, versio
   if (!databasePool()) {
     const product = demoProducts(context).find((candidate) => candidate.versions.some((version) => version.id === versionId));
     const version = product?.versions.find((candidate) => candidate.id === versionId);
-    return version?.status === "approved" ? version : null;
+    return version?.status === "approved" && isProductFactsCurrent(version.facts) ? version : null;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<{ id: string; revision: number; approval_status: ProductVersion["status"]; facts: unknown; created_at: Date | string; approved_at: Date | string | null }>(
       "select id, revision, approval_status, facts, created_at, approved_at from product_versions where id = $1 and approval_status = 'approved'",
       [versionId]
     );
-    return result.rows[0] ? persistentVersion(result.rows[0]) : null;
+    const version = result.rows[0] ? persistentVersion(result.rows[0]) : null;
+    return version && isProductFactsCurrent(version.facts) ? version : null;
   });
 }
 
@@ -162,6 +167,16 @@ function persistentVersion(row: { id: string; revision: number; approval_status:
     createdAt: new Date(row.created_at).toISOString(),
     approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined
   };
+}
+
+export function isProductFactsCurrent(facts: ProductFacts, now = new Date()) {
+  const syncedAt = Date.parse(facts.sourceSyncedAt);
+  const validFrom = Date.parse(facts.validFrom);
+  const validUntil = facts.validUntil ? Date.parse(facts.validUntil) : undefined;
+  if (!facts.sourceRef.trim() || !Number.isFinite(syncedAt) || !Number.isFinite(validFrom)) return false;
+  if (syncedAt > now.getTime() + 5 * 60_000 || now.getTime() - syncedAt > 24 * 60 * 60_000) return false;
+  if (validFrom > now.getTime()) return false;
+  return validUntil === undefined || (Number.isFinite(validUntil) && validUntil > now.getTime());
 }
 
 function databaseErrorCode(error: unknown) {
