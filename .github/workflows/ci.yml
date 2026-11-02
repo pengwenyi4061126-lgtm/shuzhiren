@@ -33,6 +33,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run deploy:check -- --allow-placeholders
+      - run: npm run deploy:check:test
       - run: npm run policy:red-team
       - run: npm run preflight:check
       - run: npm run start:ack:check

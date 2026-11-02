@@ -21,6 +21,7 @@
     "channel-adapter:test": "node scripts/test-channel-adapter.mjs",
     "alert-notifier:test": "node scripts/test-alert-notifier.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
+    "deploy:check:test": "node scripts/test-deployment-config.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "start:ack:check": "node scripts/check-start-ack-gate.mjs",
