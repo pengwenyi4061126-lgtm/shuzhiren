@@ -13,5 +13,5 @@ export async function POST(request: Request) {
 function isReleaseInput(value: unknown): value is CreateModelReleaseInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>; const components = new Set<ReleaseComponent>(["runtime", "avatar", "lip_sync", "voice"]);
-  return typeof input.component === "string" && components.has(input.component as ReleaseComponent) && ["name", "version", "sourceCommit", "imageDigest", "artifactHash", "driverVersion", "license", "rightsScope"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0) && (input.notes === undefined || typeof input.notes === "string");
+  return typeof input.component === "string" && components.has(input.component as ReleaseComponent) && ["name", "version", "sourceCommit", "imageDigest", "artifactHash", "driverVersion", "license", "rightsScope", "evidenceRef", "validationSummary"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0) && (input.notes === undefined || typeof input.notes === "string");
 }
