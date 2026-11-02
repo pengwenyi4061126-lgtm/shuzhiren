@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, CalendarDays, ChartNoAxesCombined, Clapperboard, CircleStop, Clock3, FileText, LoaderCircle, MonitorPlay, Package, PackageCheck, Pause, Play, Radio, RotateCcw, Send, ShieldCheck, SquareStack, UserRoundCheck, Users, Volume2 } from "lucide-react";
+import { AlertTriangle, BarChart3, CalendarDays, ChartNoAxesCombined, Clapperboard, CircleStop, Clock3, FileText, LoaderCircle, MonitorPlay, Package, PackageCheck, Pause, Play, Radio, RotateCcw, Send, ShieldCheck, SquareStack, UserRoundCheck, Users, Volume2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { LiveCommand, LiveRun, LiveRunState } from "@/lib/domain";
@@ -21,6 +21,7 @@ const navigation: NavigationItem[] = [
   { icon: PackageCheck, label: "发布治理", href: "/releases" },
   { icon: ShieldCheck, label: "知识与策略", href: "/policy" },
   { icon: ChartNoAxesCombined, label: "运行监控", href: "/monitoring" },
+  { icon: BarChart3, label: "经营数据", href: "/analytics" },
   { icon: Send, label: "投递队列", href: "/outbox" },
   { icon: FileText, label: "审计中心", href: "/audit" },
   { icon: SquareStack, label: "渠道设置", href: "/channels" }

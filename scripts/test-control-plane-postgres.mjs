@@ -18,6 +18,7 @@ const nextCli = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const worker = path.join(root, "apps", "runtime-worker", "index.mjs");
 const tenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
+const commerceToken = "control-plane-integration-commerce-token";
 const { publicKey, privateKey } = await generateKeyPair("RS256");
 const jwk = { ...(await exportJWK(publicKey)), kid: "integration-key", alg: "RS256", use: "sig" };
 const client = new Client({ connectionString: databaseUrl });
@@ -39,8 +40,10 @@ try {
     .setExpirationTime("5m")
     .sign(privateKey);
 
-  const recoverRunId = await seedRun("DEGRADED", "session_recover", new Date());
-  const staleRunId = await seedRun("LIVE", "session_stale", new Date(Date.now() - 120_000));
+  const recoverRun = await seedRun("DEGRADED", "session_recover", new Date());
+  const staleRun = await seedRun("LIVE", "session_stale", new Date(Date.now() - 120_000));
+  const recoverRunId = recoverRun.runId;
+  const staleRunId = staleRun.runId;
   next = spawn(process.execPath, [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(consolePort)], {
     cwd: consoleRoot,
     env: {
@@ -52,7 +55,8 @@ try {
       RUNTIME_GATEWAY_DEMO_MODE: "false",
       OIDC_ISSUER_URL: issuer,
       OIDC_AUDIENCE: "shuzhiren-integration",
-      OIDC_JWKS_URL: `${mock.baseUrl}/jwks`
+      OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
+      CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken })
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -85,6 +89,33 @@ try {
   assert.equal(mock.mediaCommands.length, 1);
   assert.equal(mock.mediaCommands[0].action, "start_program");
 
+  const commerceHeaders = { "content-type": "application/json", authorization: `Bearer ${commerceToken}` };
+  for (const event of [
+    { eventId: "view-1", eventType: "view" },
+    { eventId: "cart-1", eventType: "add_to_cart" },
+    { eventId: "paid-1", eventType: "order_paid", orderReference: "order-1", amountCents: 19900 },
+    { eventId: "refund-1", eventType: "refund", orderReference: "order-1", amountCents: 5000 }
+  ]) {
+    const response = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-commerce`, {
+      method: "POST",
+      headers: commerceHeaders,
+      body: JSON.stringify({ tenantId, runId: recoverRunId, channelConnectionId: recoverRun.channelId, ...event })
+    });
+    assert.equal(response.status, 202, `commerce event ${event.eventId} should be accepted`);
+  }
+  const duplicateCommerce = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-commerce`, {
+    method: "POST",
+    headers: commerceHeaders,
+    body: JSON.stringify({ tenantId, runId: recoverRunId, channelConnectionId: recoverRun.channelId, eventId: "paid-1", eventType: "order_paid", orderReference: "order-1", amountCents: 19900 })
+  });
+  assert.equal(duplicateCommerce.status, 200, "identical commerce retries must be idempotent");
+  const summaryResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commerce-summary`, { headers: requestHeaders });
+  assert.equal(summaryResponse.status, 200);
+  const summary = await summaryResponse.json();
+  assert.deepEqual(summary.data, { runId: recoverRunId, views: 1, productClicks: 0, addToCart: 1, paidOrders: 1, refunds: 1, grossPaidCents: 19900, refundedCents: 5000, netPaidCents: 14900, viewToCartRate: 1, viewToPaidRate: 1, refundRate: 1 });
+  const commerceAudit = await client.query("select event_type from audit_events where resource_type = 'commerce_event' order by occurred_at");
+  assert.deepEqual(commerceAudit.rows.map((row) => row.event_type), ["commerce_event.order_paid", "commerce_event.refund"]);
+
   workerProcess = spawn(process.execPath, [worker], {
     cwd: root,
     env: {
@@ -108,7 +139,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane acknowledges recovery and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane gates recovery, records idempotent commerce facts, and degrades stale LIVE telemetry");
 } finally {
   await stop(workerProcess);
   await stop(next);
@@ -120,12 +151,15 @@ async function seedRun(state, sessionId, sampledAt) {
   const showId = randomUUID();
   const revisionId = randomUUID();
   const runId = randomUUID();
+  const channelId = randomUUID();
   await client.query("insert into tenants (id, slug, name) values ($1, $2, $3) on conflict (id) do nothing", [tenantId, `integration-${tenantId}`, "Control plane integration"]);
   await client.query("insert into shows (id, tenant_id, name) values ($1, $2, $3)", [showId, tenantId, `Integration show ${runId}`]);
   await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'approved')", [revisionId, tenantId, showId]);
-  await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id) values ($1, $2, $3, $4::live_run_state, $5, $6)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId]);
+  const capabilities = { channel: "integration-webhook", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
+  await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now())", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities)]);
+  await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, $3)", [tenantId, runId, sampledAt]);
-  return runId;
+  return { runId, channelId };
 }
 
 async function startMockServer() {
