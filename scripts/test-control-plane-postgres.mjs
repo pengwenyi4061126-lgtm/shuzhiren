@@ -118,6 +118,8 @@ try {
   const freshVersion = await freshVersionResponse.json();
   const freshApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products/${product.data.id}/versions/${freshVersion.data.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(freshApproval.status, 200, "fresh product source facts should be approvable");
+  const inactiveRuntimeRun = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration inactive runtime run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "missing_session", aiDisclosureEnabled: true }) });
+  assert.equal(inactiveRuntimeRun.status, 409, "creating a run must reject an inactive runtime session");
   const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true }) });
   assert.equal(createdRunResponse.status, 201, "creating a production run should freeze currently approved media rights");
   const createdRun = await createdRunResponse.json();
@@ -533,9 +535,13 @@ async function startMockServer() {
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/jwks") return json(response, 200, { keys: [jwk] });
-    if (url.pathname === "/v1/observations/0" && request.method === "GET") {
+    if ((url.pathname === "/v1/observations/0" || url.pathname === "/v1/observations/session_frozen_rights") && request.method === "GET") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
-      return json(response, 200, { session: { id: "0", active: true } });
+      return json(response, 200, { session: { id: url.pathname.split("/").at(-1), active: true } });
+    }
+    if (url.pathname === "/v1/observations/missing_session" && request.method === "GET") {
+      assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
+      return json(response, 200, { session: { id: "missing_session", active: false } });
     }
     if (url.pathname === "/v1/media" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
