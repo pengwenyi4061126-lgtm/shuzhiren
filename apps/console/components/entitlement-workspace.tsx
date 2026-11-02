@@ -5,8 +5,8 @@ import { useState } from "react";
 import type { Entitlement, EntitlementCode } from "@/lib/entitlements";
 
 const definitions: Array<{ code: EntitlementCode; label: string; description: string; unit: string; placeholder: string }> = [
-  { code: "max_concurrent_live_runs", label: "并发直播场次", description: "同一租户同时处于直播中的场次数上限。", unit: "场", placeholder: "1" },
-  { code: "monthly_live_minutes", label: "当月直播分钟数", description: "worker 为每个 LIVE 场次记录幂等分钟桶；仅在下一次开播前阻断超额。", unit: "分钟", placeholder: "1000" }
+  { code: "max_concurrent_live_runs", label: "并发直播场次", description: "同一租户同时处于 LIVE 或 DEGRADED 的场次数上限。", unit: "场", placeholder: "1" },
+  { code: "monthly_live_minutes", label: "当月直播分钟数", description: "worker 为每个 LIVE 或 DEGRADED 场次记录幂等分钟桶；仅在下一次开播前阻断超额。", unit: "分钟", placeholder: "1000" }
 ];
 
 export function EntitlementWorkspace({ initialEntitlements, canManage }: { initialEntitlements: Entitlement[]; canManage: boolean }) {

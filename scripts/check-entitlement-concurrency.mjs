@@ -13,4 +13,9 @@ for (const source of sources) {
   if (!content.includes(expectedPredicate)) throw new Error(`${source} must count LIVE and DEGRADED runs against concurrent capacity`);
 }
 
-console.log(`PASS  entitlement concurrency consistently counts LIVE and DEGRADED runs (${root})`);
+const worker = await readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8");
+if (!/from live_runs\s+where state in \('LIVE', 'DEGRADED'\)\s+and exists/.test(worker)) {
+  throw new Error("runtime usage metering must record LIVE and DEGRADED minutes");
+}
+
+console.log(`PASS  entitlement accounting consistently includes LIVE and DEGRADED runs (${root})`);

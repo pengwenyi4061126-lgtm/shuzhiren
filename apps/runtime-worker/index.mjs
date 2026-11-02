@@ -156,7 +156,7 @@ async function meterLiveUsage() {
           'live-minute:' || id::text || ':' || to_char(date_trunc('minute', now() at time zone 'UTC'), 'YYYYMMDDHH24MI'),
           jsonb_build_object('meter', 'runtime-worker', 'bucket', 'one_minute')
         from live_runs
-        where state = 'LIVE'
+        where state in ('LIVE', 'DEGRADED')
           and exists (select 1 from tenant_entitlements where code = 'monthly_live_minutes' and effective_from <= current_date and (effective_until is null or effective_until >= current_date))
         on conflict (tenant_id, idempotency_key) do nothing`, [tenantId]);
       return result.rowCount ?? 0;

@@ -357,7 +357,7 @@ try {
   const isolatedProductFact = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${isolatedPimToken}` }, body: JSON.stringify({ ...productFactInput, tenantId: isolatedTenantId }) });
   assert.equal(isolatedProductFact.status, 202, "the same external PIM event ID may be used independently by another tenant");
 
-  await seedRun("DEGRADED", "session_entitlement_degraded_active", new Date());
+  const degradedOccupyingRun = await seedRun("DEGRADED", "session_entitlement_degraded_active", new Date());
   const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 2 }) });
   assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");
   const minuteEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/monthly_live_minutes`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1000 }) });
@@ -457,6 +457,7 @@ try {
   });
   await waitFor(async () => (await client.query("select state from live_runs where id = $1", [staleRunId])).rows[0]?.state === "DEGRADED", 10_000, "stale telemetry watchdog");
   await waitFor(async () => Number((await client.query("select count(*) as count from usage_records where live_run_id = $1 and code = 'monthly_live_minutes'", [recoverRunId])).rows[0]?.count) >= 1, 10_000, "live-minute metering");
+  await waitFor(async () => Number((await client.query("select count(*) as count from usage_records where live_run_id = $1 and code = 'monthly_live_minutes'", [degradedOccupyingRun.runId])).rows[0]?.count) >= 1, 10_000, "degraded live-minute metering");
   const alert = await client.query("select code, status from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId]);
   assert.deepEqual(alert.rows[0], { code: "runtime_telemetry_stale", status: "open" });
   const alertId = (await client.query("select id from runtime_alerts where live_run_id = $1 and code = 'runtime_telemetry_stale'", [staleRunId])).rows[0].id;
@@ -563,7 +564,7 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
-  console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, revokes frozen model releases and media rights fail-closed, ingests idempotent reviewable PIM facts, enforces entitlements, meters live minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
+  console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, revokes frozen model releases and media rights fail-closed, ingests idempotent reviewable PIM facts, enforces entitlements, meters LIVE and DEGRADED minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
   await stop(workerProcess);
