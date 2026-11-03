@@ -90,6 +90,7 @@ try {
       RUNTIME_GATEWAY_URL: mock.baseUrl,
       RUNTIME_SHARED_TOKEN: gatewayToken,
       RUNTIME_GATEWAY_DEMO_MODE: "false",
+      RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
       OUTBOX_MAX_ATTEMPTS: "1",
       OIDC_ISSUER_URL: issuer,
       OIDC_AUDIENCE: "shuzhiren-integration",

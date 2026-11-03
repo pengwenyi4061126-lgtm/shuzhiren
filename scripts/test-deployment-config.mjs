@@ -33,6 +33,7 @@ const control = env({
   OIDC_AUDIENCE: "shuzhiren-console",
   OIDC_JWKS_URL: "https://issuer.internal/jwks.json",
   OUTBOX_MAX_ATTEMPTS: "6",
+  RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
   RUNTIME_TELEMETRY_TENANT_TOKENS: { [tenantId]: telemetryToken },
   RUNTIME_RECORDING_TENANT_TOKENS: { [tenantId]: "recording-token-at-least-32-bytes" },
   PIM_INGEST_TENANT_TOKENS: { [tenantId]: "pim-ingest-token-at-least-32-bytes" },
@@ -167,6 +168,12 @@ try {
   const mismatchedOutboxAttempts = check(["--require-cosyvoice"]);
   assert.notEqual(mismatchedOutboxAttempts.status, 0, "control-plane and runtime retry limits must match");
   assert.match(mismatchedOutboxAttempts.stderr, /OUTBOX_MAX_ATTEMPTS/, "retry-limit mismatch must identify the shared outbox gate");
+  await writeFile(files.control, control);
+
+  await writeFile(files.control, control.replace("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=20000", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=15000"));
+  const mismatchedGatewayTimeout = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedGatewayTimeout.status, 0, "control-plane and runtime Gateway timeouts must match");
+  assert.match(mismatchedGatewayTimeout.stderr, /RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS/, "Gateway timeout mismatch must identify the shared delivery gate");
   await writeFile(files.control, control);
 
   await writeFile(files.control, control.replace("commerce-ingest-token-at-least-32-bytes", telemetryToken));
