@@ -20,6 +20,15 @@ export function parseTargets(value) {
 
 export function payloadSha256(rawBody) { return createHash("sha256").update(rawBody).digest("hex"); }
 
+export function publicRequestError(error) {
+  const message = error instanceof Error ? error.message : "";
+  if (message === "webhook_body_too_large") return { status: 413, error: "webhook_body_too_large" };
+  if (message === "event_id_reused_with_different_payload") return { status: 409, error: "event_id_conflict" };
+  if (message === "webhook_replay_conflict_unresolved") return { status: 503, error: "webhook_replay_unavailable" };
+  if (error instanceof SyntaxError || message.startsWith("Invalid") || message.includes("required") || message.includes("Unsupported") || message.startsWith("Amount") || message.startsWith("Paid order")) return { status: 400, error: "invalid_webhook_payload" };
+  return { status: 500, error: "webhook_processing_failed" };
+}
+
 export function verifyWebhook({ rawBody, timestamp, signature, secret, now = Date.now(), maxAgeMs = 5 * 60_000 }) {
   if (!/^\d{10,16}$/.test(timestamp ?? "")) return false;
   const timestampMs = Number(timestamp) * (timestamp.length <= 10 ? 1000 : 1);

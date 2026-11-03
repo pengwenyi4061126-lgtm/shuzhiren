@@ -1,6 +1,6 @@
 import http from "node:http";
 import pg from "pg";
-import { parseNormalizedEvent, parseTargets, payloadSha256, verifyWebhook } from "./lib.mjs";
+import { parseNormalizedEvent, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
 
 const port = positiveInt(process.env.CHANNEL_ADAPTER_PORT, 8082, "CHANNEL_ADAPTER_PORT");
 const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
@@ -47,9 +47,9 @@ const server = http.createServer(async (request, response) => {
     await markDelivered(target, eventId);
     return json(response, 202, { accepted: true, duplicate: false });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "webhook_processing_failed";
-    const status = message === "webhook_body_too_large" ? 413 : error instanceof SyntaxError || message.startsWith("Invalid") || message.includes("required") || message.includes("Unsupported") ? 400 : 500;
-    return json(response, status, { error: message });
+    const result = publicRequestError(error);
+    console.error("channel-adapter.request_failed", { error: error instanceof Error ? error.message : "unknown_error", status: result.status, code: result.error });
+    return json(response, result.status, { error: result.error });
   }
 });
 

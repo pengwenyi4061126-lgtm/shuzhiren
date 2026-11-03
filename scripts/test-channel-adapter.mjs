@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { parseNormalizedEvent, parseTargets, payloadSha256, verifyWebhook } from "../apps/channel-adapter/lib.mjs";
+import { parseNormalizedEvent, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "../apps/channel-adapter/lib.mjs";
 
 const secret = "channel-signing-secret-at-least-32-chars";
 const now = 1_700_000_000_000;
@@ -25,4 +25,9 @@ assert.equal(parseTargets(JSON.stringify([validTarget])).size, 1);
 assert.throws(() => parseTargets(JSON.stringify([{ ...validTarget, commerceToken: validTarget.interactionToken }])), /must differ/);
 assert.throws(() => parseTargets(JSON.stringify([{ ...validTarget, tenantId: "123e4567-e89b-12d3-c456-426614174000" }])), /must be UUIDs/);
 
-console.log("PASS  channel adapter validates HMAC, replay prerequisites, and normalized event contracts");
+assert.deepEqual(publicRequestError(new Error("webhook_body_too_large")), { status: 413, error: "webhook_body_too_large" });
+assert.deepEqual(publicRequestError(new Error("event_id_reused_with_different_payload")), { status: 409, error: "event_id_conflict" });
+assert.deepEqual(publicRequestError(new SyntaxError("Unexpected token private-webhook-key")), { status: 400, error: "invalid_webhook_payload" });
+assert.deepEqual(publicRequestError(new Error("database failed for postgresql://internal/private-token")), { status: 500, error: "webhook_processing_failed" });
+
+console.log("PASS  channel adapter validates HMAC, replay prerequisites, normalized event contracts, and public error boundaries");
