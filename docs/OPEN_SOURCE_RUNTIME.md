@@ -52,7 +52,7 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 
 ## 控制面接口
 
-`ENDED` 场次可由管理员或场控归档为 `ARCHIVED`。归档是终态整理动作，不删除录屏、审计、发布清单或其他证据。
+`ENDED` 场次可由管理员或场控归档为 `ARCHIVED`。归档是终态整理动作，不删除录屏、审计、发布清单或其他证据；录屏归档服务仍可补交已生成的证据，但新的互动、交易和运行遥测会被拒绝，避免历史场次重新进入自动告警链路。
 
 - `GET /api/v1/runtime/health`：检查 Gateway 是否可用；本地开发返回 `demo`。
 - `POST /api/v1/runtime/media`：仅允许对处于 `LIVE` 的场次发起受控的备用节目或人工接管；服务端只使用该场次已绑定的运行时会话，并将场次切至 `DEGRADED`。`START`、`RECOVER` 和 `END` 必须走场次命令接口，不能绕过预检、额度、状态机和 Gateway 确认。

@@ -14,7 +14,11 @@ export async function POST(request: Request) {
     requireRuntimeService(request, body.tenantId);
 
     const serviceContext: RequestContext = { tenantId: body.tenantId, actorId: "runtime-service", actorName: "运行时服务", role: "operator" };
-    if (!await getRun(serviceContext, body.runId)) return Response.json({ error: "live_run_not_found" }, { status: 404 });
+    const run = await getRun(serviceContext, body.runId);
+    if (!run) return Response.json({ error: "live_run_not_found" }, { status: 404 });
+    // Recording evidence may arrive after archival, but fresh health samples must
+    // not reopen output alerts for a terminal historical run.
+    if (run.state === "ARCHIVED") return Response.json({ error: "archived_live_run_rejects_telemetry" }, { status: 409 });
 
     const input: RuntimeTelemetryInput = {
       runId: body.runId,
