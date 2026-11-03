@@ -32,6 +32,7 @@
     "deploy:check:test": "node scripts/test-deployment-config.mjs",
     "backup:automation:check": "node scripts/check-backup-automation.mjs",
     "control-plane:compose:check": "node scripts/check-control-plane-compose.mjs",
+    "runtime:compose:check": "node scripts/check-runtime-compose.mjs",
     "console:page-auth:check": "node scripts/check-console-page-auth.mjs",
     "console:security-headers:check": "node scripts/check-console-security-headers.mjs",
     "console:client-requests:check": "node scripts/check-console-client-requests.mjs",

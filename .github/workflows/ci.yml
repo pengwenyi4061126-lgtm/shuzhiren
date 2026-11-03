@@ -44,12 +44,14 @@ jobs:
       - run: npm run backup:automation:check
       - run: bash scripts/test-postgres-backup-direct.sh
       - run: npm run control-plane:compose:check
+      - run: npm run runtime:compose:check
       - run: npm run console:page-auth:check
       - run: npm run console:security-headers:check
       - run: npm run console:client-requests:check
       - run: docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config
         env:
           CONTROL_PLANE_ENV_FILE: config/control-plane.example.env
+      - run: docker compose --env-file config/runtime.example.env --env-file config/runtime-gateway.example.env --env-file config/channel-adapter.example.env --env-file config/alert-notifier.example.env --profile output-probe --profile channel-adapter --profile alert-notifier --profile cosyvoice -f infra/compose/docker-compose.runtime.yml config
       - run: docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .
       - run: docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .
       - run: docker build --file apps/runtime-observer/Dockerfile --tag shuzhiren-runtime-observer-ci .
@@ -57,6 +59,7 @@ jobs:
       - run: docker build --file apps/channel-adapter/Dockerfile --tag shuzhiren-channel-adapter-ci .
       - run: docker build --file apps/alert-notifier/Dockerfile --tag shuzhiren-alert-notifier-ci .
       - run: docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway
+      - run: docker build --file runtime/livetalking/Dockerfile --tag shuzhiren-livetalking-ci .
       - run: npm run policy:red-team
       - run: npm run preflight:check
       - run: npm run lifecycle:authz:check

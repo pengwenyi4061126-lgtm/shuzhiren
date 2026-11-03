@@ -13,6 +13,7 @@ const checks = [
   ["run", "deploy:check:test"],
   ["run", "backup:automation:check"],
   ["run", "control-plane:compose:check"],
+  ["run", "runtime:compose:check"],
   ["run", "console:page-auth:check"],
   ["run", "console:security-headers:check"],
   ["run", "console:client-requests:check"],
