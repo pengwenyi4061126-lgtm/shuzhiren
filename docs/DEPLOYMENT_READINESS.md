@@ -18,6 +18,6 @@
    若本机已用同一解释器安装 `runtime/gateway/requirements.txt`，再运行 `npm run verify:local -- --with-gateway --python /absolute/path/to/python`，将额外编译 Gateway 并执行 PCM/WAV 与并发幂等测试；缺少依赖时该命令会失败，不会静默跳过。
 2. 再运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --channel-adapter /srv/shuzhiren/channel-adapter.env --alert-notifier /srv/shuzhiren/alert-notifier.env --require-output-probe --require-cosyvoice`。该项目的实时问答语音链路依赖 CosyVoice；仅预制内容试播才可省略后一个门禁。
 3. 主机、权重、账号和密钥就绪后，执行内部试播、故障演练与独立输出探针验证。
-4. 只有 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json` 通过，且所有外部项有可审计证据，才允许真实小规模开播。
+4. 只有 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json` 通过，且所有外部项有可审计证据（包括 PostgreSQL 与 Gateway 命令日志的隔离恢复及不重放验证），才允许真实小规模开播。
 
 任何缺失的外部项都是上线阻断，不应通过开发态 fixture、Gateway `/healthz`、容器 `running` 状态或口头确认绕过。

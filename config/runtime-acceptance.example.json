@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "completedAt": "2026-11-03T12:00:00.000Z",
   "operator": "replace-with-duty-operator",
   "releaseManifestSha256": "replace-with-64-character-release-manifest-sha256",
@@ -33,5 +33,11 @@
     "ttsTimeout": { "passed": true, "evidence": "replace-with-drill-record-id" },
     "blackFrame": { "passed": true, "evidence": "replace-with-drill-record-id" },
     "silence": { "passed": true, "evidence": "replace-with-drill-record-id" }
+  },
+  "recovery": {
+    "postgresRestoreEvidence": "replace-with-isolated-postgres-restore-drill-id",
+    "gatewayJournalSnapshotEvidence": "replace-with-gateway-journal-snapshot-id",
+    "gatewayJournalRecoveryEvidence": "replace-with-isolated-gateway-journal-restore-drill-id",
+    "completedCommandNoReplayVerified": true
   }
 }

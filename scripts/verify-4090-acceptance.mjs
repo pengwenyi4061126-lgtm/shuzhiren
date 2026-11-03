@@ -22,7 +22,7 @@ const requireNumber = (value, label, minimum) => {
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 if (!isObject(evidence)) errors.push("evidence must be a JSON object");
-if (evidence?.schemaVersion !== 2) errors.push("schemaVersion must be 2");
+if (evidence?.schemaVersion !== 3) errors.push("schemaVersion must be 3");
 requireString(evidence?.completedAt, "completedAt");
 if (Number.isNaN(Date.parse(evidence?.completedAt ?? ""))) errors.push("completedAt must be an ISO timestamp");
 requireString(evidence?.operator, "operator");
@@ -60,8 +60,15 @@ for (const name of ["networkLoss", "rtmpRejected", "gpuOom", "ttsTimeout", "blac
   requireString(drill?.evidence, `drills.${name}.evidence`);
 }
 
+const recovery = evidence?.recovery;
+if (!isObject(recovery)) errors.push("recovery must be an object");
+requireString(recovery?.postgresRestoreEvidence, "recovery.postgresRestoreEvidence");
+requireString(recovery?.gatewayJournalSnapshotEvidence, "recovery.gatewayJournalSnapshotEvidence");
+requireString(recovery?.gatewayJournalRecoveryEvidence, "recovery.gatewayJournalRecoveryEvidence");
+if (recovery?.completedCommandNoReplayVerified !== true) errors.push("recovery.completedCommandNoReplayVerified must be true");
+
 if (errors.length) {
   for (const error of errors) console.error(`ERROR ${error}`);
   process.exit(1);
 }
-console.log(`PASS  4090 runtime acceptance evidence verified for ${host.hostname}; ${trial.durationMinutes} minutes, ${trial.minimumOutputFps} FPS, ${trial.minimumOutputWidth}x${trial.minimumOutputHeight}, ${trial.minimumBitrateMbps} Mbps minimum, ${trial.maximumAvSyncMs} ms maximum A/V sync`);
+console.log(`PASS  4090 runtime acceptance evidence verified for ${host.hostname}; ${trial.durationMinutes} minutes, ${trial.minimumOutputFps} FPS, ${trial.minimumOutputWidth}x${trial.minimumOutputHeight}, ${trial.minimumBitrateMbps} Mbps minimum, ${trial.maximumAvSyncMs} ms maximum A/V sync, recovery evidence complete`);
