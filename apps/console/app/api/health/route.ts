@@ -10,6 +10,7 @@ export async function GET() {
     return Response.json({
       status: "ok",
       service: "shuzhiren-console",
+      releaseRevision: readiness.releaseRevision,
       timestamp: new Date().toISOString(),
       dependencies: {
         controlPlane: database.status,
@@ -22,6 +23,7 @@ export async function GET() {
     return Response.json({
       status: "unavailable",
       service: "shuzhiren-console",
+      releaseRevision: null,
       timestamp: new Date().toISOString(),
       dependencies: {
         controlPlane: "unavailable",

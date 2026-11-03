@@ -28,6 +28,7 @@ const control = env({
   DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
   DATABASE_QUERY_TIMEOUT_MS: "5000",
   CONTROL_PLANE_DEMO_MODE: "false",
+  RELEASE_REVISION: "a1b2c3d4e5f6a7b8c9d0",
   OIDC_ISSUER_URL: "https://issuer.internal",
   OIDC_AUDIENCE: "shuzhiren-console",
   OIDC_JWKS_URL: "https://issuer.internal/jwks.json",
@@ -150,6 +151,12 @@ try {
   const excessiveDatabaseTimeout = check(["--require-cosyvoice"]);
   assert.notEqual(excessiveDatabaseTimeout.status, 0, "control-plane database timeout must remain bounded for health checks");
   assert.match(excessiveDatabaseTimeout.stderr, /DATABASE_QUERY_TIMEOUT_MS/, "database timeout rejection must identify the readiness gate");
+  await writeFile(files.control, control);
+
+  await writeFile(files.control, control.replace("RELEASE_REVISION=a1b2c3d4e5f6a7b8c9d0", "RELEASE_REVISION=not-a-git-revision"));
+  const invalidReleaseRevision = check(["--require-cosyvoice"]);
+  assert.notEqual(invalidReleaseRevision.status, 0, "production deployments must expose an immutable control-plane source revision");
+  assert.match(invalidReleaseRevision.stderr, /RELEASE_REVISION/, "release revision rejection must identify the traceability gate");
   await writeFile(files.control, control);
 
   await writeFile(files.control, control.replace("OUTBOX_MAX_ATTEMPTS=6", "OUTBOX_MAX_ATTEMPTS=4"));

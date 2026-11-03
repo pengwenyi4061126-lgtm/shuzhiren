@@ -86,6 +86,7 @@ try {
       ...process.env,
       DATABASE_URL: databaseUrl,
       CONTROL_PLANE_DEMO_MODE: "false",
+      RELEASE_REVISION: "abc1234",
       RUNTIME_GATEWAY_URL: mock.baseUrl,
       RUNTIME_SHARED_TOKEN: gatewayToken,
       RUNTIME_GATEWAY_DEMO_MODE: "false",
@@ -107,6 +108,7 @@ try {
   const consoleHealthBody = await consoleHealth.json();
   assert.equal(consoleHealthBody.dependencies.controlPlane, "ok", "the control-plane health endpoint must verify PostgreSQL instead of returning a static success response");
   assert.equal(consoleHealthBody.dependencies.authentication, "oidc", "the control-plane health endpoint must verify production OIDC configuration");
+  assert.equal(consoleHealthBody.releaseRevision, "abc1234", "the control-plane health endpoint must expose the immutable deployed source revision");
   const anonymousPage = await fetch(`http://127.0.0.1:${consolePort}/`);
   assert.equal(anonymousPage.status, 401, "production console pages must reject anonymous requests before server rendering");
   const authenticatedPage = await fetch(`http://127.0.0.1:${consolePort}/`, { headers: { authorization: `Bearer ${token}` } });

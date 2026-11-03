@@ -5,6 +5,7 @@ export type ControlPlaneConfig = {
 
 export type ControlPlaneReadiness = {
   authentication: "demo" | "oidc";
+  releaseRevision: string | null;
 };
 
 export function controlPlaneConfig(): ControlPlaneConfig {
@@ -21,7 +22,7 @@ export function controlPlaneConfig(): ControlPlaneConfig {
 
 export function controlPlaneReadiness(): ControlPlaneReadiness {
   const config = controlPlaneConfig();
-  if (process.env.NODE_ENV !== "production" || config.demoMode) return { authentication: "demo" };
+  if (process.env.NODE_ENV !== "production" || config.demoMode) return { authentication: "demo", releaseRevision: null };
 
   for (const [name, value] of [["OIDC_ISSUER_URL", process.env.OIDC_ISSUER_URL], ["OIDC_JWKS_URL", process.env.OIDC_JWKS_URL]] as const) {
     if (!value) throw new Error(`${name} is required in production`);
@@ -30,5 +31,7 @@ export function controlPlaneReadiness(): ControlPlaneReadiness {
     if (url.username || url.password || (url.protocol !== "https:" && !loopbackHttp)) throw new Error(`${name} must use HTTPS outside a loopback integration environment`);
   }
   if (!process.env.OIDC_AUDIENCE?.trim()) throw new Error("OIDC_AUDIENCE is required in production");
-  return { authentication: "oidc" };
+  const releaseRevision = process.env.RELEASE_REVISION?.trim() ?? "";
+  if (!/^[0-9a-f]{7,40}$/i.test(releaseRevision)) throw new Error("RELEASE_REVISION must be a 7 to 40 character Git commit in production");
+  return { authentication: "oidc", releaseRevision };
 }
