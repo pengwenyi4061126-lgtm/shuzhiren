@@ -96,6 +96,9 @@ const gateway = env({
   COSYVOICE_REQUIRED: "true",
   COSYVOICE_SAMPLE_RATE: "24000",
   COSYVOICE_MODEL_DIR: "/opt/CosyVoice/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B-2512",
+  RUNTIME_COMMAND_JOURNAL_PATH: "/var/lib/shuzhiren-runtime/commands.sqlite3",
+  RUNTIME_COMMAND_JOURNAL_REQUIRED: "true",
+  RUNTIME_GATEWAY_STATE_PATH: "/srv/shuzhiren/runtime-gateway-state",
   STREAM_RTMP_URL: "rtmp://ingest.internal/live",
   STREAM_KEY: "fixture-stream-key-not-a-placeholder",
   PROGRAM_AUDIOTYPE: "0",
@@ -187,6 +190,24 @@ try {
   const missingCosyVoice = check(["--require-cosyvoice"]);
   assert.notEqual(missingCosyVoice.status, 0, "a realtime speech deployment must require CosyVoice health");
   assert.match(missingCosyVoice.stderr, /COSYVOICE_REQUIRED/, "missing CosyVoice requirement must identify the gateway gate");
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.gateway, gateway.replace("RUNTIME_COMMAND_JOURNAL_REQUIRED=true", "RUNTIME_COMMAND_JOURNAL_REQUIRED=false"));
+  const optionalCommandJournal = check(["--require-cosyvoice"]);
+  assert.notEqual(optionalCommandJournal.status, 0, "production Gateway must require durable command journal storage");
+  assert.match(optionalCommandJournal.stderr, /RUNTIME_COMMAND_JOURNAL_REQUIRED/, "command journal rejection must identify the production reliability gate");
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.gateway, gateway.replace("RUNTIME_COMMAND_JOURNAL_PATH=/var/lib/shuzhiren-runtime/commands.sqlite3", "RUNTIME_COMMAND_JOURNAL_PATH=relative/commands.sqlite3"));
+  const relativeCommandJournal = check(["--require-cosyvoice"]);
+  assert.notEqual(relativeCommandJournal.status, 0, "production Gateway command journal path must be absolute");
+  assert.match(relativeCommandJournal.stderr, /RUNTIME_COMMAND_JOURNAL_PATH/, "relative command journal path rejection must identify the persistence gate");
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.gateway, gateway.replace("RUNTIME_GATEWAY_STATE_PATH=/srv/shuzhiren/runtime-gateway-state", "RUNTIME_GATEWAY_STATE_PATH=relative/runtime-gateway-state"));
+  const relativeGatewayState = check(["--require-cosyvoice"]);
+  assert.notEqual(relativeGatewayState.status, 0, "production Gateway state path must be an absolute managed host path");
+  assert.match(relativeGatewayState.stderr, /RUNTIME_GATEWAY_STATE_PATH/, "relative Gateway state path rejection must identify the host persistence gate");
   await writeFile(files.gateway, gateway);
 
   await writeFile(files.runtime, runtime([{ ...validProbeTarget[0], expectedHeight: undefined }]));

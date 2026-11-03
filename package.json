@@ -38,6 +38,7 @@
     "entitlement:check": "node scripts/check-entitlement-concurrency.mjs",
     "runtime:media:check": "node scripts/check-bound-runtime-media.mjs",
     "runtime:voice:check": "node scripts/check-frozen-runtime-voice.mjs",
+    "runtime:journal:check": "node scripts/check-runtime-gateway-journal.mjs",
     "runtime:acceptance:verify": "node scripts/verify-4090-acceptance.mjs",
     "runtime:acceptance:test": "node scripts/test-4090-acceptance.mjs",
     "verify:local": "node scripts/verify-local.mjs",

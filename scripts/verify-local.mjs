@@ -23,6 +23,7 @@ const checks = [
   ["run", "entitlement:check"],
   ["run", "runtime:media:check"],
   ["run", "runtime:voice:check"],
+  ["run", "runtime:journal:check"],
   ["run", "runtime:acceptance:test"],
   ["run", "observer:runtime:test"],
   ["run", "observer:targets:test"],

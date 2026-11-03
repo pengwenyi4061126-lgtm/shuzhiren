@@ -12,6 +12,8 @@ services:
       COSYVOICE_REQUIRED: ${COSYVOICE_REQUIRED:-false}
       MEDIA_COMMAND_CACHE_TTL_SECONDS: ${MEDIA_COMMAND_CACHE_TTL_SECONDS:-3600}
       MEDIA_COMMAND_CACHE_MAX_ENTRIES: ${MEDIA_COMMAND_CACHE_MAX_ENTRIES:-2048}
+      RUNTIME_COMMAND_JOURNAL_PATH: /var/lib/shuzhiren-runtime/commands.sqlite3
+      RUNTIME_COMMAND_JOURNAL_REQUIRED: "true"
       PROGRAM_AUDIOTYPE: ${PROGRAM_AUDIOTYPE:-0}
       FALLBACK_AUDIOTYPE: ${FALLBACK_AUDIOTYPE:-1}
       HUMAN_HANDOFF_AUDIOTYPE: ${HUMAN_HANDOFF_AUDIOTYPE:-2}
@@ -19,6 +21,8 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8090"
+    volumes:
+      - ${RUNTIME_GATEWAY_STATE_PATH:?set-in-runtime-gateway-env}:/var/lib/shuzhiren-runtime
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz', timeout=3).read()"]
       interval: 10s

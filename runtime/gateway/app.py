@@ -1,8 +1,12 @@
 import asyncio
+import hashlib
+import json
 import os
 import re
+import sqlite3
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -20,6 +24,8 @@ REQUEST_TIMEOUT_SECONDS = float(os.environ.get("RUNTIME_REQUEST_TIMEOUT_SECONDS"
 COSYVOICE_REQUIRED = os.environ.get("COSYVOICE_REQUIRED", "false").lower() == "true"
 MEDIA_COMMAND_CACHE_TTL_SECONDS = float(os.environ.get("MEDIA_COMMAND_CACHE_TTL_SECONDS", "3600"))
 MEDIA_COMMAND_CACHE_MAX_ENTRIES = int(os.environ.get("MEDIA_COMMAND_CACHE_MAX_ENTRIES", "2048"))
+RUNTIME_COMMAND_JOURNAL_PATH = os.environ.get("RUNTIME_COMMAND_JOURNAL_PATH", "")
+RUNTIME_COMMAND_JOURNAL_REQUIRED = os.environ.get("RUNTIME_COMMAND_JOURNAL_REQUIRED", "false").lower() == "true"
 runtime_command_cache_lock = asyncio.Lock()
 runtime_command_cache: OrderedDict[str, dict] = OrderedDict()
 runtime_command_locks: dict[str, dict] = {}
@@ -93,6 +99,63 @@ def prune_runtime_command_cache(now: float) -> None:
             break
         runtime_command_cache.pop(oldest_id)
 
+def command_identity_hash(identity: dict) -> str:
+    canonical = json.dumps(identity, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+def open_runtime_command_journal() -> sqlite3.Connection | None:
+    if not RUNTIME_COMMAND_JOURNAL_PATH:
+        return None
+    path = Path(RUNTIME_COMMAND_JOURNAL_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=5)
+    connection.execute("pragma journal_mode = wal")
+    connection.execute("pragma synchronous = full")
+    connection.execute(
+        """create table if not exists runtime_command_journal (
+            command_id text primary key,
+            kind text not null,
+            identity_sha256 text not null,
+            state text not null check (state in ('reserved', 'completed')),
+            response_json text,
+            created_at real not null,
+            completed_at real
+        )"""
+    )
+    return connection
+
+def command_journal_status() -> dict:
+    if not RUNTIME_COMMAND_JOURNAL_PATH:
+        return {"available": False, "required": RUNTIME_COMMAND_JOURNAL_REQUIRED, "durable": False}
+    try:
+        connection = open_runtime_command_journal()
+        if connection is not None:
+            connection.close()
+    except (OSError, sqlite3.Error):
+        return {"available": False, "required": RUNTIME_COMMAND_JOURNAL_REQUIRED, "durable": False}
+    return {"available": True, "required": RUNTIME_COMMAND_JOURNAL_REQUIRED, "durable": True}
+
+def require_runtime_command_journal() -> sqlite3.Connection | None:
+    try:
+        connection = open_runtime_command_journal()
+    except (OSError, sqlite3.Error) as error:
+        if RUNTIME_COMMAND_JOURNAL_REQUIRED:
+            raise HTTPException(status_code=503, detail="Runtime command journal is unavailable") from error
+        return None
+    if connection is None and RUNTIME_COMMAND_JOURNAL_REQUIRED:
+        raise HTTPException(status_code=503, detail="Runtime command journal is not configured")
+    return connection
+
+def prune_runtime_command_journal(connection: sqlite3.Connection, now: float) -> None:
+    expiry = now - MEDIA_COMMAND_CACHE_TTL_SECONDS
+    connection.execute("delete from runtime_command_journal where state = 'completed' and completed_at < ?", (expiry,))
+    overflow = connection.execute(
+        "select command_id from runtime_command_journal where state = 'completed' order by completed_at desc limit -1 offset ?",
+        (MEDIA_COMMAND_CACHE_MAX_ENTRIES,),
+    ).fetchall()
+    if overflow:
+        connection.executemany("delete from runtime_command_journal where command_id = ?", overflow)
+
 async def acquire_runtime_command_lock(command_id: str) -> asyncio.Lock:
     async with runtime_command_cache_lock:
         state = runtime_command_locks.get(command_id)
@@ -115,20 +178,86 @@ async def release_runtime_command_lock(command_id: str, lock: asyncio.Lock) -> N
             runtime_command_locks.pop(command_id, None)
 
 async def cached_runtime_command(command_id: str, kind: str, identity: dict) -> dict | None:
+    identity_sha256 = command_identity_hash(identity)
     async with runtime_command_cache_lock:
         now = time.monotonic()
         prune_runtime_command_cache(now)
         cached = runtime_command_cache.get(command_id)
-        if not cached:
+        if cached:
+            if cached["kind"] != kind or cached["identity_sha256"] != identity_sha256:
+                raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
+            return {**cached["response"], "duplicate": True}
+        connection = require_runtime_command_journal()
+        if connection is None:
             return None
-        if cached["kind"] != kind or cached["identity"] != identity:
-            raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
-        return {**cached["response"], "duplicate": True}
+        try:
+            row = connection.execute(
+                "select kind, identity_sha256, state, response_json from runtime_command_journal where command_id = ?",
+                (command_id,),
+            ).fetchone()
+            if not row:
+                return None
+            stored_kind, stored_identity, state, response_json = row
+            if stored_kind != kind or stored_identity != identity_sha256:
+                raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
+            if state != "completed" or not response_json:
+                raise HTTPException(status_code=409, detail="Runtime command outcome is uncertain; verify the media session before issuing a new command")
+            response = json.loads(response_json)
+            runtime_command_cache[command_id] = {"kind": kind, "identity_sha256": identity_sha256, "response": response, "completed_at": now}
+            prune_runtime_command_cache(now)
+            return {**response, "duplicate": True}
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=503, detail="Runtime command journal is unreadable") from error
+        finally:
+            connection.close()
+
+async def reserve_runtime_command(command_id: str, kind: str, identity: dict) -> None:
+    identity_sha256 = command_identity_hash(identity)
+    async with runtime_command_cache_lock:
+        connection = require_runtime_command_journal()
+        if connection is None:
+            return
+        try:
+            now = time.time()
+            existing = connection.execute(
+                "select kind, identity_sha256, state from runtime_command_journal where command_id = ?",
+                (command_id,),
+            ).fetchone()
+            if existing:
+                stored_kind, stored_identity, state = existing
+                if stored_kind != kind or stored_identity != identity_sha256:
+                    raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
+                if state != "completed":
+                    raise HTTPException(status_code=409, detail="Runtime command outcome is uncertain; verify the media session before issuing a new command")
+                return
+            connection.execute(
+                "insert into runtime_command_journal (command_id, kind, identity_sha256, state, created_at) values (?, ?, ?, 'reserved', ?)",
+                (command_id, kind, identity_sha256, now),
+            )
+            connection.commit()
+        finally:
+            connection.close()
 
 async def cache_runtime_command(command_id: str, kind: str, identity: dict, response: dict) -> None:
+    identity_sha256 = command_identity_hash(identity)
     async with runtime_command_cache_lock:
-        runtime_command_cache[command_id] = {"kind": kind, "identity": identity, "response": response, "completed_at": time.monotonic()}
-        prune_runtime_command_cache(time.monotonic())
+        connection = require_runtime_command_journal()
+        if connection is not None:
+            try:
+                now = time.time()
+                completed = connection.execute(
+                    "update runtime_command_journal set state = 'completed', response_json = ?, completed_at = ? where command_id = ? and kind = ? and identity_sha256 = ? and state = 'reserved'",
+                    (json.dumps(response, ensure_ascii=False, separators=(",", ":"), sort_keys=True), now, command_id, kind, identity_sha256),
+                )
+                if completed.rowcount != 1:
+                    raise HTTPException(status_code=409, detail="Runtime command journal reservation is no longer valid")
+                prune_runtime_command_journal(connection, now)
+                connection.commit()
+            finally:
+                connection.close()
+        cache_now = time.monotonic()
+        runtime_command_cache[command_id] = {"kind": kind, "identity_sha256": identity_sha256, "response": response, "completed_at": cache_now}
+        prune_runtime_command_cache(cache_now)
 
 def gpu_observation() -> dict:
     try:
@@ -172,7 +301,8 @@ async def healthz() -> JSONResponse:
         service_health(LIVE_TALKING_URL, "/api/admin/sessions", expected_code=0),
         service_health(COSYVOICE_URL, "/openapi.json"),
     )
-    status = "ok" if livetalking["available"] and (not COSYVOICE_REQUIRED or cosyvoice["available"]) else "degraded"
+    command_journal = command_journal_status()
+    status = "ok" if livetalking["available"] and (not COSYVOICE_REQUIRED or cosyvoice["available"]) and (not RUNTIME_COMMAND_JOURNAL_REQUIRED or command_journal["available"]) else "degraded"
     return JSONResponse(
         status_code=200 if status == "ok" else 503,
         content={
@@ -180,6 +310,7 @@ async def healthz() -> JSONResponse:
             "dependencies": {
                 "livetalking": livetalking,
                 "cosyvoice": {**cosyvoice, "required": COSYVOICE_REQUIRED},
+                "command_journal": command_journal,
             },
             "media_actions": ["start_program", "switch_to_fallback", "switch_to_human", "stop_program"],
         },
@@ -230,6 +361,7 @@ async def speak(request: SpeakRequest, authorization: str | None = Header(defaul
         cached = await cached_runtime_command(request.command_id, "speech", identity)
         if cached:
             return cached
+        await reserve_runtime_command(request.command_id, "speech", identity)
         if request.provider == "cosyvoice":
             if not request.voice:
                 raise HTTPException(status_code=400, detail="CosyVoice speaker id is required")
@@ -255,6 +387,7 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
         cached = await cached_runtime_command(request.command_id, "media", identity)
         if cached:
             return cached
+        await reserve_runtime_command(request.command_id, "media", identity)
         downstream_actions: list[str] = []
         if request.action == "stop_program":
             await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
