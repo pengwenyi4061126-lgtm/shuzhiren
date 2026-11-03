@@ -89,14 +89,25 @@ for (const key of ["STREAM_FPS", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_T
 equal(control, "控制面", "NODE_ENV", "production");
 equal(control, "控制面", "CONTROL_PLANE_DEMO_MODE", "false");
 
+const tenantServiceTokenMaps = new Map();
 for (const key of ["RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS"]) {
   const value = control.get(key);
   try {
     const tokens = value ? JSON.parse(value) : null;
     if (!tokens || typeof tokens !== "object" || Array.isArray(tokens) || !Object.entries(tokens).every(([tenant, token]) => tenant.length > 0 && typeof token === "string" && token.length >= 16)) throw new Error("invalid");
+    tenantServiceTokenMaps.set(key, tokens);
   } catch {
     const message = `控制面 的 ${key} 必须是每租户独立服务密钥的 JSON 对象`;
     if (allowPlaceholders) warnings.push(message); else errors.push(message);
+  }
+}
+const tokenOwners = new Map();
+for (const [service, tokens] of tenantServiceTokenMaps) {
+  for (const [tenantId, token] of Object.entries(tokens)) {
+    const owner = `${service}:${tenantId}`;
+    const previousOwner = tokenOwners.get(token);
+    if (previousOwner && previousOwner !== owner) errors.push("控制面的私网服务 token 不得跨服务或跨租户复用");
+    else tokenOwners.set(token, owner);
   }
 }
 try {

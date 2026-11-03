@@ -147,6 +147,12 @@ try {
   assert.match(mismatchedOutboxAttempts.stderr, /OUTBOX_MAX_ATTEMPTS/, "retry-limit mismatch must identify the shared outbox gate");
   await writeFile(files.control, control);
 
+  await writeFile(files.control, control.replace("commerce-ingest-token-at-least-32-bytes", telemetryToken));
+  const reusedServiceToken = check(["--require-cosyvoice"]);
+  assert.notEqual(reusedServiceToken.status, 0, "private service tokens must not be reused across ingestion boundaries");
+  assert.match(reusedServiceToken.stderr, /不得跨服务或跨租户复用/, "service-token reuse must identify the least-privilege deployment gate");
+  await writeFile(files.control, control);
+
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
   const demoGateway = check(["--require-cosyvoice"]);
   assert.notEqual(demoGateway.status, 0, "production deployment must reject runtime gateway demo mode");
