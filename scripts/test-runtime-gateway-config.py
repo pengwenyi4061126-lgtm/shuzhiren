@@ -1,4 +1,5 @@
 import asyncio
+import math
 import pathlib
 import sys
 import tempfile
@@ -18,6 +19,19 @@ async def reject(token: str) -> None:
     except RuntimeError as error:
         assert "RUNTIME_SHARED_TOKEN" in str(error)
 
+async def reject_configuration(name: str, value: object, expected: str) -> None:
+    original = getattr(gateway, name)
+    gateway.RUNTIME_TOKEN = "g" * 32
+    gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = False
+    setattr(gateway, name, value)
+    try:
+        async with gateway.lifespan(gateway.app):
+            raise AssertionError(f"Runtime Gateway must reject invalid {name} before startup")
+    except RuntimeError as error:
+        assert expected in str(error), str(error)
+    finally:
+        setattr(gateway, name, original)
+
 
 async def main() -> None:
     await reject("")
@@ -36,6 +50,13 @@ async def main() -> None:
     else:
         raise AssertionError("Runtime Gateway must reject a mismatched shared token")
 
+    await reject_configuration("COSYVOICE_SAMPLE_RATE", 7_999, "COSYVOICE_SAMPLE_RATE")
+    await reject_configuration("REQUEST_TIMEOUT_SECONDS", math.inf, "RUNTIME_REQUEST_TIMEOUT_SECONDS")
+    await reject_configuration("MEDIA_COMMAND_CACHE_TTL_SECONDS", 0, "MEDIA_COMMAND_CACHE_TTL_SECONDS")
+    await reject_configuration("MEDIA_COMMAND_CACHE_MAX_ENTRIES", 0, "MEDIA_COMMAND_CACHE_MAX_ENTRIES")
+    await reject_configuration("LIVE_TALKING_URL", "ftp://untrusted.example", "LIVETALKING_BASE_URL")
+    await reject_configuration("FALLBACK_AUDIOTYPE", gateway.PROGRAM_AUDIOTYPE, "must be distinct")
+
     with tempfile.TemporaryDirectory() as directory:
         blocked_parent = pathlib.Path(directory) / "not-a-directory"
         blocked_parent.write_text("blocked", encoding="utf-8")
@@ -50,4 +71,4 @@ async def main() -> None:
 
 asyncio.run(main())
 
-print("PASS  Runtime Gateway rejects weak shared tokens before startup")
+print("PASS  Runtime Gateway rejects unsafe startup configuration")

@@ -3,6 +3,7 @@ import hmac
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -11,6 +12,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
@@ -59,8 +61,8 @@ class MediaRequest(BaseModel):
     action: Literal["start_program", "switch_to_fallback", "switch_to_human", "stop_program"]
 
 PROGRAM_AUDIOTYPE = int(os.environ.get("PROGRAM_AUDIOTYPE", "0"))
-FALLBACK_AUDIOTYPE = int(os.environ.get("FALLBACK_AUDIOTYPE", "0"))
-HUMAN_HANDOFF_AUDIOTYPE = int(os.environ.get("HUMAN_HANDOFF_AUDIOTYPE", "0"))
+FALLBACK_AUDIOTYPE = int(os.environ.get("FALLBACK_AUDIOTYPE", "1"))
+HUMAN_HANDOFF_AUDIOTYPE = int(os.environ.get("HUMAN_HANDOFF_AUDIOTYPE", "2"))
 
 def authorize(authorization: str | None) -> None:
     if not RUNTIME_TOKEN:
@@ -156,8 +158,36 @@ def command_journal_status() -> dict:
 def validate_runtime_configuration() -> None:
     if len(RUNTIME_TOKEN) < 32 or any(character.isspace() for character in RUNTIME_TOKEN):
         raise RuntimeError("RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters")
+    validate_service_url("LIVETALKING_BASE_URL", LIVE_TALKING_URL)
+    validate_service_url("COSYVOICE_BASE_URL", COSYVOICE_URL)
+    validate_integer_range("COSYVOICE_SAMPLE_RATE", COSYVOICE_SAMPLE_RATE, 8_000, 192_000)
+    validate_number_range("RUNTIME_REQUEST_TIMEOUT_SECONDS", REQUEST_TIMEOUT_SECONDS, 0.1, 120)
+    validate_number_range("MEDIA_COMMAND_CACHE_TTL_SECONDS", MEDIA_COMMAND_CACHE_TTL_SECONDS, 60, 604_800)
+    validate_integer_range("MEDIA_COMMAND_CACHE_MAX_ENTRIES", MEDIA_COMMAND_CACHE_MAX_ENTRIES, 1, 100_000)
+    action_slots = {
+        "PROGRAM_AUDIOTYPE": PROGRAM_AUDIOTYPE,
+        "FALLBACK_AUDIOTYPE": FALLBACK_AUDIOTYPE,
+        "HUMAN_HANDOFF_AUDIOTYPE": HUMAN_HANDOFF_AUDIOTYPE,
+    }
+    for name, value in action_slots.items():
+        validate_integer_range(name, value, 0, 255)
+    if len(set(action_slots.values())) != len(action_slots):
+        raise RuntimeError("PROGRAM_AUDIOTYPE, FALLBACK_AUDIOTYPE, and HUMAN_HANDOFF_AUDIOTYPE must be distinct")
     if RUNTIME_COMMAND_JOURNAL_REQUIRED and not command_journal_status()["available"]:
         raise RuntimeError("Runtime command journal is unavailable")
+
+def validate_service_url(name: str, value: str) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise RuntimeError(f"{name} must be an HTTP(S) base URL without embedded credentials")
+
+def validate_number_range(name: str, value: float, minimum: float, maximum: float) -> None:
+    if not math.isfinite(value) or value < minimum or value > maximum:
+        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+
+def validate_integer_range(name: str, value: int, minimum: int, maximum: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum or value > maximum:
+        raise RuntimeError(f"{name} must be an integer between {minimum} and {maximum}")
 
 def require_runtime_command_journal() -> sqlite3.Connection | None:
     try:
