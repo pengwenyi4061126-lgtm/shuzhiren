@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Shuzhiren PostgreSQL archive backup every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=shuzhiren-postgres-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -14,14 +14,18 @@ pass() { printf 'PASS   %s\n' "$*"; }
 [[ -n "$backup_file" ]] || fail "BACKUP_FILE is required"
 [[ "$backup_file" = /* ]] || fail "BACKUP_FILE must be an absolute path"
 [[ -r "$backup_file" ]] || fail "BACKUP_FILE is not readable: $backup_file"
-[[ -f "$compose_file" ]] || fail "COMPOSE_FILE does not exist: $compose_file"
-command -v docker >/dev/null || fail "docker is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required"
 
 actual_sha256="$(sha256sum "$backup_file" | awk '{print $1}')"
 if [[ -n "$expected_sha256" && "$actual_sha256" != "$expected_sha256" ]]; then
   fail "SHA-256 does not match EXPECTED_SHA256"
 fi
-docker compose -f "$compose_file" exec -T "$postgres_service" pg_restore --list < "$backup_file" >/dev/null
+if command -v pg_restore >/dev/null; then
+  pg_restore --list "$backup_file" >/dev/null
+else
+  [[ -f "$compose_file" ]] || fail "COMPOSE_FILE does not exist: $compose_file"
+  command -v docker >/dev/null || fail "pg_restore or docker is required"
+  docker compose -f "$compose_file" exec -T "$postgres_service" pg_restore --list < "$backup_file" >/dev/null
+fi
 pass "PostgreSQL archive is readable: $backup_file"
 pass "SHA-256: $actual_sha256"

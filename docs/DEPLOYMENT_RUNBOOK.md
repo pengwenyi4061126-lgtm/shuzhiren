@@ -68,11 +68,11 @@ REQUIRED_GPU_NAME='RTX 4090D' MIN_FREE_GIB=250 bash scripts/check-runtime-host.s
 - `RUNTIME_GATEWAY_STATE_PATH` 也必须进入加密备份与隔离恢复范围。该目录保存 Gateway 已完成命令的有界哈希和响应摘要，不保存播报文本；恢复演练必须在同一 `commandId` 重发已完成命令，确认 Gateway 返回重复结果且不再次调用 LiveTalking 或 CosyVoice。遇到未完成的预留记录时，Gateway 会 fail-closed；值班人员应先核验实际媒体会话，而不是删除日志后盲目重试。
 - 以下脚本只生成或验证 PostgreSQL 自定义格式归档，绝不执行恢复、覆盖数据库、自动轮转或删除任何历史备份。
 
-创建并验证一次备份：
+创建并验证一次备份。生产环境优先使用安装了 PostgreSQL client 的备份账号和私网 `DATABASE_URL`；脚本不会把连接串写入清单。未提供 `DATABASE_URL` 时才兼容本地开发 Compose 的 `postgres` 服务。
 
 ```bash
-BACKUP_DIR=/srv/shuzhiren/backups/postgres \
-POSTGRES_DB=shuzhiren POSTGRES_USER=shuzhiren \
+DATABASE_URL='postgresql://shuzhiren_backup:***@private-postgres:5432/shuzhiren' \
+POSTGRES_BACKUP_DIR=/srv/shuzhiren/backups/postgres \
 bash scripts/backup-postgres.sh
 ```
 
@@ -103,6 +103,32 @@ bash scripts/verify-runtime-gateway-state-backup.sh
 恢复只能在隔离的空数据库演练环境中由值班负责人执行：先创建独立数据库，人工检查 `pg_restore --list`，再以明确的目标数据库名执行 `pg_restore`。Gateway 快照同样只能在隔离 Gateway 实例中恢复，且必须保持只读的原始备份；不要为方便而提供一键覆盖生产库、命令日志或运行中挂载目录的脚本。每月完成一次恢复演练，并将归档校验值、演练目标、开始/结束时间、RPO、RTO 和结果写入发布证据。
 
 MinIO 对象、模型权重和录屏不由上述数据库脚本覆盖。上线前必须在对象存储层启用版本控制，并配置已验证的站外复制；在此之前不得把对象恢复能力表述为已完成。
+
+### 受控定时备份
+
+仓库提供了两个每 15 分钟触发的 systemd 模板，分别生成 PostgreSQL archive 和 Gateway 命令日志 SQLite 一致性快照。它们只创建和校验本机备份；站外不可变复制仍必须由已经批准的存储/备份系统完成。先安装 PostgreSQL client，并创建不具备登录 shell 的备份账号与受限目录：
+
+```bash
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin shuzhiren-backup
+sudo install -d -m 0700 -o shuzhiren-backup -g shuzhiren-backup /srv/shuzhiren/backups/postgres
+sudo install -d -m 0700 -o shuzhiren-backup -g shuzhiren-backup /srv/shuzhiren/backups/runtime-gateway
+sudo install -d -m 0750 -o 10001 -g shuzhiren-backup /srv/shuzhiren/runtime-gateway-state
+sudo install -m 0600 -o root -g root config/backup.example.env /etc/shuzhiren/backup.env
+```
+
+将 `/etc/shuzhiren/backup.env` 的 `DATABASE_URL`、备份目录和 Gateway 状态目录替换为真实私网值；不要将该文件放入 Git、镜像或容器环境。然后安装并启用计时器：
+
+```bash
+sudo install -m 0644 infra/systemd/shuzhiren-postgres-backup.service /etc/systemd/system/
+sudo install -m 0644 infra/systemd/shuzhiren-postgres-backup.timer /etc/systemd/system/
+sudo install -m 0644 infra/systemd/shuzhiren-runtime-gateway-backup.service /etc/systemd/system/
+sudo install -m 0644 infra/systemd/shuzhiren-runtime-gateway-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now shuzhiren-postgres-backup.timer shuzhiren-runtime-gateway-backup.timer
+sudo systemctl list-timers 'shuzhiren-*backup*'
+```
+
+每次修改备份配置后先手动执行 `sudo systemctl start shuzhiren-postgres-backup.service` 和 `sudo systemctl start shuzhiren-runtime-gateway-backup.service`，检查 `journalctl -u` 的成功记录及每个备份旁的 manifest，再允许计时器承担 RPO。定时任务失败、延迟或站外复制失败必须进入值班告警，不能由下一次定时成功静默掩盖。
 
 示例结构检查：
 

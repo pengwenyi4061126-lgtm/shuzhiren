@@ -33,11 +33,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: bash -n scripts/check-runtime-host.sh
+      - run: bash -n scripts/backup-postgres.sh
       - run: bash -n scripts/backup-runtime-gateway-state.sh
+      - run: bash -n scripts/verify-postgres-backup.sh
       - run: bash -n scripts/verify-runtime-gateway-state-backup.sh
       - run: bash scripts/check-runtime-host.sh --help
       - run: npm run deploy:check -- --allow-placeholders
       - run: npm run deploy:check:test
+      - run: npm run backup:automation:check
       - run: npm run control-plane:compose:check
       - run: docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config
         env:

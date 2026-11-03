@@ -4,7 +4,7 @@ set -euo pipefail
 # Creates a consistent SQLite snapshot of the Gateway command journal. It never
 # restores, deletes, rotates, uploads, or overwrites backups.
 state_path="${RUNTIME_GATEWAY_STATE_PATH:-}"
-backup_dir="${BACKUP_DIR:-}"
+backup_dir="${BACKUP_DIR:-${GATEWAY_BACKUP_DIR:-}}"
 python_bin="${PYTHON_BIN:-python3}"
 
 fail() { printf 'ERROR  %s\n' "$*" >&2; exit 1; }
@@ -13,7 +13,7 @@ pass() { printf 'PASS   %s\n' "$*"; }
 [[ -n "$state_path" ]] || fail "RUNTIME_GATEWAY_STATE_PATH is required"
 [[ "$state_path" = /* ]] || fail "RUNTIME_GATEWAY_STATE_PATH must be an absolute path"
 [[ -d "$state_path" ]] || fail "RUNTIME_GATEWAY_STATE_PATH does not exist: $state_path"
-[[ -n "$backup_dir" ]] || fail "BACKUP_DIR is required and must be an absolute path outside the repository"
+[[ -n "$backup_dir" ]] || fail "BACKUP_DIR or GATEWAY_BACKUP_DIR is required and must be an absolute path outside the repository"
 [[ "$backup_dir" = /* ]] || fail "BACKUP_DIR must be an absolute path"
 command -v "$python_bin" >/dev/null || fail "PYTHON_BIN is unavailable: $python_bin"
 command -v sha256sum >/dev/null || fail "sha256sum is required"

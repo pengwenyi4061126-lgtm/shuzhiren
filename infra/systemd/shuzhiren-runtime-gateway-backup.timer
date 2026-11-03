@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Shuzhiren Runtime Gateway journal snapshot every 15 minutes
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=shuzhiren-runtime-gateway-backup.service
+
+[Install]
+WantedBy=timers.target
