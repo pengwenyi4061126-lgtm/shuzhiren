@@ -78,19 +78,14 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
     if (path === "/api/v1/policy/profiles") return operatorRoles;
     if (/^\/api\/v1\/policy\/profiles\/[^/]+\/approve$/.test(path)) return reviewerRoles;
     if (/^\/api\/v1\/policy\/profiles\/[^/]+\/revoke$/.test(path)) return reviewerRoles;
-    if (/^\/api\/v1\/live-runs\/[^/]+\/lifecycle$/.test(path)) return lifecycleRoles(request);
+    // The route applies action-specific roles after bounded JSON parsing. Keep
+    // middleware body-free so an oversized lifecycle request cannot bypass the
+    // shared request-size boundary merely to select a role.
+    if (/^\/api\/v1\/live-runs\/[^/]+\/lifecycle$/.test(path)) return allRoles;
   }
 
   if (method === "PUT" && /^\/api\/v1\/entitlements\/[^/]+$/.test(path)) return ["admin"];
   if (method === "PUT" && /^\/api\/v1\/live-runs\/[^/]+\/runtime-session$/.test(path)) return operatorRoles;
-  return undefined;
-}
-
-async function lifecycleRoles(request: NextRequest): Promise<Role[] | undefined> {
-  const body: unknown = await request.clone().json().catch(() => null);
-  const action = body && typeof body === "object" ? (body as { action?: unknown }).action : undefined;
-  if (action === "approve") return reviewerRoles;
-  if (action === "submit_review" || action === "begin_preflight" || action === "arm" || action === "disarm" || action === "archive") return operatorRoles;
   return undefined;
 }
 
