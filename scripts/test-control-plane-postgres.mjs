@@ -56,6 +56,14 @@ try {
     .setIssuedAt()
     .setExpirationTime("5m")
     .sign(privateKey);
+  const analystToken = await new SignJWT({ tenant_id: tenantId, role: "analyst", name: "Integration Analyst" })
+    .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
+    .setSubject("integration-analyst")
+    .setIssuer(issuer)
+    .setAudience("shuzhiren-integration")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
   const isolatedToken = await new SignJWT({ tenant_id: isolatedTenantId, role: "admin", name: "Isolated Tenant Admin" })
     .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
     .setSubject("isolated-operator")
@@ -93,6 +101,7 @@ try {
   await waitFor(async () => (await fetch(`http://127.0.0.1:${consolePort}/api/health`)).ok, 20_000, "control plane startup");
 
   const requestHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
+  const analystRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${analystToken}` };
   const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
   const forgedMediaSession = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/media`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ runId: recoverRunId, sessionId: "another_livetalking_session", type: "switch_to_human" }) });
   assert.equal(forgedMediaSession.status, 400, "runtime media commands must reject caller-provided session IDs");
@@ -414,6 +423,8 @@ try {
   const reservationLimitedRun = await seedRun("DEGRADED", "session_entitlement_pending_limit", new Date());
   const blockedByPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${reservationLimitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
   assert.equal(blockedByPendingStart.status, 409, "a pending start acknowledgement must block another activation at the tenant limit");
+  const analystDisarmPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${pendingStartRun.runId}/lifecycle`, { method: "POST", headers: analystRequestHeaders, body: JSON.stringify({ action: "disarm" }) });
+  assert.equal(analystDisarmPendingStart.status, 403, "an analyst must not cancel a pending live activation");
   const disarmPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${pendingStartRun.runId}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "disarm" }) });
   assert.equal(disarmPendingStart.status, 200, "an operator should cancel a pending scheduled activation before it is delivering");
   assert.equal((await disarmPendingStart.json()).data.state, "PREFLIGHT", "disarming must return the run to preflight");
