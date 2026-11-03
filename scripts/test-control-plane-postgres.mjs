@@ -22,6 +22,7 @@ const tenantId = randomUUID();
 const isolatedTenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const telemetryToken = "control-plane-integration-telemetry-token";
+const interactionToken = "control-plane-integration-interaction-token";
 const commerceToken = "control-plane-integration-commerce-token";
 const recordingToken = "control-plane-integration-recording-token";
 const pimToken = "control-plane-integration-pim-token";
@@ -92,6 +93,7 @@ try {
       OIDC_AUDIENCE: "shuzhiren-integration",
       OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
       RUNTIME_TELEMETRY_TENANT_TOKENS: JSON.stringify({ [tenantId]: telemetryToken }),
+      CHANNEL_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: interactionToken }),
       CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken }),
       RUNTIME_RECORDING_TENANT_TOKENS: JSON.stringify({ [tenantId]: recordingToken }),
       PIM_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: pimToken, [isolatedTenantId]: isolatedPimToken })
@@ -436,6 +438,16 @@ try {
   assert.equal((await afterDisarmEntitlements.json()).data.find((item) => item.code === "max_concurrent_live_runs")?.used, 3, "disarming a pending activation must release reserved concurrent capacity");
   assert.equal((await client.query("select count(*) as count from audit_events where resource_id = $1 and event_type = 'live_run.disarm'", [pendingStartRun.runId])).rows[0].count, "1", "disarming must be recorded in the audit chain");
 
+  const interactionHeaders = { "content-type": "application/json", authorization: `Bearer ${interactionToken}` };
+  const channelInteractionBody = { tenantId, runId: recoverRunId, channelConnectionId: recoverRun.channelId, eventId: "interaction-1", question: "这款商品有什么卖点？" };
+  const channelInteraction = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-interactions`, { method: "POST", headers: interactionHeaders, body: JSON.stringify(channelInteractionBody) });
+  assert.equal(channelInteraction.status, 202, "a channel interaction with the tenant service token should be accepted");
+  const duplicateChannelInteraction = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-interactions`, { method: "POST", headers: interactionHeaders, body: JSON.stringify(channelInteractionBody) });
+  assert.equal(duplicateChannelInteraction.status, 200, "identical channel interaction retries must be idempotent");
+  const conflictingChannelInteraction = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-interactions`, { method: "POST", headers: interactionHeaders, body: JSON.stringify({ ...channelInteractionBody, question: "换一条不同问题" }) });
+  assert.equal(conflictingChannelInteraction.status, 409, "a channel interaction event id must not be reused with different content");
+  assert.equal((await client.query("select count(*) as count from audit_events where event_type = 'channel_interaction.received'")).rows[0].count, "1", "a newly ingested channel interaction must be audited once");
+
   const adapterPort = await availablePort();
   const adapterSigningSecret = "control-plane-integration-adapter-signing-secret";
   adapterProcess = spawn(process.execPath, [channelAdapter], {
@@ -446,7 +458,7 @@ try {
       CONTROL_PLANE_URL: `http://127.0.0.1:${consolePort}`,
       CHANNEL_ADAPTER_PORT: String(adapterPort),
       CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE: "1",
-      CHANNEL_ADAPTER_TARGETS: JSON.stringify([{ tenantId, channelConnectionId: recoverRun.channelId, signingSecret: adapterSigningSecret, interactionToken: "control-plane-integration-interaction-token", commerceToken }])
+      CHANNEL_ADAPTER_TARGETS: JSON.stringify([{ tenantId, channelConnectionId: recoverRun.channelId, signingSecret: adapterSigningSecret, interactionToken, commerceToken }])
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
