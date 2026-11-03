@@ -7,7 +7,7 @@
 - 仓库：`git@github.com:pengwenyi4061126-lgtm/shuzhiren.git`
 - 分支：`master`
 - 远端检查点：`a42b6c4 docs: add system migration resume handoff`
-- 本地检查点：`fc43a91 fix: validate channel adapter control plane URL`（当前领先远端 1 个提交，待恢复 SSH 凭据后推送）。
+- 本地检查点：`master` 当前领先远端；恢复 SSH 凭据后用 `git log origin/master..HEAD --oneline` 核对并推送全部本地提交。
 - 工作区状态：干净；没有未提交的代码、配置或密钥文件。
 - 本文件不保存任何平台密钥、SSH 私钥、GPU 租机凭据、OIDC 凭据或数据库口令。
 
@@ -79,4 +79,4 @@ npm run build
 - 渠道适配器出站控制面 URL 的安全约束已在 `fc43a91` 完成并由 `npm run channel-adapter:test`、`npm run deploy:check:test` 验证。
 - 已执行 `npm run verify:local`：42 项本机配置契约、策略、权限、运行时可靠性、observer、输出探针、渠道、告警、类型检查、lint 与生产构建均通过。该命令不连接 PostgreSQL、不启动 Docker，也不能证明 Python Gateway、GPU 或平台验收。
 - 仓库内没有待实现的 `TODO`、`FIXME` 或 stub 代码。`docs/FRAMEWORK_STATUS.md` 中仍标记为进行中的项目均需要真实平台 OAuth/Webhook、ERP/PIM、OIDC 成员同步、结算对账、生产密钥或 4090 试播证据，不能用开发态模拟补全。
-- 恢复受控 SSH 凭据后推送 `fc43a91`；之后按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
+- 恢复受控 SSH 凭据后推送全部本地提交；之后按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
