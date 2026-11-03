@@ -2,6 +2,19 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export const eventTypes = new Set(["view", "product_click", "add_to_cart", "order_paid", "refund"]);
 
+export function parseControlPlaneUrl(value) {
+  if (!value) throw new Error("CONTROL_PLANE_URL is required");
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("CONTROL_PLANE_URL must be an HTTP(S) URL");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("CONTROL_PLANE_URL must be an HTTP(S) URL");
+  if (url.username || url.password) throw new Error("CONTROL_PLANE_URL must not contain embedded credentials");
+  return url;
+}
+
 export function parseTargets(value) {
   const parsed = JSON.parse(value ?? "[]");
   if (!Array.isArray(parsed) || !parsed.length) throw new Error("CHANNEL_ADAPTER_TARGETS must contain at least one target");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { parseNormalizedEvent, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "../apps/channel-adapter/lib.mjs";
+import { parseControlPlaneUrl, parseNormalizedEvent, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "../apps/channel-adapter/lib.mjs";
 
 const secret = "channel-signing-secret-at-least-32-chars";
 const now = 1_700_000_000_000;
@@ -12,6 +12,9 @@ assert.equal(verifyWebhook({ rawBody: raw, timestamp, signature, secret, now }),
 assert.equal(verifyWebhook({ rawBody: raw, timestamp, signature: `${signature}x`, secret, now }), false);
 assert.equal(verifyWebhook({ rawBody: raw, timestamp: String(now - 300_001), signature, secret, now }), false);
 assert.equal(payloadSha256(raw).length, 64);
+assert.equal(parseControlPlaneUrl("https://control-plane.internal").origin, "https://control-plane.internal");
+assert.throws(() => parseControlPlaneUrl("ftp://control-plane.internal"), /HTTP\(S\)/);
+assert.throws(() => parseControlPlaneUrl("https://operator:password@control-plane.internal"), /embedded credentials/);
 
 assert.deepEqual(parseNormalizedEvent(JSON.parse(raw)), { kind: "interaction", runId: "run_1", question: "现在有赠品吗？" });
 assert.deepEqual(parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 9900, orderReference: "order_1" }), { kind: "commerce", runId: "run_1", eventType: "order_paid", occurredAt: undefined, orderReference: "order_1", amountCents: 9900, quantity: 1 });

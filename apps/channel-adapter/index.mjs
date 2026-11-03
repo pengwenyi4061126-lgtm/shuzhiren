@@ -1,9 +1,9 @@
 import http from "node:http";
 import pg from "pg";
-import { parseNormalizedEvent, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
+import { parseControlPlaneUrl, parseNormalizedEvent, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
 
 const port = positiveInt(process.env.CHANNEL_ADAPTER_PORT, 8082, "CHANNEL_ADAPTER_PORT");
-const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
+const controlPlaneUrl = parseControlPlaneUrl(process.env.CONTROL_PLANE_URL);
 const targets = parseTargets(process.env.CHANNEL_ADAPTER_TARGETS);
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for durable webhook replay protection");
@@ -74,7 +74,6 @@ async function reserveReplay(target, eventId, hash) {
 async function markDelivered(target, eventId) { const client = await pool.connect(); try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]); await client.query("update channel_webhook_replays set state = 'delivered', delivered_at = now(), lease_expires_at = null where channel_connection_id = $1 and external_event_id = $2", [target.channelConnectionId, eventId]); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); } }
 async function releaseReplay(target, eventId) { const client = await pool.connect(); try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]); await client.query("update channel_webhook_replays set state = 'pending', lease_expires_at = null where channel_connection_id = $1 and external_event_id = $2 and state = 'delivering'", [target.channelConnectionId, eventId]); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); } }
 function asHeader(value) { return typeof value === "string" ? value : ""; }
-function requiredUrl(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return new URL(value); }
 function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
 function boundedPositiveInt(value, fallback, name, minimum, maximum) { const parsed = positiveInt(value, fallback, name); if (parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); }

@@ -217,6 +217,18 @@ try {
   assert.match(shortAdapterDatabaseTimeout.stderr, /渠道适配器.*DATABASE_QUERY_TIMEOUT_MS/, "channel adapter database timeout rejection must identify the durable replay gate");
   await writeFile(files.channel, channel);
 
+  await writeFile(files.channel, channel.replace("https://control-plane.internal", "https://operator:password@control-plane.internal"));
+  const adapterControlPlaneCredentials = check(["--require-cosyvoice"]);
+  assert.notEqual(adapterControlPlaneCredentials.status, 0, "channel adapter control-plane URL must not embed credentials");
+  assert.match(adapterControlPlaneCredentials.stderr, /CONTROL_PLANE_URL.*嵌入凭据/, "embedded control-plane credentials must identify the channel adapter URL gate");
+  await writeFile(files.channel, channel);
+
+  await writeFile(files.channel, channel.replace("https://control-plane.internal", "ftp://control-plane.internal"));
+  const adapterControlPlaneProtocol = check(["--require-cosyvoice"]);
+  assert.notEqual(adapterControlPlaneProtocol.status, 0, "channel adapter control-plane URL must use HTTP(S)");
+  assert.match(adapterControlPlaneProtocol.stderr, /CONTROL_PLANE_URL.*HTTP\(S\)/, "control-plane protocol rejection must identify the channel adapter URL gate");
+  await writeFile(files.channel, channel);
+
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=20000", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=61000"));
   const excessiveGatewayTimeout = check(["--require-cosyvoice"]);
   assert.notEqual(excessiveGatewayTimeout.status, 0, "runtime Gateway delivery timeout must remain bounded");

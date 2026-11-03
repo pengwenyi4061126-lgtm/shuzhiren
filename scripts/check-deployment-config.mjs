@@ -86,6 +86,18 @@ function privateSecret(values, fileName, key) {
   if (value.length < 32 || /\s/.test(value)) errors.push(`${fileName} 的 ${key} 必须是至少 32 个字符且不含空白的私网密钥`);
 }
 
+function outboundControlPlaneUrl(values, fileName) {
+  const value = values.get("CONTROL_PLANE_URL");
+  if (!value) return;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) throw new Error("protocol");
+    if (url.username || url.password) throw new Error("credentials");
+  } catch {
+    errors.push(`${fileName} 的 CONTROL_PLANE_URL 必须是不含嵌入凭据的 HTTP(S) 地址`);
+  }
+}
+
 function git(directory, args) {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
@@ -102,6 +114,7 @@ required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", 
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 required(channelAdapter, "渠道适配器", ["DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_TARGETS"]);
 required(alertNotifier, "告警通知器", ["DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS", "ALERT_NOTIFIER_TARGETS"]);
+outboundControlPlaneUrl(channelAdapter, "渠道适配器");
 positiveInteger(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_PORT");
 positiveInteger(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS");
 positiveInteger(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE");
