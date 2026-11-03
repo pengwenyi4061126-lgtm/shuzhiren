@@ -17,6 +17,7 @@ pass() { printf 'PASS   %s\n' "$*"; }
 [[ -n "$backup_dir" ]] || fail "BACKUP_DIR or POSTGRES_BACKUP_DIR is required and must be an absolute path outside the repository"
 [[ "$backup_dir" = /* ]] || fail "BACKUP_DIR must be an absolute path"
 command -v sha256sum >/dev/null || fail "sha256sum is required"
+command -v flock >/dev/null || fail "flock is required to prevent concurrent backups"
 if [[ -n "$database_url" ]]; then
   command -v pg_dump >/dev/null || fail "pg_dump is required when DATABASE_URL is configured"
   command -v pg_restore >/dev/null || fail "pg_restore is required when DATABASE_URL is configured"
@@ -27,10 +28,14 @@ fi
 
 umask 077
 mkdir -p "$backup_dir"
+lock_file="${backup_dir}/.backup.lock"
+exec 9>"$lock_file"
+flock -n 9 || fail "another PostgreSQL backup is already running for $backup_dir"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 base="shuzhiren-postgres-${timestamp}"
 archive="${backup_dir}/${base}.dump"
 manifest="${backup_dir}/${base}.manifest"
+[[ ! -e "$archive" && ! -e "$manifest" ]] || fail "refusing to overwrite an existing backup: $base"
 temporary="$(mktemp "${backup_dir}/.${base}.XXXXXX")"
 trap 'rm -f "$temporary"' EXIT
 

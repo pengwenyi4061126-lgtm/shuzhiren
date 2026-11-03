@@ -13,13 +13,13 @@ const files = {
 };
 const contents = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([name, file]) => [name, await readFile(new URL(file, import.meta.url), "utf8")])));
 
-for (const source of ["DATABASE_URL", 'pg_dump --dbname="$database_url" --format=custom', 'pg_restore --list "$temporary"', 'backup_source="database_url"']) {
+for (const source of ["DATABASE_URL", 'pg_dump --dbname="$database_url" --format=custom', 'pg_restore --list "$temporary"', 'backup_source="database_url"', "flock -n 9", "refusing to overwrite an existing backup"]) {
   if (!contents.postgresBackup.includes(source)) throw new Error(`PostgreSQL backup must support the private production database path: ${source}`);
 }
 for (const source of ['pg_restore --list "$backup_file"', "pg_restore or docker is required"]) {
   if (!contents.postgresVerify.includes(source)) throw new Error(`PostgreSQL backup verifier must work without a Compose database: ${source}`);
 }
-for (const source of ["DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren'", "source=database_url", "verify-postgres-backup.sh"]) {
+for (const source of ["DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren'", "source=database_url", "verify-postgres-backup.sh", "another PostgreSQL backup is already running"]) {
   if (!contents.postgresDirectTest.includes(source)) throw new Error(`PostgreSQL direct backup test must cover ${source}`);
 }
 if (!contents.gatewayBackup.includes("GATEWAY_BACKUP_DIR")) throw new Error("Gateway backup must support its dedicated scheduled backup directory");

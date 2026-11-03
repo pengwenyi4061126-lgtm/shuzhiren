@@ -69,7 +69,7 @@ REQUIRED_GPU_NAME='RTX 4090D' MIN_FREE_GIB=250 bash scripts/check-runtime-host.s
 - `RUNTIME_GATEWAY_STATE_PATH` 也必须进入加密备份与隔离恢复范围。该目录保存 Gateway 已完成命令的有界哈希和响应摘要，不保存播报文本；恢复演练必须在同一 `commandId` 重发已完成命令，确认 Gateway 返回重复结果且不再次调用 LiveTalking 或 CosyVoice。遇到未完成的预留记录时，Gateway 会 fail-closed；值班人员应先核验实际媒体会话，而不是删除日志后盲目重试。
 - 以下脚本只生成或验证 PostgreSQL 自定义格式归档，绝不执行恢复、覆盖数据库、自动轮转或删除任何历史备份。
 
-创建并验证一次备份。生产环境优先使用安装了 PostgreSQL client 的备份账号和私网 `DATABASE_URL`；脚本不会把连接串写入清单。未提供 `DATABASE_URL` 时才兼容本地开发 Compose 的 `postgres` 服务。
+创建并验证一次备份。生产环境优先使用安装了 PostgreSQL client 的备份账号和私网 `DATABASE_URL`；脚本不会把连接串写入清单。同一备份目录有任务运行时，第二个实例会立即失败，不能并发写入或覆盖归档；等待前一个任务完成后再重试。未提供 `DATABASE_URL` 时才兼容本地开发 Compose 的 `postgres` 服务。
 
 ```bash
 DATABASE_URL='postgresql://shuzhiren_backup:***@private-postgres:5432/shuzhiren' \
