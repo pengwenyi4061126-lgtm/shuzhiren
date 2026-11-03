@@ -84,7 +84,23 @@ EXPECTED_SHA256=replace-with-manifest-sha256 \
 bash scripts/verify-postgres-backup.sh
 ```
 
-恢复只能在隔离的空数据库演练环境中由值班负责人执行：先创建独立数据库，人工检查 `pg_restore --list`，再以明确的目标数据库名执行 `pg_restore`。不得为方便而提供一键覆盖生产库的脚本。每月完成一次恢复演练，并将归档校验值、演练目标、开始/结束时间、RPO、RTO 和结果写入发布证据。
+为 Gateway 命令日志创建一致性快照（脚本使用 SQLite backup API，不能用普通文件复制替代）：
+
+```bash
+RUNTIME_GATEWAY_STATE_PATH=/srv/shuzhiren/runtime-gateway-state \
+BACKUP_DIR=/srv/shuzhiren/backups/runtime-gateway \
+bash scripts/backup-runtime-gateway-state.sh
+```
+
+校验已复制的 Gateway 快照，`EXPECTED_SHA256` 使用同名 `.manifest` 中的值：
+
+```bash
+BACKUP_FILE=/srv/shuzhiren/backups/runtime-gateway/shuzhiren-runtime-gateway-state-YYYYMMDDTHHMMSSZ.sqlite3 \
+EXPECTED_SHA256=replace-with-manifest-sha256 \
+bash scripts/verify-runtime-gateway-state-backup.sh
+```
+
+恢复只能在隔离的空数据库演练环境中由值班负责人执行：先创建独立数据库，人工检查 `pg_restore --list`，再以明确的目标数据库名执行 `pg_restore`。Gateway 快照同样只能在隔离 Gateway 实例中恢复，且必须保持只读的原始备份；不要为方便而提供一键覆盖生产库、命令日志或运行中挂载目录的脚本。每月完成一次恢复演练，并将归档校验值、演练目标、开始/结束时间、RPO、RTO 和结果写入发布证据。
 
 MinIO 对象、模型权重和录屏不由上述数据库脚本覆盖。上线前必须在对象存储层启用版本控制，并配置已验证的站外复制；在此之前不得把对象恢复能力表述为已完成。
 
