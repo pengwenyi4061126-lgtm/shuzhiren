@@ -27,7 +27,8 @@ bash scripts/check-runtime-host.sh
 
 ```bash
 REQUIRED_STORAGE_PATHS='/srv/shuzhiren:/srv/shuzhiren/models:/srv/shuzhiren/avatars:/srv/shuzhiren/recordings:/srv/shuzhiren/runtime-gateway-state' \
-bash scripts/check-runtime-host.sh
+GATEWAY_STATE_PATH=/srv/shuzhiren/runtime-gateway-state \
+bash scripts/check-runtime-host.sh --require-gateway-state-permissions
 ```
 
 默认要求单张 `RTX 4090`、至少 22 GiB 显存和 150 GiB 可用磁盘。租用方规格不同但已评估可用时，显式传入阈值，例如：

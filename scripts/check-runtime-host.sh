@@ -8,6 +8,7 @@ minimum_free_gib="${MIN_FREE_GIB:-150}"
 workspace_root="${WORKSPACE_ROOT:-$PWD}"
 required_storage_paths="${REQUIRED_STORAGE_PATHS:-$workspace_root}"
 run_container_smoke=false
+require_gateway_state_permissions=false
 
 usage() {
   cat <<'EOF'
@@ -20,9 +21,16 @@ Environment:
   MIN_GPU_MEMORY_MIB     Minimum GPU memory in MiB (default: 22000)
   MIN_FREE_GIB           Minimum free disk space in GiB (default: 150)
   GPU_SMOKE_IMAGE        Immutable local image reference required by --container-smoke
+  GATEWAY_STATE_PATH     Gateway command-journal state directory checked by --require-gateway-state-permissions
+  GATEWAY_UID            Expected Gateway directory owner UID (default: 10001)
+  GATEWAY_BACKUP_GROUP   Expected backup group name (default: shuzhiren-backup)
 
 The optional --container-smoke only runs an already-present image. GPU_SMOKE_IMAGE
 must be pinned by digest; the script never pulls an image from a registry.
+
+The optional --require-gateway-state-permissions verifies the state directory is
+owned by GATEWAY_UID, grouped by GATEWAY_BACKUP_GROUP, and uses mode 2750 so its
+SQLite journal can be snapshotted by the non-root backup service.
 EOF
 }
 
@@ -32,6 +40,7 @@ pass() { printf 'PASS   %s\n' "$*"; }
 while (($#)); do
   case "$1" in
     --container-smoke) run_container_smoke=true ;;
+    --require-gateway-state-permissions) require_gateway_state_permissions=true ;;
     --help|-h) usage; exit 0 ;;
     *) fail "unknown option: $1" ;;
   esac
@@ -71,6 +80,23 @@ for storage_path in "${storage_paths[@]}"; do
   (( free_gib >= minimum_free_gib )) || fail "only ${free_gib} GiB free at $storage_path; at least ${minimum_free_gib} GiB is required"
   pass "disk capacity accepted: ${free_gib} GiB free at $storage_path"
 done
+
+if "$require_gateway_state_permissions"; then
+  gateway_state_path="${GATEWAY_STATE_PATH:-}"
+  gateway_uid="${GATEWAY_UID:-10001}"
+  gateway_backup_group="${GATEWAY_BACKUP_GROUP:-shuzhiren-backup}"
+  [[ "$gateway_state_path" = /* ]] || fail "--require-gateway-state-permissions requires an absolute GATEWAY_STATE_PATH"
+  [[ -d "$gateway_state_path" ]] || fail "GATEWAY_STATE_PATH does not exist: $gateway_state_path"
+  [[ "$gateway_uid" =~ ^[0-9]+$ ]] || fail "GATEWAY_UID must be numeric"
+  command -v getent >/dev/null || fail "getent is required to resolve GATEWAY_BACKUP_GROUP"
+  backup_group_gid="$(getent group "$gateway_backup_group" | awk -F: 'NR == 1 { print $3 }')"
+  [[ "$backup_group_gid" =~ ^[0-9]+$ ]] || fail "GATEWAY_BACKUP_GROUP does not resolve to a group: $gateway_backup_group"
+  command -v stat >/dev/null || fail "stat is required to inspect GATEWAY_STATE_PATH"
+  state_metadata="$(stat -c '%u:%g:%a' -- "$gateway_state_path")"
+  expected_state_metadata="${gateway_uid}:${backup_group_gid}:2750"
+  [[ "$state_metadata" == "$expected_state_metadata" ]] || fail "GATEWAY_STATE_PATH must be ${expected_state_metadata}; found ${state_metadata} at ${gateway_state_path}"
+  pass "Gateway state directory permissions accepted: ${gateway_state_path} (${state_metadata})"
+fi
 
 if "$run_container_smoke"; then
   smoke_image="${GPU_SMOKE_IMAGE:-}"
