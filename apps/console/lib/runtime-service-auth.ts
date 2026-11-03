@@ -9,7 +9,7 @@ function configuredTenantTokens(variable: TenantServiceTokenVariable, developmen
   try {
     const parsed: unknown = JSON.parse(value);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-    const tokens = new Map(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[0] === "string" && entry[0].length > 0 && entry[0].length <= 200 && typeof entry[1] === "string" && entry[1].length >= 16));
+    const tokens = new Map(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[0] === "string" && entry[0].length > 0 && entry[0].length <= 200 && typeof entry[1] === "string" && entry[1].length >= 32 && !/\s/.test(entry[1])));
     if (!tokens.size) throw new Error("no valid tenant token");
     return tokens;
   } catch {

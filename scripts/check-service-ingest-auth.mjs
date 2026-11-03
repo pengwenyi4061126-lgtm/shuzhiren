@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 const proxy = await readFile(new URL("../apps/console/proxy.ts", import.meta.url), "utf8");
+const serviceAuth = await readFile(new URL("../apps/console/lib/runtime-service-auth.ts", import.meta.url), "utf8");
 const protectedServiceRoutes = [
   ["/api/v1/runtime/telemetry", "../apps/console/app/api/v1/runtime/telemetry/route.ts", "requireRuntimeService(request, body.tenantId)"],
   ["/api/v1/runtime/recordings", "../apps/console/app/api/v1/runtime/recordings/route.ts", "requireRuntimeRecordingService(request, body.tenantId)"],
@@ -14,5 +15,7 @@ for (const [path, routePath, serviceGuard] of protectedServiceRoutes) {
   const route = await readFile(new URL(routePath, import.meta.url), "utf8");
   if (!route.includes(serviceGuard)) throw new Error(`${path} must enforce tenant-scoped service authentication inside the route`);
 }
+
+if (!serviceAuth.includes("entry[1].length >= 32") || !serviceAuth.includes("!/\\s/.test(entry[1])")) throw new Error("private tenant service tokens must require at least 32 non-whitespace characters");
 
 console.log("PASS  private ingest routes use dedicated tenant service-token boundaries");
