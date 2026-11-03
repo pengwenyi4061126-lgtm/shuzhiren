@@ -2,6 +2,8 @@ export function parseObserverTargets(rawText, source) {
   let parsed;
   try { parsed = JSON.parse(rawText); } catch { throw new Error(`${source} must be valid JSON`); }
   if (!Array.isArray(parsed)) throw new Error(`${source} must be a JSON array`);
+  const runKeys = new Set();
+  const sessionIds = new Set();
   return parsed.map((target, index) => {
     if (!target || typeof target !== "object" || Array.isArray(target)) throw new Error(`${source}[${index}] must be an object`);
     const value = target;
@@ -11,6 +13,11 @@ export function parseObserverTargets(rawText, source) {
     if (value.outputProbeToken !== undefined && (typeof value.outputProbeToken !== "string" || value.outputProbeToken.length < 32 || value.outputProbeToken.length > 2000 || /\s/.test(value.outputProbeToken))) throw new Error(`${source}[${index}].outputProbeToken is invalid`);
     const probeUrl = new URL(value.outputProbeUrl);
     if (!/^https?:$/.test(probeUrl.protocol) || probeUrl.username || probeUrl.password) throw new Error(`${source}[${index}].outputProbeUrl is invalid`);
+    const runKey = `${value.tenantId}:${value.runId}`;
+    if (runKeys.has(runKey)) throw new Error(`${source}[${index}] duplicates tenantId/runId ${runKey}`);
+    if (sessionIds.has(value.sessionId)) throw new Error(`${source}[${index}] duplicates sessionId ${value.sessionId}`);
+    runKeys.add(runKey);
+    sessionIds.add(value.sessionId);
     return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, outputProbeUrl: probeUrl.toString(), outputProbeToken: value.outputProbeToken };
   });
 }

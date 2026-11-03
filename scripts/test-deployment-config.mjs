@@ -44,7 +44,7 @@ const control = env({
   CHANNEL_COMMERCE_TENANT_TOKENS: { [tenantId]: "commerce-ingest-token-at-least-32-bytes" }
 });
 
-function runtime(outputProbeTargets) {
+function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }]) {
   return env({
     NVIDIA_VISIBLE_DEVICES: "0",
     STREAM_OUTPUT_MODE: "rtmp",
@@ -62,7 +62,7 @@ function runtime(outputProbeTargets) {
     DATABASE_QUERY_TIMEOUT_MS: "5000",
     CONTROL_PLANE_URL: "https://control-plane.internal",
     RUNTIME_OBSERVER_TARGETS_DIR: "/srv/shuzhiren/observer-config",
-    RUNTIME_OBSERVER_TARGETS: [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }],
+    RUNTIME_OBSERVER_TARGETS: observerTargets,
     RUNTIME_OBSERVER_POLL_MS: "5000",
     RUNTIME_OBSERVER_TIMEOUT_MS: "3000",
     RUNTIME_OBSERVER_FAIL_CLOSED: "true",
@@ -239,6 +239,15 @@ try {
   const mismatchedProbeToken = check(["--require-cosyvoice"]);
   assert.notEqual(mismatchedProbeToken.status, 0, "runtime observer output-probe credentials must match the probe service token");
   assert.match(mismatchedProbeToken.stderr, /outputProbeToken 必须匹配/, "probe credential mismatch must identify the output-probe token gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
+  await writeFile(files.runtime, runtime(validProbeTarget, [
+    { tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken },
+    { tenantId, runId: "run_fixture", sessionId: "session_other", telemetryToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/other", outputProbeToken }
+  ]));
+  const duplicateObserverRun = check(["--require-cosyvoice"]);
+  assert.notEqual(duplicateObserverRun.status, 0, "deployment preflight must reject duplicate observer run targets");
+  assert.match(duplicateObserverRun.stderr, /RUNTIME_OBSERVER_TARGETS/, "duplicate observer targets must identify the observer configuration gate");
   await writeFile(files.runtime, runtime(validProbeTarget));
 
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));

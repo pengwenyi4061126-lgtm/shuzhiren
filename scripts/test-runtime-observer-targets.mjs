@@ -33,6 +33,20 @@ try {
   const probeTokenRejected = check(invalid, true, runtimeEnv);
   assert.notEqual(probeTokenRejected.status, 0, "observer target probe tokens must match the configured output probe secret");
   assert.match(probeTokenRejected.stderr, /OUTPUT_PROBE_SHARED_TOKEN/);
+  await writeFile(invalid, JSON.stringify([
+    { tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_one", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/one", outputProbeToken: "output-probe-token-at-least-32-chars" },
+    { tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_two", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/two", outputProbeToken: "output-probe-token-at-least-32-chars" }
+  ]));
+  const duplicateRunRejected = check(invalid, true, runtimeEnv);
+  assert.notEqual(duplicateRunRejected.status, 0, "observer targets must not report one run twice");
+  assert.match(duplicateRunRejected.stderr, /duplicates tenantId\/runId/);
+  await writeFile(invalid, JSON.stringify([
+    { tenantId: "tenant_demo", runId: "run_one", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/one", outputProbeToken: "output-probe-token-at-least-32-chars" },
+    { tenantId: "tenant_demo", runId: "run_two", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/two", outputProbeToken: "output-probe-token-at-least-32-chars" }
+  ]));
+  const duplicateSessionRejected = check(invalid, true, runtimeEnv);
+  assert.notEqual(duplicateSessionRejected.status, 0, "observer targets must not bind one runtime session twice");
+  assert.match(duplicateSessionRejected.stderr, /duplicates sessionId/);
   console.log("PASS  runtime observer target file validator accepts valid targets and rejects unsafe updates");
 } finally {
   await rm(directory, { recursive: true, force: true });

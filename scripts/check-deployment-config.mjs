@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateTarget as validateOutputProbeTarget } from "../apps/output-probe/lib.mjs";
+import { parseObserverTargets } from "../apps/runtime-observer/targets.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const allowPlaceholders = process.argv.includes("--allow-placeholders");
@@ -187,13 +188,7 @@ equal(runtime, "运行时", "STREAM_OUTPUT_MODE", "rtmp");
 equal(runtime, "运行时", "STREAM_FPS", "25");
 
 try {
-  const targets = JSON.parse(runtime.get("RUNTIME_OBSERVER_TARGETS") ?? "[]");
-  const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
-    && ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"].every((key) => typeof target[key] === "string" && target[key].length > 0)
-    && target.telemetryToken.length >= 32
-    && (target.outputProbeToken === undefined || (typeof target.outputProbeToken === "string" && target.outputProbeToken.length >= 32))
-    && /^https?:\/\//.test(target.outputProbeUrl);
-  if (!Array.isArray(targets) || !targets.every(targetValid)) throw new Error("invalid");
+  const targets = parseObserverTargets(runtime.get("RUNTIME_OBSERVER_TARGETS") ?? "[]", "RUNTIME_OBSERVER_TARGETS");
   const telemetryTokens = tenantServiceTokenMaps.get("RUNTIME_TELEMETRY_TENANT_TOKENS") ?? {};
   const outputProbeToken = runtime.get("OUTPUT_PROBE_SHARED_TOKEN");
   if (targets.length > 0 && (!outputProbeToken || outputProbeToken.length < 32 || /\s/.test(outputProbeToken) || (!allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(outputProbeToken)))) errors.push("运行时 observer 目标需要有效的 OUTPUT_PROBE_SHARED_TOKEN");
