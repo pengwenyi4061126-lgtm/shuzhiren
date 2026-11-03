@@ -199,6 +199,18 @@ try {
   await writeFile(files.runtime, runtime(validProbeTarget));
   await writeFile(files.gateway, gateway);
 
+  await writeFile(files.gateway, gateway.replace("FALLBACK_AUDIOTYPE=1", "FALLBACK_AUDIOTYPE=0"));
+  const duplicateGatewayActionSlot = check(["--require-cosyvoice"]);
+  assert.notEqual(duplicateGatewayActionSlot.status, 0, "Gateway deployment must reject reused program and fallback action slots");
+  assert.match(duplicateGatewayActionSlot.stderr, /动作索引必须互不相同/, "duplicate Gateway action slots must identify the media handoff gate");
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("HUMAN_HANDOFF_AUDIOTYPE=2", "HUMAN_HANDOFF_AUDIOTYPE=256"));
+  const outOfRangeRuntimeActionSlot = check(["--require-cosyvoice"]);
+  assert.notEqual(outOfRangeRuntimeActionSlot.status, 0, "runtime deployment must reject out-of-range human handoff action slots");
+  assert.match(outOfRangeRuntimeActionSlot.stderr, /动作索引必须是 0 至 255/, "out-of-range runtime action slots must identify the media handoff gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
   await writeFile(files.channel, channel.replace("DATABASE_QUERY_TIMEOUT_MS=5000", "DATABASE_QUERY_TIMEOUT_MS=99"));
   const shortAdapterDatabaseTimeout = check(["--require-cosyvoice"]);
   assert.notEqual(shortAdapterDatabaseTimeout.status, 0, "channel adapter database timeout must remain bounded");

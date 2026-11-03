@@ -70,6 +70,16 @@ function boundedPositiveInteger(values, fileName, key, minimum, maximum) {
   }
 }
 
+function distinctActionSlots(values, fileName) {
+  const keys = ["PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"];
+  const slots = keys.map((key) => Number(values.get(key)));
+  if (slots.some((slot) => !Number.isInteger(slot) || slot < 0 || slot > 255)) {
+    errors.push(`${fileName} 的节目、备用与人工接管动作索引必须是 0 至 255 的整数`);
+    return;
+  }
+  if (new Set(slots).size !== slots.length) errors.push(`${fileName} 的节目、备用与人工接管动作索引必须互不相同`);
+}
+
 function privateSecret(values, fileName, key) {
   const value = values.get(key);
   if (!value || (allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(value))) return;
@@ -103,6 +113,8 @@ boundedPositiveInteger(channelAdapter, "渠道适配器", "DATABASE_QUERY_TIMEOU
 boundedPositiveInteger(alertNotifier, "告警通知器", "DATABASE_QUERY_TIMEOUT_MS", 100, 60_000);
 for (const key of ["ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS"]) positiveInteger(alertNotifier, "告警通知器", key);
 positiveInteger(gateway, "Gateway", "COSYVOICE_SAMPLE_RATE");
+distinctActionSlots(runtime, "运行时");
+distinctActionSlots(gateway, "Gateway");
 if (!gateway.get("COSYVOICE_MODEL_DIR")?.startsWith("/")) errors.push("Gateway 的 COSYVOICE_MODEL_DIR 必须是 CosyVoice 容器内的绝对路径");
 if (!gateway.get("RUNTIME_COMMAND_JOURNAL_PATH")?.startsWith("/")) errors.push("Gateway 的 RUNTIME_COMMAND_JOURNAL_PATH 必须是私有持久化绝对路径");
 equal(gateway, "Gateway", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "true");
