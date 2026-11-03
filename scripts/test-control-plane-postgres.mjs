@@ -104,6 +104,7 @@ try {
   await waitFor(async () => (await fetch(`http://127.0.0.1:${consolePort}/api/health`)).ok, 20_000, "control plane startup");
 
   const requestHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
+  const operatorRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${operatorToken}` };
   const analystRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${analystToken}` };
   const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
   const forgedMediaSession = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/media`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ runId: recoverRunId, sessionId: "another_livetalking_session", type: "switch_to_human" }) });
@@ -114,7 +115,7 @@ try {
   assert.equal(foreignRunRead.status, 404, "one tenant must not read another tenant's live run");
   const analystArchive = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${archivableRun.runId}/lifecycle`, { method: "POST", headers: analystRequestHeaders, body: JSON.stringify({ action: "archive" }) });
   assert.equal(analystArchive.status, 403, "an analyst must not archive a completed live run");
-  const archiveRun = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${archivableRun.runId}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "archive" }) });
+  const archiveRun = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${archivableRun.runId}/lifecycle`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ action: "archive" }) });
   assert.equal(archiveRun.status, 200, "an operator should archive a completed live run");
   assert.equal((await archiveRun.json()).data.state, "ARCHIVED", "archiving must move an ended run to the terminal archived state");
   assert.equal((await client.query("select count(*) as count from audit_events where resource_id = $1 and event_type = 'live_run.archive'", [archivableRun.runId])).rows[0].count, "1", "archiving must be recorded in the audit chain");
@@ -438,7 +439,7 @@ try {
   assert.equal(blockedByPendingStart.status, 409, "a pending start acknowledgement must block another activation at the tenant limit");
   const analystDisarmPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${pendingStartRun.runId}/lifecycle`, { method: "POST", headers: analystRequestHeaders, body: JSON.stringify({ action: "disarm" }) });
   assert.equal(analystDisarmPendingStart.status, 403, "an analyst must not cancel a pending live activation");
-  const disarmPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${pendingStartRun.runId}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "disarm" }) });
+  const disarmPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${pendingStartRun.runId}/lifecycle`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ action: "disarm" }) });
   assert.equal(disarmPendingStart.status, 200, "an operator should cancel a pending scheduled activation before it is delivering");
   assert.equal((await disarmPendingStart.json()).data.state, "PREFLIGHT", "disarming must return the run to preflight");
   assert.deepEqual((await client.query("select state from outbox_events where id = $1", [pendingStartEvent.rows[0].id])).rows[0], { state: "cancelled" }, "disarming must cancel the pending activation outbox event");
