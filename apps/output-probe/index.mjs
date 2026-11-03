@@ -7,11 +7,12 @@ const cacheMs = positiveInt(process.env.OUTPUT_PROBE_CACHE_MS, 3000);
 const audioSampleSeconds = positiveInt(process.env.OUTPUT_PROBE_AUDIO_SAMPLE_SECONDS, 5);
 const silenceDurationSeconds = positiveInt(process.env.OUTPUT_PROBE_SILENCE_DURATION_SECONDS, 2);
 const silenceThresholdDb = negativeNumber(process.env.OUTPUT_PROBE_SILENCE_THRESHOLD_DB, -50);
-const token = required("OUTPUT_PROBE_SHARED_TOKEN");
+const token = requiredSecret("OUTPUT_PROBE_SHARED_TOKEN");
 const targets = configuredTargets();
 const cache = new Map();
 
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
+function requiredSecret(name) { const value = required(name); if (value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`); return value; }
 function positiveInt(value, fallback) { const parsed = Number.parseInt(value ?? "", 10); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }
 function negativeNumber(value, fallback) { const parsed = Number(value); return Number.isFinite(parsed) && parsed < 0 && parsed >= -120 ? parsed : fallback; }
 function configuredTargets() {

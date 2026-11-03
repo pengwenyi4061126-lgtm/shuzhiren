@@ -76,6 +76,7 @@ jobs:
       - run: npm run observer:targets:test
       - run: npm run observer:targets:apply:test
       - run: npm run output-probe:test
+      - run: npm run output-probe:config:test
       - run: npm run output-probe:response:check
       - run: npm run channel-adapter:test
       - run: npm run alert-notifier:test

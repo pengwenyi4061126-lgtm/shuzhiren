@@ -35,6 +35,7 @@ const checks = [
   ["run", "observer:targets:test"],
   ["run", "observer:targets:apply:test"],
   ["run", "output-probe:test"],
+  ["run", "output-probe:config:test"],
   ["run", "output-probe:response:check"],
   ["run", "channel-adapter:test"],
   ["run", "alert-notifier:test"],
