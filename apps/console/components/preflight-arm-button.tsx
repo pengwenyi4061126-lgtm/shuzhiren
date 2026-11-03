@@ -3,6 +3,7 @@
 import { LoaderCircle, Radio } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { clientFetch } from "@/lib/client-request";
 
 export function PreflightArmButton({ runId, enabled, canOperate }: { runId: string; enabled: boolean; canOperate: boolean }) {
   const router = useRouter();
@@ -15,7 +16,7 @@ export function PreflightArmButton({ runId, enabled, canOperate }: { runId: stri
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/v1/live-runs/${encodeURIComponent(runId)}/lifecycle`, {
+      const response = await clientFetch(`/api/v1/live-runs/${encodeURIComponent(runId)}/lifecycle`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "arm" })

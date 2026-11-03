@@ -3,6 +3,7 @@
 import { LoaderCircle, Save } from "lucide-react";
 import { useState } from "react";
 import type { Entitlement, EntitlementCode } from "@/lib/entitlements";
+import { clientFetch } from "@/lib/client-request";
 
 const definitions: Array<{ code: EntitlementCode; label: string; description: string; unit: string; placeholder: string }> = [
   { code: "max_concurrent_live_runs", label: "并发直播场次", description: "同一租户同时处于 LIVE、DEGRADED 或等待 Gateway 确认开播的场次数上限。", unit: "场", placeholder: "1" },
@@ -19,7 +20,7 @@ export function EntitlementWorkspace({ initialEntitlements, canManage }: { initi
     if (!Number.isSafeInteger(limitValue) || limitValue <= 0) { setError("额度必须是正整数"); return; }
     setBusy(code); setError(null);
     try {
-      const response = await fetch(`/api/v1/entitlements/${code}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ limitValue }) });
+      const response = await clientFetch(`/api/v1/entitlements/${code}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ limitValue }) });
       const payload = await response.json().catch(() => null) as { data?: Entitlement; error?: string } | null;
       if (!response.ok || !payload?.data) throw new Error(payload?.error || "更新额度失败");
       setEntitlements((current) => [...current.filter((item) => item.code !== code), payload.data!]);

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 import type { RuntimeAlert } from "@/lib/monitoring";
 import { runbookForAlertCode } from "@/lib/runbooks";
+import { clientFetch } from "@/lib/client-request";
 
 export function MonitoringAlertList({ initialAlerts, initialIncidentAlertIds = [], canAcknowledge }: { initialAlerts: RuntimeAlert[]; initialIncidentAlertIds?: string[]; canAcknowledge: boolean }) {
   const [alerts, setAlerts] = useState(initialAlerts);
@@ -15,7 +16,7 @@ export function MonitoringAlertList({ initialAlerts, initialIncidentAlertIds = [
   async function acknowledge(alertId: string) {
     setBusy(alertId); setError(null);
     try {
-      const response = await fetch(`/api/v1/alerts/${encodeURIComponent(alertId)}/acknowledge`, { method: "POST" });
+      const response = await clientFetch(`/api/v1/alerts/${encodeURIComponent(alertId)}/acknowledge`, { method: "POST" });
       const payload = await response.json().catch(() => null) as { data?: { alert: RuntimeAlert }; error?: string } | null;
       if (!response.ok || !payload?.data) throw new Error(payload?.error || "告警确认失败");
       setAlerts((current) => current.map((alert) => alert.id === alertId ? payload.data!.alert : alert));
@@ -27,7 +28,7 @@ export function MonitoringAlertList({ initialAlerts, initialIncidentAlertIds = [
   async function openIncident(alertId: string) {
     setBusy(`incident:${alertId}`); setError(null);
     try {
-      const response = await fetch("/api/v1/incidents", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ alertId }) });
+      const response = await clientFetch("/api/v1/incidents", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ alertId }) });
       const payload = await response.json().catch(() => null) as { data?: unknown; error?: string } | null;
       if (!response.ok || !payload?.data) throw new Error(payload?.error || "创建事故单失败");
       setIncidentAlertIds((current) => new Set(current).add(alertId));

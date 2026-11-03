@@ -6,6 +6,7 @@ import { CircleDotDashed, Clock3, Plus, Radio, X } from "lucide-react";
 import type { Product } from "@/lib/catalog";
 import type { ChannelConnection } from "@/lib/channels";
 import type { StoredRun } from "@/lib/control-plane/store";
+import { clientFetch as fetch } from "@/lib/client-request";
 
 type Props = { initialRuns: StoredRun[]; products: Product[]; channels: ChannelConnection[]; canManage: boolean; canApprove: boolean };
 const bindableRuntimeStates = new Set<StoredRun["state"]>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"]);

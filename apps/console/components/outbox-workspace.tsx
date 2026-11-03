@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { Activity, CheckCircle2, Clock3, RotateCcw, Send, TriangleAlert } from "lucide-react";
 import type { RuntimeOutboxEvent } from "@/lib/control-plane/outbox";
+import { clientFetch } from "@/lib/client-request";
 
 export function OutboxWorkspace({ initialEvents }: { initialEvents: RuntimeOutboxEvent[] }) {
   const [events, setEvents] = useState(initialEvents);
@@ -15,7 +16,7 @@ export function OutboxWorkspace({ initialEvents }: { initialEvents: RuntimeOutbo
     setBusy(event.id);
     setError(null);
     try {
-      const response = await fetch(`/api/v1/runtime/outbox/${encodeURIComponent(event.id)}/deliver`, { method: "POST" });
+      const response = await clientFetch(`/api/v1/runtime/outbox/${encodeURIComponent(event.id)}/deliver`, { method: "POST" });
       const payload = await response.json().catch(() => null) as { data?: { event?: RuntimeOutboxEvent }; error?: string } | null;
       if (!response.ok || !payload?.data?.event) throw new Error(payload?.error || "投递失败");
       setEvents((items) => items.map((item) => item.id === event.id ? payload.data!.event! : item));

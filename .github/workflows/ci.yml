@@ -45,6 +45,7 @@ jobs:
       - run: bash scripts/test-postgres-backup-direct.sh
       - run: npm run control-plane:compose:check
       - run: npm run console:page-auth:check
+      - run: npm run console:client-requests:check
       - run: docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config
         env:
           CONTROL_PLANE_ENV_FILE: config/control-plane.example.env

@@ -4,6 +4,7 @@ import { AlertTriangle, Archive, BarChart3, BookOpenCheck, CalendarDays, ChartNo
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { LiveCommand, LiveRun, LiveRunState } from "@/lib/domain";
+import { clientFetch as fetch } from "@/lib/client-request";
 import type { RuntimeAlert, RuntimeTelemetry } from "@/lib/monitoring";
 import type { LiveInteraction } from "@/lib/interactions";
 import type { RuntimeOutboxEvent } from "@/lib/control-plane/outbox";

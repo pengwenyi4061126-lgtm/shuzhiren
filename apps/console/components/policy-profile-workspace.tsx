@@ -3,6 +3,7 @@
 import { BadgeCheck, ClipboardCheck, Plus, ShieldCheck, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { PolicyProfile } from "@/lib/policy-profiles";
+import { clientFetch } from "@/lib/client-request";
 
 type Draft = {
   name: string;
@@ -25,7 +26,7 @@ export function PolicyProfileWorkspace({ initialProfiles, canManage, canApprove 
   const [error, setError] = useState<string | null>(null);
 
   async function request<T>(url: string, init: RequestInit) {
-    const response = await fetch(url, init);
+    const response = await clientFetch(url, init);
     const payload = await response.json().catch(() => null) as { data?: T; error?: string } | null;
     if (!response.ok || !payload?.data) throw new Error(payload?.error || "策略包操作失败");
     return payload.data;

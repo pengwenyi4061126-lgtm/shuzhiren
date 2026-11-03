@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { BadgeCheck, CircleDotDashed, Link2, MonitorPlay, Plus, Radio, X } from "lucide-react";
 import type { ChannelConnection, ChannelProvider, ChannelStatus, OutputProtocol } from "@/lib/channels";
+import { clientFetch } from "@/lib/client-request";
 
 type Draft = { name: string; provider: ChannelProvider; secretRef: string; outputProtocol: OutputProtocol };
 const emptyDraft: Draft = { name: "", provider: "generic-rtmp", secretRef: "", outputProtocol: "rtmp" };
@@ -17,7 +18,7 @@ export function ChannelWorkspace({ initialConnections }: { initialConnections: C
   const [error, setError] = useState<string | null>(null);
 
   async function request<T>(url: string, init: RequestInit) {
-    const response = await fetch(url, init);
+    const response = await clientFetch(url, init);
     const payload = await response.json().catch(() => null) as { data?: T; error?: string } | null;
     if (!response.ok || !payload?.data) throw new Error(payload?.error || "操作失败，请稍后重试");
     return payload.data;

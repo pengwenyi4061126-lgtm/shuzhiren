@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { BadgeCheck, ChevronDown, Package, Plus, ShieldCheck, X } from "lucide-react";
 import type { Product, ProductFacts, ProductVersion } from "@/lib/catalog";
+import { clientFetch } from "@/lib/client-request";
 
 type Props = { initialProducts: Product[]; canManage: boolean; canApprove: boolean };
 type VersionDraft = { price: string; unitCost: string; stock: string; highlights: string; faq: string; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil: string };
@@ -21,7 +22,7 @@ export function ProductWorkspace({ initialProducts, canManage, canApprove }: Pro
   const [error, setError] = useState<string | null>(null);
 
   async function request<T>(url: string, init: RequestInit) {
-    const response = await fetch(url, init);
+    const response = await clientFetch(url, init);
     const payload = await response.json().catch(() => null) as { data?: T; error?: string } | null;
     if (!response.ok || !payload?.data) throw new Error(payload?.error || "操作失败，请稍后重试");
     return payload.data;

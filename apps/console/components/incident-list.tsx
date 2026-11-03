@@ -3,6 +3,7 @@
 import { CheckCircle2, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import type { Incident } from "@/lib/incidents";
+import { clientFetch } from "@/lib/client-request";
 
 export function IncidentList({ initialIncidents, canResolve }: { initialIncidents: Incident[]; canResolve: boolean }) {
   const [incidents, setIncidents] = useState(initialIncidents);
@@ -13,7 +14,7 @@ export function IncidentList({ initialIncidents, canResolve }: { initialIncident
   async function resolve(incidentId: string) {
     setBusy(incidentId); setError(null);
     try {
-      const response = await fetch(`/api/v1/incidents/${encodeURIComponent(incidentId)}/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resolution }) });
+      const response = await clientFetch(`/api/v1/incidents/${encodeURIComponent(incidentId)}/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resolution }) });
       const payload = await response.json().catch(() => null) as { data?: { incident: Incident }; error?: string } | null;
       if (!response.ok || !payload?.data) throw new Error(payload?.error || "关闭事故单失败");
       setIncidents((current) => current.map((incident) => incident.id === incidentId ? payload.data!.incident : incident));

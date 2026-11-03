@@ -30,6 +30,7 @@
     "backup:automation:check": "node scripts/check-backup-automation.mjs",
     "control-plane:compose:check": "node scripts/check-control-plane-compose.mjs",
     "console:page-auth:check": "node scripts/check-console-page-auth.mjs",
+    "console:client-requests:check": "node scripts/check-console-client-requests.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "lifecycle:authz:check": "node scripts/check-lifecycle-authorization.mjs",

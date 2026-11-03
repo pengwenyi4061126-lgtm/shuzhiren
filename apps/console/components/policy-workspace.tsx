@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ArrowLeft, BadgeCheck, CircleAlert, ShieldCheck, ShieldQuestion, UserRoundCheck } from "lucide-react";
 import { FormEvent, useState } from "react";
+import { clientFetch } from "@/lib/client-request";
 
 type PolicyDecision = {
   action: "answer" | "handoff" | "refuse";
@@ -41,7 +42,7 @@ export function PolicyWorkspace() {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch("/api/v1/policy/evaluate", {
+      const response = await clientFetch("/api/v1/policy/evaluate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ question: question.trim(), evidenceIds })
