@@ -8,6 +8,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerSource = await readFile(path.join(root, "apps/runtime-worker/index.mjs"), "utf8");
 
 assert.match(workerSource, /AbortSignal\.timeout\(gatewayRequestTimeoutMs\)/, "runtime worker must bound Gateway command delivery");
+assert.doesNotMatch(workerSource, /await response\.text\(\)/, "runtime worker must not persist arbitrary Gateway response bodies in delivery errors");
+assert.match(workerSource, /let lastSuccessfulTickAt = null/, "runtime worker must wait for a successful tick before reporting healthy");
 
 for (const token of ["short", "this token has whitespace and is intentionally invalid"]) {
   const result = spawnSync(process.execPath, ["apps/runtime-worker/index.mjs"], {
