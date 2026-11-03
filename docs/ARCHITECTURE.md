@@ -43,18 +43,18 @@ LiveTalking、MuseTalk、CosyVoice 都必须固定到经审核的版本和模型
 ## 3. 直播状态机
 
 ```text
-PREPARE -> PREVIEW -> LIVE_PRESET
-                       |       |
-                       |       +-> RISK -> HUMAN_TAKEOVER
-                       v
-                  LIVE_INTERACTIVE
-                       |
-                       +-> STREAM_ERROR -> RECOVERING -> LIVE_PRESET
-                       |
-                       +-> STOPPING -> ARCHIVED
+DRAFT -> REVIEW -> APPROVED -> PREFLIGHT -> ARMED
+                                             |  |
+                                  disarm ----+  +-- START acknowledged --> LIVE
+                                             |                             |  |
+                                             +-----------------------------+  +-- PAUSE / HANDOFF / watchdog --> DEGRADED
+                                                                                                              |       |
+                                                                                              RECOVER acknowledged --+       +-- END acknowledged --> ENDED -> ARCHIVED
+                                                                                                                      |
+                                                                                                                      +-----------------------------> LIVE
 ```
 
-`LIVE_INTERACTIVE` 的入口条件：商品数据版本有效、直播脚本已审核、GPU 健康、推流可用、AI 标识已启用。任何一个条件失效时，退回预制内容或人工接管，不让 LLM 继续自由回复。
+`LIVE` 的入口条件：商品数据版本有效、直播脚本已审核、GPU 健康、推流可用、AI 标识已启用，并且 `START` 已收到 Gateway 确认。`RECOVER` 和 `END` 同样必须先收到 Gateway 确认才改变场次状态。`ARMED` 的待启动事件只有在 `pending` 或 `failed` 时可由场控取消；取消后回到 `PREFLIGHT`，而正在投递的事件必须等待本轮结果。`ARCHIVED` 是保留审计、录屏与发布清单的终态，不是删除操作。任何一个关键条件失效时，进入 `DEGRADED`、预制内容或人工接管，不让 LLM 继续自由回复。
 
 ## 4. 单张 4090 部署策略
 
