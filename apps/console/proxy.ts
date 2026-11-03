@@ -8,6 +8,7 @@ const reviewerRoles: Role[] = ["admin", "reviewer"];
 const observerRoles: Role[] = ["admin", "operator", "analyst"];
 const reviewObserverRoles: Role[] = ["admin", "reviewer", "analyst"];
 const allRoles: Role[] = ["admin", "operator", "reviewer", "analyst"];
+const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 export async function proxy(request: NextRequest) {
   if (process.env.NODE_ENV !== "production" || request.nextUrl.pathname === "/api/v1/runtime/telemetry" || request.nextUrl.pathname === "/api/v1/runtime/recordings" || request.nextUrl.pathname === "/api/v1/runtime/channel-interactions" || request.nextUrl.pathname === "/api/v1/runtime/channel-commerce" || request.nextUrl.pathname === "/api/v1/integrations/product-facts") return NextResponse.next();
@@ -19,7 +20,7 @@ export async function proxy(request: NextRequest) {
   const jwksUrl = process.env.OIDC_JWKS_URL;
   if (!issuer || !audience || !jwksUrl) return error("oidc_configuration_missing", 503);
   try {
-    const keys = createRemoteJWKSet(new URL(jwksUrl));
+    const keys = jwksFor(jwksUrl);
     const { payload } = await jwtVerify(token, keys, { issuer, audience });
     const tenantId = stringClaim(payload, "tenant_id");
     const role = stringClaim(payload, "role");
@@ -30,6 +31,15 @@ export async function proxy(request: NextRequest) {
   } catch {
     return error("bearer_token_verification_failed", 401);
   }
+}
+
+function jwksFor(url: string) {
+  let keys = remoteJwks.get(url);
+  if (!keys) {
+    keys = createRemoteJWKSet(new URL(url), { timeoutDuration: 5_000 });
+    remoteJwks.set(url, keys);
+  }
+  return keys;
 }
 
 function accessTokenFrom(request: NextRequest) {

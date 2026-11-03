@@ -10,6 +10,7 @@ export type RequestContext = {
 };
 
 const roles = new Set<ActorRole>(["admin", "operator", "reviewer", "analyst"]);
+const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 export const demoRequestContext: RequestContext = {
   tenantId: "tenant_demo",
@@ -41,7 +42,7 @@ async function contextFromBearerToken(request: Request): Promise<RequestContext>
   if (!issuer || !audience || !jwksUrl) throw new Error("OIDC_ISSUER_URL, OIDC_AUDIENCE, and OIDC_JWKS_URL are required in production");
 
   try {
-    const keys = createRemoteJWKSet(new URL(jwksUrl));
+    const keys = jwksFor(jwksUrl);
     const { payload } = await jwtVerify(token, keys, { issuer, audience });
     const tenantId = stringClaim(payload, "tenant_id");
     const role = stringClaim(payload, "role");
@@ -53,6 +54,15 @@ async function contextFromBearerToken(request: Request): Promise<RequestContext>
     if (error instanceof Response) throw error;
     throw new Response("Bearer token verification failed", { status: 401 });
   }
+}
+
+function jwksFor(url: string) {
+  let keys = remoteJwks.get(url);
+  if (!keys) {
+    keys = createRemoteJWKSet(new URL(url), { timeoutDuration: 5_000 });
+    remoteJwks.set(url, keys);
+  }
+  return keys;
 }
 
 function accessTokenFrom(request: Request) {
