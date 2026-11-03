@@ -17,7 +17,7 @@ npm run observer:targets:apply -- --candidate /srv/shuzhiren/observer-config/run
 - Ubuntu 22.04 或兼容 Linux，单张 RTX 4090，建议至少 64 GB 内存和 1 TB NVMe。
 - 已安装可用的 NVIDIA 驱动、Docker Engine、Docker Compose GPU 支持；`nvidia-smi` 必须可见 GPU。
 - 仅对反向代理公开控制台；PostgreSQL、MinIO、Redis、Gateway 与 Worker 位于私网。
-- 将模型、头像、录屏目录分别挂载到独立磁盘路径，不将权重、录屏或流密钥写入 Git。
+- 将模型、头像、录屏目录分别挂载到独立磁盘路径，不将权重、录屏或流密钥写入 Git。模型和头像目录以只读方式挂载；录屏目录必须可由 LiveTalking 容器 UID/GID `10002` 写入，例如 `sudo install -d -m 0700 -o 10002 -g 10002 /srv/shuzhiren/recordings`。
 
 先在仓库根目录执行只读主机预检。它检查 GPU 名称/显存、Docker NVIDIA runtime 和用于模型、镜像、录屏的可用磁盘空间；不会安装软件、拉取镜像或启动容器。默认只检查当前仓库所在磁盘；生产环境必须把模型、Avatar 和录屏的实际宿主机目录一并传入。
 
