@@ -106,6 +106,10 @@ try {
   await waitFor(async () => (await fetch(`http://127.0.0.1:${consolePort}/api/health`)).ok, 20_000, "control plane startup");
   const consoleHealth = await fetch(`http://127.0.0.1:${consolePort}/api/health`);
   assert.equal(consoleHealth.status, 200, "a configured production control plane must report ready");
+  assert.match(consoleHealth.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/, "control plane responses must prevent framing");
+  assert.equal(consoleHealth.headers.get("x-frame-options"), "DENY", "control plane responses must deny framing");
+  assert.equal(consoleHealth.headers.get("x-content-type-options"), "nosniff", "control plane responses must disable MIME sniffing");
+  assert.equal(consoleHealth.headers.get("referrer-policy"), "no-referrer", "control plane responses must not disclose referrers");
   const consoleHealthBody = await consoleHealth.json();
   assert.equal(consoleHealthBody.dependencies.controlPlane, "ok", "the control-plane health endpoint must verify PostgreSQL instead of returning a static success response");
   assert.equal(consoleHealthBody.dependencies.authentication, "oidc", "the control-plane health endpoint must verify production OIDC configuration");

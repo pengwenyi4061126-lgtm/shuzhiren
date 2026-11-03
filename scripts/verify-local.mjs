@@ -14,6 +14,7 @@ const checks = [
   ["run", "backup:automation:check"],
   ["run", "control-plane:compose:check"],
   ["run", "console:page-auth:check"],
+  ["run", "console:security-headers:check"],
   ["run", "console:client-requests:check"],
   ["run", "policy:red-team"],
   ["run", "preflight:check"],
