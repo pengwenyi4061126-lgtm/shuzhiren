@@ -18,6 +18,7 @@ async function startServer(probeMode) {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/v1/observations/session_demo") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
+      if (probeMode === "slow") await new Promise((resolve) => setTimeout(resolve, 500));
       return json(response, 200, { session: { id: "session_demo", active: true }, gpu: { available: true, utilization_percent: 71, memory_used_mib: 14200 }, quality: { writer_accepting_frames: true, inference_fps: 28.5 } });
     }
     if (url.pathname === "/probe") {
@@ -138,6 +139,33 @@ async function observeTelemetryDeliveryFailure() {
   }
 }
 
+async function observeStartupHealth() {
+  const fixture = await startServer("slow");
+  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
+  const child = spawn(process.execPath, [observer], {
+    cwd: root,
+    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    let health;
+    await waitFor(async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
+        health = await response.json();
+        return response.status === 503 && health.lastSuccessfulCycleAt === null;
+      } catch {
+        return false;
+      }
+    }, 5000);
+    assert.equal(health.lastSuccessfulCycleAt, null);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+    await new Promise((resolve) => fixture.server.close(resolve));
+  }
+}
+
 async function waitFor(predicate, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
@@ -157,5 +185,6 @@ assert.deepEqual(failed, { tenantId: "tenant_demo", runId: "run_demo", outputCon
 
 await observeReloadedTargets();
 await observeTelemetryDeliveryFailure();
+await observeStartupHealth();
 
-console.log("PASS  runtime observer activity-audio, fail-closed, delivery health, and target reload paths");
+console.log("PASS  runtime observer activity-audio, fail-closed, startup health, delivery health, and target reload paths");

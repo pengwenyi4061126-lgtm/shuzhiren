@@ -147,7 +147,7 @@ const healthServer = http.createServer((request, response) => {
   if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { ok: false, error: "not_found" });
   const cycleFresh = lastSuccessfulCycleAt !== null && Date.now() - lastSuccessfulCycleAt <= Math.max(pollMs * 3, 15_000);
   const healthy = cycleFresh && !stopping && !targetConfigError;
-  return json(response, healthy ? 200 : 503, { ok: healthy, targetCount: targets.length, targetConfigSource: targetsFile ? "file" : "environment", targetConfigHealthy: !targetConfigError, lastSuccessfulCycleAt: new Date(lastSuccessfulCycleAt).toISOString(), lastError: lastCycleError, targetConfigError });
+  return json(response, healthy ? 200 : 503, { ok: healthy, targetCount: targets.length, targetConfigSource: targetsFile ? "file" : "environment", targetConfigHealthy: !targetConfigError, lastSuccessfulCycleAt: lastSuccessfulCycleAt === null ? null : new Date(lastSuccessfulCycleAt).toISOString(), lastError: lastCycleError, targetConfigError });
 });
 healthServer.listen(healthPort, "0.0.0.0", () => log("observer.health_listening", { port: healthPort }));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
