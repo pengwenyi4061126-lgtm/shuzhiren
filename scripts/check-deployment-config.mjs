@@ -157,6 +157,10 @@ try {
     && (target.outputProbeToken === undefined || (typeof target.outputProbeToken === "string" && target.outputProbeToken.length >= 16))
     && /^https?:\/\//.test(target.outputProbeUrl);
   if (!Array.isArray(targets) || !targets.every(targetValid)) throw new Error("invalid");
+  const telemetryTokens = tenantServiceTokenMaps.get("RUNTIME_TELEMETRY_TENANT_TOKENS") ?? {};
+  for (const target of targets) {
+    if (target.telemetryToken !== telemetryTokens[target.tenantId]) errors.push("运行时 observer 的 telemetryToken 必须匹配控制面同租户的 RUNTIME_TELEMETRY_TENANT_TOKENS");
+  }
 } catch {
   const message = "运行时 的 RUNTIME_OBSERVER_TARGETS 必须是可选的有效场次/会话/遥测密钥/私网输出探针数组";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);

@@ -165,6 +165,12 @@ try {
   assert.match(mismatchedCommerceToken.stderr, /commerceToken 必须匹配/, "adapter credential mismatch must identify the commerce token gate");
   await writeFile(files.channel, channel);
 
+  await writeFile(files.runtime, runtime(validProbeTarget).replace(telemetryToken, "wrong-observer-token-at-least-32-byte"));
+  const mismatchedObserverToken = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedObserverToken.status, 0, "runtime observer credentials must match the control-plane tenant telemetry token");
+  assert.match(mismatchedObserverToken.stderr, /observer 的 telemetryToken 必须匹配/, "observer credential mismatch must identify the telemetry token gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
   const demoGateway = check(["--require-cosyvoice"]);
   assert.notEqual(demoGateway.status, 0, "production deployment must reject runtime gateway demo mode");
