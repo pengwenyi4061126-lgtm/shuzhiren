@@ -24,6 +24,7 @@
     "output-probe:test": "node scripts/test-output-probe.mjs",
     "channel-adapter:test": "node scripts/test-channel-adapter.mjs",
     "alert-notifier:test": "node scripts/test-alert-notifier.mjs",
+    "alert-notifier:health:check": "node scripts/check-alert-notifier-health.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
     "deploy:check:test": "node scripts/test-deployment-config.mjs",
     "backup:automation:check": "node scripts/check-backup-automation.mjs",

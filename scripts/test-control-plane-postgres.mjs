@@ -579,6 +579,10 @@ try {
     stdio: ["ignore", "pipe", "pipe"]
   });
   await waitFor(async () => (await fetch(`http://127.0.0.1:${notifierPort}/healthz`)).ok, 10_000, "alert notifier startup");
+  const notifierHealth = await fetch(`http://127.0.0.1:${notifierPort}/healthz`);
+  const notifierHealthBody = await notifierHealth.json();
+  assert.equal(notifierHealthBody.ok, true, "alert notifier health must require a fresh successful polling cycle");
+  assert.equal(typeof notifierHealthBody.lastSuccessfulTickAt, "string", "alert notifier health must expose the last successful polling cycle");
   await waitFor(() => mock.alertNotifications.some((notification) => notification.payload.alert.id === alertId), 10_000, "runtime alert webhook delivery");
   assert.equal(mock.alertNotifications.find((notification) => notification.payload.alert.id === alertId)?.payload.alert.code, "runtime_telemetry_stale");
   const notificationDelivery = await client.query("select state, attempts from alert_notification_deliveries where runtime_alert_id = $1", [alertId]);

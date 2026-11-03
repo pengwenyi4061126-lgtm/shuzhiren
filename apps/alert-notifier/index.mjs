@@ -11,14 +11,19 @@ const maxAttempts = positiveInt(process.env.ALERT_NOTIFIER_MAX_ATTEMPTS, 6, "ALE
 const retryBaseMs = positiveInt(process.env.ALERT_NOTIFIER_RETRY_BASE_MS, 1_000, "ALERT_NOTIFIER_RETRY_BASE_MS");
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.ALERT_NOTIFIER_RETRY_MAX_MS, 60_000, "ALERT_NOTIFIER_RETRY_MAX_MS"));
 const pool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
+let stopping = false;
+let lastSuccessfulTickAt = null;
+let lastTickError = null;
 
 const server = http.createServer(async (request, response) => {
   if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { error: "not_found" });
   try {
     await pool.query("select 1");
-    return json(response, 200, { ok: true, targets: targets.length });
+    const tickFresh = lastSuccessfulTickAt !== null && Date.now() - lastSuccessfulTickAt <= Math.max(pollMs * 3, 15_000);
+    const ok = tickFresh && !stopping;
+    return json(response, ok ? 200 : 503, { ok, targets: targets.length, lastSuccessfulTickAt: lastSuccessfulTickAt === null ? null : new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError });
   } catch {
-    return json(response, 503, { ok: false });
+    return json(response, 503, { ok: false, targets: targets.length, lastSuccessfulTickAt: lastSuccessfulTickAt === null ? null : new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError ?? "database_unavailable" });
   }
 });
 
@@ -27,6 +32,7 @@ let running = false;
 const timer = setInterval(() => void tick(), pollMs);
 void tick();
 for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => {
+  stopping = true;
   clearInterval(timer);
   server.close(() => pool.end().finally(() => process.exit(0)));
 });
@@ -40,8 +46,11 @@ async function tick() {
       const delivery = await claimDelivery(target);
       if (delivery) await deliver(target, delivery);
     }
+    lastSuccessfulTickAt = Date.now();
+    lastTickError = null;
   } catch (error) {
-    console.error("alert-notifier.tick_failed", error instanceof Error ? error.message : error);
+    lastTickError = error instanceof Error ? error.message : "alert_notifier_tick_failed";
+    console.error("alert-notifier.tick_failed", lastTickError);
   } finally {
     running = false;
   }

@@ -36,6 +36,7 @@ const checks = [
   ["run", "output-probe:test"],
   ["run", "channel-adapter:test"],
   ["run", "alert-notifier:test"],
+  ["run", "alert-notifier:health:check"],
   ["run", "typecheck"],
   ["run", "lint"],
   ["run", "build"]
