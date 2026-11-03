@@ -150,7 +150,7 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 docker compose --env-file /srv/shuzhiren/control-plane-compose.env -f infra/compose/docker-compose.control-plane.yml --profile migrate run --rm control-plane-migrate
 ```
 
-2. 启动控制台和 OIDC 配置。控制台 Compose 默认只绑定 `127.0.0.1:3000`；对外访问必须经过已经配置 TLS、OIDC 回调和来源限制的反向代理，不能将应用端口直接暴露到公网。`/api/health` 只有在生产配置有效且 PostgreSQL 可查询时才返回 `200`，Docker 健康检查使用该端点；它不替代 Gateway、GPU 或输出探针的运行时健康判定。
+2. 启动控制台和 OIDC 配置。控制台 Compose 默认只绑定 `127.0.0.1:3000`；对外访问必须经过已经配置 TLS、OIDC 回调和来源限制的反向代理，不能将应用端口直接暴露到公网。`/api/health` 只有在生产数据库可查询且 OIDC issuer、audience、JWKS 完整有效时才返回 `200`，Docker 健康检查使用该端点；公开生产 OIDC URL 必须为 HTTPS，本地 loopback URL 只允许集成测试。它不替代 Gateway、GPU 或输出探针的运行时健康判定。
 
 ```bash
 docker compose --env-file /srv/shuzhiren/control-plane-compose.env -f infra/compose/docker-compose.control-plane.yml up --build -d control-plane
