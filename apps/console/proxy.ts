@@ -92,4 +92,4 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
 function stringClaim(payload: Record<string, unknown>, key: string) { const value = payload[key]; return typeof value === "string" && value.length > 0 ? value : undefined; }
 function error(error: string, status: number) { return NextResponse.json({ error }, { status }); }
 
-export const config = { matcher: "/api/v1/:path*" };
+export const config = { matcher: ["/((?!api/health(?:/.*)?|_next/static|_next/image|favicon.ico).*)"] };

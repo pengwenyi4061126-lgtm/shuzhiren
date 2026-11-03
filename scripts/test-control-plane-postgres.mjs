@@ -107,6 +107,10 @@ try {
   const consoleHealthBody = await consoleHealth.json();
   assert.equal(consoleHealthBody.dependencies.controlPlane, "ok", "the control-plane health endpoint must verify PostgreSQL instead of returning a static success response");
   assert.equal(consoleHealthBody.dependencies.authentication, "oidc", "the control-plane health endpoint must verify production OIDC configuration");
+  const anonymousPage = await fetch(`http://127.0.0.1:${consolePort}/`);
+  assert.equal(anonymousPage.status, 401, "production console pages must reject anonymous requests before server rendering");
+  const authenticatedPage = await fetch(`http://127.0.0.1:${consolePort}/`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(authenticatedPage.status, 200, "a valid production operator token must render the console page");
 
   const requestHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
   const operatorRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${operatorToken}` };
