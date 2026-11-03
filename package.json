@@ -40,6 +40,8 @@
     "runtime:media:check": "node scripts/check-bound-runtime-media.mjs",
     "runtime:voice:check": "node scripts/check-frozen-runtime-voice.mjs",
     "runtime:journal:check": "node scripts/check-runtime-gateway-journal.mjs",
+    "runtime:images:check": "node scripts/check-runtime-service-images.mjs",
+    "runtime:worker:config:test": "node scripts/test-runtime-worker-config.mjs",
     "runtime:acceptance:verify": "node scripts/verify-4090-acceptance.mjs",
     "runtime:acceptance:test": "node scripts/test-4090-acceptance.mjs",
     "verify:local": "node scripts/verify-local.mjs",

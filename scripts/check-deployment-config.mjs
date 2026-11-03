@@ -279,7 +279,7 @@ try {
   if (!cosyVoice.includes("return StreamingResponse(generate_data(model_output))") || !cosyVoice.includes("tts_speech")) errors.push("锁定 CosyVoice FastAPI 不再输出原始语音 PCM 流");
   if (!gatewayAppText.includes('COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))') || !gatewayAppText.includes("pcm_s16le_to_wav")) errors.push("Gateway 未以 24 kHz 配置封装 CosyVoice PCM");
   if (!gatewayDockerfileText.includes("COPY app.py audio.py .")) errors.push("Gateway 镜像缺少 PCM/WAV 封装模块");
-  if (!observerDockerfileText.includes("COPY apps/runtime-observer/targets.mjs ./targets.mjs")) errors.push("Runtime observer 镜像缺少受管目标解析模块");
+  if (!/COPY(?:\s+--chown=[^\s]+)?\s+apps\/runtime-observer\/targets\.mjs\s+\.\/targets\.mjs/.test(observerDockerfileText)) errors.push("Runtime observer 镜像缺少受管目标解析模块");
 } catch (error) {
   errors.push(`开源运行时启动契约不可验证：${error instanceof Error ? error.message : "读取失败"}`);
 }

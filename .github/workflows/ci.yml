@@ -43,6 +43,9 @@ jobs:
         env:
           CONTROL_PLANE_ENV_FILE: config/control-plane.example.env
       - run: docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .
+      - run: docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .
+      - run: docker build --file apps/runtime-observer/Dockerfile --tag shuzhiren-runtime-observer-ci .
+      - run: docker build --file apps/output-probe/Dockerfile --tag shuzhiren-output-probe-ci .
       - run: npm run policy:red-team
       - run: npm run preflight:check
       - run: npm run lifecycle:authz:check
@@ -56,6 +59,8 @@ jobs:
       - run: npm run runtime:media:check
       - run: npm run runtime:voice:check
       - run: npm run runtime:journal:check
+      - run: npm run runtime:images:check
+      - run: npm run runtime:worker:config:test
       - run: npm run runtime:acceptance:test
       - run: npm run observer:runtime:test
       - run: npm run observer:targets:test

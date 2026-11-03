@@ -1,0 +1,12 @@
+.git
+.github
+.agents
+.codex
+node_modules
+.npm
+apps/*/node_modules
+apps/*/.next
+vendor
+docs
+data
+*.log

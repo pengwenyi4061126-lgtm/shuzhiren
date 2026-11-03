@@ -25,6 +25,8 @@ const checks = [
   ["run", "runtime:media:check"],
   ["run", "runtime:voice:check"],
   ["run", "runtime:journal:check"],
+  ["run", "runtime:images:check"],
+  ["run", "runtime:worker:config:test"],
   ["run", "runtime:acceptance:test"],
   ["run", "observer:runtime:test"],
   ["run", "observer:targets:test"],

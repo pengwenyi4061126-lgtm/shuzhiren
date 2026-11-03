@@ -4,7 +4,7 @@ import pg from "pg";
 const { Pool } = pg;
 const databaseUrl = required("DATABASE_URL");
 const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
-const gatewayToken = required("RUNTIME_SHARED_TOKEN");
+const gatewayToken = requiredSecret("RUNTIME_SHARED_TOKEN");
 const pollMs = positiveInt(process.env.OUTBOX_POLL_MS, 1000);
 const schedulerPollMs = positiveInt(process.env.SCHEDULER_POLL_MS, 1000);
 const schedulerBatchSize = positiveInt(process.env.SCHEDULER_BATCH_SIZE, 10);
@@ -20,6 +20,7 @@ const healthPort = positiveInt(process.env.RUNTIME_WORKER_PORT, 8080);
 const pool = new Pool({ connectionString: databaseUrl, max: 4 });
 
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
+function requiredSecret(name) { const value = required(name); if (value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`); return value; }
 function positiveInt(value, fallback) { const parsed = Number.parseInt(value ?? "", 10); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }
 function log(event, fields = {}) { process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), service: "runtime-worker", event, ...fields })}\n`); }
 
