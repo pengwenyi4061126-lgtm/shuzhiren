@@ -33,6 +33,15 @@ const navigation: NavigationItem[] = [
   { icon: SquareStack, label: "渠道设置", href: "/channels" }
 ];
 const stateLabel: Record<LiveRunState, string> = { DRAFT: "草稿", REVIEW: "审核中", APPROVED: "已批准", PREFLIGHT: "预检", ARMED: "待开播", LIVE: "直播中", DEGRADED: "降级运行", ENDED: "已结束", ARCHIVED: "已归档" };
+const confirmationActions = new Set<LiveCommand["action"]>(["START", "PAUSE", "HANDOFF", "END"]);
+const commandActionLabel: Record<LiveCommand["action"], string> = { START: "开始直播", PAUSE: "切入备用节目", HANDOFF: "切入人工接管", RECOVER: "恢复数字人节目", END: "结束直播" };
+const commandConfirmationNotice: Record<LiveCommand["action"], string> = {
+  START: "该动作会向运行时投递开播指令，并等待 Gateway 回执后才进入直播状态。",
+  PAUSE: "该动作会立即要求媒体运行时切入备用节目。",
+  HANDOFF: "该动作会立即要求媒体运行时切入人工接管。",
+  RECOVER: "该动作会在运行时健康校验通过后恢复数字人节目。",
+  END: "该动作会向运行时投递停止指令；Gateway 确认后场次结束，不能撤销。"
+};
 
 export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initialInteractions, canOperate }: Props) {
   const [run, setRun] = useState(initialRun);
@@ -51,6 +60,8 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
   const [commandError, setCommandError] = useState<string | null>(null);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const [gatewayConfirmation, setGatewayConfirmation] = useState<GatewayConfirmation | null>(null);
+  const [confirmationAction, setConfirmationAction] = useState<LiveCommand["action"] | null>(null);
+  const [confirmationAcknowledged, setConfirmationAcknowledged] = useState(false);
   const elapsed = useMemo(() => (run.state === "LIVE" ? "01:24:17" : run.state === "DEGRADED" ? "已降级" : "未开始"), [run.state]);
   const telemetryHealthy = Boolean(telemetry?.outputConnected && telemetry.outputFps >= 24 && telemetry.avSyncMs <= 120 && telemetry.bitrateMbps >= 2 && telemetry.audioActive && telemetry.fallbackReady);
   const selectedInteraction = interactions.find((interaction) => interaction.id === selectedQuestion) ?? null;
@@ -129,9 +140,32 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
     return () => { active = false; window.clearInterval(timer); };
   }, [gatewayConfirmation, run.id]);
 
+  function requestDispatch(action: LiveCommand["action"]) {
+    if (!canOperate || !canTransition(run.state, action) || pendingAction || gatewayConfirmation) return;
+    if (confirmationActions.has(action)) {
+      setConfirmationAction(action);
+      setConfirmationAcknowledged(false);
+      return;
+    }
+    void dispatch(action);
+  }
+
+  function cancelCommandConfirmation() {
+    if (pendingAction) return;
+    setConfirmationAction(null);
+    setConfirmationAcknowledged(false);
+  }
+
+  function confirmCommandDispatch() {
+    const action = confirmationAction;
+    if (!action || !confirmationAcknowledged || pendingAction) return;
+    setConfirmationAction(null);
+    setConfirmationAcknowledged(false);
+    void dispatch(action);
+  }
+
   async function dispatch(action: LiveCommand["action"]) {
     if (!canOperate || !canTransition(run.state, action) || pendingAction) return;
-    if (action === "END" && !window.confirm("确认结束当前直播？此命令会停止场次，不能撤销。")) return;
     setPendingAction(action);
     setCommandError(null);
     setCommandNotice(null);
@@ -222,7 +256,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
             <div className="panel-header"><div><h2>直播预览</h2><span>主运行时 · 720p · {telemetry?.outputFps ?? "--"} FPS</span></div><span className={telemetryHealthy && !alerts.length ? "healthy" : "unhealthy"}><span />{telemetryHealthy && !alerts.length ? "输出健康" : `待处理 ${alerts.length} 项`}</span></div>
             <div className="preview" aria-label="数字人直播预览"><div className="live-badge"><span />{run.state === "LIVE" ? "LIVE" : stateLabel[run.state]}</div><div className="avatar" aria-hidden="true" /><div className="caption">现在下单，赠旅行装三件套</div></div>
             <div className="stage-metrics"><Metric label="视频帧率" value={telemetry ? telemetry.outputFps.toFixed(1) : "--"} unit="FPS" /><Metric label="音画同步" value={telemetry ? String(telemetry.avSyncMs) : "--"} unit="ms" /><Metric label="输出码率" value={telemetry ? String(telemetry.bitrateMbps) : "--"} unit="Mbps" /><Metric label="备用节目" value={telemetry?.fallbackReady ? "就绪" : "未就绪"} unit="" /></div>
-            <div className="control-row"><CommandButton action="START" icon={Play} label="开始" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="PAUSE" icon={Pause} label="暂停" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="HANDOFF" icon={UserRoundCheck} label="人工接管" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="RECOVER" icon={RotateCcw} label="恢复运行" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="END" icon={CircleStop} label="结束" run={run} pendingAction={pendingAction} onDispatch={dispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} danger /></div>
+            <div className="control-row"><CommandButton action="START" icon={Play} label="开始" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="PAUSE" icon={Pause} label="暂停" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="HANDOFF" icon={UserRoundCheck} label="人工接管" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="RECOVER" icon={RotateCcw} label="恢复运行" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="END" icon={CircleStop} label="结束" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} danger /></div>
             {commandNotice ? <p className="command-notice" role="status">{commandNotice}</p> : null}
             {commandError ? <p className="command-error" role="alert">命令未执行：{commandError}</p> : null}
           </section>
@@ -231,6 +265,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
         <section className="panel timeline-panel"><div className="panel-header"><div><h2>节目单与命令记录</h2><span>命令使用幂等键与预期状态校验</span></div><Clock3 size={17} /></div><div className="timeline-content"><div className="program-track"><span className="segment preset">预制讲品 · A-102</span><span className="segment live">实时问答</span><span className="segment queued">成分讲解 · A-103</span></div><div className="command-list">{commands.slice(0, 3).map((command) => <div className="command" key={command.id}><span>{command.action}</span><small>{command.actorName} · {new Date(command.issuedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small><b>{command.result}</b></div>)}</div></div></section>
       </section>
     </main>
+    {confirmationAction ? <div className="command-confirm-backdrop" role="presentation"><section className="command-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="command-confirm-title"><span className={`command-confirm-action ${confirmationAction === "END" ? "danger" : ""}`}>{commandActionLabel[confirmationAction]}</span><h2 id="command-confirm-title">确认派发高风险命令</h2><p>{commandConfirmationNotice[confirmationAction]}</p><dl><div><dt>场次</dt><dd>{run.showName}</dd></div><div><dt>当前状态</dt><dd>{stateLabel[run.state]}</dd></div><div><dt>追踪标识</dt><dd>{run.traceId}</dd></div></dl><label className="command-confirm-check"><input type="checkbox" checked={confirmationAcknowledged} onChange={(event) => setConfirmationAcknowledged(event.target.checked)} />我已核对当前场次和状态，确认执行此命令。</label><div className="command-confirm-actions"><button type="button" onClick={cancelCommandConfirmation}>取消</button><button className={confirmationAction === "END" ? "danger" : ""} type="button" disabled={!confirmationAcknowledged || Boolean(pendingAction)} onClick={confirmCommandDispatch}>确认派发{commandActionLabel[confirmationAction]}</button></div></section></div> : null}
   </div>;
 }
 
