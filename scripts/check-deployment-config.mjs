@@ -61,6 +61,12 @@ function positiveInteger(values, fileName, key) {
   }
 }
 
+function privateSecret(values, fileName, key) {
+  const value = values.get(key);
+  if (!value || (allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(value))) return;
+  if (value.length < 32 || /\s/.test(value)) errors.push(`${fileName} 的 ${key} 必须是至少 32 个字符且不含空白的私网密钥`);
+}
+
 function git(directory, args) {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
@@ -89,6 +95,9 @@ equal(gateway, "Gateway", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "true");
 if (!gateway.get("RUNTIME_GATEWAY_STATE_PATH")?.startsWith("/")) errors.push("Gateway 的 RUNTIME_GATEWAY_STATE_PATH 必须是受控主机绝对路径");
 if (["0.0.0.0", "::", "[::]"].includes(gateway.get("RUNTIME_GATEWAY_HOST_BIND") ?? "")) errors.push("Gateway 的 RUNTIME_GATEWAY_HOST_BIND 不得使用全网卡通配监听地址");
 if (requireCosyVoice) equal(gateway, "Gateway", "COSYVOICE_REQUIRED", "true");
+privateSecret(runtime, "运行时", "RUNTIME_SHARED_TOKEN");
+privateSecret(gateway, "Gateway", "RUNTIME_SHARED_TOKEN");
+if (runtime.get("OUTPUT_PROBE_SHARED_TOKEN")) privateSecret(runtime, "运行时", "OUTPUT_PROBE_SHARED_TOKEN");
 for (const key of ["STREAM_FPS", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]) positiveInteger(runtime, "运行时", key);
 equal(control, "控制面", "NODE_ENV", "production");
 equal(control, "控制面", "CONTROL_PLANE_DEMO_MODE", "false");
@@ -98,7 +107,7 @@ for (const key of ["RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_
   const value = control.get(key);
   try {
     const tokens = value ? JSON.parse(value) : null;
-    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens) || !Object.entries(tokens).every(([tenant, token]) => tenant.length > 0 && typeof token === "string" && token.length >= 16)) throw new Error("invalid");
+    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens) || !Object.entries(tokens).every(([tenant, token]) => tenant.length > 0 && typeof token === "string" && token.length >= 32 && !/\s/.test(token))) throw new Error("invalid");
     tenantServiceTokenMaps.set(key, tokens);
   } catch {
     const message = `控制面 的 ${key} 必须是每租户独立服务密钥的 JSON 对象`;
@@ -106,20 +115,25 @@ for (const key of ["RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_
   }
 }
 const tokenOwners = new Map();
+function claimPrivateToken(token, owner) {
+  if (!token || (allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(token))) return;
+  const previousOwner = tokenOwners.get(token);
+  if (previousOwner && previousOwner !== owner) errors.push("私网服务 token 不得跨服务或跨租户复用");
+  else tokenOwners.set(token, owner);
+}
 for (const [service, tokens] of tenantServiceTokenMaps) {
   for (const [tenantId, token] of Object.entries(tokens)) {
-    const owner = `${service}:${tenantId}`;
-    const previousOwner = tokenOwners.get(token);
-    if (previousOwner && previousOwner !== owner) errors.push("控制面的私网服务 token 不得跨服务或跨租户复用");
-    else tokenOwners.set(token, owner);
+    claimPrivateToken(token, `${service}:${tenantId}`);
   }
 }
+claimPrivateToken(runtime.get("RUNTIME_SHARED_TOKEN"), "runtime-gateway");
+claimPrivateToken(runtime.get("OUTPUT_PROBE_SHARED_TOKEN"), "output-probe");
 try {
   const targets = JSON.parse(channelAdapter.get("CHANNEL_ADAPTER_TARGETS") ?? "");
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
     && uuid.test(target.tenantId ?? "") && uuid.test(target.channelConnectionId ?? "")
-    && [target.signingSecret, target.interactionToken, target.commerceToken].every((value) => typeof value === "string" && value.length >= 16)
+    && [target.signingSecret, target.interactionToken, target.commerceToken].every((value) => typeof value === "string" && value.length >= 32 && !/\s/.test(value))
     && new Set([target.signingSecret, target.interactionToken, target.commerceToken]).size === 3;
   if (!Array.isArray(targets) || !targets.length || !targets.every(targetValid)) throw new Error("invalid");
   const interactionTokens = tenantServiceTokenMaps.get("CHANNEL_INGEST_TENANT_TOKENS") ?? {};
@@ -127,6 +141,7 @@ try {
   for (const target of targets) {
     if (target.interactionToken !== interactionTokens[target.tenantId]) errors.push("渠道适配器的 interactionToken 必须匹配控制面同租户的 CHANNEL_INGEST_TENANT_TOKENS");
     if (target.commerceToken !== commerceTokens[target.tenantId]) errors.push("渠道适配器的 commerceToken 必须匹配控制面同租户的 CHANNEL_COMMERCE_TENANT_TOKENS");
+    claimPrivateToken(target.signingSecret, `channel-adapter-signature:${target.tenantId}:${target.channelConnectionId}`);
   }
 } catch {
   const message = "渠道适配器的 CHANNEL_ADAPTER_TARGETS 必须包含 UUID 租户/渠道和三种不同的高熵密钥";
@@ -137,9 +152,10 @@ try {
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
     && /^[A-Za-z0-9._-]{1,80}$/.test(target.id ?? "") && uuid.test(target.tenantId ?? "")
-    && /^https:\/\//.test(target.webhookUrl ?? "") && typeof target.signingSecret === "string" && target.signingSecret.length >= 16
+    && /^https:\/\//.test(target.webhookUrl ?? "") && typeof target.signingSecret === "string" && target.signingSecret.length >= 32 && !/\s/.test(target.signingSecret)
     && [undefined, "warning", "critical"].includes(target.minimumSeverity);
   if (!Array.isArray(targets) || !targets.length || !targets.every(targetValid)) throw new Error("invalid");
+  for (const target of targets) claimPrivateToken(target.signingSecret, `alert-notifier-signature:${target.tenantId}:${target.id}`);
 } catch {
   const message = "告警通知器的 ALERT_NOTIFIER_TARGETS 必须包含租户 UUID、HTTPS 目标、独立签名密钥和有效最低等级";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);
@@ -157,13 +173,13 @@ try {
   const targets = JSON.parse(runtime.get("RUNTIME_OBSERVER_TARGETS") ?? "[]");
   const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
     && ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"].every((key) => typeof target[key] === "string" && target[key].length > 0)
-    && target.telemetryToken.length >= 16
-    && (target.outputProbeToken === undefined || (typeof target.outputProbeToken === "string" && target.outputProbeToken.length >= 16))
+    && target.telemetryToken.length >= 32
+    && (target.outputProbeToken === undefined || (typeof target.outputProbeToken === "string" && target.outputProbeToken.length >= 32))
     && /^https?:\/\//.test(target.outputProbeUrl);
   if (!Array.isArray(targets) || !targets.every(targetValid)) throw new Error("invalid");
   const telemetryTokens = tenantServiceTokenMaps.get("RUNTIME_TELEMETRY_TENANT_TOKENS") ?? {};
   const outputProbeToken = runtime.get("OUTPUT_PROBE_SHARED_TOKEN");
-  if (targets.length > 0 && (!outputProbeToken || outputProbeToken.length < 16 || (!allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(outputProbeToken)))) errors.push("运行时 observer 目标需要有效的 OUTPUT_PROBE_SHARED_TOKEN");
+  if (targets.length > 0 && (!outputProbeToken || outputProbeToken.length < 32 || /\s/.test(outputProbeToken) || (!allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(outputProbeToken)))) errors.push("运行时 observer 目标需要有效的 OUTPUT_PROBE_SHARED_TOKEN");
   for (const target of targets) {
     if (target.telemetryToken !== telemetryTokens[target.tenantId]) errors.push("运行时 observer 的 telemetryToken 必须匹配控制面同租户的 RUNTIME_TELEMETRY_TENANT_TOKENS");
     if (target.outputProbeToken !== outputProbeToken) errors.push("运行时 observer 的 outputProbeToken 必须匹配 OUTPUT_PROBE_SHARED_TOKEN");

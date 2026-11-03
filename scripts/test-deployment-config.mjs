@@ -157,6 +157,20 @@ try {
   assert.match(reusedServiceToken.stderr, /不得跨服务或跨租户复用/, "service-token reuse must identify the least-privilege deployment gate");
   await writeFile(files.control, control);
 
+  await writeFile(files.runtime, runtime(validProbeTarget).replaceAll(runtimeToken, "short"));
+  await writeFile(files.gateway, gateway.replaceAll(runtimeToken, "short"));
+  const shortRuntimeToken = check(["--require-cosyvoice"]);
+  assert.notEqual(shortRuntimeToken.status, 0, "runtime Gateway authentication must reject a short shared token");
+  assert.match(shortRuntimeToken.stderr, /RUNTIME_SHARED_TOKEN/, "short runtime token rejection must identify the shared-token gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replaceAll(outputProbeToken, runtimeToken));
+  const reusedOutputProbeToken = check(["--require-cosyvoice"]);
+  assert.notEqual(reusedOutputProbeToken.status, 0, "output probe credentials must not reuse the runtime Gateway token");
+  assert.match(reusedOutputProbeToken.stderr, /不得跨服务或跨租户复用/, "output probe token reuse must identify the least-privilege deployment gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
   await writeFile(files.channel, channel.replace("channel-ingest-token-at-least-32-bytes", "wrong-interaction-token-at-least-32"));
   const mismatchedAdapterToken = check(["--require-cosyvoice"]);
   assert.notEqual(mismatchedAdapterToken.status, 0, "channel adapter interaction credentials must match the control-plane tenant token");
