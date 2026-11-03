@@ -6,20 +6,22 @@
 
 - 仓库：`git@github.com:pengwenyi4061126-lgtm/shuzhiren.git`
 - 分支：`master`
-- 已推送检查点：`8514765 fix: report observer startup health accurately`
+- 远端检查点：`a42b6c4 docs: add system migration resume handoff`
+- 本地检查点：`fc43a91 fix: validate channel adapter control plane URL`（当前领先远端 1 个提交，待恢复 SSH 凭据后推送）。
 - 工作区状态：干净；没有未提交的代码、配置或密钥文件。
 - 本文件不保存任何平台密钥、SSH 私钥、GPU 租机凭据、OIDC 凭据或数据库口令。
 
-最近已推送的运行可靠性改进：
+最近的运行可靠性与部署安全改进：
 
 1. `078ecf7`：Gateway 在启动前校验上游 URL、CosyVoice 采样率、请求超时、命令缓存和三类动作槽位。
 2. `e49601a`：部署预检拒绝重复或超出 `0..255` 的节目、备用、人工接管动作槽位。
 3. `87a1922`：渠道 Webhook 对外使用稳定错误码，内部异常仅写服务日志。
 4. `8514765`：runtime-observer 在首次遥测成功前明确报告 `lastSuccessfulCycleAt: null`。
+5. `fc43a91`：渠道适配器与部署预检拒绝包含嵌入凭据或非 HTTP(S) 的 `CONTROL_PLANE_URL`；渠道和部署测试均已覆盖。
 
 ## 新系统恢复步骤
 
-1. 安装 Git、Node.js 20+、Docker Desktop/Engine、可用于 Gateway 测试的 Python 3.11+；4090 运行机还需要 NVIDIA 驱动、NVIDIA Container Toolkit 和受许可的模型权重。
+1. Windows 控制面开发机至少恢复 Git 和 Node.js 20+。Docker、临时 PostgreSQL 与 Python 3.11+ 只在完整 CI、Gateway 本地测试或 Linux 4090 运行机部署时需要；4090 运行机还需要 NVIDIA 驱动、NVIDIA Container Toolkit 和受许可的模型权重。
 2. 配置能访问 GitHub 仓库的 SSH 私钥，再验证：
 
 ```powershell
@@ -72,8 +74,9 @@ npm run build
 - 真实授权素材、声线/肖像授权、模型许可证和发布包验收证据。
 - 4 小时单路验收和 `npm run runtime:acceptance:verify` 所需的真实验收证据。
 
-## 下一步代码工作
+## 代码审计结果与下一步
 
-下一轮应从渠道适配器的出站控制面 URL 继续：限制 `CONTROL_PLANE_URL` 为无嵌入凭据的 HTTP(S) 地址，并在 `scripts/check-deployment-config.mjs` 与 `scripts/test-deployment-config.mjs` 中加入同一部署预检。上一轮对此的补丁未应用成功，且已确认工作区干净，所以不存在半完成修改。
-
-随后做一次按 `docs/FRAMEWORK_STATUS.md` 的逐项完成审计：用真实运行证据区分“代码已完成”和“等待 GPU/平台/账号”的外部前置条件。
+- 渠道适配器出站控制面 URL 的安全约束已在 `fc43a91` 完成并由 `npm run channel-adapter:test`、`npm run deploy:check:test` 验证。
+- 已执行 `npm run verify:local`：42 项本机配置契约、策略、权限、运行时可靠性、observer、输出探针、渠道、告警、类型检查、lint 与生产构建均通过。该命令不连接 PostgreSQL、不启动 Docker，也不能证明 Python Gateway、GPU 或平台验收。
+- 仓库内没有待实现的 `TODO`、`FIXME` 或 stub 代码。`docs/FRAMEWORK_STATUS.md` 中仍标记为进行中的项目均需要真实平台 OAuth/Webhook、ERP/PIM、OIDC 成员同步、结算对账、生产密钥或 4090 试播证据，不能用开发态模拟补全。
+- 恢复受控 SSH 凭据后推送 `fc43a91`；之后按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
