@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { alertPayload, matchingSeverities, parseTargets, retryDelayMs, signWebhook, verifyWebhook } from "../apps/alert-notifier/lib.mjs";
 
 const tenantId = "b783df8e-8456-44fa-9f04-e50429eac7a3";
-const targets = parseTargets(JSON.stringify([{ id: "oncall-critical", tenantId, webhookUrl: "https://alerts.example.com/hook", signingSecret: "notification-signing-secret", minimumSeverity: "critical" }]));
+const targets = parseTargets(JSON.stringify([{ id: "oncall-critical", tenantId, webhookUrl: "https://alerts.example.com/hook", signingSecret: "notification-signing-secret-at-least-32-chars", minimumSeverity: "critical" }]));
 assert.equal(targets.length, 1);
-assert.throws(() => parseTargets(JSON.stringify([{ id: "oncall", tenantId, webhookUrl: "http://alerts.example.com/hook", signingSecret: "notification-signing-secret" }])), /HTTPS/);
+assert.throws(() => parseTargets(JSON.stringify([{ id: "oncall", tenantId, webhookUrl: "http://alerts.example.com/hook", signingSecret: "notification-signing-secret-at-least-32-chars" }])), /HTTPS/);
 const payload = alertPayload({ id: "delivery-1", alert_id: "alert-1", live_run_id: "run-1", severity: "critical", code: "stream_disconnected", message: "Output disconnected", opened_at: "2026-11-02T00:00:00.000Z" });
 assert.equal(payload.eventType, "runtime_alert.opened");
 assert.equal(payload.alert.severity, "critical");

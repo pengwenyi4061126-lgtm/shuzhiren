@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { parseNormalizedEvent, parseTargets, payloadSha256, verifyWebhook } from "../apps/channel-adapter/lib.mjs";
 
-const secret = "signing-secret-123";
+const secret = "channel-signing-secret-at-least-32-chars";
 const now = 1_700_000_000_000;
 const raw = JSON.stringify({ kind: "interaction", runId: "run_1", question: "现在有赠品吗？" });
 const timestamp = String(now);
@@ -20,7 +20,7 @@ assert.throws(() => parseNormalizedEvent({ kind: "commerce", runId: "run_1", eve
 assert.throws(() => parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 0 }), /Amount does not match/);
 assert.throws(() => parseNormalizedEvent({ kind: "commerce", runId: "run_1", eventType: "order_paid", amountCents: 9900, quantity: 0 }), /Paid order quantity/);
 
-const validTarget = { tenantId: "123e4567-e89b-12d3-a456-426614174000", channelConnectionId: "223e4567-e89b-12d3-a456-426614174000", signingSecret: secret, interactionToken: "interaction-token-123", commerceToken: "commerce-token-1234" };
+const validTarget = { tenantId: "123e4567-e89b-12d3-a456-426614174000", channelConnectionId: "223e4567-e89b-12d3-a456-426614174000", signingSecret: secret, interactionToken: "interaction-token-at-least-32-chars", commerceToken: "commerce-token-at-least-32-chars" };
 assert.equal(parseTargets(JSON.stringify([validTarget])).size, 1);
 assert.throws(() => parseTargets(JSON.stringify([{ ...validTarget, commerceToken: validTarget.interactionToken }])), /must differ/);
 assert.throws(() => parseTargets(JSON.stringify([{ ...validTarget, tenantId: "123e4567-e89b-12d3-c456-426614174000" }])), /must be UUIDs/);

@@ -9,7 +9,7 @@ export function parseTargets(value) {
   for (const item of parsed) {
     if (!item || typeof item !== "object") throw new Error("Invalid channel adapter target");
     const { tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken } = item;
-    if (![tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken].every((entry) => typeof entry === "string" && entry.length >= 16)) throw new Error("Each channel adapter target requires tenantId, channelConnectionId and distinct secrets");
+    if (![tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken].every((entry) => typeof entry === "string" && entry.length >= 32 && !/\s/.test(entry))) throw new Error("Each channel adapter target requires tenantId, channelConnectionId and distinct 32-character secrets without whitespace");
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tenantId) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(channelConnectionId)) throw new Error("Channel adapter target IDs must be UUIDs");
     if (new Set([signingSecret, interactionToken, commerceToken]).size !== 3) throw new Error("Channel adapter signing, interaction, and commerce secrets must differ");
     if (byChannel.has(channelConnectionId)) throw new Error(`Duplicate channelConnectionId: ${channelConnectionId}`);

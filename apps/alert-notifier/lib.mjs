@@ -12,7 +12,7 @@ export function parseTargets(value, { allowInsecureHttp = false } = {}) {
     if (![id, tenantId, webhookUrl, signingSecret].every((entry) => typeof entry === "string" && entry.length)) throw new Error("Each alert notifier target requires id, tenantId, webhookUrl and signingSecret");
     if (!/^[A-Za-z0-9._-]{1,80}$/.test(id)) throw new Error("Alert notifier target id is invalid");
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tenantId)) throw new Error("Alert notifier tenantId must be a UUID");
-    if (signingSecret.length < 16) throw new Error("Alert notifier signingSecret must be at least 16 characters");
+    if (signingSecret.length < 32 || /\s/.test(signingSecret)) throw new Error("Alert notifier signingSecret must be at least 32 non-whitespace characters");
     if (!severities.has(minimumSeverity)) throw new Error("Alert notifier minimumSeverity is invalid");
     const url = new URL(webhookUrl);
     if (url.protocol !== "https:" && !(allowInsecureHttp && url.protocol === "http:")) throw new Error("Alert notifier webhookUrl must use HTTPS");
