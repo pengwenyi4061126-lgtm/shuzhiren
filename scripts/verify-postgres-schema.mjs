@@ -70,6 +70,9 @@ try {
   const extension = await client.query("select exists(select 1 from pg_extension where extname = 'pgcrypto') as installed");
   if (!extension.rows[0].installed) errors.push("缺少 pgcrypto 扩展");
 
+  const outboxStates = new Set((await client.query("select e.enumlabel from pg_type t join pg_enum e on e.enumtypid = t.oid where t.typname = 'outbox_state'")).rows.map((row) => row.enumlabel));
+  for (const state of ["pending", "delivering", "delivered", "failed", "cancelled"]) if (!outboxStates.has(state)) errors.push(`outbox_state 缺少状态：${state}`);
+
   const identity = await client.query("select current_user as role, r.rolsuper, r.rolbypassrls from pg_roles r where r.rolname = current_user");
   if (!allowPrivileged && (identity.rows[0]?.rolsuper || identity.rows[0]?.rolbypassrls)) errors.push(`应用数据库账号 ${identity.rows[0]?.role ?? "unknown"} 可绕过 RLS；请使用非超级、非 BYPASSRLS 的运行时账号`);
 
