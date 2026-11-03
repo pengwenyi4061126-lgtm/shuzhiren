@@ -37,6 +37,7 @@
     "console:security-headers:check": "node scripts/check-console-security-headers.mjs",
     "console:client-requests:check": "node scripts/check-console-client-requests.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
+    "governance:immutability:check": "node scripts/check-governed-evidence-immutability.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "lifecycle:authz:check": "node scripts/check-lifecycle-authorization.mjs",
     "command:confirmation:check": "node scripts/check-command-confirmation.mjs",

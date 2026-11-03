@@ -20,7 +20,7 @@ const requiredColumns = { live_runs: ["scheduled_start_event_id", "pending_media
 const requiredIndexes = ["live_runs_pending_media_event_id_key", "live_interactions_external_event_id_idx", "commerce_events_run_occurred_idx", "commerce_events_run_type_idx", "channel_webhook_replays_lease_idx", "runtime_alerts_tenant_acknowledged_idx", "runtime_alerts_one_open_condition_key", "alert_notification_deliveries_claim_idx", "incidents_tenant_status_opened_idx", "audit_events_tenant_chain_sequence_idx", "usage_records_tenant_code_occurred_idx", "media_assets_tenant_revoked_idx", "show_revision_media_assets_tenant_revision_idx", "model_releases_tenant_revoked_idx", "policy_profiles_tenant_approval_idx", "policy_profiles_tenant_revoked_idx", "show_revision_policy_profiles_tenant_revision_idx", "show_revision_release_manifest_snapshots_tenant_revision_idx"];
 const rlsTables = new Set(["products", "product_versions", "shows", "show_revisions", "live_runs", "live_commands", "preflight_checks", "show_revision_product_versions", "audit_events", "audit_chain_heads", "outbox_events", "show_revision_segments", "media_assets", "show_revision_media_assets", "channel_connections", "runtime_health_samples", "runtime_alerts", "live_interactions", "model_releases", "show_revision_model_releases", "commerce_events", "channel_webhook_replays", "alert_notification_deliveries", "incidents", "tenant_entitlements", "usage_records", "policy_profiles", "show_revision_policy_profiles", "show_revision_release_manifest_snapshots"]);
 const requiredPolicies = ["tenant_isolation_products", "tenant_isolation_product_versions", "tenant_isolation_shows", "tenant_isolation_show_revisions", "tenant_isolation_live_runs", "tenant_isolation_live_commands", "tenant_isolation_preflight_checks", "tenant_isolation_show_revision_product_versions", "tenant_isolation_audit_events", "tenant_isolation_audit_chain_heads", "tenant_isolation_outbox_events", "tenant_isolation_show_revision_segments", "tenant_isolation_media_assets", "tenant_isolation_show_revision_media_assets", "tenant_isolation_channel_connections", "tenant_isolation_runtime_health_samples", "tenant_isolation_runtime_alerts", "tenant_isolation_live_interactions", "tenant_isolation_model_releases", "tenant_isolation_show_revision_model_releases", "tenant_isolation_commerce_events", "tenant_isolation_channel_webhook_replays", "tenant_isolation_alert_notification_deliveries", "tenant_isolation_incidents", "tenant_isolation_tenant_entitlements", "tenant_isolation_usage_records", "tenant_isolation_policy_profiles", "tenant_isolation_show_revision_policy_profiles", "tenant_isolation_show_revision_release_manifest_snapshots"];
-const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only"];
+const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only", "product_versions_governed_immutable", "show_revisions_append_only", "policy_profiles_governed_immutable", "model_releases_governed_immutable", "live_commands_append_only"];
 const expectedMigrations = (await readdir(migrationsDirectory)).filter((name) => name.endsWith(".sql")).sort();
 const errors = [];
 
@@ -88,6 +88,7 @@ try {
   if (allowPrivileged) {
     await verifyRlsPolicyWithUnprivilegedRole();
   }
+  await verifyGovernedEvidenceImmutability();
 } catch (error) {
   errors.push(error instanceof Error ? error.message : "数据库结构检查失败");
 } finally {
@@ -135,5 +136,65 @@ async function verifyRlsPolicyWithUnprivilegedRole() {
     await client.query("delete from products where id in ($1, $2)", [rlsProbeProductA, rlsProbeProductB]).catch(() => undefined);
     await client.query("delete from tenants where id in ($1, $2)", [rlsProbeTenantA, rlsProbeTenantB]).catch(() => undefined);
     await client.query(`drop role if exists ${role}`).catch(() => undefined);
+  }
+}
+
+async function verifyGovernedEvidenceImmutability() {
+  const tenantId = randomUUID();
+  const productId = randomUUID();
+  const productVersionId = randomUUID();
+  const showId = randomUUID();
+  const revisionId = randomUUID();
+  const policyProfileId = randomUUID();
+  const releaseId = randomUUID();
+  const runId = randomUUID();
+  const commandId = randomUUID();
+
+  await client.query("begin");
+  try {
+    await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+    await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Governed evidence verifier')", [tenantId, `governed-evidence-${tenantId}`]);
+    const actor = await client.query("insert into users (external_subject, display_name) values ($1, 'Governed evidence verifier') returning id", [`governed-evidence-${tenantId}`]);
+    const actorId = actor.rows[0].id;
+
+    await client.query("insert into products (id, tenant_id, external_sku, name) values ($1, $2, 'governed-evidence-sku', 'Governed evidence product')", [productId, tenantId]);
+    await client.query("insert into product_versions (id, tenant_id, product_id, revision, facts, approval_status) values ($1, $2, $3, 1, $4::jsonb, 'draft')", [productVersionId, tenantId, productId, JSON.stringify({ priceCent: 100, stock: 1 })]);
+    await client.query("update product_versions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [productVersionId, actorId]);
+    await expectImmutableRejection("update product_versions set facts = $2::jsonb where id = $1", [productVersionId, JSON.stringify({ priceCent: 1, stock: 999 })], "已批准商品事实不得改写");
+
+    await client.query("insert into shows (id, tenant_id, name) values ($1, $2, 'Governed evidence show')", [showId, tenantId]);
+    await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'approved')", [revisionId, tenantId, showId]);
+    await expectImmutableRejection("update show_revisions set plan = '{\"changed\":true}'::jsonb where id = $1", [revisionId], "节目修订不得改写");
+
+    await client.query("insert into policy_profiles (id, tenant_id, name, version, rules, evidence_ref, validation_summary) values ($1, $2, 'Governed evidence policy', '1.0.0', '[]'::jsonb, 'evidence://governed-policy', 'Governed verifier policy')", [policyProfileId, tenantId]);
+    await client.query("update policy_profiles set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [policyProfileId, actorId]);
+    await expectImmutableRejection("update policy_profiles set rules = '[{\"id\":\"mutated\"}]'::jsonb where id = $1", [policyProfileId], "已批准策略不得改写");
+    await client.query("update policy_profiles set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = 'governed verifier' where id = $1", [policyProfileId, actorId]);
+
+    await client.query("insert into model_releases (id, tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, approval_status) values ($1, $2, 'Governed evidence release', '1.0.0', 'runtime', '1234567', 'sha256:governed-image', 'sha256:governed-artifact', 'governed-driver', 'Apache-2.0', 'governed scope', 'evidence://governed-release', 'Governed verifier release', 'pending')", [releaseId, tenantId]);
+    await client.query("update model_releases set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [releaseId, actorId]);
+    await expectImmutableRejection("update model_releases set artifact_hash = 'sha256:mutated' where id = $1", [releaseId], "已批准发布包不得改写");
+    await client.query("update model_releases set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = 'governed verifier' where id = $1", [releaseId, actorId]);
+
+    await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id) values ($1, $2, $3, 'DRAFT', $4)", [runId, tenantId, revisionId, `governed-evidence-${runId}`]);
+    await client.query("insert into live_commands (id, tenant_id, live_run_id, actor_id, idempotency_key, expected_state, action, result) values ($1, $2, $3, $4, 'governed-evidence-command', 'DRAFT', 'START', '{}'::jsonb)", [commandId, tenantId, runId, actorId]);
+    await expectImmutableRejection("update live_commands set result = '{\"mutated\":true}'::jsonb where id = $1", [commandId], "直播命令不得改写");
+  } catch (error) {
+    errors.push(error instanceof Error ? `治理证据不可变性检查失败：${error.message}` : "治理证据不可变性检查失败");
+  } finally {
+    await client.query("rollback");
+  }
+}
+
+async function expectImmutableRejection(statement, parameters, label) {
+  await client.query("savepoint governed_evidence_mutation");
+  try {
+    await client.query(statement, parameters);
+    errors.push(`${label}未被数据库触发器拒绝`);
+  } catch (error) {
+    if (!(error instanceof Error) || !/immutable|only permits/i.test(error.message)) errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
+  } finally {
+    await client.query("rollback to savepoint governed_evidence_mutation");
+    await client.query("release savepoint governed_evidence_mutation");
   }
 }

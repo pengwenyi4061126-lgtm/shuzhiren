@@ -18,6 +18,7 @@ const checks = [
   ["run", "console:security-headers:check"],
   ["run", "console:client-requests:check"],
   ["run", "policy:red-team"],
+  ["run", "governance:immutability:check"],
   ["run", "preflight:check"],
   ["run", "lifecycle:authz:check"],
   ["run", "command:confirmation:check"],

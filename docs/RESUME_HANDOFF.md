@@ -77,6 +77,7 @@ npm run build
 ## 代码审计结果与下一步
 
 - 渠道适配器出站控制面 URL 的安全约束已在 `fc43a91` 完成并由 `npm run channel-adapter:test`、`npm run deploy:check:test` 验证。
-- 已执行 `npm run verify:local`：42 项本机配置契约、策略、权限、运行时可靠性、observer、输出探针、渠道、告警、类型检查、lint 与生产构建均通过。该命令不连接 PostgreSQL、不启动 Docker，也不能证明 Python Gateway、GPU 或平台验收。
-- 仓库内没有待实现的 `TODO`、`FIXME` 或 stub 代码。`docs/FRAMEWORK_STATUS.md` 中仍标记为进行中的项目均需要真实平台 OAuth/Webhook、ERP/PIM、OIDC 成员同步、结算对账、生产密钥或 4090 试播证据，不能用开发态模拟补全。
-- 恢复受控 SSH 凭据后推送全部本地提交；之后按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
+- 已执行 `npm run verify:local`：44 项本机配置契约、策略、权限、运行时可靠性、observer、输出探针、渠道、告警、类型检查、lint 与生产构建均通过。该命令不连接 PostgreSQL、不启动 Docker，也不能证明 Python Gateway、GPU 或平台验收。
+- 逐项审计仍在进行，不能以没有 `TODO` 或本地门禁通过替代完成判定。已修复渠道出站 URL、运行时 Compose CI 渲染/LiveTalking 构建门禁，以及商品版本、节目修订、策略、模型发布和直播命令的数据库级不可变性；后者由 CI 的 PostgreSQL 架构验证在回滚事务中实际篡改测试。
+- 仍待完成的仓库内工作包括：可编辑且可审批的节目版本/插播流程、受控直播预览与人工回复闭环、OIDC 身份声明之外的成员授权与资源范围、对象/镜像证据的实际内容校验，以及选定平台的具体 OAuth/Webhook/商品/结算 Adapter。它们不能误列为 GPU 或账号外部前置条件。
+- 恢复受控 SSH 凭据后推送全部本地提交；继续按上述代码审计项实现，再按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
