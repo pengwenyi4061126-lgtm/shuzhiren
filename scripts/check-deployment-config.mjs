@@ -118,6 +118,12 @@ try {
     && [target.signingSecret, target.interactionToken, target.commerceToken].every((value) => typeof value === "string" && value.length >= 16)
     && new Set([target.signingSecret, target.interactionToken, target.commerceToken]).size === 3;
   if (!Array.isArray(targets) || !targets.length || !targets.every(targetValid)) throw new Error("invalid");
+  const interactionTokens = tenantServiceTokenMaps.get("CHANNEL_INGEST_TENANT_TOKENS") ?? {};
+  const commerceTokens = tenantServiceTokenMaps.get("CHANNEL_COMMERCE_TENANT_TOKENS") ?? {};
+  for (const target of targets) {
+    if (target.interactionToken !== interactionTokens[target.tenantId]) errors.push("渠道适配器的 interactionToken 必须匹配控制面同租户的 CHANNEL_INGEST_TENANT_TOKENS");
+    if (target.commerceToken !== commerceTokens[target.tenantId]) errors.push("渠道适配器的 commerceToken 必须匹配控制面同租户的 CHANNEL_COMMERCE_TENANT_TOKENS");
+  }
 } catch {
   const message = "渠道适配器的 CHANNEL_ADAPTER_TARGETS 必须包含 UUID 租户/渠道和三种不同的高熵密钥";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);

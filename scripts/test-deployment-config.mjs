@@ -109,7 +109,7 @@ const channel = env({
   CHANNEL_ADAPTER_PORT: "8082",
   CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS: "60",
   CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE: "120",
-  CHANNEL_ADAPTER_TARGETS: [{ tenantId, channelConnectionId, signingSecret: "channel-signing-secret-at-least-32-bytes", interactionToken: "channel-interaction-token-at-least-32", commerceToken: "channel-commerce-token-at-least-32-bytes" }]
+  CHANNEL_ADAPTER_TARGETS: [{ tenantId, channelConnectionId, signingSecret: "channel-signing-secret-at-least-32-bytes", interactionToken: "channel-ingest-token-at-least-32-bytes", commerceToken: "commerce-ingest-token-at-least-32-bytes" }]
 });
 
 const alert = env({
@@ -152,6 +152,18 @@ try {
   assert.notEqual(reusedServiceToken.status, 0, "private service tokens must not be reused across ingestion boundaries");
   assert.match(reusedServiceToken.stderr, /不得跨服务或跨租户复用/, "service-token reuse must identify the least-privilege deployment gate");
   await writeFile(files.control, control);
+
+  await writeFile(files.channel, channel.replace("channel-ingest-token-at-least-32-bytes", "wrong-interaction-token-at-least-32"));
+  const mismatchedAdapterToken = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedAdapterToken.status, 0, "channel adapter interaction credentials must match the control-plane tenant token");
+  assert.match(mismatchedAdapterToken.stderr, /interactionToken 必须匹配/, "adapter credential mismatch must identify the interaction token gate");
+  await writeFile(files.channel, channel);
+
+  await writeFile(files.channel, channel.replace("commerce-ingest-token-at-least-32-bytes", "wrong-commerce-token-at-least-32-byte"));
+  const mismatchedCommerceToken = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedCommerceToken.status, 0, "channel adapter commerce credentials must match the control-plane tenant token");
+  assert.match(mismatchedCommerceToken.stderr, /commerceToken 必须匹配/, "adapter credential mismatch must identify the commerce token gate");
+  await writeFile(files.channel, channel);
 
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
   const demoGateway = check(["--require-cosyvoice"]);
