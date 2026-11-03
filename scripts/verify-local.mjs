@@ -31,6 +31,7 @@ const checks = [
   ["run", "runtime:journal:check"],
   ["run", "runtime:images:check"],
   ["run", "runtime:worker:config:test"],
+  ["run", "runtime:worker:health:test"],
   ["run", "runtime:acceptance:test"],
   ["run", "observer:runtime:test"],
   ["run", "observer:targets:test"],

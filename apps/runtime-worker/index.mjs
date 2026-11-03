@@ -295,7 +295,7 @@ async function openDeliveryExhaustedAlert(client, event, lastError) {
 async function deliver(event) {
   const request = deliveryRequest(event);
   const response = await fetch(`${gatewayUrl}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${gatewayToken}` }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(gatewayRequestTimeoutMs) });
-  if (!response.ok) throw new Error(`Runtime gateway returned ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw new Error(`Runtime gateway returned ${response.status}`);
 }
 
 function deliveryRequest(event) {
@@ -367,16 +367,16 @@ let nextSchedulerTenantCursor = 0;
 let nextWatchdogPollAt = 0;
 let nextWatchdogTenantCursor = 0;
 let nextUsageMeterPollAt = 0;
-let lastSuccessfulTickAt = Date.now();
+let lastSuccessfulTickAt = null;
 let lastTickError = null;
 const healthServer = http.createServer(async (request, response) => {
   if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { ok: false, error: "not_found" });
-  const tickFresh = Date.now() - lastSuccessfulTickAt <= Math.max(pollMs * 3, 15_000);
+  const tickFresh = lastSuccessfulTickAt !== null && Date.now() - lastSuccessfulTickAt <= Math.max(pollMs * 3, 15_000);
   try {
     await pool.query("select 1");
-    return json(response, tickFresh && !stopping ? 200 : 503, { ok: tickFresh && !stopping, lastSuccessfulTickAt: new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError });
+    return json(response, tickFresh && !stopping ? 200 : 503, { ok: tickFresh && !stopping, lastSuccessfulTickAt: lastSuccessfulTickAt === null ? null : new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError });
   } catch {
-    return json(response, 503, { ok: false, lastSuccessfulTickAt: new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError ?? "database_unavailable" });
+    return json(response, 503, { ok: false, lastSuccessfulTickAt: lastSuccessfulTickAt === null ? null : new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError ?? "database_unavailable" });
   }
 });
 healthServer.listen(healthPort, "0.0.0.0", () => log("worker.health_listening", { port: healthPort }));
