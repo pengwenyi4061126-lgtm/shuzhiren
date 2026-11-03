@@ -53,7 +53,9 @@ const server = http.createServer(async (request, response) => {
   try {
     return json(response, 200, await measuredTarget(target));
   } catch (error) {
-    return json(response, 503, { error: "measurement_unavailable", detail: error instanceof Error ? error.message : "probe_failed" });
+    const diagnostic = error instanceof Error ? error.message : "probe_failed";
+    process.stderr.write(`${JSON.stringify({ service: "output-probe", event: "measurement_failed", targetId: target.id, diagnostic })}\n`);
+    return json(response, 503, { error: "measurement_unavailable" });
   }
 });
 
