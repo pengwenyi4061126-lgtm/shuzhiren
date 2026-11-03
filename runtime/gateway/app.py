@@ -16,6 +16,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from audio import pcm_s16le_to_wav
 
+# Preserve backup-group read access while keeping the durable command journal private.
+os.umask(0o027)
+
 LIVE_TALKING_URL = os.environ.get("LIVETALKING_BASE_URL", "http://livetalking:8010").rstrip("/")
 COSYVOICE_URL = os.environ.get("COSYVOICE_BASE_URL", "http://cosyvoice:50000").rstrip("/")
 COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))

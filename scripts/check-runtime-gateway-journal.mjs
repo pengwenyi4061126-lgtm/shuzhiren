@@ -7,7 +7,7 @@ const [gateway, gatewayDockerfile, compose, gatewayEnv] = await Promise.all([
   readFile(new URL("../config/runtime-gateway.example.env", import.meta.url), "utf8")
 ]);
 
-for (const source of ["RUNTIME_COMMAND_JOURNAL_PATH", "reserve_runtime_command", "Runtime command outcome is uncertain", "validate_runtime_configuration", "RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters"]) {
+for (const source of ["RUNTIME_COMMAND_JOURNAL_PATH", "reserve_runtime_command", "Runtime command outcome is uncertain", "validate_runtime_configuration", "RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters", "os.umask(0o027)"]) {
   if (!gateway.includes(source)) throw new Error(`Runtime Gateway must retain durable command journal behavior: ${source}`);
 }
 for (const source of ["USER gateway", "COPY --chown=gateway:shuzhiren app.py audio.py ."]) {
