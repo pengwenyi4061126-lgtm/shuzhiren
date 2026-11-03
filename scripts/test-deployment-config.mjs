@@ -171,6 +171,12 @@ try {
   assert.match(mismatchedObserverToken.stderr, /observer 的 telemetryToken 必须匹配/, "observer credential mismatch must identify the telemetry token gate");
   await writeFile(files.runtime, runtime(validProbeTarget));
 
+  await writeFile(files.runtime, runtime(validProbeTarget).replace(outputProbeToken, "wrong-output-probe-token-at-least-32"));
+  const mismatchedProbeToken = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedProbeToken.status, 0, "runtime observer output-probe credentials must match the probe service token");
+  assert.match(mismatchedProbeToken.stderr, /outputProbeToken 必须匹配/, "probe credential mismatch must identify the output-probe token gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
   const demoGateway = check(["--require-cosyvoice"]);
   assert.notEqual(demoGateway.status, 0, "production deployment must reject runtime gateway demo mode");

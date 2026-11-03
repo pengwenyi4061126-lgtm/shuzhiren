@@ -158,8 +158,11 @@ try {
     && /^https?:\/\//.test(target.outputProbeUrl);
   if (!Array.isArray(targets) || !targets.every(targetValid)) throw new Error("invalid");
   const telemetryTokens = tenantServiceTokenMaps.get("RUNTIME_TELEMETRY_TENANT_TOKENS") ?? {};
+  const outputProbeToken = runtime.get("OUTPUT_PROBE_SHARED_TOKEN");
+  if (targets.length > 0 && (!outputProbeToken || outputProbeToken.length < 16 || (!allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(outputProbeToken)))) errors.push("运行时 observer 目标需要有效的 OUTPUT_PROBE_SHARED_TOKEN");
   for (const target of targets) {
     if (target.telemetryToken !== telemetryTokens[target.tenantId]) errors.push("运行时 observer 的 telemetryToken 必须匹配控制面同租户的 RUNTIME_TELEMETRY_TENANT_TOKENS");
+    if (target.outputProbeToken !== outputProbeToken) errors.push("运行时 observer 的 outputProbeToken 必须匹配 OUTPUT_PROBE_SHARED_TOKEN");
   }
 } catch {
   const message = "运行时 的 RUNTIME_OBSERVER_TARGETS 必须是可选的有效场次/会话/遥测密钥/私网输出探针数组";
