@@ -12,6 +12,7 @@
     "lint": "npm run lint --workspace @shuzhiren/console",
     "typecheck": "npm run typecheck --workspace @shuzhiren/console",
     "db:migrate": "npm run db:migrate --workspace @shuzhiren/console",
+    "db:migrate:lock:test": "node scripts/test-migration-lock.mjs",
     "db:verify": "node scripts/verify-postgres-schema.mjs",
     "worker:runtime": "npm run start --workspace @shuzhiren/runtime-worker",
     "notifier:alerts": "npm run start --workspace @shuzhiren/alert-notifier",

@@ -145,7 +145,7 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 
 ## 4. 启动顺序
 
-1. 准备已批准的私网 PostgreSQL；开发用 `infra/compose/docker-compose.yml` 暴露的 PostgreSQL、Redis、MinIO 不是生产编排。生产应用账号不得为超级用户或拥有 `BYPASSRLS`。先用一次性迁移 profile 执行迁移，再以控制面运行时账号执行 `npm run db:verify`；验证脚本只读检查迁移、关键表、RLS、租户上下文与账号权限。仅在本地使用管理员账号进行排障时才可显式加 `-- --allow-privileged`。
+1. 准备已批准的私网 PostgreSQL；开发用 `infra/compose/docker-compose.yml` 暴露的 PostgreSQL、Redis、MinIO 不是生产编排。生产应用账号不得为超级用户或拥有 `BYPASSRLS`。先用一次性迁移 profile 执行迁移；迁移器以数据库 advisory lock 串行化，同一数据库已有迁移运行时第二个实例会立即失败，必须等待前一个完成后再重试。随后以控制面运行时账号执行 `npm run db:verify`；验证脚本只读检查迁移、关键表、RLS、租户上下文与账号权限。仅在本地使用管理员账号进行排障时才可显式加 `-- --allow-privileged`。
 
 ```bash
 docker compose --env-file /srv/shuzhiren/control-plane-compose.env -f infra/compose/docker-compose.control-plane.yml --profile migrate run --rm control-plane-migrate

@@ -1,11 +1,12 @@
 import { readFile } from "node:fs/promises";
 
-const [nextConfig, dockerfile, dockerignore, compose, environment] = await Promise.all([
+const [nextConfig, dockerfile, dockerignore, compose, environment, migrator] = await Promise.all([
   readFile(new URL("../apps/console/next.config.ts", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/Dockerfile", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/Dockerfile.dockerignore", import.meta.url), "utf8"),
   readFile(new URL("../infra/compose/docker-compose.control-plane.yml", import.meta.url), "utf8"),
-  readFile(new URL("../config/control-plane-compose.example.env", import.meta.url), "utf8")
+  readFile(new URL("../config/control-plane-compose.example.env", import.meta.url), "utf8"),
+  readFile(new URL("../apps/console/scripts/migrate.mjs", import.meta.url), "utf8")
 ]);
 
 for (const source of ['output: "standalone"']) {
@@ -22,6 +23,9 @@ for (const source of ["control-plane:", "control-plane-migrate:", "profiles: [\"
 }
 for (const source of ["CONTROL_PLANE_ENV_FILE=/srv/shuzhiren/control.env", "CONSOLE_HOST_BIND=127.0.0.1", "CONSOLE_PORT=3000"]) {
   if (!environment.includes(source)) throw new Error(`Control-plane Compose environment template must document ${source}`);
+}
+for (const source of ["pg_try_advisory_lock", "pg_advisory_unlock", "another schema migration is already running"]) {
+  if (!migrator.includes(source)) throw new Error(`Control-plane migrations must retain concurrent deployment protection: ${source}`);
 }
 
 console.log("PASS  control-plane standalone image and private Compose deployment are configured");

@@ -11,9 +11,15 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDirectory = path.resolve(scriptDirectory, "../../../infra/postgres/migrations");
 const migrations = (await readdir(migrationsDirectory)).filter((name) => name.endsWith(".sql")).sort();
 const client = new Client({ connectionString: databaseUrl });
+const migrationLockName = "shuzhiren-schema-migrations";
 
 await client.connect();
+let lockAcquired = false;
 try {
+  const lock = await client.query("select pg_try_advisory_lock(hashtext($1)) as acquired", [migrationLockName]);
+  if (lock.rows[0]?.acquired !== true) throw new Error("another schema migration is already running");
+  lockAcquired = true;
+
   await client.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
   const applied = new Set((await client.query("select name from schema_migrations")).rows.map((row) => row.name));
 
@@ -32,5 +38,6 @@ try {
     }
   }
 } finally {
+  if (lockAcquired) await client.query("select pg_advisory_unlock(hashtext($1))", [migrationLockName]).catch(() => undefined);
   await client.end();
 }
