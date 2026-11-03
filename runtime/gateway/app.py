@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import hashlib
 import json
 import logging
@@ -64,7 +65,7 @@ HUMAN_HANDOFF_AUDIOTYPE = int(os.environ.get("HUMAN_HANDOFF_AUDIOTYPE", "0"))
 def authorize(authorization: str | None) -> None:
     if not RUNTIME_TOKEN:
         raise HTTPException(status_code=503, detail="Runtime gateway token is not configured")
-    if authorization != f"Bearer {RUNTIME_TOKEN}":
+    if not authorization or not hmac.compare_digest(authorization, f"Bearer {RUNTIME_TOKEN}"):
         raise HTTPException(status_code=401, detail="Invalid runtime gateway token")
 
 async def livetalking_post(path: str, payload: dict) -> dict:

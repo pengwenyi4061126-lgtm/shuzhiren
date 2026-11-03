@@ -3,6 +3,8 @@ import pathlib
 import sys
 import tempfile
 
+from fastapi import HTTPException
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "runtime" / "gateway"))
 import app as gateway
 
@@ -26,6 +28,13 @@ async def main() -> None:
     gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = False
     async with gateway.lifespan(gateway.app):
         pass
+    gateway.authorize(f"Bearer {'g' * 32}")
+    try:
+        gateway.authorize(f"Bearer {'g' * 31}x")
+    except HTTPException as error:
+        assert error.status_code == 401
+    else:
+        raise AssertionError("Runtime Gateway must reject a mismatched shared token")
 
     with tempfile.TemporaryDirectory() as directory:
         blocked_parent = pathlib.Path(directory) / "not-a-directory"
