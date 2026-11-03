@@ -1,0 +1,32 @@
+FROM node:20-alpine AS dependencies
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY apps/alert-notifier/package.json apps/alert-notifier/package.json
+COPY apps/channel-adapter/package.json apps/channel-adapter/package.json
+COPY apps/console/package.json apps/console/package.json
+COPY apps/output-probe/package.json apps/output-probe/package.json
+COPY apps/runtime-observer/package.json apps/runtime-observer/package.json
+COPY apps/runtime-worker/package.json apps/runtime-worker/package.json
+RUN npm ci
+
+FROM dependencies AS build
+
+COPY apps/console apps/console
+COPY infra/postgres/migrations infra/postgres/migrations
+RUN npm run build --workspace @shuzhiren/console
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+RUN addgroup --system --gid 1001 shuzhiren && adduser --system --uid 1001 console
+COPY --from=build --chown=console:shuzhiren /app/apps/console/.next/standalone ./
+COPY --from=build --chown=console:shuzhiren /app/apps/console/.next/static ./apps/console/.next/static
+
+WORKDIR /app/apps/console
+USER console
+EXPOSE 3000
+CMD ["node", "server.js"]

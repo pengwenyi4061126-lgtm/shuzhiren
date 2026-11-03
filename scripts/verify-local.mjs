@@ -11,6 +11,7 @@ if (withGateway && !python) {
 const checks = [
   ["run", "deploy:check", "--", "--allow-placeholders"],
   ["run", "deploy:check:test"],
+  ["run", "control-plane:compose:check"],
   ["run", "policy:red-team"],
   ["run", "preflight:check"],
   ["run", "lifecycle:authz:check"],

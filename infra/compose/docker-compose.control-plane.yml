@@ -1,0 +1,31 @@
+services:
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: apps/console/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "${CONSOLE_HOST_BIND:-127.0.0.1}:${CONSOLE_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  control-plane-migrate:
+    profiles: ["migrate"]
+    build:
+      context: ../..
+      dockerfile: apps/console/Dockerfile
+      target: build
+    restart: "no"
+    env_file:
+      - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
+    command: ["npm", "run", "db:migrate", "--workspace", "@shuzhiren/console"]

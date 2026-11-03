@@ -26,6 +26,7 @@
     "alert-notifier:test": "node scripts/test-alert-notifier.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
     "deploy:check:test": "node scripts/test-deployment-config.mjs",
+    "control-plane:compose:check": "node scripts/check-control-plane-compose.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "lifecycle:authz:check": "node scripts/check-lifecycle-authorization.mjs",

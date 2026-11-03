@@ -7,7 +7,7 @@
 | 4090 主机 | Linux 主机只读预检、GPU 容器 smoke 检查、Compose GPU 定义、Gateway 重启后防重放命令日志 | 租用单卡 RTX 4090、安装驱动/Docker/NVIDIA Container Toolkit、准备模型、录屏和 Gateway 状态磁盘；加密备份并演练恢复 `/srv/shuzhiren/runtime-gateway-state` | `bash scripts/check-runtime-host.sh`、可选容器 smoke 输出、Gateway 重启/重复命令恢复记录 |
 | 开源数字人 | LiveTalking + MuseTalk + CosyVoice 锁定提交、Gateway 音频封装、媒体命令与会话观测 | 下载符合许可证的权重、创建已批准 Avatar 包、实机确认动作槽位和口型/音色质量 | `npm run deploy:check`、发布包验收记录、试听/试播报告 |
 | 平台推流 | 已实现 RTMP 运行时配置、输出探针、降级和人工接管命令；SRT 需先扩展 Gateway 与验收链路 | 平台账号、私有推流地址/密钥、平台 AI 标识要求、目的端回放或中继探针 | 30 分钟内部试播、目的端输出探针记录 |
-| 身份与租户 | OIDC JWT 校验、RBAC、RLS、CSRF Origin 校验、审计哈希链 | OIDC issuer、真实成员/角色同步、生产 PostgreSQL 账号与密钥 | `/api/health`、`npm run db:verify`、租户隔离集成回归 |
+| 身份与租户 | OIDC JWT 校验、RBAC、RLS、CSRF Origin 校验、审计哈希链、控制台 standalone 容器与私网 Compose | OIDC issuer、真实成员/角色同步、生产 PostgreSQL 账号与密钥、TLS 反向代理 | `/api/health`、`npm run db:verify`、控制台 Compose 健康检查、租户隔离集成回归 |
 | 素材与合规 | 素材/发布包/策略审批、冻结修订、撤销隔离、人工接管 | 肖像、声音、音乐、商品、脚本的书面授权和审核证据 | 场次发布清单、审计导出、授权文件引用 |
 | 商品与渠道 | PIM/渠道标准化私网接入、幂等、商品审核、渠道验证证据 | ERP/PIM Adapter、平台 OAuth/Webhook、真实结算和对账数据 | 渠道验证报告、事实来源与时间窗、对账记录 |
 | 录制与恢复 | 录制证据登记、数据库备份校验脚本、Gateway 命令日志与隔离恢复流程 | 对象存储版本化、站外复制、加密备份、恢复演练负责人 | 对象复制与 SHA-256、数据库与 Gateway 状态隔离恢复演练记录 |
