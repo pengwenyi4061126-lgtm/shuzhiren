@@ -33,6 +33,9 @@ const control = env({
   OIDC_AUDIENCE: "shuzhiren-console",
   OIDC_JWKS_URL: "https://issuer.internal/jwks.json",
   OUTBOX_MAX_ATTEMPTS: "6",
+  RUNTIME_GATEWAY_URL: "http://runtime-gateway.internal:8090",
+  RUNTIME_SHARED_TOKEN: runtimeToken,
+  RUNTIME_GATEWAY_DEMO_MODE: "false",
   RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
   RUNTIME_TELEMETRY_TENANT_TOKENS: { [tenantId]: telemetryToken },
   RUNTIME_RECORDING_TENANT_TOKENS: { [tenantId]: "recording-token-at-least-32-bytes" },
@@ -168,6 +171,12 @@ try {
   const mismatchedOutboxAttempts = check(["--require-cosyvoice"]);
   assert.notEqual(mismatchedOutboxAttempts.status, 0, "control-plane and runtime retry limits must match");
   assert.match(mismatchedOutboxAttempts.stderr, /OUTBOX_MAX_ATTEMPTS/, "retry-limit mismatch must identify the shared outbox gate");
+  await writeFile(files.control, control);
+
+  await writeFile(files.control, control.replace(runtimeToken, "different-control-gateway-token-at-least-32"));
+  const mismatchedControlGatewayToken = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedControlGatewayToken.status, 0, "control-plane and runtime Gateway credentials must match");
+  assert.match(mismatchedControlGatewayToken.stderr, /控制面与运行时的 RUNTIME_SHARED_TOKEN/, "Gateway credential mismatch must identify the control-plane delivery gate");
   await writeFile(files.control, control);
 
   await writeFile(files.control, control.replace("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=20000", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=15000"));
