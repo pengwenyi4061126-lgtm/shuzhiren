@@ -48,6 +48,7 @@
     "runtime:voice:check": "node scripts/check-frozen-runtime-voice.mjs",
     "runtime:journal:check": "node scripts/check-runtime-gateway-journal.mjs",
     "runtime:gateway:config:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-config.py",
+    "runtime:gateway:errors:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-errors.py",
     "runtime:images:check": "node scripts/check-runtime-service-images.mjs",
     "runtime:worker:config:test": "node scripts/test-runtime-worker-config.mjs",
     "runtime:acceptance:verify": "node scripts/verify-4090-acceptance.mjs",

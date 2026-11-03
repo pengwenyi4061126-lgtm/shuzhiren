@@ -96,7 +96,7 @@ index 7719334..f07dcc1 100644
 +            try:
 +                self._streamer.stream_frame(rgb_frame)
 +            except Exception as error:
-+                self._record_metrics(output_connected=False, last_output_error=str(error))
++                self._record_metrics(output_connected=False, last_output_error=type(error).__name__)
 +                raise
 +            self._record_metrics(output_connected=True, last_output_at=time.time(), last_output_error=None)
  

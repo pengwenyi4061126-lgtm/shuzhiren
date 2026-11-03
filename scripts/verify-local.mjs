@@ -70,6 +70,7 @@ for (const entrypoint of nodeEntrypoints) {
 const gatewayChecks = withGateway ? [
   ["-m", "py_compile", "runtime/gateway/app.py", "runtime/gateway/audio.py", "scripts/test-runtime-gateway-config.py"],
   ["scripts/test-runtime-gateway-config.py"],
+  ["scripts/test-runtime-gateway-errors.py"],
   ["scripts/test-runtime-gateway-audio.py"],
   ["scripts/test-runtime-gateway-concurrency.py"]
 ] : [];

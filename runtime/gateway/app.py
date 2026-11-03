@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -15,6 +16,8 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from audio import pcm_s16le_to_wav
+
+logger = logging.getLogger(__name__)
 
 # Preserve backup-group read access while keeping the durable command journal private.
 os.umask(0o027)
@@ -70,10 +73,12 @@ async def livetalking_post(path: str, payload: dict) -> dict:
             response = await client.post(f"{LIVE_TALKING_URL}{path}", json=payload)
             response.raise_for_status()
     except httpx.HTTPError as error:
-        raise HTTPException(status_code=502, detail=f"LiveTalking request failed: {error}") from error
+        logger.warning("LiveTalking request failed for %s: %s", path, error)
+        raise HTTPException(status_code=502, detail="LiveTalking request failed") from error
     data = response.json()
     if data.get("code") != 0:
-        raise HTTPException(status_code=502, detail=f"LiveTalking rejected request: {data.get('msg', 'unknown error')}")
+        logger.warning("LiveTalking rejected request for %s with code %r", path, data.get("code"))
+        raise HTTPException(status_code=502, detail="LiveTalking rejected request")
     return data
 
 async def livetalking_get(path: str) -> dict:
@@ -82,10 +87,12 @@ async def livetalking_get(path: str) -> dict:
             response = await client.get(f"{LIVE_TALKING_URL}{path}")
             response.raise_for_status()
     except httpx.HTTPError as error:
-        raise HTTPException(status_code=502, detail=f"LiveTalking request failed: {error}") from error
+        logger.warning("LiveTalking request failed for %s: %s", path, error)
+        raise HTTPException(status_code=502, detail="LiveTalking request failed") from error
     data = response.json()
     if data.get("code") != 0:
-        raise HTTPException(status_code=502, detail=f"LiveTalking rejected request: {data.get('msg', 'unknown error')}")
+        logger.warning("LiveTalking rejected request for %s with code %r", path, data.get("code"))
+        raise HTTPException(status_code=502, detail="LiveTalking rejected request")
     return data
 
 async def service_health(url: str, path: str, expected_code: int | None = None) -> dict:
@@ -297,7 +304,8 @@ async def cosyvoice_synthesize(text: str, speaker: str) -> bytes:
             response = await client.post(f"{COSYVOICE_URL}/inference_sft", data={"tts_text": text, "spk_id": speaker})
             response.raise_for_status()
     except httpx.HTTPError as error:
-        raise HTTPException(status_code=502, detail=f"CosyVoice request failed: {error}") from error
+        logger.warning("CosyVoice synthesis request failed: %s", error)
+        raise HTTPException(status_code=502, detail="CosyVoice request failed") from error
     return pcm_s16le_to_wav(response.content, COSYVOICE_SAMPLE_RATE)
 
 async def livetalking_audio(session_id: str, audio: bytes) -> None:
@@ -306,10 +314,12 @@ async def livetalking_audio(session_id: str, audio: bytes) -> None:
             response = await client.post(f"{LIVE_TALKING_URL}/humanaudio", data={"sessionid": session_id}, files={"file": ("speech.wav", audio, "audio/wav")})
             response.raise_for_status()
     except httpx.HTTPError as error:
-        raise HTTPException(status_code=502, detail=f"LiveTalking audio request failed: {error}") from error
+        logger.warning("LiveTalking audio request failed: %s", error)
+        raise HTTPException(status_code=502, detail="LiveTalking audio request failed") from error
     data = response.json()
     if data.get("code") != 0:
-        raise HTTPException(status_code=502, detail=f"LiveTalking rejected audio: {data.get('msg', 'unknown error')}")
+        logger.warning("LiveTalking rejected audio request with code %r", data.get("code"))
+        raise HTTPException(status_code=502, detail="LiveTalking rejected audio request")
 
 @app.get("/healthz")
 async def healthz() -> JSONResponse:

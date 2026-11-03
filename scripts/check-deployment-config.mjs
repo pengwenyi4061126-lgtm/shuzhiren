@@ -273,6 +273,7 @@ try {
   const liveTalkingDockerignore = path.join(files.sourceRoot, "runtime", "livetalking", "Dockerfile.dockerignore");
   const [patchText, dockerfileText, dockerignoreText] = await Promise.all([readFile(observabilityPatch, "utf8"), readFile(liveTalkingDockerfile, "utf8"), readFile(liveTalkingDockerignore, "utf8")]);
   if (!patchText.includes("/api/admin/runtime-metrics")) errors.push("LiveTalking 观测补丁缺少运行时指标接口");
+  if (!patchText.includes("last_output_error=type(error).__name__")) errors.push("LiveTalking 观测指标不得暴露原始推流异常内容");
   if (!dockerfileText.includes("livetalking-observability.patch") || !dockerfileText.includes("git apply --check --recount")) errors.push("LiveTalking 镜像没有强制应用观测补丁");
   for (const expected of ["USER livetalking", "ENV HOME=/tmp", "chown -R livetalking:livetalking /app"]) if (!dockerfileText.includes(expected)) errors.push(`LiveTalking 镜像必须以非 root 用户运行：${expected}`);
   for (const expected of ["vendor/*", "!vendor/LiveTalking/**", "runtime/patches/livetalking-observability.patch"]) if (!dockerignoreText.includes(expected)) errors.push(`LiveTalking 镜像构建上下文缺少最小化规则：${expected}`);
