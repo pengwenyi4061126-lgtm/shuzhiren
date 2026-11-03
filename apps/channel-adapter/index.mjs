@@ -9,7 +9,8 @@ const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for durable webhook replay protection");
 const replayLeaseSeconds = positiveInt(process.env.CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS, 60, "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS");
 const maxRequestsPerMinute = positiveInt(process.env.CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE, 120, "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE");
-const pool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
+const databaseTimeoutMs = boundedPositiveInt(process.env.DATABASE_QUERY_TIMEOUT_MS, 5_000, "DATABASE_QUERY_TIMEOUT_MS", 100, 60_000);
+const pool = new pg.Pool({ connectionString: databaseUrl, max: 8, connectionTimeoutMillis: databaseTimeoutMs, query_timeout: databaseTimeoutMs });
 const rateWindows = new Map();
 
 const server = http.createServer(async (request, response) => {
@@ -75,6 +76,7 @@ async function releaseReplay(target, eventId) { const client = await pool.connec
 function asHeader(value) { return typeof value === "string" ? value : ""; }
 function requiredUrl(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return new URL(value); }
 function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
+function boundedPositiveInt(value, fallback, name, minimum, maximum) { const parsed = positiveInt(value, fallback, name); if (parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); }
 async function readBody(request) { const chunks = []; let size = 0; for await (const chunk of request) { size += chunk.length; if (size > 128 * 1024) throw new Error("webhook_body_too_large"); chunks.push(chunk); } return Buffer.concat(chunks).toString("utf8"); }
 function allowRequest(channelConnectionId, now = Date.now()) {

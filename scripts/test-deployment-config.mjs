@@ -55,6 +55,7 @@ function runtime(outputProbeTargets) {
     RUNTIME_GATEWAY_DEMO_MODE: "false",
     RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
     DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
+    DATABASE_QUERY_TIMEOUT_MS: "5000",
     CONTROL_PLANE_URL: "https://control-plane.internal",
     RUNTIME_OBSERVER_TARGETS_DIR: "/srv/shuzhiren/observer-config",
     RUNTIME_OBSERVER_TARGETS: [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }],
@@ -112,6 +113,7 @@ const gateway = env({
 
 const channel = env({
   DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
+  DATABASE_QUERY_TIMEOUT_MS: "5000",
   CONTROL_PLANE_URL: "https://control-plane.internal",
   CHANNEL_ADAPTER_PORT: "8082",
   CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS: "60",
@@ -121,6 +123,7 @@ const channel = env({
 
 const alert = env({
   DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
+  DATABASE_QUERY_TIMEOUT_MS: "5000",
   ALERT_NOTIFIER_PORT: "8083",
   ALERT_NOTIFIER_POLL_MS: "5000",
   ALERT_NOTIFIER_LEASE_SECONDS: "60",
@@ -179,6 +182,12 @@ try {
   assert.match(shortRuntimeToken.stderr, /RUNTIME_SHARED_TOKEN/, "short runtime token rejection must identify the shared-token gate");
   await writeFile(files.runtime, runtime(validProbeTarget));
   await writeFile(files.gateway, gateway);
+
+  await writeFile(files.channel, channel.replace("DATABASE_QUERY_TIMEOUT_MS=5000", "DATABASE_QUERY_TIMEOUT_MS=99"));
+  const shortAdapterDatabaseTimeout = check(["--require-cosyvoice"]);
+  assert.notEqual(shortAdapterDatabaseTimeout.status, 0, "channel adapter database timeout must remain bounded");
+  assert.match(shortAdapterDatabaseTimeout.stderr, /渠道适配器.*DATABASE_QUERY_TIMEOUT_MS/, "channel adapter database timeout rejection must identify the durable replay gate");
+  await writeFile(files.channel, channel);
 
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=20000", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=61000"));
   const excessiveGatewayTimeout = check(["--require-cosyvoice"]);

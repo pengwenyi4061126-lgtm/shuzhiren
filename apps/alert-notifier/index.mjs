@@ -10,7 +10,8 @@ const leaseSeconds = positiveInt(process.env.ALERT_NOTIFIER_LEASE_SECONDS, 60, "
 const maxAttempts = positiveInt(process.env.ALERT_NOTIFIER_MAX_ATTEMPTS, 6, "ALERT_NOTIFIER_MAX_ATTEMPTS");
 const retryBaseMs = positiveInt(process.env.ALERT_NOTIFIER_RETRY_BASE_MS, 1_000, "ALERT_NOTIFIER_RETRY_BASE_MS");
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.ALERT_NOTIFIER_RETRY_MAX_MS, 60_000, "ALERT_NOTIFIER_RETRY_MAX_MS"));
-const pool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
+const databaseTimeoutMs = boundedPositiveInt(process.env.DATABASE_QUERY_TIMEOUT_MS, 5_000, "DATABASE_QUERY_TIMEOUT_MS", 100, 60_000);
+const pool = new pg.Pool({ connectionString: databaseUrl, max: 8, connectionTimeoutMillis: databaseTimeoutMs, query_timeout: databaseTimeoutMs });
 let stopping = false;
 let lastSuccessfulTickAt = null;
 let lastTickError = null;
@@ -119,5 +120,6 @@ async function withTenant(tenantId, operation) {
   try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]); await operation(client); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
 }
 function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
+function boundedPositiveInt(value, fallback, name, minimum, maximum) { const parsed = positiveInt(value, fallback, name); if (parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function required(value, name) { if (!value) throw new Error(`${name} is required`); return value; }
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); }
