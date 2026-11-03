@@ -102,6 +102,9 @@ try {
     stdio: ["ignore", "pipe", "pipe"]
   });
   await waitFor(async () => (await fetch(`http://127.0.0.1:${consolePort}/api/health`)).ok, 20_000, "control plane startup");
+  const consoleHealth = await fetch(`http://127.0.0.1:${consolePort}/api/health`);
+  assert.equal(consoleHealth.status, 200, "a configured production control plane must report ready");
+  assert.equal((await consoleHealth.json()).dependencies.controlPlane, "ok", "the control-plane health endpoint must verify PostgreSQL instead of returning a static success response");
 
   const requestHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
   const operatorRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${operatorToken}` };
