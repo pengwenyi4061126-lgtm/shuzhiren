@@ -26,6 +26,7 @@ function env(values) {
 const control = env({
   NODE_ENV: "production",
   DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
+  DATABASE_QUERY_TIMEOUT_MS: "5000",
   CONTROL_PLANE_DEMO_MODE: "false",
   OIDC_ISSUER_URL: "https://issuer.internal",
   OIDC_AUDIENCE: "shuzhiren-console",
@@ -144,6 +145,12 @@ try {
   await Promise.all([writeFile(files.control, control), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  await writeFile(files.control, control.replace("DATABASE_QUERY_TIMEOUT_MS=5000", "DATABASE_QUERY_TIMEOUT_MS=61000"));
+  const excessiveDatabaseTimeout = check(["--require-cosyvoice"]);
+  assert.notEqual(excessiveDatabaseTimeout.status, 0, "control-plane database timeout must remain bounded for health checks");
+  assert.match(excessiveDatabaseTimeout.stderr, /DATABASE_QUERY_TIMEOUT_MS/, "database timeout rejection must identify the readiness gate");
+  await writeFile(files.control, control);
 
   await writeFile(files.control, control.replace("OUTBOX_MAX_ATTEMPTS=6", "OUTBOX_MAX_ATTEMPTS=4"));
   const mismatchedOutboxAttempts = check(["--require-cosyvoice"]);

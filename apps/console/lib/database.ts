@@ -8,8 +8,14 @@ declare global {
 export function databasePool() {
   const config = controlPlaneConfig();
   if (config.demoMode || !config.databaseUrl) return null;
-  globalThis.shuzhirenDatabasePool ??= new Pool({ connectionString: config.databaseUrl, max: 10 });
+  const timeoutMs = databaseTimeoutMs();
+  globalThis.shuzhirenDatabasePool ??= new Pool({ connectionString: config.databaseUrl, max: 10, connectionTimeoutMillis: timeoutMs, query_timeout: timeoutMs });
   return globalThis.shuzhirenDatabasePool;
+}
+
+function databaseTimeoutMs() {
+  const configured = Number.parseInt(process.env.DATABASE_QUERY_TIMEOUT_MS ?? "5000", 10);
+  return Number.isInteger(configured) && configured >= 100 && configured <= 60_000 ? configured : 5000;
 }
 
 export async function withTenantTransaction<T>(tenantId: string, operation: (client: PoolClient) => Promise<T>) {
