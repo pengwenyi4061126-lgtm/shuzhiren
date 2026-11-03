@@ -20,7 +20,7 @@ services:
     runtime: nvidia
     restart: unless-stopped
     ports:
-      - "8090:8090"
+      - "${RUNTIME_GATEWAY_HOST_BIND:-127.0.0.1}:8090:8090"
     volumes:
       - ${RUNTIME_GATEWAY_STATE_PATH:?set-in-runtime-gateway-env}:/var/lib/shuzhiren-runtime
     healthcheck:

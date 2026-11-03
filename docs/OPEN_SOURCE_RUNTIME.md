@@ -30,7 +30,7 @@ Console / Policy / Product Truth
 ## 4090 服务器启动
 
 1. Ubuntu 主机安装 NVIDIA 驱动、Docker Engine 与 NVIDIA Container Toolkit。
-2. 将 `config/runtime.example.env` 和 `config/runtime-gateway.example.env` 分别复制为主机上的私密 `runtime.env` 与 `gateway.env`，填入 RTMP、模型和形象的绝对路径。每次 Docker Compose 启动都必须同时加载这两个文件；前者提供 worker、observer 和输出探针配置，后者提供 Gateway、Avatar、录屏和 CosyVoice 模型配置。
+2. 将 `config/runtime.example.env` 和 `config/runtime-gateway.example.env` 分别复制为主机上的私密 `runtime.env` 与 `gateway.env`，填入 RTMP、模型和形象的绝对路径。每次 Docker Compose 启动都必须同时加载这两个文件；前者提供 worker、observer 和输出探针配置，后者提供 Gateway、Avatar、录屏和 CosyVoice 模型配置。Gateway 的宿主机端口默认只绑定 `127.0.0.1`；只有控制台分机部署时才可把 `RUNTIME_GATEWAY_HOST_BIND` 改为经审批的私网地址，并用防火墙限制来源，禁止使用 `0.0.0.0` 或公网暴露。
 3. 准备 LiveTalking/MuseTalk 所需权重到 `MODEL_VOLUME_PATH`，准备已授权 Avatar 到 `AVATAR_VOLUME_PATH`。
 4. 先启动画面和回退 TTS：
 

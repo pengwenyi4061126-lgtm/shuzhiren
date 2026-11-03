@@ -99,6 +99,7 @@ const gateway = env({
   RUNTIME_COMMAND_JOURNAL_PATH: "/var/lib/shuzhiren-runtime/commands.sqlite3",
   RUNTIME_COMMAND_JOURNAL_REQUIRED: "true",
   RUNTIME_GATEWAY_STATE_PATH: "/srv/shuzhiren/runtime-gateway-state",
+  RUNTIME_GATEWAY_HOST_BIND: "127.0.0.1",
   STREAM_RTMP_URL: "rtmp://ingest.internal/live",
   STREAM_KEY: "fixture-stream-key-not-a-placeholder",
   PROGRAM_AUDIOTYPE: "0",
@@ -208,6 +209,12 @@ try {
   const relativeGatewayState = check(["--require-cosyvoice"]);
   assert.notEqual(relativeGatewayState.status, 0, "production Gateway state path must be an absolute managed host path");
   assert.match(relativeGatewayState.stderr, /RUNTIME_GATEWAY_STATE_PATH/, "relative Gateway state path rejection must identify the host persistence gate");
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.gateway, gateway.replace("RUNTIME_GATEWAY_HOST_BIND=127.0.0.1", "RUNTIME_GATEWAY_HOST_BIND=0.0.0.0"));
+  const publicGatewayBind = check(["--require-cosyvoice"]);
+  assert.notEqual(publicGatewayBind.status, 0, "production Gateway must reject an all-interface host port binding");
+  assert.match(publicGatewayBind.stderr, /RUNTIME_GATEWAY_HOST_BIND/, "public Gateway binding rejection must identify the network exposure gate");
   await writeFile(files.gateway, gateway);
 
   await writeFile(files.runtime, runtime([{ ...validProbeTarget[0], expectedHeight: undefined }]));
