@@ -90,7 +90,7 @@ async function lifecycleRoles(request: NextRequest): Promise<Role[] | undefined>
   const body: unknown = await request.clone().json().catch(() => null);
   const action = body && typeof body === "object" ? (body as { action?: unknown }).action : undefined;
   if (action === "approve") return reviewerRoles;
-  if (action === "submit_review" || action === "begin_preflight" || action === "arm" || action === "disarm") return operatorRoles;
+  if (action === "submit_review" || action === "begin_preflight" || action === "arm" || action === "disarm" || action === "archive") return operatorRoles;
   return undefined;
 }
 

@@ -4,7 +4,7 @@ import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-contex
 import { advanceRunLifecycle, type RunLifecycleAction } from "@/lib/control-plane/store";
 
 export const dynamic = "force-dynamic";
-const actions = new Set<RunLifecycleAction>(["submit_review", "approve", "begin_preflight", "arm", "disarm"]);
+const actions = new Set<RunLifecycleAction>(["submit_review", "approve", "begin_preflight", "arm", "disarm", "archive"]);
 
 export async function POST(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/lifecycle">) {
   const actor = await requestContextFrom(request);

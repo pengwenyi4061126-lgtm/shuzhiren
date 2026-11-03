@@ -76,6 +76,7 @@ try {
 
   const recoverRun = await seedRun("DEGRADED", "session_recover", new Date());
   const staleRun = await seedRun("LIVE", "session_stale", new Date(Date.now() - 120_000));
+  const archivableRun = await seedRun("ENDED", "session_archivable", new Date());
   await client.query("insert into tenants (id, slug, name) values ($1, $2, $3)", [isolatedTenantId, `isolated-${isolatedTenantId}`, "Isolated integration tenant"]);
   const recoverRunId = recoverRun.runId;
   const staleRunId = staleRun.runId;
@@ -111,6 +112,12 @@ try {
   assert.equal(lifecycleBypass.status, 400, "runtime media commands must reject start actions that bypass lifecycle gates");
   const foreignRunRead = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}`, { headers: isolatedRequestHeaders });
   assert.equal(foreignRunRead.status, 404, "one tenant must not read another tenant's live run");
+  const analystArchive = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${archivableRun.runId}/lifecycle`, { method: "POST", headers: analystRequestHeaders, body: JSON.stringify({ action: "archive" }) });
+  assert.equal(analystArchive.status, 403, "an analyst must not archive a completed live run");
+  const archiveRun = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${archivableRun.runId}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "archive" }) });
+  assert.equal(archiveRun.status, 200, "an operator should archive a completed live run");
+  assert.equal((await archiveRun.json()).data.state, "ARCHIVED", "archiving must move an ended run to the terminal archived state");
+  assert.equal((await client.query("select count(*) as count from audit_events where resource_id = $1 and event_type = 'live_run.archive'", [archivableRun.runId])).rows[0].count, "1", "archiving must be recorded in the audit chain");
   const invalidAsset = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ kind: "voice", name: "Invalid asset", rightsScope: "test", source: "test", objectKey: "../outside.wav", checksum: "not-a-digest" }) });
   assert.equal(invalidAsset.status, 400, "media assets must reject unsafe object keys and invalid checksums");
   const invalidRelease = await fetch(`http://127.0.0.1:${consolePort}/api/v1/releases`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ component: "voice", name: "Invalid release", version: "1", sourceCommit: "not-a-commit", imageDigest: "sha256:bad", artifactHash: "sha256:bad", driverVersion: "570", license: "Apache-2.0", rightsScope: "test", evidenceRef: "evidence://integration/invalid", validationSummary: "should not be stored" }) });

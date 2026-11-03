@@ -39,7 +39,7 @@ export type StoredRun = LiveRun & {
 };
 
 type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
-export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm" | "disarm";
+export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm" | "disarm" | "archive";
 const runtimeSessionBindingStates = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"]);
 type CommandIdempotencyRecord = { command: LiveCommand; runId: string };
 type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, CommandIdempotencyRecord> };
@@ -182,7 +182,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
 }
 
 function lifecycleTarget(state: LiveRunState, action: RunLifecycleAction): LiveRunState {
-  const target = ({ DRAFT: { submit_review: "REVIEW" }, REVIEW: { approve: "APPROVED" }, APPROVED: { begin_preflight: "PREFLIGHT" }, PREFLIGHT: { arm: "ARMED" }, ARMED: { disarm: "PREFLIGHT" } } as Partial<Record<LiveRunState, Partial<Record<RunLifecycleAction, LiveRunState>>>>)[state]?.[action];
+  const target = ({ DRAFT: { submit_review: "REVIEW" }, REVIEW: { approve: "APPROVED" }, APPROVED: { begin_preflight: "PREFLIGHT" }, PREFLIGHT: { arm: "ARMED" }, ARMED: { disarm: "PREFLIGHT" }, ENDED: { archive: "ARCHIVED" } } as Partial<Record<LiveRunState, Partial<Record<RunLifecycleAction, LiveRunState>>>>)[state]?.[action];
   if (!target) throw new Response("Lifecycle action is not allowed in current state", { status: 409 });
   return target;
 }
