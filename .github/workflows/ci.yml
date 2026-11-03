@@ -48,6 +48,7 @@ jobs:
       - run: docker build --file apps/output-probe/Dockerfile --tag shuzhiren-output-probe-ci .
       - run: docker build --file apps/channel-adapter/Dockerfile --tag shuzhiren-channel-adapter-ci .
       - run: docker build --file apps/alert-notifier/Dockerfile --tag shuzhiren-alert-notifier-ci .
+      - run: docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway
       - run: npm run policy:red-team
       - run: npm run preflight:check
       - run: npm run lifecycle:authz:check
@@ -61,6 +62,7 @@ jobs:
       - run: npm run runtime:media:check
       - run: npm run runtime:voice:check
       - run: npm run runtime:journal:check
+      - run: npm run runtime:gateway:config:test
       - run: npm run runtime:images:check
       - run: npm run runtime:worker:config:test
       - run: npm run runtime:acceptance:test

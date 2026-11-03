@@ -6,6 +6,7 @@ import re
 import sqlite3
 import time
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -15,7 +16,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from audio import pcm_s16le_to_wav
 
-app = FastAPI(title="Shuzhiren Runtime Gateway", version="0.1.0")
 LIVE_TALKING_URL = os.environ.get("LIVETALKING_BASE_URL", "http://livetalking:8010").rstrip("/")
 COSYVOICE_URL = os.environ.get("COSYVOICE_BASE_URL", "http://cosyvoice:50000").rstrip("/")
 COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))
@@ -30,6 +30,13 @@ runtime_command_cache_lock = asyncio.Lock()
 runtime_command_cache: OrderedDict[str, dict] = OrderedDict()
 runtime_command_locks: dict[str, dict] = {}
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    validate_runtime_configuration()
+    yield
+
+app = FastAPI(title="Shuzhiren Runtime Gateway", version="0.1.0", lifespan=lifespan)
 
 class SpeakRequest(BaseModel):
     command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -134,6 +141,12 @@ def command_journal_status() -> dict:
     except (OSError, sqlite3.Error):
         return {"available": False, "required": RUNTIME_COMMAND_JOURNAL_REQUIRED, "durable": False}
     return {"available": True, "required": RUNTIME_COMMAND_JOURNAL_REQUIRED, "durable": True}
+
+def validate_runtime_configuration() -> None:
+    if len(RUNTIME_TOKEN) < 32 or any(character.isspace() for character in RUNTIME_TOKEN):
+        raise RuntimeError("RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters")
+    if RUNTIME_COMMAND_JOURNAL_REQUIRED and not command_journal_status()["available"]:
+        raise RuntimeError("Runtime command journal is unavailable")
 
 def require_runtime_command_journal() -> sqlite3.Connection | None:
     try:

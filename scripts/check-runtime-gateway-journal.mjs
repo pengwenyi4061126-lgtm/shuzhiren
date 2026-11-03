@@ -1,13 +1,17 @@
 import { readFile } from "node:fs/promises";
 
-const [gateway, compose, gatewayEnv] = await Promise.all([
+const [gateway, gatewayDockerfile, compose, gatewayEnv] = await Promise.all([
   readFile(new URL("../runtime/gateway/app.py", import.meta.url), "utf8"),
+  readFile(new URL("../runtime/gateway/Dockerfile", import.meta.url), "utf8"),
   readFile(new URL("../infra/compose/docker-compose.runtime.yml", import.meta.url), "utf8"),
   readFile(new URL("../config/runtime-gateway.example.env", import.meta.url), "utf8")
 ]);
 
-for (const source of ["RUNTIME_COMMAND_JOURNAL_PATH", "reserve_runtime_command", "Runtime command outcome is uncertain"]) {
+for (const source of ["RUNTIME_COMMAND_JOURNAL_PATH", "reserve_runtime_command", "Runtime command outcome is uncertain", "validate_runtime_configuration", "RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters"]) {
   if (!gateway.includes(source)) throw new Error(`Runtime Gateway must retain durable command journal behavior: ${source}`);
+}
+for (const source of ["USER gateway", "COPY --chown=gateway:shuzhiren app.py audio.py ."]) {
+  if (!gatewayDockerfile.includes(source)) throw new Error(`Runtime Gateway image must retain non-root execution: ${source}`);
 }
 for (const source of ["RUNTIME_COMMAND_JOURNAL_PATH: /var/lib/shuzhiren-runtime/commands.sqlite3", 'RUNTIME_COMMAND_JOURNAL_REQUIRED: "true"', '"${RUNTIME_GATEWAY_HOST_BIND:-127.0.0.1}:8090:8090"', "${RUNTIME_GATEWAY_STATE_PATH:?set-in-runtime-gateway-env}:/var/lib/shuzhiren-runtime"]) {
   if (!compose.includes(source)) throw new Error(`Runtime Compose must retain durable Gateway command journal storage: ${source}`);
