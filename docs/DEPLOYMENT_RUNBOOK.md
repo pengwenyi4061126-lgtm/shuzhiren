@@ -6,6 +6,8 @@
 
 控制面五类私网服务 token 必须按“服务类型 + 租户”唯一分配；部署预检会拒绝跨服务或跨租户复用的 token。
 
+发布 `runtime-observer-targets.json` 时，`--require-targets` 必须同时传入 `--control-env /srv/shuzhiren/control.env` 与 `--runtime-env /srv/shuzhiren/runtime.env`。发布脚本会验证每个场次的遥测 token 来自同租户控制面映射，且 output-probe token 与运行时配置一致。
+
 ## 1. 服务器基线
 
 - Ubuntu 22.04 或兼容 Linux，单张 RTX 4090，建议至少 64 GB 内存和 1 TB NVMe。
