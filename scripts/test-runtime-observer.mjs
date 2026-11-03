@@ -26,6 +26,7 @@ async function startServer(probeMode) {
     }
     if (url.pathname === "/api/v1/runtime/telemetry" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${telemetryToken}`);
+      if (probeMode === "telemetry_unavailable") return json(response, 503, { error: "telemetry_unavailable" });
       samples.push(await requestBody(request));
       return json(response, 202, { data: { accepted: true } });
     }
@@ -112,6 +113,31 @@ async function observeReloadedTargets() {
   }
 }
 
+async function observeTelemetryDeliveryFailure() {
+  const fixture = await startServer("telemetry_unavailable");
+  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
+  const child = spawn(process.execPath, [observer], {
+    cwd: root,
+    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    await waitFor(async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
+        const health = await response.json();
+        return !response.ok && health.lastError === "telemetry_delivery_failed";
+      } catch {
+        return false;
+      }
+    }, 5000);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+    await new Promise((resolve) => fixture.server.close(resolve));
+  }
+}
+
 async function waitFor(predicate, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
@@ -130,5 +156,6 @@ const failed = await observeOnce("unavailable");
 assert.deepEqual(failed, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, audioActive: false, fallbackReady: false });
 
 await observeReloadedTargets();
+await observeTelemetryDeliveryFailure();
 
-console.log("PASS  runtime observer activity-audio, fail-closed, and target reload paths");
+console.log("PASS  runtime observer activity-audio, fail-closed, delivery health, and target reload paths");

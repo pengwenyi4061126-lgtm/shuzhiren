@@ -118,17 +118,20 @@ async function observeTarget(target) {
     const telemetry = telemetryFromObservation(target, observation, probe);
     await postTelemetry(target, telemetry);
     log("telemetry.posted", { runId: target.runId, outputConnected: telemetry.outputConnected, outputFps: telemetry.outputFps, probeConnected: probe.outputConnected, writerAcceptingFrames: observation?.quality?.writer_accepting_frames === true });
+    return true;
   } catch (error) {
     const reason = error instanceof Error ? error.message : "observation_failed";
     if (!failClosed) {
       log("telemetry.skipped", { runId: target.runId, reason });
-      return;
+      return false;
     }
     try {
       await postTelemetry(target, failedSample(target));
       log("telemetry.fail_closed", { runId: target.runId, reason });
+      return true;
     } catch (postError) {
       log("telemetry.delivery_failed", { runId: target.runId, reason, deliveryError: postError instanceof Error ? postError.message : "telemetry_delivery_failed" });
+      return false;
     }
   }
 }
@@ -138,11 +141,11 @@ let targets = Array.isArray(initial) ? initial : initial.targets;
 let targetsFileContents = Array.isArray(initial) ? null : initial.raw;
 let targetConfigError = null;
 let stopping = false;
-let lastSuccessfulCycleAt = Date.now();
+let lastSuccessfulCycleAt = null;
 let lastCycleError = null;
 const healthServer = http.createServer((request, response) => {
   if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { ok: false, error: "not_found" });
-  const cycleFresh = Date.now() - lastSuccessfulCycleAt <= Math.max(pollMs * 3, 15_000);
+  const cycleFresh = lastSuccessfulCycleAt !== null && Date.now() - lastSuccessfulCycleAt <= Math.max(pollMs * 3, 15_000);
   const healthy = cycleFresh && !stopping && !targetConfigError;
   return json(response, healthy ? 200 : 503, { ok: healthy, targetCount: targets.length, targetConfigSource: targetsFile ? "file" : "environment", targetConfigHealthy: !targetConfigError, lastSuccessfulCycleAt: new Date(lastSuccessfulCycleAt).toISOString(), lastError: lastCycleError, targetConfigError });
 });
@@ -175,7 +178,8 @@ while (!stopping) {
     continue;
   }
   try {
-    await Promise.all(targets.map(observeTarget));
+    const delivered = await Promise.all(targets.map(observeTarget));
+    if (!delivered.every(Boolean)) throw new Error("telemetry_delivery_failed");
     lastSuccessfulCycleAt = Date.now();
     lastCycleError = null;
   } catch (error) {
