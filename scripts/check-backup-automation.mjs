@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 const files = {
   postgresBackup: "../scripts/backup-postgres.sh",
   postgresVerify: "../scripts/verify-postgres-backup.sh",
+  postgresDirectTest: "../scripts/test-postgres-backup-direct.sh",
   gatewayBackup: "../scripts/backup-runtime-gateway-state.sh",
   environment: "../config/backup.example.env",
   postgresService: "../infra/systemd/shuzhiren-postgres-backup.service",
@@ -17,6 +18,9 @@ for (const source of ["DATABASE_URL", 'pg_dump --dbname="$database_url" --format
 }
 for (const source of ['pg_restore --list "$backup_file"', "pg_restore or docker is required"]) {
   if (!contents.postgresVerify.includes(source)) throw new Error(`PostgreSQL backup verifier must work without a Compose database: ${source}`);
+}
+for (const source of ["DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren'", "source=database_url", "verify-postgres-backup.sh"]) {
+  if (!contents.postgresDirectTest.includes(source)) throw new Error(`PostgreSQL direct backup test must cover ${source}`);
 }
 if (!contents.gatewayBackup.includes("GATEWAY_BACKUP_DIR")) throw new Error("Gateway backup must support its dedicated scheduled backup directory");
 for (const source of ["POSTGRES_BACKUP_DIR", "GATEWAY_BACKUP_DIR", "RUNTIME_GATEWAY_STATE_PATH"]) {
