@@ -5,6 +5,7 @@ const { Pool } = pg;
 const databaseUrl = required("DATABASE_URL");
 const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
 const gatewayToken = requiredSecret("RUNTIME_SHARED_TOKEN");
+const gatewayRequestTimeoutMs = boundedPositiveInt("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", 100, 60_000, 20_000);
 const pollMs = positiveInt(process.env.OUTBOX_POLL_MS, 1000);
 const schedulerPollMs = positiveInt(process.env.SCHEDULER_POLL_MS, 1000);
 const schedulerBatchSize = positiveInt(process.env.SCHEDULER_BATCH_SIZE, 10);
@@ -22,6 +23,7 @@ const pool = new Pool({ connectionString: databaseUrl, max: 4 });
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
 function requiredSecret(name) { const value = required(name); if (value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`); return value; }
 function positiveInt(value, fallback) { const parsed = Number.parseInt(value ?? "", 10); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }
+function boundedPositiveInt(name, minimum, maximum, fallback) { const value = process.env[name]; if (value === undefined || value === "") return fallback; const parsed = Number.parseInt(value, 10); if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function log(event, fields = {}) { process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), service: "runtime-worker", event, ...fields })}\n`); }
 
 async function tenantIds() {
@@ -291,7 +293,7 @@ async function openDeliveryExhaustedAlert(client, event, lastError) {
 
 async function deliver(event) {
   const request = deliveryRequest(event);
-  const response = await fetch(`${gatewayUrl}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${gatewayToken}` }, body: JSON.stringify(request.body) });
+  const response = await fetch(`${gatewayUrl}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${gatewayToken}` }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(gatewayRequestTimeoutMs) });
   if (!response.ok) throw new Error(`Runtime gateway returned ${response.status}: ${await response.text()}`);
 }
 
@@ -378,7 +380,7 @@ const healthServer = http.createServer(async (request, response) => {
 });
 healthServer.listen(healthPort, "0.0.0.0", () => log("worker.health_listening", { port: healthPort }));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort });
+log("worker.started", { gatewayRequestTimeoutMs, pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort });
 while (!stopping) {
   try { await tick(); lastSuccessfulTickAt = Date.now(); lastTickError = null; } catch (error) { lastTickError = error instanceof Error ? error.message : "unknown"; log("worker.error", { error: lastTickError }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());

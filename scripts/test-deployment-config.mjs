@@ -53,6 +53,7 @@ function runtime(outputProbeTargets) {
     RUNTIME_GATEWAY_URL: "http://runtime-gateway.internal:8090",
     RUNTIME_SHARED_TOKEN: runtimeToken,
     RUNTIME_GATEWAY_DEMO_MODE: "false",
+    RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
     DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
     CONTROL_PLANE_URL: "https://control-plane.internal",
     RUNTIME_OBSERVER_TARGETS_DIR: "/srv/shuzhiren/observer-config",
@@ -178,6 +179,12 @@ try {
   assert.match(shortRuntimeToken.stderr, /RUNTIME_SHARED_TOKEN/, "short runtime token rejection must identify the shared-token gate");
   await writeFile(files.runtime, runtime(validProbeTarget));
   await writeFile(files.gateway, gateway);
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=20000", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=61000"));
+  const excessiveGatewayTimeout = check(["--require-cosyvoice"]);
+  assert.notEqual(excessiveGatewayTimeout.status, 0, "runtime Gateway delivery timeout must remain bounded");
+  assert.match(excessiveGatewayTimeout.stderr, /RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS/, "Gateway delivery timeout rejection must identify the outbox gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
 
   await writeFile(files.runtime, runtime(validProbeTarget).replaceAll(outputProbeToken, runtimeToken));
   const reusedOutputProbeToken = check(["--require-cosyvoice"]);
