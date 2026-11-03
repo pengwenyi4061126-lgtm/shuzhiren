@@ -5,7 +5,7 @@ import { parseObserverTargets } from "./targets.mjs";
 
 const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
 const gatewayUrl = requiredUrl("RUNTIME_GATEWAY_URL");
-const gatewayToken = required("RUNTIME_SHARED_TOKEN");
+const gatewayToken = requiredSecret("RUNTIME_SHARED_TOKEN");
 const pollMs = positiveInt(process.env.RUNTIME_OBSERVER_POLL_MS, 5000);
 const timeoutMs = positiveInt(process.env.RUNTIME_OBSERVER_TIMEOUT_MS, 3000);
 const failClosed = process.env.RUNTIME_OBSERVER_FAIL_CLOSED !== "false";
@@ -15,6 +15,12 @@ const targetsFile = optionalAbsolutePath(process.env.RUNTIME_OBSERVER_TARGETS_FI
 function required(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+function requiredSecret(name) {
+  const value = required(name);
+  if (value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`);
   return value;
 }
 

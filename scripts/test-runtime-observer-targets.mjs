@@ -17,10 +17,10 @@ function check(file, requireTargets = false, checkRuntimeEnv) {
 }
 
 try {
-  await writeFile(valid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-16", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-16" }]));
+  await writeFile(valid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-32-chars" }]));
   await writeFile(invalid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "short", outputProbeUrl: "https://probe.internal/v1/probes/demo" }]));
   await writeFile(empty, "[]");
-  await writeFile(runtimeEnv, "OUTPUT_PROBE_SHARED_TOKEN=output-probe-token-at-least-16\n");
+  await writeFile(runtimeEnv, "OUTPUT_PROBE_SHARED_TOKEN=output-probe-token-at-least-32-chars\n");
   const accepted = check(valid, true, runtimeEnv);
   assert.equal(accepted.status, 0, accepted.stderr);
   const rejected = check(invalid, true);
@@ -29,7 +29,7 @@ try {
   const emptyRejected = check(empty, true);
   assert.notEqual(emptyRejected.status, 0, "empty live target files must be rejected when requested");
   assert.match(emptyRejected.stderr, /at least one target/);
-  await writeFile(invalid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-16", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "different-output-probe-token-at-least-16" }]));
+  await writeFile(invalid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "different-output-probe-token-at-least-32-chars" }]));
   const probeTokenRejected = check(invalid, true, runtimeEnv);
   assert.notEqual(probeTokenRejected.status, 0, "observer target probe tokens must match the configured output probe secret");
   assert.match(probeTokenRejected.stderr, /OUTPUT_PROBE_SHARED_TOKEN/);
