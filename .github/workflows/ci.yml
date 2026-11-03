@@ -62,7 +62,6 @@ jobs:
       - run: npm run runtime:media:check
       - run: npm run runtime:voice:check
       - run: npm run runtime:journal:check
-      - run: npm run runtime:gateway:config:test
       - run: npm run runtime:images:check
       - run: npm run runtime:worker:config:test
       - run: npm run runtime:acceptance:test
@@ -73,6 +72,7 @@ jobs:
       - run: npm run channel-adapter:test
       - run: npm run alert-notifier:test
       - run: python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt
+      - run: npm run runtime:gateway:config:test
       - run: python3 -m py_compile runtime/gateway/app.py runtime/gateway/audio.py
       - run: python3 scripts/test-runtime-gateway-audio.py
       - run: python3 scripts/test-runtime-gateway-concurrency.py
