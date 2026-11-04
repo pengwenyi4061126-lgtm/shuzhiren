@@ -829,6 +829,30 @@ try {
   }, 10_000, "program insertion gateway acknowledgement");
   const insertionMediaCommand = mock.mediaCommands.find((command) => command.command_id === programInsertBody.data.mediaEvent.command.id);
   assert.deepEqual({ action: insertionMediaCommand?.action, program_segment_id: insertionMediaCommand?.program_segment_id, program_script: insertionMediaCommand?.program_script, script_sha256: insertionMediaCommand?.script_sha256 }, { action: "insert_program", program_segment_id: programTransitionRun.insertSegmentId, program_script: programTransitionRun.insertScript, script_sha256: programTransitionRun.insertScriptSha256 }, "worker must dispatch the approved frozen script and its hash to the gateway");
+  const programOutputObservation = {
+    tenantId,
+    runId: programTransitionRun.runId,
+    runtimeSessionId: `session_program_${programTransitionRun.runId}`,
+    outboxEventId: programInsertBody.data.mediaEvent.id,
+    commandId: programInsertBody.data.mediaEvent.command.id,
+    programSegmentId: programTransitionRun.insertSegmentId,
+    action: "INSERT_PROGRAM",
+    source: "watermark_verifier",
+    evidenceRef: "evidence://integration/program-output/insert",
+    contentSha256: "a".repeat(64),
+    confidence: 0.995,
+    mediaTimeMs: 5000,
+    observedAt: new Date().toISOString()
+  };
+  const outputObservationAccepted = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` }, body: JSON.stringify(programOutputObservation) });
+  assert.equal(outputObservationAccepted.status, 202, "a verifier attestation bound to a delivered program command must be accepted");
+  const outputObservationDuplicate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` }, body: JSON.stringify(programOutputObservation) });
+  assert.equal(outputObservationDuplicate.status, 200, "an identical output observation retry must be idempotent");
+  const outputObservationConflict = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` }, body: JSON.stringify({ ...programOutputObservation, confidence: 0.5 }) });
+  assert.equal(outputObservationConflict.status, 409, "a delivered command must not accept conflicting output evidence");
+  await assert.rejects(client.query("update program_output_observations set confidence = 0 where outbox_event_id = $1", [programInsertBody.data.mediaEvent.id]), /program output observations are immutable/i, "program output observation evidence must be append-only at the database layer");
+  const outputObservationAudit = await client.query("select detail ->> 'programSegmentId' as program_segment_id, detail ->> 'outboxEventId' as outbox_event_id from audit_events where resource_key = $1 and event_type = 'live_program.output_observed'", [programTransitionRun.runId]);
+  assert.deepEqual(outputObservationAudit.rows, [{ program_segment_id: programTransitionRun.insertSegmentId, outbox_event_id: programInsertBody.data.mediaEvent.id }], "a real output observation must enter the immutable audit chain with its command binding");
   const nestedProgramInsert = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${programTransitionRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "INSERT_PROGRAM", expectedState: "LIVE", programSegmentId: programTransitionRun.insertSegmentId, idempotencyKey: randomUUID() }) });
   assert.equal(nestedProgramInsert.status, 409, "an accepted insertion must be rolled back before another insertion");
   const programRollback = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${programTransitionRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "ROLLBACK_PROGRAM", expectedState: "LIVE", idempotencyKey: randomUUID() }) });

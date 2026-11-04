@@ -74,6 +74,17 @@ function validProbe(value) {
   return { outputConnected, outputFps, avSyncMs, bitrateMbps, audioActive, fallbackReady };
 }
 
+function validProgramObservation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const observation = value;
+  const uuid = (candidate) => typeof candidate === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate);
+  const commandId = typeof observation.commandId === "string" && /^media_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(observation.commandId);
+  const action = typeof observation.action === "string" && ["START", "RECOVER", "SCHEDULED_START", "INSERT_PROGRAM", "ROLLBACK_PROGRAM"].includes(observation.action);
+  const evidenceRef = typeof observation.evidenceRef === "string" && (/^evidence:\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(observation.evidenceRef) || /^urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$/.test(observation.evidenceRef));
+  if (!uuid(observation.outboxEventId) || !commandId || !uuid(observation.programSegmentId) || !action || typeof observation.source !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(observation.source) || !evidenceRef || typeof observation.contentSha256 !== "string" || !/^[0-9a-f]{64}$/.test(observation.contentSha256) || typeof observation.confidence !== "number" || !Number.isFinite(observation.confidence) || observation.confidence < 0 || observation.confidence > 1 || !Number.isInteger(observation.mediaTimeMs) || observation.mediaTimeMs < 0 || typeof observation.observedAt !== "string" || Number.isNaN(Date.parse(observation.observedAt))) return null;
+  return { outboxEventId: observation.outboxEventId, commandId: observation.commandId, programSegmentId: observation.programSegmentId, action: observation.action, source: observation.source, evidenceRef: observation.evidenceRef, contentSha256: observation.contentSha256, confidence: observation.confidence, mediaTimeMs: observation.mediaTimeMs, observedAt: new Date(observation.observedAt).toISOString() };
+}
+
 function failedSample(target) {
   return { runId: target.runId, outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, audioActive: false, fallbackReady: false };
 }
@@ -107,6 +118,14 @@ async function postTelemetry(target, telemetry) {
   return data;
 }
 
+async function postProgramOutputObservation(target, observation) {
+  return fetchJson(`${controlPlaneUrl}/api/v1/runtime/program-output-observations`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${target.telemetryToken}` },
+    body: JSON.stringify({ tenantId: target.tenantId, runId: target.runId, runtimeSessionId: target.sessionId, ...observation }),
+  });
+}
+
 async function observeTarget(target) {
   try {
     const [observation, probeRaw] = await Promise.all([
@@ -117,7 +136,10 @@ async function observeTarget(target) {
     if (!probe) throw new Error("output_probe_payload_invalid");
     const telemetry = telemetryFromObservation(target, observation, probe);
     await postTelemetry(target, telemetry);
-    log("telemetry.posted", { runId: target.runId, outputConnected: telemetry.outputConnected, outputFps: telemetry.outputFps, probeConnected: probe.outputConnected, writerAcceptingFrames: observation?.quality?.writer_accepting_frames === true });
+    const outputObservation = validProgramObservation(probeRaw.programObservation);
+    if (probeRaw.programObservation !== undefined && !outputObservation) log("program_output_observation.rejected", { runId: target.runId, reason: "output_probe_program_observation_invalid" });
+    if (outputObservation) await postProgramOutputObservation(target, outputObservation);
+    log("telemetry.posted", { runId: target.runId, outputConnected: telemetry.outputConnected, outputFps: telemetry.outputFps, probeConnected: probe.outputConnected, writerAcceptingFrames: observation?.quality?.writer_accepting_frames === true, outputObservationPosted: Boolean(outputObservation) });
     return true;
   } catch (error) {
     const reason = error instanceof Error ? error.message : "observation_failed";

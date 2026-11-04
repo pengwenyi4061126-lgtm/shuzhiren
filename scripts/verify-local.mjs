@@ -26,6 +26,7 @@ const checks = [
   ["run", "program:runtime-scripts:check"],
   ["run", "runtime:program-transition:check"],
   ["run", "control-room:program-transition:check"],
+  ["run", "runtime:program-output:check"],
   ["run", "preflight:check"],
   ["run", "lifecycle:authz:check"],
   ["run", "command:confirmation:check"],

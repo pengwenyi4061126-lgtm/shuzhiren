@@ -4,7 +4,7 @@ import { NextResponse, type NextRequest } from "next/server";
 const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 export async function proxy(request: NextRequest) {
-  if (process.env.NODE_ENV !== "production" || request.nextUrl.pathname === "/api/v1/runtime/telemetry" || request.nextUrl.pathname === "/api/v1/runtime/recordings" || request.nextUrl.pathname === "/api/v1/runtime/channel-interactions" || request.nextUrl.pathname === "/api/v1/runtime/channel-commerce" || request.nextUrl.pathname === "/api/v1/runtime/settlement-batches" || request.nextUrl.pathname === "/api/v1/integrations/product-facts") return NextResponse.next();
+  if (process.env.NODE_ENV !== "production" || request.nextUrl.pathname === "/api/v1/runtime/telemetry" || request.nextUrl.pathname === "/api/v1/runtime/program-output-observations" || request.nextUrl.pathname === "/api/v1/runtime/recordings" || request.nextUrl.pathname === "/api/v1/runtime/channel-interactions" || request.nextUrl.pathname === "/api/v1/runtime/channel-commerce" || request.nextUrl.pathname === "/api/v1/runtime/settlement-batches" || request.nextUrl.pathname === "/api/v1/integrations/product-facts") return NextResponse.next();
   const token = accessTokenFrom(request);
   if (!token) return error("missing_bearer_token", 401);
   if (usesCookieAuth(request) && isUnsafeMethod(request.method) && !hasTrustedOrigin(request)) return error("csrf_origin_rejected", 403);

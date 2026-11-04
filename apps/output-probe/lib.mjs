@@ -13,8 +13,11 @@ export function validateTarget(value, index) {
   const expectedFps = optionalPositiveNumber(value.expectedFps, `OUTPUT_PROBE_TARGETS[${index}].expectedFps`, 120);
   const expectedWidth = optionalPositiveInteger(value.expectedWidth, `OUTPUT_PROBE_TARGETS[${index}].expectedWidth`, 8192);
   const expectedHeight = optionalPositiveInteger(value.expectedHeight, `OUTPUT_PROBE_TARGETS[${index}].expectedHeight`, 8192);
+  const programEvidenceUrl = value.programEvidenceUrl === undefined ? null : safeHttpUrl(value.programEvidenceUrl, `OUTPUT_PROBE_TARGETS[${index}].programEvidenceUrl`);
+  const programEvidenceToken = value.programEvidenceToken === undefined ? null : requiredSecret(value.programEvidenceToken, `OUTPUT_PROBE_TARGETS[${index}].programEvidenceToken`);
   if ((expectedWidth === null) !== (expectedHeight === null)) throw new Error(`OUTPUT_PROBE_TARGETS[${index}] must set expectedWidth and expectedHeight together`);
-  return { id: value.id, streamUrl, fallbackStreamUrl, avSyncProbeUrl, expectedFps, expectedWidth, expectedHeight };
+  if (programEvidenceUrl === null && programEvidenceToken !== null) throw new Error(`OUTPUT_PROBE_TARGETS[${index}].programEvidenceToken requires programEvidenceUrl`);
+  return { id: value.id, streamUrl, fallbackStreamUrl, avSyncProbeUrl, expectedFps, expectedWidth, expectedHeight, programEvidenceUrl, programEvidenceToken };
 }
 
 function optionalPositiveNumber(value, label, maximum) {
@@ -43,17 +46,24 @@ function safeHttpUrl(value, label) {
   return url.toString();
 }
 
+function requiredSecret(value, label) {
+  if (typeof value !== "string" || value.length < 32 || value.length > 2000 || /\s/.test(value)) throw new Error(`${label} is invalid`);
+  return value;
+}
+
 export async function probeTarget(target, { ffprobePath = "ffprobe", ffmpegPath = "ffmpeg", timeoutMs = 5000, audioSampleSeconds = 5, silenceThresholdDb = -50, silenceDurationSeconds = 2, fetchImpl = fetch, execute = execFileAsync } = {}) {
-  const [primary, fallback, avSyncMs, audioActive] = await Promise.all([
+  const [primary, fallback, avSyncMs, audioActive, programObservation] = await Promise.all([
     inspectStream(target.streamUrl, { ffprobePath, timeoutMs, execute }),
     target.fallbackStreamUrl ? inspectStream(target.fallbackStreamUrl, { ffprobePath, timeoutMs, execute }).then(() => true).catch(() => false) : Promise.resolve(false),
     fetchAvSync(target.avSyncProbeUrl, { timeoutMs, fetchImpl }),
-    detectAudioActivity(target.streamUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute })
+    detectAudioActivity(target.streamUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute }),
+    fetchProgramEvidence(target, { timeoutMs, fetchImpl })
   ]);
   if (!primary.hasAudio || !primary.hasVideo || primary.outputFps === null || primary.bitrateMbps === null) throw new Error("primary_stream_measurement_incomplete");
   if (target.expectedFps !== null && Math.abs(primary.outputFps - target.expectedFps) > 0.05) throw new Error("primary_stream_fps_mismatch");
   if (target.expectedWidth !== null && (primary.width !== target.expectedWidth || primary.height !== target.expectedHeight)) throw new Error("primary_stream_resolution_mismatch");
-  return { outputConnected: true, outputFps: primary.outputFps, avSyncMs, bitrateMbps: primary.bitrateMbps, audioActive, fallbackReady: fallback };
+  const result = { outputConnected: true, outputFps: primary.outputFps, avSyncMs, bitrateMbps: primary.bitrateMbps, audioActive, fallbackReady: fallback };
+  return programObservation ? { ...result, programObservation } : result;
 }
 
 async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
@@ -76,6 +86,33 @@ async function fetchAvSync(url, { timeoutMs, fetchImpl }) {
   const value = payload?.avSyncMs;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error("av_sync_probe_payload_invalid");
   return round(value);
+}
+
+async function fetchProgramEvidence(target, { timeoutMs, fetchImpl }) {
+  if (!target.programEvidenceUrl) return null;
+  try {
+    const response = await fetchImpl(target.programEvidenceUrl, {
+      headers: target.programEvidenceToken ? { authorization: `Bearer ${target.programEvidenceToken}` } : undefined,
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!response.ok) return null;
+    return validateProgramObservation(await response.json(), "program evidence response");
+  } catch {
+    // Output health must remain available when the optional content verifier is down.
+    return null;
+  }
+}
+
+export function validateProgramObservation(value, label = "program observation") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
+  const observation = value;
+  if (!isUuid(observation.outboxEventId) || !isMediaCommandId(observation.commandId) || !isUuid(observation.programSegmentId)) throw new Error(`${label} command binding is invalid`);
+  if (!allowedAction(observation.action) || !isSessionTimestamp(observation.observedAt) || !Number.isInteger(observation.mediaTimeMs) || observation.mediaTimeMs < 0) throw new Error(`${label} timing is invalid`);
+  if (typeof observation.source !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(observation.source)) throw new Error(`${label} source is invalid`);
+  if (typeof observation.evidenceRef !== "string" || !(/^evidence:\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(observation.evidenceRef) || /^urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$/.test(observation.evidenceRef))) throw new Error(`${label} evidence reference is invalid`);
+  if (typeof observation.contentSha256 !== "string" || !/^[0-9a-f]{64}$/.test(observation.contentSha256)) throw new Error(`${label} content hash is invalid`);
+  if (typeof observation.confidence !== "number" || !Number.isFinite(observation.confidence) || observation.confidence < 0 || observation.confidence > 1) throw new Error(`${label} confidence is invalid`);
+  return { outboxEventId: observation.outboxEventId, commandId: observation.commandId, programSegmentId: observation.programSegmentId, action: observation.action, source: observation.source, evidenceRef: observation.evidenceRef, contentSha256: observation.contentSha256, confidence: observation.confidence, mediaTimeMs: observation.mediaTimeMs, observedAt: new Date(observation.observedAt).toISOString() };
 }
 
 async function detectAudioActivity(sourceUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute }) {
@@ -102,3 +139,7 @@ function numericDimension(value) {
 }
 
 function round(value) { return Math.round(value * 1000) / 1000; }
+function isUuid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
+function isMediaCommandId(value) { return typeof value === "string" && /^media_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
+function allowedAction(value) { return typeof value === "string" && ["START", "RECOVER", "SCHEDULED_START", "INSERT_PROGRAM", "ROLLBACK_PROGRAM"].includes(value); }
+function isSessionTimestamp(value) { return typeof value === "string" && !Number.isNaN(Date.parse(value)); }

@@ -5,8 +5,9 @@ import { getRun } from "@/lib/control-plane/store";
 import { listOutboxEvents } from "@/lib/control-plane/outbox";
 import { listInteractions } from "@/lib/interactions";
 import { listAlerts } from "@/lib/monitoring";
+import { listProgramOutputObservations } from "@/lib/program-output-observations";
 
-export type RunEventCategory = "command" | "media" | "alert" | "interaction" | "audit";
+export type RunEventCategory = "command" | "media" | "output" | "alert" | "interaction" | "audit";
 
 export type RunEvent = {
   id: string;
@@ -14,7 +15,7 @@ export type RunEvent = {
   occurredAt: string;
   title: string;
   detail: string;
-  state?: "accepted" | "pending" | "delivering" | "delivered" | "failed" | "cancelled" | "open" | "resolved" | "queued" | "handled";
+  state?: "accepted" | "pending" | "delivering" | "delivered" | "observed" | "failed" | "cancelled" | "open" | "resolved" | "queued" | "handled";
 };
 
 export async function listRunEvents(context: RequestContext, runId: string) {
@@ -22,8 +23,9 @@ export async function listRunEvents(context: RequestContext, runId: string) {
   const run = await getRun(context, runId);
   if (!run) return null;
 
-  const [outbox, alerts, interactions, audit] = await Promise.all([
+  const [outbox, outputObservations, alerts, interactions, audit] = await Promise.all([
     listOutboxEvents(context),
+    listProgramOutputObservations(context, runId),
     listAlerts(context, runId),
     listInteractions(context, runId),
     listAuditEventsForRun(context, runId)
@@ -45,6 +47,14 @@ export async function listRunEvents(context: RequestContext, runId: string) {
       title: event.type === "channel.reply.dispatch" ? "渠道文字回复" : event.type === "speech.dispatch" ? "受控语音播报" : mediaTitle(event.command.type),
       detail: event.type === "channel.reply.dispatch" ? `渠道 ${event.channelConnectionId} · 互动 ${event.interactionId} · 第 ${event.attempts} 次投递${event.lastError ? ` · ${event.lastError}` : ""}` : `${event.type === "speech.dispatch" ? `商品事实 v${event.command.productRevision}` : "媒体动作"} · 运行时会话 ${event.sessionId} · 第 ${event.attempts} 次投递${event.lastError ? ` · ${event.lastError}` : ""}`,
       state: event.state
+    })),
+    ...outputObservations.map((observation) => ({
+      id: `output:${observation.id}`,
+      category: "output" as const,
+      occurredAt: observation.observedAt,
+      title: `输出已观测：${mediaTitleForAction(observation.action)}`,
+      detail: `${observation.source} · 片段 ${observation.programSegmentId} · 置信度 ${(observation.confidence * 100).toFixed(1)}% · 证据 ${observation.evidenceRef}`,
+      state: "observed" as const
     })),
     ...alerts.map((alert) => ({
       id: `alert:${alert.id}`,
@@ -80,6 +90,10 @@ function commandTitle(action: string) {
 
 function mediaTitle(type: string) {
   return ({ start_program: "媒体指令：启动节目", switch_to_fallback: "媒体指令：切换备用节目", switch_to_human: "媒体指令：切换人工", stop_program: "媒体指令：结束节目", insert_program: "媒体指令：插播冻结节目", resume_program: "媒体指令：恢复节目" } as Record<string, string>)[type] ?? `媒体指令：${type}`;
+}
+
+function mediaTitleForAction(action: string) {
+  return ({ START: "启动节目", RECOVER: "恢复节目", SCHEDULED_START: "计划启动节目", INSERT_PROGRAM: "插播节目", ROLLBACK_PROGRAM: "回退节目" } as Record<string, string>)[action] ?? action;
 }
 
 function formatAuditDetail(detail: Record<string, string | number | boolean | null>) {
