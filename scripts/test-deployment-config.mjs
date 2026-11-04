@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
@@ -37,6 +37,23 @@ const releaseIssuer = "release_automation";
 const releaseKeyId = "fixture-2026";
 const releaseTrust = { [releaseIssuer]: { [releaseKeyId]: releaseSigner.publicKey.export({ type: "spki", format: "pem" }) } };
 const releaseRevision = "a".repeat(40);
+const releaseImages = {
+  CONTROL_PLANE_IMAGE: images.controlPlane,
+  CONTROL_PLANE_MIGRATOR_IMAGE: images.controlPlaneMigrator,
+  RUNTIME_GATEWAY_IMAGE: images.gateway,
+  RUNTIME_WORKER_IMAGE: images.worker,
+  RUNTIME_OBSERVER_IMAGE: images.observer,
+  OUTPUT_PROBE_IMAGE: images.probe,
+  CHANNEL_ADAPTER_IMAGE: images.adapter,
+  ALERT_NOTIFIER_IMAGE: images.notifier,
+  LIVETALKING_IMAGE: images.livetalking,
+  COSYVOICE_IMAGE: images.cosyvoice
+};
+const releaseEvidence = {
+  sbom: `${JSON.stringify({ schemaVersion: 1, artifactType: "oci-buildx-sbom-index", releaseRevision, source: "https://github.com/shuzizhibo/shuzizhibo", images: releaseImages, attestationTransport: "oci-buildx-attached" })}\n`,
+  provenance: `${JSON.stringify({ schemaVersion: 1, artifactType: "oci-buildx-provenance-index", releaseRevision, source: "https://github.com/shuzizhibo/shuzizhibo", images: releaseImages, attestationTransport: "oci-buildx-attached", builder: "github-actions-buildx" })}\n`
+};
+const releaseEvidenceSha256 = Object.fromEntries(Object.entries(releaseEvidence).map(([name, value]) => [name, `sha256:${createHash("sha256").update(value).digest("hex")}`]));
 const commits = {
   MuseTalk: "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
   CosyVoice: "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
@@ -61,20 +78,9 @@ function deploymentReleaseManifest({ releaseRevision: manifestRevision = release
     releaseRevision: manifestRevision,
     issuedAt: issuedAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
-    images: manifestImages ?? {
-      CONTROL_PLANE_IMAGE: images.controlPlane,
-      CONTROL_PLANE_MIGRATOR_IMAGE: images.controlPlaneMigrator,
-      RUNTIME_GATEWAY_IMAGE: images.gateway,
-      RUNTIME_WORKER_IMAGE: images.worker,
-      RUNTIME_OBSERVER_IMAGE: images.observer,
-      OUTPUT_PROBE_IMAGE: images.probe,
-      CHANNEL_ADAPTER_IMAGE: images.adapter,
-      ALERT_NOTIFIER_IMAGE: images.notifier,
-      LIVETALKING_IMAGE: images.livetalking,
-      COSYVOICE_IMAGE: images.cosyvoice
-    },
-    sbomSha256: `sha256:${"a".repeat(64)}`,
-    provenanceSha256: `sha256:${"b".repeat(64)}`
+    images: manifestImages ?? releaseImages,
+    sbomSha256: releaseEvidenceSha256.sbom,
+    provenanceSha256: releaseEvidenceSha256.provenance
   };
   return JSON.stringify({ ...unsigned, signature: { issuer: releaseIssuer, keyId: releaseKeyId, value: sign(null, Buffer.from(canonicalJson(unsigned)), releaseSigner.privateKey).toString("base64") } });
 }
@@ -230,6 +236,8 @@ const alert = env({
 const files = {
   control: path.join(fixtureDirectory, "control.env"),
   releaseManifest: deploymentReleaseManifestPath,
+  releaseSbom: path.join(fixtureDirectory, "release-sbom-index.json"),
+  releaseProvenance: path.join(fixtureDirectory, "release-provenance-index.json"),
   controlCompose: path.join(fixtureDirectory, "control-compose.env"),
   runtime: path.join(fixtureDirectory, "runtime.env"),
   gateway: path.join(fixtureDirectory, "gateway.env"),
@@ -243,9 +251,15 @@ function check(options = []) {
 
 try {
   const validProbeTarget = [{ id: "fixture", streamUrl: "rtmp://relay.internal/live/fixture", avSyncProbeUrl: "https://av-sync.internal/fixture", expectedFps: 25, expectedWidth: 1280, expectedHeight: 720 }];
-  await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
+  await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.releaseSbom, releaseEvidence.sbom), writeFile(files.releaseProvenance, releaseEvidence.provenance), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  await writeFile(files.releaseSbom, "tampered\n");
+  const invalidReleaseEvidence = check(["--require-cosyvoice"]);
+  assert.notEqual(invalidReleaseEvidence.status, 0, "deployment manifests must reject tampered release evidence indexes");
+  assert.match(invalidReleaseEvidence.stderr, /release-sbom-index\.json SHA-256 不匹配/, "tampered release evidence must identify the signed artifact gate");
+  await writeFile(files.releaseSbom, releaseEvidence.sbom);
 
   const tamperedManifest = JSON.parse(deploymentReleaseManifest());
   tamperedManifest.signature.value = "AA==";

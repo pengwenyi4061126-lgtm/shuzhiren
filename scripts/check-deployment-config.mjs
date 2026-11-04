@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateTarget as validateOutputProbeTarget } from "../apps/output-probe/lib.mjs";
@@ -70,6 +70,38 @@ function canonicalJson(value) {
   return JSON.stringify(value) ?? "null";
 }
 
+async function verifyReleaseEvidenceIndexes(manifest, manifestPath, imageKeys) {
+  const evidence = [
+    { file: "release-sbom-index.json", digest: manifest.sbomSha256, artifactType: "oci-buildx-sbom-index" },
+    { file: "release-provenance-index.json", digest: manifest.provenanceSha256, artifactType: "oci-buildx-provenance-index", builder: "github-actions-buildx" }
+  ];
+  for (const expected of evidence) {
+    let source;
+    try {
+      source = await readFile(path.join(path.dirname(manifestPath), expected.file));
+    } catch (error) {
+      errors.push(`DEPLOYMENT_RELEASE_MANIFEST 缺少同目录 ${expected.file}：${error instanceof Error ? error.message : "无法读取"}`);
+      continue;
+    }
+    if (`sha256:${createHash("sha256").update(source).digest("hex")}` !== expected.digest) {
+      errors.push(`DEPLOYMENT_RELEASE_MANIFEST 的 ${expected.file} SHA-256 不匹配`);
+      continue;
+    }
+    let index;
+    try {
+      index = JSON.parse(source.toString("utf8"));
+    } catch {
+      errors.push(`${expected.file} 必须是 JSON 对象`);
+      continue;
+    }
+    if (!index || typeof index !== "object" || Array.isArray(index) || index.schemaVersion !== 1 || index.artifactType !== expected.artifactType || index.releaseRevision !== manifest.releaseRevision || index.attestationTransport !== "oci-buildx-attached" || (expected.builder && index.builder !== expected.builder)) {
+      errors.push(`${expected.file} 必须绑定 Buildx attestation、发布提交和 artifact 类型`);
+      continue;
+    }
+    if (!index.images || typeof index.images !== "object" || Array.isArray(index.images) || Object.keys(index.images).length !== imageKeys.length || imageKeys.some((key) => index.images[key] !== manifest.images[key])) errors.push(`${expected.file} 的十个镜像必须精确匹配 DEPLOYMENT_RELEASE_MANIFEST`);
+  }
+}
+
 async function verifyDeploymentReleaseManifest(control, controlCompose, runtime, controlImageKeys, runtimeImageKeys) {
   const manifestPath = control.get("DEPLOYMENT_RELEASE_MANIFEST");
   const trustSource = control.get("DEPLOYMENT_RELEASE_MANIFEST_TRUST");
@@ -124,12 +156,14 @@ async function verifyDeploymentReleaseManifest(control, controlCompose, runtime,
   if (!/^sha256:[a-f0-9]{64}$/.test(manifest.sbomSha256 ?? "")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少 SBOM SHA-256");
   if (!/^sha256:[a-f0-9]{64}$/.test(manifest.provenanceSha256 ?? "")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少 provenance SHA-256");
   const images = manifest.images;
-  if (!images || typeof images !== "object" || Array.isArray(images)) {
+  const imageKeys = [...controlImageKeys, ...runtimeImageKeys];
+  if (!images || typeof images !== "object" || Array.isArray(images) || Object.keys(images).length !== imageKeys.length) {
     errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少服务镜像映射");
     return;
   }
   for (const key of controlImageKeys) if (images[key] !== controlCompose.get(key)) errors.push(`DEPLOYMENT_RELEASE_MANIFEST 的 ${key} 必须匹配控制面 Compose`);
   for (const key of runtimeImageKeys) if (images[key] !== runtime.get(key)) errors.push(`DEPLOYMENT_RELEASE_MANIFEST 的 ${key} 必须匹配运行时 Compose`);
+  if (/^sha256:[a-f0-9]{64}$/.test(manifest.sbomSha256 ?? "") && /^sha256:[a-f0-9]{64}$/.test(manifest.provenanceSha256 ?? "")) await verifyReleaseEvidenceIndexes(manifest, manifestPath, imageKeys);
 }
 
 function equal(values, fileName, key, expected) {
