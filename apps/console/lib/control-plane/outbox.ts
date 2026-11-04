@@ -1,6 +1,7 @@
 import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import { createSpeechCommand, type SpeechCommand } from "@/lib/speech-protocol";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess, hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { dispatchMediaCommand, dispatchSpeechCommand } from "@/lib/runtime-gateway";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import type { PoolClient } from "pg";
@@ -84,12 +85,19 @@ export async function enqueueSpeechCommandInTransaction(client: PoolClient, cont
 }
 
 export async function getOutboxEvent(context: RequestContext, eventId: string) {
-  if (!databasePool()) { const event = outboxStore().events.get(eventId); return event?.tenantId === context.tenantId ? event : null; }
+  if (!databasePool()) {
+    const event = outboxStore().events.get(eventId);
+    if (!event || event.tenantId !== context.tenantId) return null;
+    await assertOutboxEventAccess(context, event);
+    return event;
+  }
   if (!isUuid(eventId)) return null;
-  return withTenantTransaction(context.tenantId, async (client) => {
+  const event = await withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentOutboxRow>("select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error from outbox_events where id = $1", [eventId]);
     return result.rows[0] ? persistentEvent(result.rows[0]) : null;
   });
+  if (event) await assertOutboxEventAccess(context, event);
+  return event;
 }
 
 function isUuid(value: string) {
@@ -99,7 +107,7 @@ function isUuid(value: string) {
 export async function listOutboxEvents(context: RequestContext) {
   if (!databasePool()) return [...outboxStore().events.values()].filter((event) => event.tenantId === context.tenantId).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentOutboxRow>("select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error from outbox_events order by created_at desc limit 100");
+    const result = await client.query<PersistentOutboxRow>("select event.id, event.tenant_id, event.event_type, event.state, event.attempts, event.payload, event.created_at, event.delivered_at, event.last_error from outbox_events event where not $1::boolean or exists (select 1 from live_runs r where ((event.aggregate_type = 'live_run' and event.aggregate_id = r.id) or (event.event_type = 'channel.reply.dispatch' and event.payload ->> 'runId' = r.id::text)) and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))) order by event.created_at desc limit 100", [hasRestrictedMembership(context), context.membershipId ?? null]);
     return result.rows.map(persistentEvent);
   });
 }
@@ -130,6 +138,7 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
   if (!databasePool()) {
     const event = outboxStore().events.get(eventId);
     if (!event || event.tenantId !== context.tenantId) throw new Response("Outbox event not found", { status: 404 });
+    await assertOutboxEventAccess(context, event);
     if (event.state === "delivered") return { event, duplicate: true };
     if (event.state === "delivering") throw new Response("Outbox event is already delivering", { status: 409 });
     event.state = "delivering";
@@ -139,7 +148,7 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
   if (!isUuid(eventId)) throw new Response("Outbox event not found", { status: 404 });
 
   return withTenantTransaction(context.tenantId, async (client) => {
-    const selected = await client.query<PersistentOutboxRow>("select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error from outbox_events where id = $1 for update", [eventId]);
+    const selected = await client.query<PersistentOutboxRow>("select event.id, event.tenant_id, event.event_type, event.state, event.attempts, event.payload, event.created_at, event.delivered_at, event.last_error from outbox_events event where event.id = $1 and (not $2::boolean or exists (select 1 from live_runs r where ((event.aggregate_type = 'live_run' and event.aggregate_id = r.id) or (event.event_type = 'channel.reply.dispatch' and event.payload ->> 'runId' = r.id::text)) and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) for update of event", [eventId, hasRestrictedMembership(context), context.membershipId ?? null]);
     if (!selected.rows[0]) throw new Response("Outbox event not found", { status: 404 });
     const current = persistentEvent(selected.rows[0]);
     if (current.state === "delivered") return { event: current, duplicate: true as const };
@@ -148,6 +157,10 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
     const updated = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivering', attempts = attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second') where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [eventId, manualDeliveryLeaseSeconds]);
     return { event: persistentEvent(updated.rows[0]), duplicate: false as const };
   });
+}
+
+async function assertOutboxEventAccess(context: RequestContext, event: RuntimeOutboxEvent) {
+  await assertLiveRunAccess(context, event.type === "channel.reply.dispatch" ? event.runId : event.command.runId);
 }
 
 async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent) {

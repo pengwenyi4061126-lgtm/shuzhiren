@@ -1,5 +1,5 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
-import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
+import { assertLiveRunAccess, hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; audioActive: boolean; fallbackReady: boolean };
@@ -49,9 +49,10 @@ export async function getRuntimeSamplingSlo(context: RequestContext, runId: stri
 }
 
 export async function listAlerts(context: RequestContext, runId?: string) {
+  if (runId) await assertLiveRunAccess(context, runId);
   if (!databasePool()) return [...monitoringStore().alerts.values()].filter((alert) => alert.tenantId === context.tenantId && (!runId || alert.runId === runId)).sort((left, right) => right.openedAt.localeCompare(left.openedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentAlertRow>(`select a.id, a.tenant_id, a.live_run_id, a.severity, a.code, a.message, a.status, a.opened_at, a.resolved_at, a.acknowledged_at, u.display_name as acknowledged_by_name from runtime_alerts a left join users u on u.id = a.acknowledged_by where ($1::uuid is null or a.live_run_id = $1) order by a.opened_at desc limit 500`, [runId ?? null]);
+    const result = await client.query<PersistentAlertRow>(`select a.id, a.tenant_id, a.live_run_id, a.severity, a.code, a.message, a.status, a.opened_at, a.resolved_at, a.acknowledged_at, u.display_name as acknowledged_by_name from runtime_alerts a left join users u on u.id = a.acknowledged_by where ($1::uuid is null or a.live_run_id = $1) and (not $2::boolean or exists (select 1 from live_runs r where r.id = a.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) order by a.opened_at desc limit 500`, [runId ?? null, hasRestrictedMembership(context), context.membershipId ?? null]);
     return result.rows.map(persistentAlert);
   });
 }
@@ -88,6 +89,7 @@ export async function acknowledgeAlert(context: RequestContext, alertId: string)
   if (!databasePool()) {
     const alert = monitoringStore().alerts.get(alertId);
     if (!alert || alert.tenantId !== context.tenantId) throw new Response("Runtime alert not found", { status: 404 });
+    await assertLiveRunAccess(context, alert.runId);
     if (alert.status !== "open") throw new Response("Resolved alerts cannot be acknowledged", { status: 409 });
     if (alert.acknowledgedAt) return { alert, duplicate: true as const };
     const acknowledged = { ...alert, acknowledgedAt: new Date().toISOString(), acknowledgedBy: context.actorName };
@@ -95,7 +97,7 @@ export async function acknowledgeAlert(context: RequestContext, alertId: string)
     return { alert: acknowledged, duplicate: false as const };
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const existing = await client.query<PersistentAlertRow>(`select a.id, a.tenant_id, a.live_run_id, a.severity, a.code, a.message, a.status, a.opened_at, a.resolved_at, a.acknowledged_at, u.display_name as acknowledged_by_name from runtime_alerts a left join users u on u.id = a.acknowledged_by where a.id = $1 for update of a`, [alertId]);
+    const existing = await client.query<PersistentAlertRow>(`select a.id, a.tenant_id, a.live_run_id, a.severity, a.code, a.message, a.status, a.opened_at, a.resolved_at, a.acknowledged_at, u.display_name as acknowledged_by_name from runtime_alerts a left join users u on u.id = a.acknowledged_by where a.id = $1 and (not $2::boolean or exists (select 1 from live_runs r where r.id = a.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) for update of a`, [alertId, hasRestrictedMembership(context), context.membershipId ?? null]);
     if (!existing.rows[0]) throw new Response("Runtime alert not found", { status: 404 });
     const current = persistentAlert(existing.rows[0]);
     if (current.status !== "open") throw new Response("Resolved alerts cannot be acknowledged", { status: 409 });

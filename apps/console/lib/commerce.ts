@@ -1,6 +1,7 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { listProducts } from "@/lib/catalog";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { getRun } from "@/lib/control-plane/store";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
@@ -60,6 +61,7 @@ export async function createChannelCommerceEvent(context: RequestContext, input:
 }
 
 export async function getCommerceSummary(context: RequestContext, runId: string): Promise<CommerceSummary> {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return summarizeCommerceEvents(runId, [...commerceStore().events.values()].filter((event) => event.tenantId === context.tenantId && event.runId === runId), await unitCostForDemoRun(context, runId));
   return withTenantTransaction(context.tenantId, async (client) => {
     const [result, cost] = await Promise.all([

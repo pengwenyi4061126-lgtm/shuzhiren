@@ -1,5 +1,6 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
+import { assertLiveRunAccess, hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { listAlerts } from "@/lib/monitoring";
 
@@ -12,6 +13,7 @@ declare global { var shuzhirenIncidentStore: IncidentStore | undefined; }
 function incidentStore() { globalThis.shuzhirenIncidentStore ??= { incidents: new Map() }; return globalThis.shuzhirenIncidentStore; }
 
 export async function listIncidents(context: RequestContext, runId?: string) {
+  if (runId) await assertLiveRunAccess(context, runId);
   if (!databasePool()) return [...incidentStore().incidents.values()].filter((incident) => incident.tenantId === context.tenantId && (!runId || incident.runId === runId)).sort((left, right) => right.openedAt.localeCompare(left.openedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentIncidentRow>(`select i.id, i.tenant_id, i.live_run_id, i.runtime_alert_id, i.severity, i.title, i.status, i.owner_id, owner.display_name as owner_name, i.opened_at, i.resolution, i.resolved_at, resolver.display_name as resolved_by_name
@@ -19,7 +21,8 @@ export async function listIncidents(context: RequestContext, runId?: string) {
       left join users owner on owner.id = i.owner_id
       left join users resolver on resolver.id = i.resolved_by
       where ($1::uuid is null or i.live_run_id = $1)
-      order by i.opened_at desc limit 500`, [runId ?? null]);
+        and (not $2::boolean or exists (select 1 from live_runs r where r.id = i.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))))
+      order by i.opened_at desc limit 500`, [runId ?? null, hasRestrictedMembership(context), context.membershipId ?? null]);
     return result.rows.map(persistentIncident);
   });
 }
@@ -37,7 +40,7 @@ export async function createIncidentFromAlert(context: RequestContext, alertId: 
     return { incident, duplicate: false as const };
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const alert = await client.query<{ id: string; live_run_id: string; severity: Incident["severity"]; code: string; status: "open" | "resolved" }>("select id, live_run_id, severity, code, status from runtime_alerts where id = $1 for update", [alertId]);
+    const alert = await client.query<{ id: string; live_run_id: string; severity: Incident["severity"]; code: string; status: "open" | "resolved" }>("select a.id, a.live_run_id, a.severity, a.code, a.status from runtime_alerts a where a.id = $1 and (not $2::boolean or exists (select 1 from live_runs r where r.id = a.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) for update", [alertId, hasRestrictedMembership(context), context.membershipId ?? null]);
     if (!alert.rows[0]) throw new Response("Runtime alert not found", { status: 404 });
     if (alert.rows[0].status !== "open") throw new Response("Resolved alerts cannot create incidents", { status: 409 });
     const existing = await client.query<PersistentIncidentRow>(`select i.id, i.tenant_id, i.live_run_id, i.runtime_alert_id, i.severity, i.title, i.status, i.owner_id, owner.display_name as owner_name, i.opened_at, i.resolution, i.resolved_at, resolver.display_name as resolved_by_name
@@ -60,6 +63,7 @@ export async function resolveIncident(context: RequestContext, incidentId: strin
   if (!databasePool()) {
     const incident = incidentStore().incidents.get(incidentId);
     if (!incident || incident.tenantId !== context.tenantId) throw new Response("Incident not found", { status: 404 });
+    await assertLiveRunAccess(context, incident.runId);
     if (incident.status === "resolved") return { incident, duplicate: true as const };
     if (context.role !== "admin" && incident.ownerName !== context.actorName) throw new Response("Only the incident owner can resolve it", { status: 403 });
     const resolved = { ...incident, status: "resolved" as const, resolution: trimmed, resolvedAt: new Date().toISOString(), resolvedBy: context.actorName };
@@ -70,7 +74,7 @@ export async function resolveIncident(context: RequestContext, incidentId: strin
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const current = await client.query<PersistentIncidentRow>(`select i.id, i.tenant_id, i.live_run_id, i.runtime_alert_id, i.severity, i.title, i.status, i.owner_id, owner.display_name as owner_name, i.opened_at, i.resolution, i.resolved_at, resolver.display_name as resolved_by_name
-      from incidents i left join users owner on owner.id = i.owner_id left join users resolver on resolver.id = i.resolved_by where i.id = $1 for update of i`, [incidentId]);
+      from incidents i left join users owner on owner.id = i.owner_id left join users resolver on resolver.id = i.resolved_by where i.id = $1 and (not $2::boolean or exists (select 1 from live_runs r where r.id = i.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) for update of i`, [incidentId, hasRestrictedMembership(context), context.membershipId ?? null]);
     if (!current.rows[0]) throw new Response("Incident not found", { status: 404 });
     if (current.rows[0].status === "resolved") return { incident: persistentIncident(current.rows[0]), duplicate: true as const };
     if (context.role !== "admin" && current.rows[0].owner_id !== actor.rows[0].id) throw new Response("Only the incident owner can resolve it", { status: 403 });

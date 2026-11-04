@@ -1,4 +1,5 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type RecordingEvidence = {
@@ -44,7 +45,8 @@ export async function listRecordings(context: RequestContext) {
   if (!databasePool()) return [...recordingStore().recordings.values()].filter((recording) => recording.tenantId === context.tenantId).sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentRecordingRow>(
-      "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until from recording_evidence order by recorded_at desc limit 500",
+      "select evidence.id, evidence.tenant_id, evidence.live_run_id, evidence.object_key, evidence.checksum_sha256, evidence.bytes, evidence.duration_seconds, evidence.started_at, evidence.ended_at, evidence.recorded_at, evidence.retention_until from recording_evidence evidence where not $1::boolean or exists (select 1 from live_runs r where r.id = evidence.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))) order by evidence.recorded_at desc limit 500",
+      [hasRestrictedMembership(context), context.membershipId ?? null]
     );
     return result.rows.map(persistentRecording);
   });

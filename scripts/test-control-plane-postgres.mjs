@@ -145,6 +145,7 @@ try {
   const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
   const forgedRoleRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${forgedRoleToken}` };
   const suspendedRequestHeaders = { authorization: `Bearer ${suspendedToken}` };
+  const scopeArtifacts = await seedRunScopeArtifacts(recoverRunId, staleRunId);
   const forgedRoleEntitlement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: forgedRoleRequestHeaders, body: JSON.stringify({ limitValue: 1 }) });
   assert.equal(forgedRoleEntitlement.status, 403, "a JWT role claim must not elevate an analyst database membership");
   const memberDirectory = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: requestHeaders });
@@ -161,6 +162,24 @@ try {
   assert.equal(scopedForeignRun.status, 404, "a restricted operator must not read an unassigned live run");
   const scopedChannels = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections`, { headers: operatorRequestHeaders });
   assert.deepEqual((await scopedChannels.json()).data, [], "a direct live-run scope must not grant tenant channel administration");
+  const scopedAlerts = await fetch(`http://127.0.0.1:${consolePort}/api/v1/alerts`, { headers: operatorRequestHeaders });
+  assert.deepEqual((await scopedAlerts.json()).data.map((alert) => alert.id), [scopeArtifacts.recoverAlertId], "a restricted operator must list alerts only for assigned live runs");
+  const scopedIncidents = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents`, { headers: operatorRequestHeaders });
+  assert.deepEqual((await scopedIncidents.json()).data.map((incident) => incident.id), [scopeArtifacts.recoverIncidentId], "a restricted operator must list incidents only for assigned live runs");
+  const scopedRecordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/recordings`, { headers: operatorRequestHeaders });
+  assert.deepEqual((await scopedRecordings.json()).data.map((recording) => recording.id), [scopeArtifacts.recoverRecordingId], "a restricted operator must list recording evidence only for assigned live runs");
+  const scopedOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox`, { headers: operatorRequestHeaders });
+  assert.deepEqual((await scopedOutbox.json()).data.map((event) => event.id), [scopeArtifacts.recoverOutboxEventId], "a restricted operator must list runtime outbox events only for assigned live runs");
+  const scopedForeignAlertAcknowledgement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/alerts/${scopeArtifacts.staleAlertId}/acknowledge`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(scopedForeignAlertAcknowledgement.status, 404, "a restricted operator must not acknowledge an unassigned live-run alert");
+  const scopedForeignIncidentCreation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ alertId: scopeArtifacts.staleAlertId }) });
+  assert.equal(scopedForeignIncidentCreation.status, 404, "a restricted operator must not create an incident from an unassigned live-run alert");
+  const scopedForeignIncidentResolution = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents/${scopeArtifacts.staleIncidentId}/resolve`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ resolution: "This resolution must not reach an unassigned incident." }) });
+  assert.equal(scopedForeignIncidentResolution.status, 404, "a restricted operator must not resolve an unassigned live-run incident");
+  const scopedForeignOutboxRead = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${scopeArtifacts.staleOutboxEventId}`, { headers: operatorRequestHeaders });
+  assert.equal(scopedForeignOutboxRead.status, 404, "a restricted operator must not read an unassigned live-run outbox event");
+  const scopedForeignOutboxDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${scopeArtifacts.staleOutboxEventId}/deliver`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(scopedForeignOutboxDelivery.status, 404, "a restricted operator must not deliver an unassigned live-run command");
   const scopedRunEvents = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/events`, { headers: operatorRequestHeaders });
   assert.equal(scopedRunEvents.status, 200, "a restricted operator must retain the evidence timeline for an assigned live run");
   const scopedProducts = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products`, { headers: operatorRequestHeaders });
@@ -875,6 +894,21 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id, product_version_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7, $8)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId, productVersionId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, $3)", [tenantId, runId, sampledAt]);
   return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
+}
+
+async function seedRunScopeArtifacts(recoverRunId, staleRunId) {
+  const owner = await client.query("select id from users where external_subject = 'integration-operator'");
+  if (!owner.rows[0]) throw new Error("integration admin user was not seeded");
+  const recoverAlert = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message) values ($1, $2, 'warning', 'scope_recover_alert', 'Authorized scope fixture') returning id", [tenantId, recoverRunId]);
+  const staleAlert = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message) values ($1, $2, 'warning', 'scope_stale_alert', 'Unauthorized scope fixture') returning id", [tenantId, staleRunId]);
+  const recoverIncident = await client.query("insert into incidents (tenant_id, live_run_id, runtime_alert_id, severity, title, owner_id) values ($1, $2, $3, 'warning', 'Authorized scope fixture', $4) returning id", [tenantId, recoverRunId, recoverAlert.rows[0].id, owner.rows[0].id]);
+  const staleIncident = await client.query("insert into incidents (tenant_id, live_run_id, runtime_alert_id, severity, title, owner_id) values ($1, $2, $3, 'warning', 'Unauthorized scope fixture', $4) returning id", [tenantId, staleRunId, staleAlert.rows[0].id, owner.rows[0].id]);
+  const recoverRecording = await client.query("insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, idempotency_key) values ($1, $2, $3, $4, 1024, 10, $5) returning id", [tenantId, recoverRunId, `recordings/${recoverRunId}/scope-fixture.mp4`, "a".repeat(64), `scope-recover-${recoverRunId}`]);
+  const staleRecording = await client.query("insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, idempotency_key) values ($1, $2, $3, $4, 1024, 10, $5) returning id", [tenantId, staleRunId, `recordings/${staleRunId}/scope-fixture.mp4`, "b".repeat(64), `scope-stale-${staleRunId}`]);
+  const outboxPayload = (runId) => JSON.stringify({ sessionId: `scope_${runId}`, command: { id: `scope_command_${runId}`, runId, type: "switch_to_human", issuedAt: new Date().toISOString(), traceId: `scope_trace_${runId}`, payload: { reason: "scope-fixture" } } });
+  const recoverOutbox = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id", [tenantId, recoverRunId, outboxPayload(recoverRunId)]);
+  const staleOutbox = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id", [tenantId, staleRunId, outboxPayload(staleRunId)]);
+  return { recoverAlertId: recoverAlert.rows[0].id, staleAlertId: staleAlert.rows[0].id, recoverIncidentId: recoverIncident.rows[0].id, staleIncidentId: staleIncident.rows[0].id, recoverRecordingId: recoverRecording.rows[0].id, staleRecordingId: staleRecording.rows[0].id, recoverOutboxEventId: recoverOutbox.rows[0].id, staleOutboxEventId: staleOutbox.rows[0].id };
 }
 
 async function seedMembership(targetTenantId, subject, displayName, role) {

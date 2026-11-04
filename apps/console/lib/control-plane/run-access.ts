@@ -5,7 +5,7 @@ export async function assertLiveRunAccess(context: RequestContext, runId: string
   if (!isUuid(runId)) throw new Response("Live run not found", { status: 404 });
   if (!databasePool()) return;
   const accessible = await withTenantTransaction(context.tenantId, async (client) => {
-    const restricted = context.accessScope === "restricted" && Boolean(context.membershipId);
+    const restricted = hasRestrictedMembership(context);
     const result = await client.query<{ id: string }>(
       restricted
         ? `select r.id from live_runs r
@@ -21,6 +21,10 @@ export async function assertLiveRunAccess(context: RequestContext, runId: string
     return result.rows[0] ?? null;
   });
   if (!accessible) throw new Response("Live run not found", { status: 404 });
+}
+
+export function hasRestrictedMembership(context: RequestContext) {
+  return context.accessScope === "restricted" && Boolean(context.membershipId);
 }
 
 function isUuid(value: string) {
