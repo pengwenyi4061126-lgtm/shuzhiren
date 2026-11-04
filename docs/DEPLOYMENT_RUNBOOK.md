@@ -79,11 +79,10 @@ POSTGRES_BACKUP_DIR=/srv/shuzhiren/backups/postgres \
 bash scripts/backup-postgres.sh
 ```
 
-校验已复制的归档，`EXPECTED_SHA256` 使用同名 `.manifest` 中的值：
+校验已复制的归档。验证器强制读取同名 `.manifest`，并核对 archive 名称、SHA-256、字节数、来源和创建时间；可选 `EXPECTED_SHA256` 只能作为额外交叉检查，不能替代 manifest：
 
 ```bash
 BACKUP_FILE=/srv/shuzhiren/backups/postgres/shuzhiren-postgres-YYYYMMDDTHHMMSSZ.dump \
-EXPECTED_SHA256=replace-with-manifest-sha256 \
 bash scripts/verify-postgres-backup.sh
 ```
 
@@ -95,11 +94,10 @@ BACKUP_DIR=/srv/shuzhiren/backups/runtime-gateway \
 bash scripts/backup-runtime-gateway-state.sh
 ```
 
-校验已复制的 Gateway 快照，`EXPECTED_SHA256` 使用同名 `.manifest` 中的值：
+校验已复制的 Gateway 快照时同样强制验证相邻 manifest：
 
 ```bash
 BACKUP_FILE=/srv/shuzhiren/backups/runtime-gateway/shuzhiren-runtime-gateway-state-YYYYMMDDTHHMMSSZ.sqlite3 \
-EXPECTED_SHA256=replace-with-manifest-sha256 \
 bash scripts/verify-runtime-gateway-state-backup.sh
 ```
 
@@ -120,6 +118,15 @@ sudo install -m 0600 -o root -g root config/backup.example.env /etc/shuzhiren/ba
 ```
 
 将 `/etc/shuzhiren/backup.env` 的 `DATABASE_URL`、备份目录和 Gateway 状态目录替换为真实私网值；不要将该文件放入 Git、镜像或容器环境。然后安装并启用计时器：
+
+在启用 PostgreSQL 定时任务前，DBA 必须创建专用数据库登录并以**迁移的 schema owner**运行授权脚本。此角色需要 `BYPASSRLS` 才能产生完整租户 archive，因此它是高信任的备份主体：不得授予应用、控制台、渠道 Adapter 或人工日常会话，也不得使用超级用户、角色管理、建库或复制权限。
+
+```bash
+sudo -u postgres psql -d shuzhiren -c "CREATE ROLE shuzhiren_backup LOGIN NOINHERIT BYPASSRLS PASSWORD 'replace-from-secret-manager';"
+psql "$DATABASE_URL_AS_SCHEMA_OWNER" -f infra/postgres/backup-principal.sql
+```
+
+`backup-principal.sql` 会授予当前与后续迁移所建 public 表/序列的只读访问，拒绝写入、函数执行和角色继承。迁移若改由新的 schema owner 执行，必须由该新 owner 再执行一次此脚本，使其默认权限覆盖新对象。
 
 ```bash
 sudo install -m 0644 infra/systemd/shuzhiren-postgres-backup.service /etc/systemd/system/

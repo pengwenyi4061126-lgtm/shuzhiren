@@ -54,6 +54,18 @@ BACKUP_FILE="$archive" \
 EXPECTED_SHA256="$expected_sha256" \
 bash "$root/scripts/verify-postgres-backup.sh"
 
+tampered_manifest="$test_root/tampered.manifest"
+sed 's/^bytes=.*/bytes=0/' "$manifest" > "$tampered_manifest"
+set +e
+PATH="$bin_dir:$PATH" \
+BACKUP_FILE="$archive" \
+MANIFEST_FILE="$tampered_manifest" \
+bash "$root/scripts/verify-postgres-backup.sh" >"$test_root/tampered-verify.log" 2>&1
+tampered_status=$?
+set -e
+[[ "$tampered_status" -ne 0 ]]
+grep -q 'Backup bytes do not match backup manifest' "$test_root/tampered-verify.log"
+
 contended_backup_dir="$test_root/contended-backups"
 ready_file="$test_root/backup-ready"
 release_file="$test_root/backup-release"
@@ -87,4 +99,5 @@ touch "$release_file"
 wait "$first_pid"
 
 printf 'PASS  PostgreSQL backup uses the private DATABASE_URL client path without Compose\n'
+printf 'PASS  PostgreSQL backup rejects a manifest with incorrect archive bytes\n'
 printf 'PASS  PostgreSQL backup rejects concurrent writers for one backup directory\n'

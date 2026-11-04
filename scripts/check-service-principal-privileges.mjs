@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 
-const [grants, migration, worker, compose, runtime, channel, notifier] = await Promise.all([
+const [grants, backupGrants, migration, worker, compose, runtime, channel, notifier] = await Promise.all([
   readFile(new URL("../infra/postgres/service-principals.sql", import.meta.url), "utf8"),
+  readFile(new URL("../infra/postgres/backup-principal.sql", import.meta.url), "utf8"),
   readFile(new URL("../infra/postgres/migrations/056_service_actor_security.sql", import.meta.url), "utf8"),
   readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8"),
   readFile(new URL("../infra/compose/docker-compose.runtime.yml", import.meta.url), "utf8"),
@@ -13,6 +14,8 @@ const [grants, migration, worker, compose, runtime, channel, notifier] = await P
 for (const principal of ["shuzhiren_runtime_worker", "shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) {
   if (!grants.includes(`'${principal}'`)) throw new Error(`Service principal grant file must require ${principal}`);
 }
+for (const source of ["shuzhiren_backup", "LOGIN NOINHERIT BYPASSRLS", "grant select on all tables in schema public to shuzhiren_backup", "grant usage, select on all sequences in schema public to shuzhiren_backup", "alter default privileges in schema public grant select on tables to shuzhiren_backup"]) if (!backupGrants.includes(source)) throw new Error(`Backup principal grant file missing: ${source}`);
+for (const forbidden of ["grant insert", "grant update", "grant delete", "grant execute", "grant all"]) if (backupGrants.toLowerCase().includes(forbidden)) throw new Error(`Backup principal grants must not include: ${forbidden}`);
 for (const source of ["security definer", "runtime_worker_actor(requested_tenant_id uuid, requested_subject text)", "requested_subject not in ('runtime-worker', 'runtime-scheduler', 'runtime-watchdog')", "revoke all on function runtime_worker_actor(uuid, text) from public"]) {
   if (!migration.includes(source)) throw new Error(`Worker service-actor migration missing: ${source}`);
 }
@@ -37,4 +40,4 @@ for (const source of ["RUNTIME_WORKER_DATABASE_URL", "CHANNEL_ADAPTER_DATABASE_U
   if (!compose.includes(source)) throw new Error(`Runtime Compose must inject ${source} into its matching service`);
 }
 
-console.log("PASS  runtime worker, channel adapter, and alert notifier require distinct least-privilege database principals");
+console.log("PASS  runtime worker, channel adapter, alert notifier, and isolated backup principal retain their required database privileges");

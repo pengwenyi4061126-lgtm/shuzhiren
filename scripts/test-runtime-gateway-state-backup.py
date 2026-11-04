@@ -63,6 +63,18 @@ with tempfile.TemporaryDirectory() as temporary:
             {**environment, "BACKUP_FILE": str(snapshot), "EXPECTED_SHA256": checksum},
         )
         assert "Journal rows: 1" in verification.stdout
+        tampered_manifest = backup_dir / "tampered.manifest"
+        tampered_manifest.write_text(manifest.replace(f"bytes={snapshot.stat().st_size}", "bytes=0"), encoding="utf-8")
+        rejected = subprocess.run(
+            ["bash", str(VERIFY_SCRIPT)],
+            cwd=ROOT,
+            env={**environment, "BACKUP_FILE": str(snapshot), "MANIFEST_FILE": str(tampered_manifest)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert "Gateway backup bytes do not match gateway backup manifest" in rejected.stderr
         snapshot_connection = sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)
         try:
             assert snapshot_connection.execute("select state from runtime_command_journal").fetchone()[0] == "completed"
