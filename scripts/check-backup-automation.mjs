@@ -9,6 +9,8 @@ const files = {
   postgresRestoreDrillTest: "../scripts/test-postgres-restore-drill.sh",
   gatewayBackup: "../scripts/backup-runtime-gateway-state.sh",
   gatewayVerify: "../scripts/verify-runtime-gateway-state-backup.sh",
+  gatewayRestoreDrill: "../scripts/restore-runtime-gateway-state-drill.sh",
+  gatewayRestoreDrillTest: "../scripts/test-runtime-gateway-state-restore-drill.py",
   environment: "../config/backup.example.env",
   postgresService: "../infra/systemd/shuzhiren-postgres-backup.service",
   postgresTimer: "../infra/systemd/shuzhiren-postgres-backup.timer",
@@ -39,7 +41,13 @@ if (!contents.gatewayBackup.includes("GATEWAY_BACKUP_DIR")) throw new Error("Gat
 for (const source of ['manifest_file="${backup_file%.sqlite3}.manifest"', "Gateway backup manifest snapshot does not match BACKUP_FILE", "Gateway backup bytes do not match gateway backup manifest"]) {
   if (!contents.gatewayVerify?.includes(source)) throw new Error(`Gateway backup verifier must bind the snapshot to its manifest: ${source}`);
 }
-for (const source of ["POSTGRES_BACKUP_DIR", "GATEWAY_BACKUP_DIR", "RUNTIME_GATEWAY_STATE_PATH"]) {
+for (const source of ["DRILL_GATEWAY_STATE_PATH", "DRILL_EVIDENCE_FILE", "DRILL_GATEWAY_UID", "DRILL_GATEWAY_BACKUP_GROUP", "RESTORE_DRILL_CONFIRM", "must not equal RUNTIME_GATEWAY_STATE_PATH", "must be empty", "gateway_started=false", "chmod 0640"]) {
+  if (!contents.gatewayRestoreDrill.includes(source)) throw new Error(`Gateway restore drill must remain isolated and evidenced: ${source}`);
+}
+for (const source of ["fail_on_replay", "fail_on_synthesis", "fail_on_audio", "completed_command_rows=2", "must not call LiveTalking", "must not call CosyVoice", "must be empty"]) {
+  if (!contents.gatewayRestoreDrillTest.includes(source)) throw new Error(`Gateway restore drill test must prove restored completed commands do not replay: ${source}`);
+}
+for (const source of ["POSTGRES_BACKUP_DIR", "GATEWAY_BACKUP_DIR", "RUNTIME_GATEWAY_STATE_PATH", "DRILL_GATEWAY_STATE_PATH", "DRILL_EVIDENCE_FILE"]) {
   if (!contents.environment.includes(source)) throw new Error(`Backup environment template must document ${source}`);
 }
 for (const [name, source] of [["postgresService", contents.postgresService], ["gatewayService", contents.gatewayService]]) {

@@ -132,6 +132,28 @@ bash scripts/restore-postgres-drill.sh
 
 Gateway 快照同样只能在隔离 Gateway 实例中恢复，且必须保持只读的原始备份；不要为方便而提供一键覆盖生产库、命令日志或运行中挂载目录的脚本。每月完成一次恢复演练，并将归档校验值、演练目标、开始/结束时间、RPO、RTO 和结果写入发布证据。
 
+### Gateway 命令日志隔离恢复演练
+
+先从已验证、站外复制的 SQLite snapshot 和同名 manifest 计算确认值，创建一个空的、非生产状态目录。`restore-runtime-gateway-state-drill.sh` 只会恢复到该空目录，拒绝与 `RUNTIME_GATEWAY_STATE_PATH` 相同的目标，不会启动 Gateway、覆盖生产 journal 或删除原始 snapshot。evidence 文件必须位于隔离目录外，且不可覆盖：
+
+```bash
+SNAPSHOT=/srv/shuzhiren/backups/runtime-gateway/shuzhiren-runtime-gateway-state-20261104T000000Z.sqlite3
+SNAPSHOT_SHA256="$(sha256sum "$SNAPSHOT" | awk '{print $1}')"
+sudo install -d -m 2750 -o 10001 -g shuzhiren-backup /srv/shuzhiren/restore-drills/runtime-gateway-20261104
+sudo env \
+BACKUP_FILE="$SNAPSHOT" \
+DRILL_GATEWAY_STATE_PATH=/srv/shuzhiren/restore-drills/runtime-gateway-20261104 \
+DRILL_EVIDENCE_FILE=/srv/shuzhiren/evidence/runtime-gateway-restore-20261104.manifest \
+DRILL_GATEWAY_UID=10001 \
+DRILL_GATEWAY_BACKUP_GROUP=shuzhiren-backup \
+RESTORE_DRILL_CONFIRM="restore-${SNAPSHOT_SHA256}" \
+RUNTIME_GATEWAY_STATE_PATH=/srv/shuzhiren/runtime-gateway-state \
+PYTHON_BIN=/usr/bin/python3 \
+bash scripts/restore-runtime-gateway-state-drill.sh
+```
+
+恢复脚本会再次验证 manifest、SHA-256、SQLite 完整性和 Gateway 实际读取所需的 journal 字段，将文件交还 `DRILL_GATEWAY_UID:DRILL_GATEWAY_BACKUP_GROUP` 并固定为 `0640`，再在 evidence 中记录 snapshot SHA-256、目标文件 owner/group/mode、行数、已完成命令数和 `gateway_started=false`。随后必须启动一个完全独立、不可写生产状态目录的 Gateway 实例，向它重试该 snapshot 中一条已完成的媒体命令和一条 CosyVoice 语音命令。两次都必须返回 `duplicate: true` 与原始回执，且隔离实例的 LiveTalking/CosyVoice 访问日志必须显示零次下游调用；保留 Gateway 响应、三类下游访问日志和 evidence 文件。`reserved`、缺少 `response_json` 或身份不匹配的命令应返回 `409`，绝不能通过恢复演练被重放。CI 的临时目录演练覆盖这条代码路径，但真实 RPO/RTO、独立实例和访问日志仍是部署方的外部验收责任。
+
 MinIO 对象、模型权重和录屏不由上述数据库脚本覆盖。上线前必须在对象存储层启用版本控制，并配置已验证的站外复制；在此之前不得把对象恢复能力表述为已完成。
 
 ### 受控定时备份

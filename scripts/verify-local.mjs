@@ -91,7 +91,9 @@ const gatewayChecks = withGateway ? [
   ["scripts/test-runtime-gateway-config.py"],
   ["scripts/test-runtime-gateway-errors.py"],
   ["scripts/test-runtime-gateway-audio.py"],
-  ["scripts/test-runtime-gateway-concurrency.py"]
+  ["scripts/test-runtime-gateway-concurrency.py"],
+  ["scripts/test-runtime-gateway-state-backup.py"],
+  ["scripts/test-runtime-gateway-state-restore-drill.py"]
 ] : [];
 for (const args of gatewayChecks) {
   console.log(`RUN   ${python} ${args.join(" ")}`);

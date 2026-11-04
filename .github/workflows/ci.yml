@@ -38,6 +38,7 @@ jobs:
       - run: bash -n scripts/restore-postgres-drill.sh
       - run: bash -n scripts/test-postgres-restore-drill.sh
       - run: bash -n scripts/backup-runtime-gateway-state.sh
+      - run: bash -n scripts/restore-runtime-gateway-state-drill.sh
       - run: bash -n scripts/verify-postgres-backup.sh
       - run: bash -n scripts/verify-runtime-gateway-state-backup.sh
       - run: bash scripts/check-runtime-host.sh --help
@@ -110,6 +111,7 @@ jobs:
       - run: python3 scripts/test-runtime-gateway-audio.py
       - run: python3 scripts/test-runtime-gateway-concurrency.py
       - run: python3 scripts/test-runtime-gateway-state-backup.py
+      - run: python3 scripts/test-runtime-gateway-state-restore-drill.py
       - run: node --check apps/runtime-worker/index.mjs
       - run: node --check apps/runtime-observer/index.mjs
       - run: node --check apps/runtime-observer/targets.mjs
