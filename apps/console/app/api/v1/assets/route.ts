@@ -19,9 +19,14 @@ export async function POST(request: Request) {
   try { body = await readBoundedJson(request); }
   catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
   if (!isAssetInput(body)) return Response.json({ error: "invalid_media_asset" }, { status: 400 });
-  const asset = await createMediaAsset(context, body);
-  await recordAuditEvent(context, { type: "media_asset.created", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectKey: asset.objectKey } });
-  return Response.json({ data: asset }, { status: 201 });
+  try {
+    const asset = await createMediaAsset(context, body);
+    await recordAuditEvent(context, { type: "media_asset.created", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectKey: asset.objectKey, objectVersion: asset.contentVerification?.objectVersion ?? "unverified", checksum: asset.checksum, verificationEvidenceRef: asset.contentVerification?.evidenceRef ?? "unverified" } });
+    return Response.json({ data: asset }, { status: 201 });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "media_evidence_verification_failed" }, { status: error.status });
+    throw error;
+  }
 }
 
 function isAssetInput(value: unknown): value is CreateMediaAssetInput {

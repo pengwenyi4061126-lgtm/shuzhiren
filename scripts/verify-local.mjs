@@ -37,6 +37,7 @@ const checks = [
   ["run", "runtime:voice:check"],
   ["run", "runtime:journal:check"],
   ["run", "runtime:preview:check"],
+  ["run", "media:evidence:check"],
   ["run", "runtime:images:check"],
   ["run", "runtime:worker:config:test"],
   ["run", "runtime:worker:health:test"],

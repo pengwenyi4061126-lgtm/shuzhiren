@@ -11,6 +11,7 @@ const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), "shuzhiren-deploy-
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const channelConnectionId = "22222222-2222-4222-8222-222222222222";
 const runtimeToken = "runtime-shared-token-at-least-32-bytes";
+const mediaEvidenceToken = "media-evidence-verifier-token-at-least-32-bytes";
 const telemetryToken = "telemetry-token-at-least-32-bytes";
 const outputProbeToken = "output-probe-token-at-least-32-bytes";
 const commits = {
@@ -37,6 +38,9 @@ const control = env({
   RUNTIME_SHARED_TOKEN: runtimeToken,
   RUNTIME_GATEWAY_DEMO_MODE: "false",
   RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
+  MEDIA_EVIDENCE_VERIFIER_URL: "https://media-evidence.internal",
+  MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
+  MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
   RUNTIME_TELEMETRY_TENANT_TOKENS: { [tenantId]: telemetryToken },
   RUNTIME_RECORDING_TENANT_TOKENS: { [tenantId]: "recording-token-at-least-32-bytes" },
   PIM_INGEST_TENANT_TOKENS: { [tenantId]: "pim-ingest-token-at-least-32-bytes" },
@@ -193,6 +197,18 @@ try {
   const mismatchedGatewayTimeout = check(["--require-cosyvoice"]);
   assert.notEqual(mismatchedGatewayTimeout.status, 0, "control-plane and runtime Gateway timeouts must match");
   assert.match(mismatchedGatewayTimeout.stderr, /RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS/, "Gateway timeout mismatch must identify the shared delivery gate");
+  await writeFile(files.control, control);
+
+  await writeFile(files.control, control.replace(mediaEvidenceToken, "short"));
+  const shortMediaEvidenceToken = check(["--require-cosyvoice"]);
+  assert.notEqual(shortMediaEvidenceToken.status, 0, "media evidence verification must reject a short private credential");
+  assert.match(shortMediaEvidenceToken.stderr, /MEDIA_EVIDENCE_VERIFIER_TOKEN/, "media evidence credential rejection must identify the object-verification gate");
+  await writeFile(files.control, control);
+
+  await writeFile(files.control, control.replace("https://media-evidence.internal", "rtmp://media-evidence.internal"));
+  const unsafeMediaEvidenceUrl = check(["--require-cosyvoice"]);
+  assert.notEqual(unsafeMediaEvidenceUrl.status, 0, "media evidence verification must use a credential-free HTTPS endpoint");
+  assert.match(unsafeMediaEvidenceUrl.stderr, /MEDIA_EVIDENCE_VERIFIER_URL/, "media evidence URL rejection must identify the object-verification gate");
   await writeFile(files.control, control);
 
   await writeFile(files.control, control.replace("commerce-ingest-token-at-least-32-bytes", telemetryToken));

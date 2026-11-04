@@ -21,6 +21,7 @@ const alertNotifier = path.join(root, "apps", "alert-notifier", "index.mjs");
 const tenantId = randomUUID();
 const isolatedTenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
+const mediaEvidenceToken = "control-plane-integration-media-evidence-token";
 const telemetryToken = "control-plane-integration-telemetry-token";
 const interactionToken = "control-plane-integration-interaction-token";
 const commerceToken = "control-plane-integration-commerce-token";
@@ -111,6 +112,9 @@ try {
       RUNTIME_SHARED_TOKEN: gatewayToken,
       RUNTIME_GATEWAY_DEMO_MODE: "false",
       RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
+      MEDIA_EVIDENCE_VERIFIER_URL: mock.baseUrl,
+      MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
+      MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
       OUTBOX_MAX_ATTEMPTS: "1",
       OIDC_ISSUER_URL: issuer,
       OIDC_AUDIENCE: "shuzhiren-integration",
@@ -146,6 +150,13 @@ try {
   const forgedRoleRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${forgedRoleToken}` };
   const suspendedRequestHeaders = { authorization: `Bearer ${suspendedToken}` };
   const scopeArtifacts = await seedRunScopeArtifacts(recoverRunId, staleRunId);
+  const verifiedAssetCreate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ kind: "music", name: "Integration verified music", rightsScope: "Integration test only", source: "evidence://integration/new-media", objectKey: `assets/${tenantId}/verified-music.mp3`, checksum: `sha256:${"c".repeat(64)}` }) });
+  assert.equal(verifiedAssetCreate.status, 201, "a media asset must be registered only after private content verification");
+  const verifiedAsset = await verifiedAssetCreate.json();
+  assert.equal(verifiedAsset.data.contentVerification.contentType, "audio/mpeg", "media asset registration must retain the verifier content type");
+  const verifiedAssetApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets/${verifiedAsset.data.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(verifiedAssetApproval.status, 200, "media asset approval must repeat private content verification");
+  assert.equal((await verifiedAssetApproval.json()).data.contentVerification.objectVersion, "integration-version-1", "media asset approval must retain the version-bound verification evidence");
   const forgedRoleEntitlement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: forgedRoleRequestHeaders, body: JSON.stringify({ limitValue: 1 }) });
   assert.equal(forgedRoleEntitlement.status, 403, "a JWT role claim must not elevate an analyst database membership");
   const memberDirectory = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: requestHeaders });
@@ -891,7 +902,7 @@ async function seedRun(state, sessionId, sampledAt) {
     await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4::model_release_component)", [tenantId, revisionId, releaseId, component]);
   }
   for (const [kind, assetId] of Object.entries(mediaAssetIds)) {
-    await client.query("insert into media_assets (id, tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_at, runtime_voice_id) values ($1, $2, $3::media_asset_kind, $4, $5, $6, 'Integration approved rights', 'evidence://integration/media-asset', 'approved', now(), $7)", [assetId, tenantId, kind, `Integration ${kind}`, `assets/${tenantId}/${kind}`, `sha256:${kind}`, kind === "voice" ? "integration_approved_voice" : null]);
+    await client.query("insert into media_assets (id, tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_at, runtime_voice_id, verified_object_version, verified_bytes, verified_content_type, verification_evidence_ref, verified_at) values ($1, $2, $3::media_asset_kind, $4, $5, $6, 'Integration approved rights', 'evidence://integration/media-asset', 'approved', now(), $7, 'integration-seed-v1', 1024, $8, 'evidence://integration/media-content', now())", [assetId, tenantId, kind, `Integration ${kind}`, `assets/${tenantId}/${kind}`, `sha256:${kind}`, kind === "voice" ? "integration_approved_voice" : null, kind === "portrait" || kind === "product_clip" ? "video/mp4" : "audio/wav"]);
     await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, $4::media_asset_kind)", [tenantId, revisionId, assetId, kind]);
   }
   const profileRules = [{ id: "integration_block_term", terms: ["集成策略禁播词"], reason: "集成策略包禁止该类提问", action: "refuse", riskLevel: "high", requiredEvidence: [] }];
@@ -951,6 +962,12 @@ async function startMockServer() {
     if (url.pathname === "/v1/previews/session_recover" && request.method === "GET") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
       return json(response, 200, { available: true, mode: "webrtc", url: "https://preview.internal/embed/session_recover", expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    }
+    if (url.pathname === "/v1/media-evidence/verify" && request.method === "POST") {
+      assert.equal(request.headers.authorization, `Bearer ${mediaEvidenceToken}`);
+      const evidence = await requestBody(request);
+      const contentType = evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
+      return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
     }
     if (url.pathname === "/v1/media" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
