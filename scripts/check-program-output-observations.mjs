@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (...parts) => readFile(path.join(root, ...parts), "utf8");
-const [migration, store, route, observer, probe, timeline, page, schema, integration] = await Promise.all([
+const [migration, store, route, observer, probe, timeline, page, monitoring, schema, integration] = await Promise.all([
   read("infra", "postgres", "migrations", "066_program_output_observations.sql"),
   read("apps", "console", "lib", "program-output-observations.ts"),
   read("apps", "console", "app", "api", "v1", "runtime", "program-output-observations", "route.ts"),
@@ -12,6 +12,7 @@ const [migration, store, route, observer, probe, timeline, page, schema, integra
   read("apps", "output-probe", "lib.mjs"),
   read("apps", "console", "lib", "run-events.ts"),
   read("apps", "console", "app", "shows", "[runId]", "events", "page.tsx"),
+  read("apps", "console", "app", "monitoring", "page.tsx"),
   read("scripts", "verify-postgres-schema.mjs"),
   read("scripts", "test-control-plane-postgres.mjs")
 ]);
@@ -23,6 +24,7 @@ for (const source of ["postProgramOutputObservation", "validProgramObservation",
 for (const source of ["programEvidenceUrl", "fetchProgramEvidence", "validateProgramObservation", "Output health must remain available"]) if (!probe.includes(source)) throw new Error(`Output probe must keep optional verifier evidence isolated from health: ${source}`);
 for (const source of ["listProgramOutputObservations", "category: \"output\"", "state: \"observed\""]) if (!timeline.includes(source)) throw new Error(`Run timeline must expose output evidence: ${source}`);
 if (!page.includes("output: RadioTower")) throw new Error("Run event page must render output observations");
+for (const source of ["listProgramOutputObservations", "节目输出证据", "尚未收到独立输出验证器证明"]) if (!monitoring.includes(source)) throw new Error(`Monitoring page must surface output evidence: ${source}`);
 for (const source of ["program_output_observations", "program_output_observations_run_observed_idx", "tenant_isolation_program_output_observations"]) if (!schema.includes(source)) throw new Error(`Schema verification must cover ${source}`);
 for (const source of ["program-output-observations", "live_program.output_observed", "program output observation"]) if (!integration.includes(source)) throw new Error(`PostgreSQL integration test must cover ${source}`);
 
