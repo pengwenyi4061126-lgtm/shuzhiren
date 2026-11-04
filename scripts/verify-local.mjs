@@ -50,6 +50,7 @@ const checks = [
   ["run", "output-probe:response:check"],
   ["run", "channel-adapter:test"],
   ["run", "channel:verification:check"],
+  ["run", "settlement:reconciliation:check"],
   ["run", "alert-notifier:test"],
   ["run", "alert-notifier:health:check"],
   ["run", "typecheck"],

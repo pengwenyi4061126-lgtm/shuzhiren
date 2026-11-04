@@ -91,6 +91,7 @@ jobs:
       - run: npm run output-probe:response:check
       - run: npm run channel-adapter:test
       - run: npm run channel:verification:check
+      - run: npm run settlement:reconciliation:check
       - run: npm run alert-notifier:test
       - run: npm run alert-notifier:health:check
       - run: python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt

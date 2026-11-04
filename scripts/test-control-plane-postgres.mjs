@@ -26,6 +26,7 @@ const channelEvidenceToken = "control-plane-integration-channel-evidence-token";
 const telemetryToken = "control-plane-integration-telemetry-token";
 const interactionToken = "control-plane-integration-interaction-token";
 const commerceToken = "control-plane-integration-commerce-token";
+const settlementToken = "control-plane-integration-settlement-token";
 const recordingToken = "control-plane-integration-recording-token";
 const pimToken = "control-plane-integration-pim-token";
 const isolatedPimToken = "control-plane-integration-isolated-pim-token";
@@ -126,6 +127,7 @@ try {
       RUNTIME_TELEMETRY_TENANT_TOKENS: JSON.stringify({ [tenantId]: telemetryToken }),
       CHANNEL_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: interactionToken }),
       CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken }),
+      SETTLEMENT_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: settlementToken }),
       RUNTIME_RECORDING_TENANT_TOKENS: JSON.stringify({ [tenantId]: recordingToken }),
       PIM_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: pimToken, [isolatedTenantId]: isolatedPimToken })
     },
@@ -726,6 +728,45 @@ try {
   assert.deepEqual(summary.data, { runId: recoverRunId, views: 1, productClicks: 0, addToCart: 1, paidOrders: 2, paidUnits: 3, refunds: 1, grossPaidCents: 29800, refundedCents: 5000, netPaidCents: 24800, unitCostCents: 3500, productCostCents: 10500, contributionMarginCents: 14300, viewToCartRate: 1, viewToPaidRate: 2, refundRate: 0.5 });
   const commerceAudit = await client.query("select event_type from audit_events where resource_type = 'commerce_event' order by occurred_at");
   assert.deepEqual(commerceAudit.rows.map((row) => row.event_type), ["commerce_event.order_paid", "commerce_event.order_paid", "commerce_event.refund"]);
+
+  const settlementHeaders = { "content-type": "application/json", authorization: `Bearer ${settlementToken}` };
+  const settlementPeriodStart = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const settlementPeriodEnd = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const reconciledStatement = { tenantId, channelConnectionId: recoverRun.channelId, providerStatementRef: "integration-statement-reconciled", periodStart: settlementPeriodStart, periodEnd: settlementPeriodEnd, sourceSha256: "a".repeat(64), evidenceRef: "evidence://integration/settlement/reconciled", lines: [
+    { externalLineId: "sale-order-1", lineType: "gross_sale", externalOrderReference: "order-1", occurredAt: settlementPeriodEnd, amountCents: 19900 },
+    { externalLineId: "sale-adapter-1", lineType: "gross_sale", externalOrderReference: "adapter-order-1", occurredAt: settlementPeriodEnd, amountCents: 9900 },
+    { externalLineId: "refund-order-1", lineType: "refund", externalOrderReference: "order-1", occurredAt: settlementPeriodEnd, amountCents: -5000 },
+    { externalLineId: "platform-fee-1", lineType: "platform_fee", occurredAt: settlementPeriodEnd, amountCents: -1000 },
+    { externalLineId: "payout-1", lineType: "payout", occurredAt: settlementPeriodEnd, amountCents: 23800 }
+  ] };
+  const settlementImported = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/settlement-batches`, { method: "POST", headers: settlementHeaders, body: JSON.stringify(reconciledStatement) });
+  assert.equal(settlementImported.status, 202, "a private settlement statement import must be accepted");
+  const settlementImportedPayload = await settlementImported.json();
+  assert.equal(settlementImportedPayload.data.status, "reconciled", "a matching statement should reconcile without human exceptions");
+  assert.equal(settlementImportedPayload.data.exceptions.length, 0, "a matching statement should not create reconciliation exceptions");
+  const settlementRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/settlement-batches`, { method: "POST", headers: settlementHeaders, body: JSON.stringify(reconciledStatement) });
+  assert.equal(settlementRetry.status, 200, "identical settlement statement imports must be idempotent");
+  const settlementConflict = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/settlement-batches`, { method: "POST", headers: settlementHeaders, body: JSON.stringify({ ...reconciledStatement, sourceSha256: "b".repeat(64) }) });
+  assert.equal(settlementConflict.status, 409, "the same provider statement reference cannot be reused with different source evidence");
+  const reviewStatement = { ...reconciledStatement, providerStatementRef: "integration-statement-review", sourceSha256: "c".repeat(64), evidenceRef: "evidence://integration/settlement/review", lines: [
+    { externalLineId: "unmatched-sale", lineType: "gross_sale", externalOrderReference: "missing-order", occurredAt: settlementPeriodEnd, amountCents: 100 },
+    { externalLineId: "unmatched-payout", lineType: "payout", occurredAt: settlementPeriodEnd, amountCents: 100 }
+  ] };
+  const settlementReview = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/settlement-batches`, { method: "POST", headers: settlementHeaders, body: JSON.stringify(reviewStatement) });
+  assert.equal(settlementReview.status, 202, "a valid statement with an unmatched order must be imported for review");
+  const settlementReviewPayload = await settlementReview.json();
+  assert.equal(settlementReviewPayload.data.status, "review_required", "an unmatched statement line must require review");
+  const settlementException = settlementReviewPayload.data.exceptions.find((exception) => exception.exceptionType === "missing_operational_event");
+  assert.ok(settlementException, "the unmatched statement line must create a missing-operational-event exception");
+  const analystSettlementResolve = await fetch(`http://127.0.0.1:${consolePort}/api/v1/settlement-exceptions/${settlementException.id}/resolve`, { method: "POST", headers: analystRequestHeaders, body: JSON.stringify({ resolution: "分析员不能结案平台账单差异。", evidenceRef: "evidence://integration/settlement/analyst" }) });
+  assert.equal(analystSettlementResolve.status, 403, "analysts must not resolve settlement exceptions");
+  const settlementResolve = await fetch(`http://127.0.0.1:${consolePort}/api/v1/settlement-exceptions/${settlementException.id}/resolve`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ resolution: "平台已确认该订单属于账期外补充行，已建立追溯工单。", evidenceRef: "evidence://integration/settlement/resolution" }) });
+  assert.equal(settlementResolve.status, 200, "an administrator must resolve a settlement exception with controlled evidence");
+  const settlementList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/settlement-batches`, { headers: analystRequestHeaders });
+  assert.equal(settlementList.status, 200, "analysts may read governed settlement batches");
+  assert.equal((await settlementList.json()).data.length, 2, "settlement list must expose both integration statements");
+  const settlementAudit = await client.query("select event_type from audit_events where resource_type in ('settlement_batch', 'settlement_exception') order by chain_sequence");
+  assert.deepEqual(settlementAudit.rows.map((row) => row.event_type), ["settlement_batch.imported", "settlement_batch.imported", "settlement_exception.resolved"], "settlement imports and exception resolution must enter the audit chain");
 
   workerProcess = spawn(process.execPath, [worker], {
     cwd: root,

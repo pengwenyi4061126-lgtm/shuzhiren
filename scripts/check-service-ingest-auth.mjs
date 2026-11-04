@@ -7,7 +7,8 @@ const protectedServiceRoutes = [
   ["/api/v1/runtime/recordings", "../apps/console/app/api/v1/runtime/recordings/route.ts", "requireRuntimeRecordingService(request, body.tenantId)"],
   ["/api/v1/integrations/product-facts", "../apps/console/app/api/v1/integrations/product-facts/route.ts", "requirePimIngestService(request, body.tenantId)"],
   ["/api/v1/runtime/channel-interactions", "../apps/console/app/api/v1/runtime/channel-interactions/route.ts", "requireChannelIngestService(request, body.tenantId)"],
-  ["/api/v1/runtime/channel-commerce", "../apps/console/app/api/v1/runtime/channel-commerce/route.ts", "requireChannelCommerceService(request, body.tenantId)"]
+  ["/api/v1/runtime/channel-commerce", "../apps/console/app/api/v1/runtime/channel-commerce/route.ts", "requireChannelCommerceService(request, body.tenantId)"],
+  ["/api/v1/runtime/settlement-batches", "../apps/console/app/api/v1/runtime/settlement-batches/route.ts", "requireSettlementIngestService(request, body.tenantId)"]
 ];
 
 for (const [path, routePath, serviceGuard] of protectedServiceRoutes) {

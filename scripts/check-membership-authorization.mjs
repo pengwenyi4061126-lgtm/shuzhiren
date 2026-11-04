@@ -24,6 +24,7 @@ const exempt = new Set([
   "runtime/channel-commerce/route.ts",
   "runtime/channel-interactions/route.ts",
   "runtime/recordings/route.ts",
+  "runtime/settlement-batches/route.ts",
   "runtime/telemetry/route.ts"
 ]);
 const routeFiles = await collectRoutes(routesRoot);

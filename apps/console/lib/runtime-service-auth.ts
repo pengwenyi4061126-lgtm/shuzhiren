@@ -1,4 +1,4 @@
-type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "RUNTIME_RECORDING_TENANT_TOKENS" | "PIM_INGEST_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS" | "CHANNEL_COMMERCE_TENANT_TOKENS";
+type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "RUNTIME_RECORDING_TENANT_TOKENS" | "PIM_INGEST_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS" | "CHANNEL_COMMERCE_TENANT_TOKENS" | "SETTLEMENT_INGEST_TENANT_TOKENS";
 
 function configuredTenantTokens(variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
   const value = process.env[variable];
@@ -29,3 +29,4 @@ export function requireRuntimeRecordingService(request: Request, tenantId: strin
 export function requirePimIngestService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "PIM_INGEST_TENANT_TOKENS", "demo-pim-ingest-token", "PIM ingest service"); }
 export function requireChannelIngestService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "CHANNEL_INGEST_TENANT_TOKENS", "demo-channel-ingest-token", "channel ingest service"); }
 export function requireChannelCommerceService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "CHANNEL_COMMERCE_TENANT_TOKENS", "demo-channel-commerce-token", "channel commerce service"); }
+export function requireSettlementIngestService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "SETTLEMENT_INGEST_TENANT_TOKENS", "demo-settlement-ingest-token", "settlement ingest service"); }

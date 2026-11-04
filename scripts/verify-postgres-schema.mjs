@@ -26,7 +26,14 @@ requiredColumns.membership_resource_scopes = ["membership_id", "resource_type", 
 requiredIndexes.push("membership_resource_scopes_membership_idx", "membership_resource_scopes_tenant_resource_idx");
 rlsTables.add("membership_resource_scopes");
 requiredPolicies.push("tenant_isolation_membership_resource_scopes");
-const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only", "product_versions_governed_immutable", "show_revisions_append_only", "policy_profiles_governed_immutable", "model_releases_governed_immutable", "live_commands_append_only", "media_assets_governed_evidence_mutation", "channel_connections_governed_verification", "channel_reply_drafts_governed_mutation", "show_program_change_requests_governed_mutation", "live_runs_governed_show_revision_rebind"];
+requiredTables.push("settlement_batches", "settlement_lines", "settlement_reconciliation_exceptions");
+requiredColumns.settlement_batches = ["source_sha256", "evidence_ref", "status", "imported_by"];
+requiredColumns.settlement_lines = ["external_line_id", "line_type", "amount_cents"];
+requiredColumns.settlement_reconciliation_exceptions = ["exception_type", "status", "resolution_evidence_ref", "resolved_by"];
+requiredIndexes.push("settlement_batches_tenant_imported_idx", "settlement_lines_batch_type_idx", "settlement_exceptions_batch_status_idx");
+rlsTables.add("settlement_batches", "settlement_lines", "settlement_reconciliation_exceptions");
+requiredPolicies.push("tenant_isolation_settlement_batches", "tenant_isolation_settlement_lines", "tenant_isolation_settlement_reconciliation_exceptions");
+const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only", "product_versions_governed_immutable", "show_revisions_append_only", "policy_profiles_governed_immutable", "model_releases_governed_immutable", "live_commands_append_only", "media_assets_governed_evidence_mutation", "channel_connections_governed_verification", "channel_reply_drafts_governed_mutation", "settlement_batches_governed_mutation", "settlement_lines_governed_mutation", "settlement_exceptions_governed_mutation", "show_program_change_requests_governed_mutation", "live_runs_governed_show_revision_rebind"];
 const requiredConstraints = new Map([["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true]]);
 const expectedMigrations = (await readdir(migrationsDirectory)).filter((name) => name.endsWith(".sql")).sort();
 const errors = [];
@@ -172,6 +179,9 @@ async function verifyGovernedEvidenceImmutability() {
   const interactionId = randomUUID();
   const replyId = randomUUID();
   const replyOutboxId = randomUUID();
+  const settlementBatchId = randomUUID();
+  const settlementLineId = randomUUID();
+  const settlementExceptionId = randomUUID();
 
   await client.query("begin");
   try {
@@ -227,6 +237,14 @@ async function verifyGovernedEvidenceImmutability() {
     await client.query("update channel_connections set status = 'connected', last_verified_at = now(), verification_evidence_ref = 'evidence://governed/channel-verification', verified_by = $2 where id = $1", [channelId, actorId]);
     await expectImmutableRejection("update channel_connections set verified_by = $2 where id = $1", [channelId, outsiderId], "非租户成员不得作为渠道验证人");
     await expectImmutableRejection("update channel_connections set secret_ref = 'kms://governed/channel-mutated' where id = $1", [channelId], "渠道密钥引用不得改写");
+    await client.query("insert into settlement_batches (id, tenant_id, channel_connection_id, provider_statement_ref, period_start, period_end, source_sha256, evidence_ref, imported_by) values ($1, $2, $3, 'governed-statement', now() - interval '1 day', now(), repeat('a', 64), 'evidence://governed/settlement', $4)", [settlementBatchId, tenantId, channelId, actorId]);
+    await client.query("insert into settlement_lines (id, tenant_id, settlement_batch_id, external_line_id, line_type, external_order_reference, occurred_at, amount_cents) values ($1, $2, $3, 'governed-line', 'gross_sale', 'governed-order', now(), 100)", [settlementLineId, tenantId, settlementBatchId]);
+    await expectImmutableRejection("update settlement_batches set source_sha256 = repeat('b', 64) where id = $1", [settlementBatchId], "结算账单来源不得改写");
+    await expectImmutableRejection("update settlement_lines set amount_cents = 1 where id = $1", [settlementLineId], "结算账单行不得改写");
+    await client.query("insert into settlement_reconciliation_exceptions (id, tenant_id, settlement_batch_id, settlement_line_id, order_reference, exception_type, actual_amount_cents, detail) values ($1, $2, $3, $4, 'governed-order', 'missing_operational_event', 100, 'Governed settlement exception')", [settlementExceptionId, tenantId, settlementBatchId, settlementLineId]);
+    await expectImmutableRejection("update settlement_reconciliation_exceptions set detail = 'mutated' where id = $1", [settlementExceptionId], "结算差异事实不得改写");
+    await client.query("update settlement_reconciliation_exceptions set status = 'resolved', resolved_by = $2, resolved_at = now(), resolution = 'Governed settlement resolution', resolution_evidence_ref = 'evidence://governed/settlement-resolution' where id = $1", [settlementExceptionId, actorId]);
+    await expectImmutableRejection("update settlement_reconciliation_exceptions set resolution = 'Mutated settlement resolution' where id = $1", [settlementExceptionId], "已结案结算差异不得改写");
     await client.query("insert into live_interactions (id, tenant_id, live_run_id, source, channel_connection_id, question_text, risk_level, policy_action, evidence_ids) values ($1, $2, $3, 'channel:governed', $4, 'Can this be sent?', 'low', 'answer', '[\"product_version\"]'::jsonb)", [interactionId, tenantId, runId, channelId]);
     await client.query("insert into channel_reply_drafts (id, tenant_id, live_run_id, interaction_id, channel_connection_id, body, body_sha256, policy_action, evidence_snapshot, created_by) values ($1, $2, $3, $4, $5, 'Initial governed reply', encode(digest('Initial governed reply', 'sha256'), 'hex'), 'answer', '[{\"type\":\"product_version\",\"id\":\"evidence\"}]'::jsonb, $6)", [replyId, tenantId, runId, interactionId, channelId, actorId]);
     await client.query("update channel_reply_drafts set body = 'Edited governed reply', body_sha256 = encode(digest('Edited governed reply', 'sha256'), 'hex'), edited_by = $2 where id = $1", [replyId, actorId]);
@@ -249,7 +267,7 @@ async function expectImmutableRejection(statement, parameters, label) {
     await client.query(statement, parameters);
     errors.push(`${label}未被数据库触发器拒绝`);
   } catch (error) {
-    if (!(error instanceof Error) || !/immutable|only permits|editable only|channel reply|channel connection|channel verification/i.test(error.message)) errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
+    if (!(error instanceof Error) || !/immutable|only permits|editable only|channel reply|channel connection|channel verification|settlement/i.test(error.message)) errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
   } finally {
     await client.query("rollback to savepoint governed_evidence_mutation");
     await client.query("release savepoint governed_evidence_mutation");

@@ -27,6 +27,7 @@
     "output-probe:response:check": "node scripts/check-output-probe-response.mjs",
     "channel-adapter:test": "node scripts/test-channel-adapter.mjs",
     "channel:verification:check": "node scripts/check-channel-verification-governance.mjs",
+    "settlement:reconciliation:check": "node scripts/check-settlement-reconciliation.mjs",
     "alert-notifier:test": "node scripts/test-alert-notifier.mjs",
     "alert-notifier:health:check": "node scripts/check-alert-notifier-health.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
