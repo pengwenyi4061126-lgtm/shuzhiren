@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "completedAt": "2026-11-03T12:00:00.000Z",
   "operator": "replace-with-duty-operator",
   "releaseManifestSha256": "replace-with-64-character-release-manifest-sha256",
@@ -24,7 +24,19 @@
     "runtimeObservationEvidence": "replace-with-private-observation-report-id",
     "outputProbeEvidence": "replace-with-private-output-probe-report-id",
     "audioActivityEvidence": "replace-with-private-audio-activity-report-id",
-    "recordingEvidence": "replace-with-immutable-recording-evidence-id"
+    "recordingEvidence": "replace-with-immutable-recording-evidence-id",
+    "programOutputObservation": {
+      "runId": "replace-with-live-run-uuid",
+      "outboxEventId": "replace-with-delivered-media-outbox-uuid",
+      "commandId": "replace-with-media-command-uuid-prefixed-by-media_",
+      "programSegmentId": "replace-with-frozen-program-segment-uuid",
+      "source": "replace-with-output-verifier-source",
+      "evidenceRef": "replace-with-evidence-or-urn-reference",
+      "contentSha256": "replace-with-64-character-observed-content-sha256",
+      "confidence": 0.99,
+      "mediaTimeMs": 0,
+      "observedAt": "2026-11-03T12:00:00.000Z"
+    }
   },
   "drills": {
     "networkLoss": { "passed": true, "evidence": "replace-with-drill-record-id" },
