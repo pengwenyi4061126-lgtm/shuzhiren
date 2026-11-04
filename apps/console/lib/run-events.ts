@@ -79,7 +79,7 @@ function commandTitle(action: string) {
 }
 
 function mediaTitle(type: string) {
-  return ({ start_program: "媒体指令：启动节目", switch_to_fallback: "媒体指令：切换备用节目", switch_to_human: "媒体指令：切换人工", stop_program: "媒体指令：结束节目" } as Record<string, string>)[type] ?? `媒体指令：${type}`;
+  return ({ start_program: "媒体指令：启动节目", switch_to_fallback: "媒体指令：切换备用节目", switch_to_human: "媒体指令：切换人工", stop_program: "媒体指令：结束节目", insert_program: "媒体指令：插播冻结节目", resume_program: "媒体指令：恢复节目" } as Record<string, string>)[type] ?? `媒体指令：${type}`;
 }
 
 function formatAuditDetail(detail: Record<string, string | number | boolean | null>) {

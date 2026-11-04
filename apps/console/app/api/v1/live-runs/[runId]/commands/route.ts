@@ -1,12 +1,12 @@
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { readBoundedJson } from "@/lib/bounded-json";
-import { issueCommand } from "@/lib/control-plane/store";
+import { issueCommand, type CommandInput } from "@/lib/control-plane/store";
 import type { LiveCommandAction, LiveRunState } from "@/lib/domain";
 import { recordAuditEvent } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
 
-const actions = new Set<LiveCommandAction>(["START", "PAUSE", "HANDOFF", "END", "RECOVER"]);
+const actions = new Set<LiveCommandAction>(["START", "PAUSE", "HANDOFF", "END", "RECOVER", "INSERT_PROGRAM", "ROLLBACK_PROGRAM"]);
 const states = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT", "ARMED", "LIVE", "DEGRADED", "ENDED", "ARCHIVED"]);
 
 export async function POST(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/commands">) {
@@ -21,8 +21,8 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   try {
     const result = await issueCommand(requestContext, runId, body);
     if (!result.duplicate) {
-      await recordAuditEvent(requestContext, { type: "live_command.accepted", resource: "live_run", resourceId: runId, detail: { action: body.action, commandId: result.command.id } });
-      await recordAuditEvent(requestContext, { type: "media_command.enqueued", resource: "outbox_event", resourceId: result.mediaEvent.id, detail: { mediaCommandId: result.mediaEvent.command.id, commandType: result.mediaEvent.command.type, controlAction: body.action } });
+      await recordAuditEvent(requestContext, { type: "live_command.accepted", resource: "live_run", resourceId: runId, detail: { action: body.action, commandId: result.command.id, programSegmentId: body.programSegmentId ?? null } });
+      await recordAuditEvent(requestContext, { type: "media_command.enqueued", resource: "outbox_event", resourceId: result.mediaEvent.id, detail: { mediaCommandId: result.mediaEvent.command.id, commandType: result.mediaEvent.command.type, controlAction: body.action, programSegmentId: body.programSegmentId ?? null } });
     }
     return Response.json({ data: result }, { status: result.duplicate ? 200 : 202 });
   } catch (error) {
@@ -31,8 +31,10 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   }
 }
 
-function isCommandBody(value: unknown): value is { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState } {
+function isCommandBody(value: unknown): value is CommandInput {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
-  return typeof candidate.idempotencyKey === "string" && candidate.idempotencyKey.length >= 8 && actions.has(candidate.action as LiveCommandAction) && states.has(candidate.expectedState as LiveRunState);
+  if (typeof candidate.idempotencyKey !== "string" || candidate.idempotencyKey.length < 8 || !actions.has(candidate.action as LiveCommandAction) || !states.has(candidate.expectedState as LiveRunState)) return false;
+  if (candidate.action === "INSERT_PROGRAM") return typeof candidate.programSegmentId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.programSegmentId);
+  return candidate.programSegmentId === undefined;
 }

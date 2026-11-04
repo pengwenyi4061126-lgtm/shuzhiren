@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { MediaCommand } from "@/lib/media-protocol";
 import type { SpeechCommand } from "@/lib/speech-protocol";
 
@@ -65,15 +66,38 @@ function previewUrl(value: string) {
 
 export async function dispatchMediaCommand(command: MediaCommand, sessionId: string) {
   const config = runtimeGatewayConfig();
-  if (config.demoMode) return { delivery: "demo" as const };
+  if (config.demoMode) return { delivery: "demo" as const, provider: { accepted: true, command_id: command.id, session_id: sessionId, action: command.type, receipt: { command_id: command.id, session_id: sessionId, action: command.type, accepted_at: new Date().toISOString(), evidence: "demo_gateway" } } };
+  const programSegmentId = command.payload.programSegmentId;
+  const runtimeScript = command.payload.runtimeScript;
+  const scriptSha256 = command.payload.scriptSha256;
+  if (command.type === "insert_program" && (!programSegmentIdValid(programSegmentId) || !runtimeScript || !/^[a-f0-9]{64}$/i.test(scriptSha256 ?? ""))) throw new Error("Program insertion command is missing frozen script evidence");
+  if (command.type === "resume_program" && ((runtimeScript && (!programSegmentIdValid(programSegmentId) || !/^[a-f0-9]{64}$/i.test(scriptSha256 ?? ""))) || (!runtimeScript && (programSegmentId || scriptSha256)))) throw new Error("Program resume command contains incomplete frozen script evidence");
+  if (runtimeScript && createHash("sha256").update(runtimeScript).digest("hex") !== scriptSha256) throw new Error("Program script hash does not match frozen script");
+  if (command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Non-program media command cannot include a runtime script");
   const response = await fetch(`${config.url}/v1/media`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type }),
+    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}) }),
     signal: AbortSignal.timeout(config.requestTimeoutMs)
   });
   if (!response.ok) throw new Error(`Runtime gateway rejected media command: ${response.status}`);
-  return { delivery: "accepted" as const, provider: await response.json() as unknown };
+  const provider = await response.json() as unknown;
+  assertMediaGatewayReceipt(provider, command, sessionId);
+  return { delivery: "accepted" as const, provider };
+}
+
+function assertMediaGatewayReceipt(value: unknown, command: MediaCommand, sessionId: string) {
+  if (!value || typeof value !== "object") throw new Error("Runtime gateway returned an invalid media receipt");
+  const receipt = (value as { receipt?: unknown }).receipt;
+  if (!receipt || typeof receipt !== "object") throw new Error("Runtime gateway returned an invalid media receipt");
+  const fields = receipt as Record<string, unknown>;
+  const acceptedAt = typeof fields.accepted_at === "string" ? new Date(fields.accepted_at) : undefined;
+  if ((value as { accepted?: unknown }).accepted !== true || fields.command_id !== command.id || fields.session_id !== sessionId || fields.action !== command.type || !acceptedAt || Number.isNaN(acceptedAt.getTime()) || Math.abs(Date.now() - acceptedAt.getTime()) > 5 * 60_000) throw new Error("Runtime gateway receipt does not bind the media command");
+  if (command.payload.programSegmentId && fields.program_segment_id !== command.payload.programSegmentId) throw new Error("Runtime gateway receipt does not bind the program segment");
+}
+
+function programSegmentIdValid(value: unknown) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export async function dispatchSpeechCommand(command: SpeechCommand, sessionId: string) {

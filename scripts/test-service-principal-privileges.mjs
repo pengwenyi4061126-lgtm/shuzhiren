@@ -27,6 +27,7 @@ try {
   await expectTable("shuzhiren_alert_notifier", "outbox_events", "select", false);
 
   await expectTable("shuzhiren_runtime_worker", "outbox_events", "update", true);
+  await expectTable("shuzhiren_runtime_worker", "show_revision_segments", "select", true);
   await expectTable("shuzhiren_runtime_worker", "audit_events", "insert", true);
   await expectTable("shuzhiren_runtime_worker", "memberships", "select", false);
   await expectTable("shuzhiren_runtime_worker", "users", "update", false);

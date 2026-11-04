@@ -62,7 +62,10 @@ class SpeakRequest(BaseModel):
 class MediaRequest(BaseModel):
     command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
-    action: Literal["start_program", "switch_to_fallback", "switch_to_human", "stop_program"]
+    action: Literal["start_program", "switch_to_fallback", "switch_to_human", "stop_program", "insert_program", "resume_program"]
+    program_segment_id: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+    program_script: str | None = Field(default=None, min_length=1, max_length=800)
+    script_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 PROGRAM_AUDIOTYPE = int(os.environ.get("PROGRAM_AUDIOTYPE", "0"))
 FALLBACK_AUDIOTYPE = int(os.environ.get("FALLBACK_AUDIOTYPE", "1"))
@@ -418,7 +421,7 @@ async def healthz() -> JSONResponse:
                 "cosyvoice": {**cosyvoice, "required": COSYVOICE_REQUIRED},
                 "command_journal": command_journal,
             },
-            "media_actions": ["start_program", "switch_to_fallback", "switch_to_human", "stop_program"],
+            "media_actions": ["start_program", "switch_to_fallback", "switch_to_human", "stop_program", "insert_program", "resume_program"],
         },
     )
 
@@ -501,7 +504,22 @@ async def speak(request: SpeakRequest, authorization: str | None = Header(defaul
 @app.post("/v1/media")
 async def media(request: MediaRequest, authorization: str | None = Header(default=None)) -> dict:
     authorize(authorization)
-    identity = {"session_id": request.session_id, "action": request.action}
+    if request.action == "insert_program":
+        if not request.program_segment_id or not request.program_script or not request.script_sha256:
+            raise HTTPException(status_code=400, detail="Program insertion requires segment, script, and script hash")
+        if not hmac.compare_digest(hashlib.sha256(request.program_script.encode("utf-8")).hexdigest(), request.script_sha256):
+            raise HTTPException(status_code=400, detail="Program script hash does not match script")
+    elif request.action == "resume_program":
+        if (request.program_script is None) != (request.script_sha256 is None):
+            raise HTTPException(status_code=400, detail="Program resume script and hash must be supplied together")
+        if request.program_script and not request.program_segment_id:
+            raise HTTPException(status_code=400, detail="Program resume script requires a segment")
+        if request.program_script and not hmac.compare_digest(hashlib.sha256(request.program_script.encode("utf-8")).hexdigest(), request.script_sha256 or ""):
+            raise HTTPException(status_code=400, detail="Program script hash does not match script")
+    elif request.program_segment_id or request.program_script or request.script_sha256:
+        raise HTTPException(status_code=400, detail="Only program transition actions may carry a script")
+
+    identity = {"session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "script_sha256": request.script_sha256}
     lock = await acquire_runtime_command_lock(request.command_id)
     try:
         cached = await cached_runtime_command(request.command_id, "media", identity)
@@ -519,13 +537,22 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
             downstream_actions.append("set_program_audiotype")
             await livetalking_post("/record", {"sessionid": request.session_id, "type": "start_record"})
             downstream_actions.append("start_record")
+        elif request.action in ("insert_program", "resume_program"):
+            await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
+            downstream_actions.append("interrupt_talk")
+            await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": PROGRAM_AUDIOTYPE})
+            downstream_actions.append("set_program_audiotype")
+            if request.program_script:
+                await livetalking_post("/human", {"sessionid": request.session_id, "text": request.program_script, "type": "echo", "interrupt": True})
+                downstream_actions.append("play_frozen_program_script")
         else:
             await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
             downstream_actions.append("interrupt_talk")
             audiotype = FALLBACK_AUDIOTYPE if request.action == "switch_to_fallback" else HUMAN_HANDOFF_AUDIOTYPE
             await livetalking_post("/set_audiotype", {"sessionid": request.session_id, "audiotype": audiotype})
             downstream_actions.append("set_fallback_audiotype" if request.action == "switch_to_fallback" else "set_human_handoff_audiotype")
-        result = {"accepted": True, "provider": "livetalking", "command_id": request.command_id, "action": request.action, "downstream_actions": downstream_actions}
+        accepted_at = datetime.now(timezone.utc).isoformat()
+        result = {"accepted": True, "provider": "livetalking", "command_id": request.command_id, "session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "downstream_actions": downstream_actions, "receipt": {"command_id": request.command_id, "session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "accepted_at": accepted_at, "evidence": "livetalking_api_accepted"}}
         await cache_runtime_command(request.command_id, "media", identity, result)
         return {**result, "duplicate": False}
     finally:

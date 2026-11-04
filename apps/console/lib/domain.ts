@@ -1,6 +1,6 @@
 export type LiveRunState = "DRAFT" | "REVIEW" | "APPROVED" | "PREFLIGHT" | "ARMED" | "LIVE" | "DEGRADED" | "ENDED" | "ARCHIVED";
 
-export type LiveCommandAction = "START" | "PAUSE" | "HANDOFF" | "END" | "RECOVER";
+export type LiveCommandAction = "START" | "PAUSE" | "HANDOFF" | "END" | "RECOVER" | "INSERT_PROGRAM" | "ROLLBACK_PROGRAM";
 
 export type LiveCommand = {
   id: string;
@@ -9,6 +9,7 @@ export type LiveCommand = {
   issuedAt: string;
   expectedState: LiveRunState;
   result: "accepted" | "rejected";
+  programSegmentId?: string;
 };
 
 export type LiveQuestion = {
@@ -26,6 +27,7 @@ export type LiveRun = {
   scheduledAt?: string;
   activeProgramSegmentId?: string;
   activeInsertSourceSegmentId?: string;
+  activeInsertProgramSegmentId?: string;
   pendingProgramTransitionEventId?: string;
   commandHistory: LiveCommand[];
   questions: LiveQuestion[];

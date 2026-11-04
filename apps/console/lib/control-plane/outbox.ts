@@ -126,7 +126,7 @@ export async function deliverOutboxEvent(context: RequestContext, eventId: strin
     const result = claimed.event.type === "media.dispatch"
       ? await dispatchMediaCommand(claimed.event.command, claimed.event.sessionId)
       : await dispatchSpeechCommand(claimed.event.command, claimed.event.sessionId);
-    const event = await markDelivered(context, claimed.event);
+    const event = await markDelivered(context, claimed.event, result);
     return { event, duplicate: false as const, result };
   } catch (error) {
     await markFailed(context, claimed.event, error instanceof Error ? error.message : "runtime_dispatch_failed");
@@ -163,7 +163,7 @@ async function assertOutboxEventAccess(context: RequestContext, event: RuntimeOu
   await assertLiveRunAccess(context, event.type === "channel.reply.dispatch" ? event.runId : event.command.runId);
 }
 
-async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent) {
+async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent, dispatchResult?: { provider?: unknown }) {
   if (!databasePool()) {
     const event = outboxStore().events.get(input.id);
     if (!event) throw new Error("Outbox event disappeared during delivery");
@@ -188,8 +188,32 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent)
         [event.command.runId, event.id]
       );
     }
+    if (event.type === "media.dispatch" && (event.command.payload.controlAction === "INSERT_PROGRAM" || event.command.payload.controlAction === "ROLLBACK_PROGRAM")) {
+      await applyProgramTransitionReceipt(client, context, event, dispatchResult?.provider);
+    }
     return event;
   });
+}
+
+async function applyProgramTransitionReceipt(client: PoolClient, context: RequestContext, event: MediaOutboxEvent, provider: unknown) {
+  const receipt = provider && typeof provider === "object" ? (provider as { receipt?: unknown }).receipt : undefined;
+  if (!receipt || typeof receipt !== "object") throw new Error("Program transition receipt is missing");
+  const payload = event.command.payload;
+  const target = typeof payload.programSegmentId === "string" ? payload.programSegmentId : null;
+  const source = typeof payload.sourceProgramSegmentId === "string" ? payload.sourceProgramSegmentId : null;
+  const inserted = typeof payload.insertedProgramSegmentId === "string" ? payload.insertedProgramSegmentId : null;
+  let updated;
+  if (payload.controlAction === "INSERT_PROGRAM") {
+    if (!target) throw new Error("Program insertion target is missing");
+    updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, active_insert_source_segment_id = $3::uuid, active_insert_program_segment_id = $2::uuid, pending_program_transition_event_id = null, updated_at = now() where id = $1 and pending_program_transition_event_id = $4::uuid returning id", [event.command.runId, target, source, event.id]);
+  } else {
+    if (!inserted) throw new Error("Program rollback insertion reference is missing");
+    updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, active_insert_source_segment_id = null, active_insert_program_segment_id = null, pending_program_transition_event_id = null, updated_at = now() where id = $1 and active_insert_program_segment_id = $3::uuid and pending_program_transition_event_id = $4::uuid returning id", [event.command.runId, target, inserted, event.id]);
+  }
+  if (!updated.rows[0]) throw new Error("Program transition cursor was not pending for this receipt");
+  const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
+  await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+    values ($1, $2, 'live_program.transition_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [context.tenantId, actor.rows[0].id, event.command.runId, JSON.stringify({ outboxEventId: event.id, commandId: event.command.id, action: payload.controlAction, programSegmentId: target, sourceProgramSegmentId: source, receipt })]);
 }
 
 async function markFailed(context: RequestContext, input: RuntimeOutboxEvent, lastError: string) {

@@ -6,7 +6,7 @@ const transitions: Record<LiveRunState, Partial<Record<LiveCommandAction, LiveRu
   APPROVED: {},
   PREFLIGHT: {},
   ARMED: { START: "LIVE" },
-  LIVE: { PAUSE: "DEGRADED", HANDOFF: "DEGRADED", END: "ENDED" },
+  LIVE: { PAUSE: "DEGRADED", HANDOFF: "DEGRADED", END: "ENDED", INSERT_PROGRAM: "LIVE", ROLLBACK_PROGRAM: "LIVE" },
   DEGRADED: { RECOVER: "LIVE", END: "ENDED" },
   ENDED: {},
   ARCHIVED: {}

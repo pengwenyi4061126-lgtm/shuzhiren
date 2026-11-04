@@ -5,7 +5,7 @@ import { canTransition, nextStateFor } from "@/lib/live-run";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { findApprovedProductVersion, frozenProductVersionStatusForRun, frozenProductVersionStatusForRunInTransaction, type ProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
-import { approveShowProgramInTransaction, hasApprovedFallbackProgram, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
+import { approveShowProgramInTransaction, getShowProgram, hasApprovedFallbackProgram, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
 import { activeMediaAssetStatus, activeMediaAssetStatusInTransaction, currentApprovedMediaAssetsInTransaction, hasApprovedLiveRights, requiredLiveAssetKinds, runtimeVoiceForRun, runtimeVoiceForRunInTransaction } from "@/lib/assets";
 import { activeModelReleaseStatus, activeModelReleaseStatusInTransaction, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
 import { validateChannelConnection } from "@/lib/channels";
@@ -37,7 +37,7 @@ export type StoredRun = LiveRun & {
   scheduledAt?: string;
 };
 
-type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState };
+export type CommandInput = { action: LiveCommandAction; idempotencyKey: string; expectedState: LiveRunState; programSegmentId?: string };
 export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm" | "disarm" | "archive";
 const runtimeSessionBindingStates = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"]);
 type CommandIdempotencyRecord = { command: LiveCommand; runId: string };
@@ -60,6 +60,10 @@ type PersistentRunRow = {
   ai_disclosure_enabled: boolean;
   runtime_session_id: string | null;
   scheduled_at: Date | string | null;
+  active_program_segment_id: string | null;
+  active_insert_source_segment_id: string | null;
+  active_insert_program_segment_id: string | null;
+  pending_program_transition_event_id: string | null;
 };
 type PersistentCommandRow = {
   id: string;
@@ -100,6 +104,7 @@ function initialStore(): Store {
       outputReady: true,
       aiDisclosureEnabled: true,
       runtimeSessionId: "session_demo_001",
+      activeProgramSegmentId: "10000000-0000-4000-8000-000000000002",
       commandHistory: [],
       questions: []
     }]]),
@@ -123,7 +128,7 @@ export async function listRuns(context: RequestContext) {
     const scopeClause = restrictedMembership(context)
       ? "where exists (select 1 from membership_resource_scopes scope where scope.membership_id = $1::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))"
       : "";
-    const result = await client.query<PersistentRunRow>(`select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id, r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved, r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready, r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at from live_runs r join show_revisions sr on sr.id = r.show_revision_id join shows s on s.id = sr.show_id ${scopeClause} order by r.scheduled_at asc nulls last, r.created_at desc`, restrictedMembership(context) ? [context.membershipId] : []);
+    const result = await client.query<PersistentRunRow>(`select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id, r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved, r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready, r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at, r.active_program_segment_id, r.active_insert_source_segment_id, r.active_insert_program_segment_id, r.pending_program_transition_event_id from live_runs r join show_revisions sr on sr.id = r.show_revision_id join shows s on s.id = sr.show_id ${scopeClause} order by r.scheduled_at asc nulls last, r.created_at desc`, restrictedMembership(context) ? [context.membershipId] : []);
     return result.rows.map((row) => persistentRun(row, []));
   });
 }
@@ -151,7 +156,7 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     for (const component of requiredProductionReleaseComponents) await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, frozenReleases.get(component), component]);
     await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [context.tenantId, revision.rows[0].id, policyProfile.id]);
     for (const kind of requiredLiveAssetKinds) await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, mediaAssets.get(kind)?.id, kind]);
-    const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, true, true, false, true, false, $6, $7, $8::timestamptz) returning id, tenant_id, show_revision_id, $9::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
+    const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, true, true, false, true, false, $6, $7, $8::timestamptz) returning id, tenant_id, show_revision_id, $9::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at, active_program_segment_id, active_insert_source_segment_id, active_insert_program_segment_id, pending_program_transition_event_id`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', '本段仅讲解已审核商品事实、价格和活动权益。', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', '本段只处理低风险、可追溯的已审核问题，其他请求转人工。', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', null, true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', null, true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
     await createReleaseManifestSnapshotInTransaction(client, { tenantId: context.tenantId, revisionId: revision.rows[0].id, runId: run.rows[0].id });
     return persistentRun(run.rows[0], []);
@@ -309,6 +314,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (!run.runtimeSessionId) throw new Response("Runtime session is not bound", { status: 409 });
     const requiresActivationConfirmation = input.action === "START" || input.action === "RECOVER";
     const requiresEndConfirmation = input.action === "END";
+    const isProgramTransition = input.action === "INSERT_PROGRAM" || input.action === "ROLLBACK_PROGRAM";
     if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
       throw new Response("Preflight requirements are not satisfied", { status: 409 });
     }
@@ -330,15 +336,16 @@ export async function issueCommand(context: RequestContext, runId: string, input
       const pending = await client.query<{ pending_media_event_id: string | null }>("select pending_media_event_id from live_runs where id = $1", [run.id]);
       if (pending.rows[0]?.pending_media_event_id) throw new Response("A runtime stop command is already pending confirmation", { status: 409 });
     }
+    const programTransition = isProgramTransition ? await resolveProgramTransition(client, run, input) : undefined;
 
     const nextState = nextStateFor(run.state, input.action);
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const inserted = await client.query<PersistentCommandRow>(
       "insert into live_commands (tenant_id, live_run_id, actor_id, idempotency_key, expected_state, action, result) values ($1, $2, $3, $4, $5, $6, $7::jsonb) returning id, action, expected_state, issued_at, result, $8::text as actor_name",
-      [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted" }), context.actorName]
+      [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted", programSegmentId: programTransition?.target?.id ?? null, sourceProgramSegmentId: programTransition?.source?.id ?? null }), context.actorName]
     );
     const command = persistentCommand(inserted.rows[0]);
-    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action)), run.runtimeSessionId);
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition)), run.runtimeSessionId);
     if (requiresActivationConfirmation) {
       await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = $3 and scheduled_start_event_id is null", [run.id, mediaEvent.id, run.state]);
       return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
@@ -347,9 +354,38 @@ export async function issueCommand(context: RequestContext, runId: string, input
       await client.query("update live_runs set pending_media_event_id = $2, updated_at = now() where id = $1 and state = $3 and pending_media_event_id is null", [run.id, mediaEvent.id, run.state]);
       return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
     }
+    if (programTransition) {
+      const updated = await client.query("update live_runs set pending_program_transition_event_id = $2, updated_at = now() where id = $1 and pending_program_transition_event_id is null returning id", [run.id, mediaEvent.id]);
+      if (!updated.rows[0]) throw new Response("A program transition is already pending runtime confirmation", { status: 409 });
+      return { command, mediaEvent, run: { ...run, pendingProgramTransitionEventId: mediaEvent.id, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
+    }
     await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, nextState]);
     return { command, mediaEvent, run: { ...run, state: nextState, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
   });
+}
+
+type FrozenRuntimeSegment = { id: string; runtimeScript: string };
+type ProgramTransition = { kind: "insert" | "rollback"; target?: FrozenRuntimeSegment; source?: FrozenRuntimeSegment };
+
+async function resolveProgramTransition(client: PoolClient, run: StoredRun, input: CommandInput): Promise<ProgramTransition> {
+  if (run.pendingProgramTransitionEventId) throw new Response("A program transition is already pending runtime confirmation", { status: 409 });
+  if (input.action === "INSERT_PROGRAM") {
+    if (run.activeInsertProgramSegmentId) throw new Response("An accepted program insertion must be rolled back before another insertion", { status: 409 });
+    if (!input.programSegmentId || !isUuid(input.programSegmentId)) throw new Response("A frozen program segment is required", { status: 400 });
+    const target = await loadFrozenRuntimeSegment(client, run, input.programSegmentId);
+    if (!target) throw new Response("Program segment is not runnable in this frozen revision", { status: 409 });
+    const source = run.activeProgramSegmentId ? await loadFrozenRuntimeSegment(client, run, run.activeProgramSegmentId) : undefined;
+    return { kind: "insert", target, source: source ?? undefined };
+  }
+  if (!run.activeInsertProgramSegmentId) throw new Response("No accepted program insertion is available to roll back", { status: 409 });
+  const source = run.activeInsertSourceSegmentId ? await loadFrozenRuntimeSegment(client, run, run.activeInsertSourceSegmentId) : undefined;
+  return { kind: "rollback", target: source ?? undefined, source: source ?? undefined };
+}
+
+async function loadFrozenRuntimeSegment(client: PoolClient, run: StoredRun, segmentId: string): Promise<FrozenRuntimeSegment | null> {
+  const result = await client.query<{ id: string; runtime_script: string }>("select id, runtime_script from show_revision_segments where id = $1 and show_revision_id = $2 and tenant_id = $3 and kind in ('prepared_product', 'interactive') and runtime_script is not null", [segmentId, run.revisionId, run.tenantId]);
+  const row = result.rows[0];
+  return row ? { id: row.id, runtimeScript: row.runtime_script } : null;
 }
 
 export async function enqueueGroundedSpeech(context: RequestContext, runId: string, question: string, idempotencyKey: string): Promise<GroundedSpeechDispatch> {
@@ -431,6 +467,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
     throw new Response("Runtime health is not ready for recovery", { status: 409 });
   }
+  const programTransition = input.action === "INSERT_PROGRAM" || input.action === "ROLLBACK_PROGRAM" ? await resolveDemoProgramTransition(context, run, input) : undefined;
 
   const command: LiveCommand = {
     id: `cmd_${crypto.randomUUID()}`,
@@ -438,18 +475,41 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
     actorName: context.actorName,
     issuedAt: new Date().toISOString(),
     expectedState: input.expectedState,
-    result: "accepted"
+    result: "accepted",
+    programSegmentId: programTransition?.target?.id
   };
-  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action), sessionId: run.runtimeSessionId });
-  run.state = nextStateFor(run.state, input.action);
+  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition), sessionId: run.runtimeSessionId });
+  if (programTransition) {
+    run.activeProgramSegmentId = programTransition.target?.id;
+    run.activeInsertSourceSegmentId = programTransition.kind === "insert" ? programTransition.source?.id : undefined;
+    run.activeInsertProgramSegmentId = programTransition.kind === "insert" ? programTransition.target?.id : undefined;
+  } else run.state = nextStateFor(run.state, input.action);
   run.commandHistory.unshift(command);
   activeStore.idempotency.set(`${context.tenantId}:${input.idempotencyKey}`, { command, runId: run.id });
   return { command, mediaEvent, run, duplicate: false as const };
 }
 
-function mediaCommandFor(run: StoredRun, action: LiveCommandAction): Omit<MediaCommand, "id" | "issuedAt"> {
-  const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program" } as const;
-  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action } };
+async function resolveDemoProgramTransition(context: RequestContext, run: StoredRun, input: CommandInput): Promise<ProgramTransition> {
+  if (run.pendingProgramTransitionEventId) throw new Response("A program transition is already pending runtime confirmation", { status: 409 });
+  const program = await getShowProgram(context, run.id);
+  if (!program) throw new Response("Show program not found", { status: 404 });
+  const runnable = (segmentId: string | undefined) => program.segments.find((segment) => segment.id === segmentId && (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript));
+  if (input.action === "INSERT_PROGRAM") {
+    if (run.activeInsertProgramSegmentId) throw new Response("An accepted program insertion must be rolled back before another insertion", { status: 409 });
+    const target = runnable(input.programSegmentId);
+    if (!target?.runtimeScript) throw new Response("Program segment is not runnable in this frozen revision", { status: 409 });
+    const source = runnable(run.activeProgramSegmentId);
+    return { kind: "insert", target: { id: target.id, runtimeScript: target.runtimeScript }, source: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined };
+  }
+  if (!run.activeInsertProgramSegmentId) throw new Response("No accepted program insertion is available to roll back", { status: 409 });
+  const source = runnable(run.activeInsertSourceSegmentId);
+  return { kind: "rollback", target: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined, source: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined };
+}
+
+function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition): Omit<MediaCommand, "id" | "issuedAt"> {
+  const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program", INSERT_PROGRAM: "insert_program", ROLLBACK_PROGRAM: "resume_program" } as const;
+  const segment = transition?.target;
+  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...(transition ? { programTransition: transition.kind, ...(transition.source ? { sourceProgramSegmentId: transition.source.id } : {}), ...(run.activeInsertProgramSegmentId ? { insertedProgramSegmentId: run.activeInsertProgramSegmentId } : {}), ...(segment ? { programSegmentId: segment.id, runtimeScript: segment.runtimeScript, scriptSha256: createHash("sha256").update(segment.runtimeScript).digest("hex") } : {}) } : {}) } };
 }
 
 export async function bindRuntimeSession(context: RequestContext, runId: string, runtimeSessionId: string) {
@@ -479,7 +539,8 @@ async function loadPersistentRun(client: PoolClient, runId: string, lock = false
     `select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id,
       r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved,
       r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready,
-      r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at
+      r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at, r.active_program_segment_id,
+      r.active_insert_source_segment_id, r.active_insert_program_segment_id, r.pending_program_transition_event_id
      from live_runs r
      join show_revisions sr on sr.id = r.show_revision_id
      join shows s on s.id = sr.show_id
@@ -527,7 +588,7 @@ async function findCommandByIdempotency(client: PoolClient, idempotencyKey: stri
 }
 
 function sameCommandInput(existing: CommandIdempotencyRecord, runId: string, input: CommandInput) {
-  return existing.runId === runId && existing.command.action === input.action && existing.command.expectedState === input.expectedState;
+  return existing.runId === runId && existing.command.action === input.action && existing.command.expectedState === input.expectedState && (existing.command.programSegmentId ?? undefined) === (input.programSegmentId ?? undefined);
 }
 
 function isUuid(value: string) {
@@ -553,19 +614,24 @@ function persistentRun(row: PersistentRunRow, commandHistory: LiveCommand[]): St
     aiDisclosureEnabled: row.ai_disclosure_enabled,
     runtimeSessionId: row.runtime_session_id ?? undefined,
     scheduledAt: row.scheduled_at ? new Date(row.scheduled_at).toISOString() : undefined,
+    activeProgramSegmentId: row.active_program_segment_id ?? undefined,
+    activeInsertSourceSegmentId: row.active_insert_source_segment_id ?? undefined,
+    activeInsertProgramSegmentId: row.active_insert_program_segment_id ?? undefined,
+    pendingProgramTransitionEventId: row.pending_program_transition_event_id ?? undefined,
     commandHistory,
     questions: []
   };
 }
 
 function persistentCommand(row: PersistentCommandRow): LiveCommand {
-  const result = typeof row.result === "string" ? JSON.parse(row.result) as { status?: string } : row.result as { status?: string };
+  const result = typeof row.result === "string" ? JSON.parse(row.result) as { status?: string; programSegmentId?: unknown } : row.result as { status?: string; programSegmentId?: unknown };
   return {
     id: row.id,
     action: row.action,
     actorName: row.actor_name,
     issuedAt: new Date(row.issued_at).toISOString(),
     expectedState: row.expected_state,
-    result: result.status === "rejected" ? "rejected" : "accepted"
+    result: result.status === "rejected" ? "rejected" : "accepted",
+    programSegmentId: typeof result.programSegmentId === "string" ? result.programSegmentId : undefined
   };
 }

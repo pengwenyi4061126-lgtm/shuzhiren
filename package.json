@@ -46,6 +46,8 @@
     "governance:immutability:check": "node scripts/check-governed-evidence-immutability.mjs",
     "program:revisions:check": "node scripts/check-program-revision-workflow.mjs",
     "program:runtime-scripts:check": "node scripts/check-runtime-program-scripts.mjs",
+    "runtime:program-transition:check": "node scripts/check-runtime-program-transition-protocol.mjs",
+    "control-room:program-transition:check": "node scripts/check-control-room-program-transitions.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "lifecycle:authz:check": "node scripts/check-lifecycle-authorization.mjs",
     "command:confirmation:check": "node scripts/check-command-confirmation.mjs",

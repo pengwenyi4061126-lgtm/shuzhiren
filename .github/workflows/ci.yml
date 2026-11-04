@@ -65,6 +65,8 @@ jobs:
       - run: npm run governance:immutability:check
       - run: npm run program:revisions:check
       - run: npm run program:runtime-scripts:check
+      - run: npm run runtime:program-transition:check
+      - run: npm run control-room:program-transition:check
       - run: npm run preflight:check
       - run: npm run lifecycle:authz:check
       - run: npm run command:confirmation:check

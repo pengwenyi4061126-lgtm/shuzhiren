@@ -33,6 +33,9 @@ grant select, insert, update on alert_notification_deliveries to shuzhiren_alert
 -- watchdog, entitlement accounting, channel-reply receipts, and audit events.
 grant select, update on outbox_events to shuzhiren_runtime_worker;
 grant select, update on live_runs to shuzhiren_runtime_worker;
+-- The live_runs program-cursor trigger verifies referenced frozen segments.
+-- The worker needs this read-only access for receipt-bound cursor updates.
+grant select on show_revision_segments to shuzhiren_runtime_worker;
 grant select on tenant_entitlements, runtime_health_samples to shuzhiren_runtime_worker;
 grant select (id) on tenants to shuzhiren_runtime_worker;
 grant select, insert on usage_records to shuzhiren_runtime_worker;

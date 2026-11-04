@@ -23,6 +23,7 @@ for (const source of [
   "grant select, insert, update on alert_notification_deliveries to shuzhiren_alert_notifier",
   "grant select, update on outbox_events to shuzhiren_runtime_worker",
   "grant select, update on live_runs to shuzhiren_runtime_worker",
+  "grant select on show_revision_segments to shuzhiren_runtime_worker",
   "grant insert on audit_events to shuzhiren_runtime_worker",
   "grant execute on function runtime_worker_actor(uuid, text) to shuzhiren_runtime_worker"
 ]) if (!grants.includes(source)) throw new Error(`Service principal grants missing: ${source}`);

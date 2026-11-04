@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import pathlib
 import sys
 import tempfile
+from pydantic import ValidationError
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "runtime" / "gateway"))
 import app as gateway
@@ -42,6 +44,25 @@ async def main() -> None:
     after_restart = await gateway.media(gateway.MediaRequest(command_id="command_same", session_id="session_1", action="start_program"), authorization)
     assert after_restart["duplicate"] is True
     assert len(calls) == 2, "a completed command must survive an in-memory cache loss without replaying downstream actions"
+
+    frozen_script = "This is an approved frozen program script."
+    approved_segment_id = "10000000-0000-4000-8000-000000000001"
+    inserted = await gateway.media(gateway.MediaRequest(command_id="command_insert", session_id="session_1", action="insert_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest()), authorization)
+    assert inserted["accepted"] is True
+    assert inserted["receipt"]["program_segment_id"] == approved_segment_id
+    assert any(path == "/human" and payload["text"] == frozen_script for path, payload in calls), "a governed insertion must deliver the frozen script to LiveTalking"
+    try:
+        await gateway.media(gateway.MediaRequest(command_id="command_bad_script", session_id="session_1", action="insert_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256="0" * 64), authorization)
+    except gateway.HTTPException as error:
+        assert error.status_code == 400
+    else:
+        raise AssertionError("a mismatched frozen script hash must be rejected")
+    try:
+        gateway.MediaRequest(command_id="command_bad_segment", session_id="session_1", action="insert_program", program_segment_id="not-a-uuid", program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest())
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("a governed program transition must require a UUID segment identifier")
 
     async def unknown_outcome(path: str, payload: dict) -> dict:
         calls.append((path, payload))

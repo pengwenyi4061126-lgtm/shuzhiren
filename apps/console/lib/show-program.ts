@@ -48,11 +48,11 @@ function programStore(): ProgramStore {
     status: "approved",
     editable: false,
     segments: [
-      { id: "segment_open", position: 1, kind: "prepared_product", title: "开场与福利说明", durationSeconds: 85, productVersionId: "pv_a102_v1", purpose: "预制讲品，锁定价格与赠品口径", runtimeScript: "欢迎来到直播间。今天的价格、赠品和适用范围以已审核商品卡为准。", fallback: false },
-      { id: "segment_product", position: 2, kind: "prepared_product", title: "洁面慕斯卖点讲解", durationSeconds: 210, productVersionId: "pv_a102_v1", purpose: "预制商品讲解片段", runtimeScript: "现在讲解洁面慕斯的已审核成分、使用方法和活动权益；不作未审核功效承诺。", fallback: false },
-      { id: "segment_interactive", position: 3, kind: "interactive", title: "受控互动窗口", durationSeconds: 120, productVersionId: "pv_a102_v1", purpose: "仅处理低风险、可追溯问答", runtimeScript: "现在进入受控互动环节。只回答已审核商品资料中的低风险问题，其他问题转人工。", fallback: false },
-      { id: "segment_fallback", position: 4, kind: "fallback", title: "成分与使用方式备用片段", durationSeconds: 150, productVersionId: "pv_a102_v1", purpose: "推理或网络异常时立即切换", fallback: true },
-      { id: "segment_handoff", position: 5, kind: "human_handoff", title: "人工场控接管", durationSeconds: 0, purpose: "高风险承诺、投诉与异常处理", fallback: true }
+      { id: "10000000-0000-4000-8000-000000000001", position: 1, kind: "prepared_product", title: "开场与福利说明", durationSeconds: 85, productVersionId: "pv_a102_v1", purpose: "预制讲品，锁定价格与赠品口径", runtimeScript: "欢迎来到直播间。今天的价格、赠品和适用范围以已审核商品卡为准。", fallback: false },
+      { id: "10000000-0000-4000-8000-000000000002", position: 2, kind: "prepared_product", title: "洁面慕斯卖点讲解", durationSeconds: 210, productVersionId: "pv_a102_v1", purpose: "预制商品讲解片段", runtimeScript: "现在讲解洁面慕斯的已审核成分、使用方法和活动权益；不作未审核功效承诺。", fallback: false },
+      { id: "10000000-0000-4000-8000-000000000003", position: 3, kind: "interactive", title: "受控互动窗口", durationSeconds: 120, productVersionId: "pv_a102_v1", purpose: "仅处理低风险、可追溯问答", runtimeScript: "现在进入受控互动环节。只回答已审核商品资料中的低风险问题，其他问题转人工。", fallback: false },
+      { id: "10000000-0000-4000-8000-000000000004", position: 4, kind: "fallback", title: "成分与使用方式备用片段", durationSeconds: 150, productVersionId: "pv_a102_v1", purpose: "推理或网络异常时立即切换", fallback: true },
+      { id: "10000000-0000-4000-8000-000000000005", position: 5, kind: "human_handoff", title: "人工场控接管", durationSeconds: 0, purpose: "高风险承诺、投诉与异常处理", fallback: true }
     ]
   }]]) };
   return globalThis.shuzhirenProgramStore;

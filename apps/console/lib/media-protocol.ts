@@ -1,7 +1,7 @@
 export type MediaCommand = {
   id: string;
   runId: string;
-  type: "start_program" | "switch_to_fallback" | "switch_to_human" | "stop_program";
+  type: "start_program" | "switch_to_fallback" | "switch_to_human" | "stop_program" | "insert_program" | "resume_program";
   issuedAt: string;
   traceId: string;
   payload: Record<string, string>;

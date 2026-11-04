@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
@@ -102,6 +102,7 @@ try {
   await seedMembership(tenantId, "integration-second-operator", "Integration Operator", "operator");
   await seedMembership(tenantId, "integration-analyst", "Integration Analyst", "analyst");
   await seedMembership(isolatedTenantId, "isolated-operator", "Isolated Tenant Admin", "admin");
+  const programTransitionRun = await seedProgramTransitionRun();
   const recoverRunId = recoverRun.runId;
   const staleRunId = staleRun.runId;
   next = spawn(process.execPath, [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(consolePort)], {
@@ -159,6 +160,14 @@ try {
   const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
   const forgedRoleRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${forgedRoleToken}` };
   const suspendedRequestHeaders = { authorization: `Bearer ${suspendedToken}` };
+  const programInsert = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${programTransitionRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "INSERT_PROGRAM", expectedState: "LIVE", programSegmentId: programTransitionRun.insertSegmentId, idempotencyKey: randomUUID() }) });
+  assert.equal(programInsert.status, 202, "a frozen approved program segment should enter the media outbox");
+  const programInsertBody = await programInsert.json();
+  assert.equal(programInsertBody.data.command.programSegmentId, programTransitionRun.insertSegmentId, "the accepted command must retain its frozen insertion segment");
+  const pendingProgramInsert = await client.query("select active_program_segment_id, active_insert_source_segment_id, active_insert_program_segment_id, pending_program_transition_event_id from live_runs where id = $1", [programTransitionRun.runId]);
+  assert.deepEqual(pendingProgramInsert.rows[0], { active_program_segment_id: programTransitionRun.primarySegmentId, active_insert_source_segment_id: null, active_insert_program_segment_id: null, pending_program_transition_event_id: programInsertBody.data.mediaEvent.id }, "program cursor must not move before a bound gateway receipt");
+  const concurrentProgramInsert = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${programTransitionRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "INSERT_PROGRAM", expectedState: "LIVE", programSegmentId: programTransitionRun.insertSegmentId, idempotencyKey: randomUUID() }) });
+  assert.equal(concurrentProgramInsert.status, 409, "a pending program transition must reject a concurrent insertion");
   const unsafeChannelVerification = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections/${recoverRun.channelId}/verify`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ status: "connected", evidenceRef: "https://operator:secret@evidence.internal/report" }) });
   assert.equal(unsafeChannelVerification.status, 400, "channel verification must reject credential-bearing or non-opaque evidence references");
   const governedChannelVerification = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections/${recoverRun.channelId}/verify`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ status: "connected" }) });
@@ -776,6 +785,7 @@ try {
   const settlementAudit = await client.query("select event_type from audit_events where resource_type in ('settlement_batch', 'settlement_exception') order by chain_sequence");
   assert.deepEqual(settlementAudit.rows.map((row) => row.event_type), ["settlement_batch.imported", "settlement_batch.imported", "settlement_exception.resolved"], "settlement imports and exception resolution must enter the audit chain");
 
+  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, programTransitionRun.runId]);
   workerProcess = spawn(process.execPath, [worker], {
     cwd: root,
     env: {
@@ -798,6 +808,33 @@ try {
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  await waitFor(async () => {
+    const result = await client.query("select active_program_segment_id, active_insert_source_segment_id, active_insert_program_segment_id, pending_program_transition_event_id from live_runs where id = $1", [programTransitionRun.runId]);
+    const cursor = result.rows[0];
+    return cursor?.active_program_segment_id === programTransitionRun.insertSegmentId
+      && cursor?.active_insert_source_segment_id === programTransitionRun.primarySegmentId
+      && cursor?.active_insert_program_segment_id === programTransitionRun.insertSegmentId
+      && cursor?.pending_program_transition_event_id === null;
+  }, 10_000, "program insertion gateway acknowledgement");
+  const insertionMediaCommand = mock.mediaCommands.find((command) => command.command_id === programInsertBody.data.mediaEvent.command.id);
+  assert.deepEqual({ action: insertionMediaCommand?.action, program_segment_id: insertionMediaCommand?.program_segment_id, program_script: insertionMediaCommand?.program_script, script_sha256: insertionMediaCommand?.script_sha256 }, { action: "insert_program", program_segment_id: programTransitionRun.insertSegmentId, program_script: programTransitionRun.insertScript, script_sha256: programTransitionRun.insertScriptSha256 }, "worker must dispatch the approved frozen script and its hash to the gateway");
+  const nestedProgramInsert = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${programTransitionRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "INSERT_PROGRAM", expectedState: "LIVE", programSegmentId: programTransitionRun.insertSegmentId, idempotencyKey: randomUUID() }) });
+  assert.equal(nestedProgramInsert.status, 409, "an accepted insertion must be rolled back before another insertion");
+  const programRollback = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${programTransitionRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "ROLLBACK_PROGRAM", expectedState: "LIVE", idempotencyKey: randomUUID() }) });
+  assert.equal(programRollback.status, 202, "an accepted insertion should allow a receipt-bound rollback");
+  const programRollbackBody = await programRollback.json();
+  await waitFor(async () => {
+    const result = await client.query("select active_program_segment_id, active_insert_source_segment_id, active_insert_program_segment_id, pending_program_transition_event_id from live_runs where id = $1", [programTransitionRun.runId]);
+    const cursor = result.rows[0];
+    return cursor?.active_program_segment_id === programTransitionRun.primarySegmentId
+      && cursor?.active_insert_source_segment_id === null
+      && cursor?.active_insert_program_segment_id === null
+      && cursor?.pending_program_transition_event_id === null;
+  }, 10_000, "program rollback gateway acknowledgement");
+  const rollbackMediaCommand = mock.mediaCommands.find((command) => command.command_id === programRollbackBody.data.mediaEvent.command.id);
+  assert.deepEqual({ action: rollbackMediaCommand?.action, program_segment_id: rollbackMediaCommand?.program_segment_id, program_script: rollbackMediaCommand?.program_script, script_sha256: rollbackMediaCommand?.script_sha256 }, { action: "resume_program", program_segment_id: programTransitionRun.primarySegmentId, program_script: programTransitionRun.primaryScript, script_sha256: programTransitionRun.primaryScriptSha256 }, "rollback must restore the saved frozen source script rather than an operator-supplied value");
+  const programTransitionAudit = await client.query("select detail ->> 'action' as action from audit_events where resource_key = $1 and event_type = 'live_program.transition_accepted' order by chain_sequence", [programTransitionRun.runId]);
+  assert.deepEqual(programTransitionAudit.rows.map((row) => row.action), ["INSERT_PROGRAM", "ROLLBACK_PROGRAM"], "receipt-bound insertion and rollback must both enter the immutable audit chain");
   await waitFor(async () => (await client.query("select status, provider_message_id from channel_reply_drafts where id = $1", [replyDraft.id])).rows[0]?.status === "sent", 10_000, "channel reply worker delivery");
   assert.equal(mock.channelReplies.length, 1, "the channel adapter should forward the approved reply to its provider bridge once");
   assert.deepEqual((await client.query("select status from live_interactions where id = $1", [replyInteractionId])).rows[0], { status: "handled" }, "only a delivered channel reply should close the source interaction");
@@ -975,6 +1012,27 @@ async function seedRun(state, sessionId, sampledAt) {
   return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
 }
 
+async function seedProgramTransitionRun() {
+  const showId = randomUUID();
+  const revisionId = randomUUID();
+  const runId = randomUUID();
+  const primarySegmentId = randomUUID();
+  const insertSegmentId = randomUUID();
+  const primaryScript = "本段仅播报已批准的主节目商品事实。";
+  const insertScript = "本段为已批准的限时插播，结束后回到主节目。";
+  const approver = await client.query("select id from users where tenant_id = $1 and external_subject = 'integration-operator'", [tenantId]);
+  if (!approver.rows[0]) throw new Error("integration admin must exist before seeding a program transition run");
+  await client.query("insert into shows (id, tenant_id, name) values ($1, $2, $3)", [showId, tenantId, `Program transition show ${runId}`]);
+  await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft')", [revisionId, tenantId, showId]);
+  await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id) values ($1, $2, $3, 'DRAFT', $4, $5)", [runId, tenantId, revisionId, `trace_${runId}`, `session_program_${runId}`]);
+  await client.query("insert into show_revision_segments (id, tenant_id, show_revision_id, position, kind, title, purpose, duration_seconds, runtime_script) values ($1, $2, $3, 1, 'prepared_product', '主节目', '受审核主节目内容', 120, $4), ($5, $2, $3, 2, 'interactive', '限时插播', '受审核插播内容', 60, $6)", [primarySegmentId, tenantId, revisionId, primaryScript, insertSegmentId, insertScript]);
+  await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, approver.rows[0].id]);
+  await client.query("update live_runs set state = 'LIVE', active_program_segment_id = $2 where id = $1", [runId, primarySegmentId]);
+  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, runId]);
+  const digest = (value) => createHash("sha256").update(value).digest("hex");
+  return { runId, primarySegmentId, insertSegmentId, primaryScript, insertScript, primaryScriptSha256: digest(primaryScript), insertScriptSha256: digest(insertScript) };
+}
+
 async function seedRunScopeArtifacts(recoverRunId, staleRunId) {
   const owner = await client.query("select id from users where external_subject = 'integration-operator'");
   if (!owner.rows[0]) throw new Error("integration admin user was not seeded");
@@ -1045,7 +1103,7 @@ async function startMockServer() {
       const command = await requestBody(request);
       mediaCommands.push(command);
       if (command.command_id.startsWith("fail_media_")) return json(response, 503, { error: "injected_delivery_failure" });
-      return json(response, 200, { accepted: true });
+      return json(response, 200, { accepted: true, command_id: command.command_id, session_id: command.session_id, action: command.action, receipt: { command_id: command.command_id, session_id: command.session_id, action: command.action, program_segment_id: command.program_segment_id ?? null, accepted_at: new Date().toISOString(), evidence: "integration_gateway_accepted" } });
     }
     if (url.pathname === "/provider-reply-fixture" && request.method === "POST") {
       assert.equal(request.headers.authorization, "Bearer provider-reply-token-at-least-32-bytes");

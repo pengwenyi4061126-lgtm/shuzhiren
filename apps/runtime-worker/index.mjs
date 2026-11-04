@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createHash } from "node:crypto";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -272,7 +273,31 @@ async function markDelivered(event, receipt = {}) {
         [event.payload.command.runId, event.tenant_id, event.id]
       );
     }
+    if (event.event_type === "media.dispatch" && ["INSERT_PROGRAM", "ROLLBACK_PROGRAM"].includes(event.payload?.command?.payload?.controlAction)) {
+      await applyProgramTransitionReceipt(client, event, receipt.mediaReceipt);
+    }
   });
+}
+
+async function applyProgramTransitionReceipt(client, event, receipt) {
+  const command = event.payload?.command;
+  const payload = command?.payload;
+  if (!command || !payload || !receipt) throw new Error("Program transition receipt is missing");
+  const target = typeof payload.programSegmentId === "string" ? payload.programSegmentId : null;
+  const source = typeof payload.sourceProgramSegmentId === "string" ? payload.sourceProgramSegmentId : null;
+  const inserted = typeof payload.insertedProgramSegmentId === "string" ? payload.insertedProgramSegmentId : null;
+  let updated;
+  if (payload.controlAction === "INSERT_PROGRAM") {
+    if (!target) throw new Error("Program insertion target is missing");
+    updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, active_insert_source_segment_id = $3::uuid, active_insert_program_segment_id = $2::uuid, pending_program_transition_event_id = null, updated_at = now() where id = $1 and pending_program_transition_event_id = $4::uuid returning id", [command.runId, target, source, event.id]);
+  } else {
+    if (!inserted) throw new Error("Program rollback insertion reference is missing");
+    updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, active_insert_source_segment_id = null, active_insert_program_segment_id = null, pending_program_transition_event_id = null, updated_at = now() where id = $1 and active_insert_program_segment_id = $3::uuid and pending_program_transition_event_id = $4::uuid returning id", [command.runId, target, inserted, event.id]);
+  }
+  if (!updated.rows[0]) throw new Error("Program transition cursor was not pending for this receipt");
+  const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
+  await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+    values ($1, $2, 'live_program.transition_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, command.runId, JSON.stringify({ outboxEventId: event.id, commandId: command.id, action: payload.controlAction, programSegmentId: target, sourceProgramSegmentId: source, receipt })]);
 }
 
 async function markFailed(event, lastError, retryable = true) {
@@ -326,6 +351,10 @@ async function deliver(event) {
   if (!target || !token) throw new DeliveryError("Channel adapter dispatch is not configured", false);
   const response = await fetch(`${target}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(gatewayRequestTimeoutMs) });
   if (!response.ok) throw new DeliveryError(`${request.target === "channel-adapter" ? "Channel adapter" : "Runtime gateway"} returned ${response.status}`, response.status === 429 || response.status >= 500);
+  if (request.target === "gateway" && event.event_type === "media.dispatch") {
+    const payload = await response.json().catch(() => null);
+    return { mediaReceipt: assertMediaGatewayReceipt(payload, event.payload.command, event.payload.sessionId) };
+  }
   if (request.target !== "channel-adapter") return {};
   const payload = await response.json().catch(() => null);
   if (!payload || typeof payload !== "object" || typeof payload.providerMessageId !== "string") throw new DeliveryError("Channel adapter returned an invalid delivery receipt", false);
@@ -337,8 +366,15 @@ function deliveryRequest(event) {
   if (event.event_type === "media.dispatch") {
     const { sessionId, command } = event.payload;
     if (!sessionIdValid(sessionId) || !command || typeof command !== "object" || Array.isArray(command)) throw new Error("Invalid media dispatch payload");
-    if (!commandIdValid(command.id) || !["start_program", "switch_to_fallback", "switch_to_human", "stop_program"].includes(command.type)) throw new Error("Invalid media command");
-    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type } };
+    if (!commandIdValid(command.id) || !["start_program", "switch_to_fallback", "switch_to_human", "stop_program", "insert_program", "resume_program"].includes(command.type)) throw new Error("Invalid media command");
+    const programSegmentId = command.payload?.programSegmentId;
+    const runtimeScript = command.payload?.runtimeScript;
+    const scriptSha256 = command.payload?.scriptSha256;
+    if (command.type === "insert_program" && (!programSegmentIdValid(programSegmentId) || typeof runtimeScript !== "string" || runtimeScript.length < 1 || runtimeScript.length > 800 || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) throw new Error("Invalid program insertion command");
+    if (command.type === "resume_program" && ((typeof runtimeScript === "string" && (!programSegmentIdValid(programSegmentId) || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) || (runtimeScript === undefined && (programSegmentId || scriptSha256)))) throw new Error("Invalid program resume command");
+    if (typeof runtimeScript === "string" && createHash("sha256").update(runtimeScript).digest("hex") !== scriptSha256) throw new Error("Program script hash does not match frozen script");
+    if (command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Invalid media command payload");
+    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}) } };
   }
   if (event.event_type === "speech.dispatch") {
     const { sessionId, command } = event.payload;
@@ -358,6 +394,15 @@ function deliveryRequest(event) {
 
 function commandIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function sessionIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+function programSegmentIdValid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
+function assertMediaGatewayReceipt(value, command, sessionId) {
+  if (!value || typeof value !== "object" || value.accepted !== true || !value.receipt || typeof value.receipt !== "object") throw new DeliveryError("Runtime gateway returned an invalid media receipt", false);
+  const receipt = value.receipt;
+  const acceptedAt = typeof receipt.accepted_at === "string" ? Date.parse(receipt.accepted_at) : Number.NaN;
+  if (receipt.command_id !== command.id || receipt.session_id !== sessionId || receipt.action !== command.type || Number.isNaN(acceptedAt) || Math.abs(Date.now() - acceptedAt) > 5 * 60_000) throw new DeliveryError("Runtime gateway receipt does not bind the media command", false);
+  if (command.payload?.programSegmentId && receipt.program_segment_id !== command.payload.programSegmentId) throw new DeliveryError("Runtime gateway receipt does not bind the program segment", false);
+  return receipt;
+}
 
 async function tick() {
   const now = Date.now();

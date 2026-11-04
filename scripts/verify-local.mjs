@@ -24,6 +24,8 @@ const checks = [
   ["run", "governance:immutability:check"],
   ["run", "program:revisions:check"],
   ["run", "program:runtime-scripts:check"],
+  ["run", "runtime:program-transition:check"],
+  ["run", "control-room:program-transition:check"],
   ["run", "preflight:check"],
   ["run", "lifecycle:authz:check"],
   ["run", "command:confirmation:check"],
