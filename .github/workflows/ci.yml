@@ -44,6 +44,7 @@ jobs:
       - run: bash scripts/check-runtime-host.sh --help
       - run: npm run deploy:check -- --allow-placeholders
       - run: npm run deploy:check:test
+      - run: npm run deploy:manifest:test
       - run: npm run backup:automation:check
       - run: bash scripts/test-postgres-backup-direct.sh
       - run: bash scripts/test-postgres-restore-drill.sh

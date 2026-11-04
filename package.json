@@ -34,6 +34,8 @@
     "alert-notifier:health:check": "node scripts/check-alert-notifier-health.mjs",
     "deploy:check": "node scripts/check-deployment-config.mjs",
     "deploy:check:test": "node scripts/test-deployment-config.mjs",
+    "deploy:manifest:create": "node scripts/create-deployment-release-manifest.mjs",
+    "deploy:manifest:test": "node scripts/test-deployment-release-manifest.mjs",
     "backup:automation:check": "node scripts/check-backup-automation.mjs",
     "backup:restore:drill:test": "bash scripts/test-postgres-restore-drill.sh",
     "runtime:gateway:restore:drill:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-state-restore-drill.py",

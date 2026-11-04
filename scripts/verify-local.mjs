@@ -11,6 +11,7 @@ if (withGateway && !python) {
 const checks = [
   ["run", "deploy:check", "--", "--allow-placeholders"],
   ["run", "deploy:check:test"],
+  ["run", "deploy:manifest:test"],
   ["run", "backup:automation:check"],
   ["run", "backup:restore:drill:test"],
   ["run", "control-plane:compose:check"],
