@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type ProductFacts = { priceCent: number; unitCostCent?: number; stock: number; highlights: string[]; faq: string[]; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil?: string };
@@ -44,11 +44,13 @@ function demoProductFacts(): ProductFacts {
 }
 
 export async function listProducts(context: RequestContext) {
+  requireTenantWideAccess(context);
   if (!databasePool()) return demoProducts(context);
   return withTenantTransaction(context.tenantId, async (client) => loadProducts(client));
 }
 
 export async function findProduct(context: RequestContext, productId: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const product = catalog().products.get(productId);
     return product?.tenantId === context.tenantId ? product : null;
@@ -57,6 +59,7 @@ export async function findProduct(context: RequestContext, productId: string) {
 }
 
 export async function createProduct(context: RequestContext, input: { externalSku: string; name: string }) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     if (demoProducts(context).some((product) => product.externalSku === input.externalSku)) throw new Response("SKU already exists", { status: 409 });
     const product: Product = { id: `product_${crypto.randomUUID()}`, tenantId: context.tenantId, externalSku: input.externalSku, name: input.name, versions: [] };
@@ -79,6 +82,7 @@ export async function createProduct(context: RequestContext, input: { externalSk
 }
 
 export async function createProductVersion(context: RequestContext, productId: string, facts: ProductFacts) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const product = await findProduct(context, productId);
     if (!product) throw new Response("Product not found", { status: 404 });
@@ -99,6 +103,7 @@ export async function createProductVersion(context: RequestContext, productId: s
 }
 
 export async function approveProductVersion(context: RequestContext, productId: string, versionId: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const product = await findProduct(context, productId);
     const version = product?.versions.find((candidate) => candidate.id === versionId);

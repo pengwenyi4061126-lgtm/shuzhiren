@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
-import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type EntitlementCode = "max_concurrent_live_runs" | "monthly_live_minutes";
@@ -12,6 +12,7 @@ declare global { var shuzhirenEntitlementStore: EntitlementStore | undefined; }
 function entitlementStore() { globalThis.shuzhirenEntitlementStore ??= { values: new Map() }; return globalThis.shuzhirenEntitlementStore; }
 
 export async function listEntitlements(context: RequestContext): Promise<Entitlement[]> {
+  requireTenantWideAccess(context);
   if (!databasePool()) return [...(entitlementStore().values.get(context.tenantId)?.values() ?? [])];
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentEntitlementRow>(`select e.code, e.limit_value,
@@ -26,6 +27,7 @@ export async function listEntitlements(context: RequestContext): Promise<Entitle
 }
 
 export async function setEntitlement(context: RequestContext, input: { code: EntitlementCode; limitValue: number; effectiveFrom?: string; effectiveUntil?: string }) {
+  requireTenantWideAccess(context);
   if (!Number.isSafeInteger(input.limitValue) || input.limitValue <= 0 || input.limitValue > 10_000_000) throw new Response("limitValue must be a positive integer", { status: 400 });
   if (!databasePool()) {
     const values = entitlementStore().values.get(context.tenantId) ?? new Map<EntitlementCode, Entitlement>();

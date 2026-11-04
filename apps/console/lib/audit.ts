@@ -1,4 +1,5 @@
-import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type AuditEvent = {
@@ -61,6 +62,7 @@ export async function recordAuditEventInTransaction(client: import("pg").PoolCli
 }
 
 export async function listAuditEvents(context: RequestContext) {
+  requireTenantWideAccess(context);
   if (!databasePool()) return auditStore().events.filter((event) => event.tenantId === context.tenantId);
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentAuditRow>(
@@ -73,7 +75,24 @@ export async function listAuditEvents(context: RequestContext) {
   });
 }
 
+export async function listAuditEventsForRun(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
+  if (!databasePool()) return auditStore().events.filter((event) => event.tenantId === context.tenantId && (event.resourceId === runId || event.detail.runId === runId));
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query<PersistentAuditRow>(
+      `select a.id, a.tenant_id, a.event_type, a.resource_type, a.resource_key,
+        u.external_subject, u.display_name as actor_name, a.occurred_at, a.detail
+       from audit_events a left join users u on u.id = a.actor_id
+       where a.resource_key = $1 or a.detail ->> 'runId' = $1
+       order by a.occurred_at desc limit 250`,
+      [runId]
+    );
+    return result.rows.map(persistentAuditEvent);
+  });
+}
+
 export async function verifyAuditChain(context: RequestContext): Promise<AuditChainVerification> {
+  requireTenantWideAccess(context);
   if (!databasePool()) return { verified: false, sealedEvents: 0, legacyEvents: auditStore().events.filter((event) => event.tenantId === context.tenantId).length, detail: "演示模式不提供持久化哈希链" };
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<{ verified: boolean; sealed_events: string | number; legacy_events: string | number; detail: string }>("select * from verify_audit_chain($1::uuid)", [context.tenantId]);
@@ -84,6 +103,7 @@ export async function verifyAuditChain(context: RequestContext): Promise<AuditCh
 }
 
 export async function exportAuditEvidence(context: RequestContext): Promise<AuditEvidenceExport> {
+  requireTenantWideAccess(context);
   await recordAuditEvent(context, { type: "audit.exported", resource: "audit_evidence_export", resourceId: `audit-export:${crypto.randomUUID()}`, detail: { format: "json", scope: "tenant_chain" } });
   const [chain, events] = await Promise.all([verifyAuditChain(context), listAuditEvidenceEvents(context)]);
   return { generatedAt: new Date().toISOString(), chain, events };

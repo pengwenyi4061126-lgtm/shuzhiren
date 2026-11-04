@@ -110,3 +110,11 @@ function isUuid(value: string | undefined): value is string {
 export function requireRole(context: RequestContext, allowed: ActorRole[]) {
   if (!allowed.includes(context.role)) throw new Response("Insufficient permission", { status: 403 });
 }
+
+export function hasTenantWideAccess(context: RequestContext) {
+  return context.accessScope !== "restricted";
+}
+
+export function requireTenantWideAccess(context: RequestContext) {
+  if (!hasTenantWideAccess(context)) throw new Response("Tenant-wide access scope is required", { status: 403 });
+}

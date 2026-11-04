@@ -7,7 +7,7 @@ import { authorizedPageRequestContext } from "@/lib/control-plane/page-context";
 export const dynamic = "force-dynamic";
 
 export default async function AuditPage() {
-  const actor = await authorizedPageRequestContext(["admin", "reviewer", "analyst"]);
+  const actor = await authorizedPageRequestContext(["admin", "reviewer", "analyst"], { tenantWide: true });
   if (!actor) return <AccessDenied />;
   const [events, chain] = await Promise.all([listAuditEvents(actor), verifyAuditChain(actor)]);
   return <main className="audit-page">

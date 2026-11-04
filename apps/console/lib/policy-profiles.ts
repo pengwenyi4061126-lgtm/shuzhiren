@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { databasePool, withTenantTransaction } from "@/lib/database";
@@ -23,11 +23,13 @@ function profileStore() {
 const columns = "id, tenant_id, name, version, rules, evidence_ref, validation_summary, approval_status, approved_at, revoked_at, revocation_reason";
 
 export async function listPolicyProfiles(context: RequestContext) {
+  requireTenantWideAccess(context);
   if (!databasePool()) return [...profileStore().profiles.values()].filter((profile) => profile.tenantId === context.tenantId);
   return withTenantTransaction(context.tenantId, async (client) => (await client.query<PersistentProfileRow>(`select ${columns} from policy_profiles order by created_at desc`)).rows.map(persistentProfile));
 }
 
 export async function createPolicyProfile(context: RequestContext, input: CreatePolicyProfileInput) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     if ([...profileStore().profiles.values()].some((profile) => profile.tenantId === context.tenantId && profile.name === input.name && profile.version === input.version)) throw new Response("Policy profile already exists", { status: 409 });
     const profile: PolicyProfile = { id: `policy_profile_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input };
@@ -42,6 +44,7 @@ export async function createPolicyProfile(context: RequestContext, input: Create
 }
 
 export async function approvePolicyProfile(context: RequestContext, profileId: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const profile = profileStore().profiles.get(profileId);
     if (!profile || profile.tenantId !== context.tenantId) throw new Response("Policy profile not found", { status: 404 });
@@ -56,6 +59,7 @@ export async function approvePolicyProfile(context: RequestContext, profileId: s
 }
 
 export async function revokePolicyProfile(context: RequestContext, profileId: string, reason: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const profile = profileStore().profiles.get(profileId);
     if (!profile || profile.tenantId !== context.tenantId || profile.approval !== "approved") throw new Response("Policy profile not found or cannot be revoked", { status: 409 });

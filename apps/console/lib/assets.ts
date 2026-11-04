@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 
@@ -59,6 +59,7 @@ function assetStore(): AssetStore {
 const columns = "id, tenant_id, kind, name, approval_status, expires_at, rights_scope, source_ref, object_key, checksum, runtime_voice_id, approved_at, revoked_at, revocation_reason";
 
 export async function listAssets(context: RequestContext) {
+  requireTenantWideAccess(context);
   if (!databasePool()) return demoAssets(context);
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentAssetRow>(
@@ -69,6 +70,7 @@ export async function listAssets(context: RequestContext) {
 }
 
 export async function createMediaAsset(context: RequestContext, input: CreateMediaAssetInput) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const asset: MediaAsset = { id: `asset_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input };
     assetStore().assets.set(asset.id, asset);
@@ -84,6 +86,7 @@ export async function createMediaAsset(context: RequestContext, input: CreateMed
 }
 
 export async function approveMediaAsset(context: RequestContext, assetId: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const asset = assetStore().assets.get(assetId);
     if (!asset || asset.tenantId !== context.tenantId || asset.approval !== "pending") throw new Response("Media asset not found or cannot be approved", { status: 409 });
@@ -103,6 +106,7 @@ export async function approveMediaAsset(context: RequestContext, assetId: string
 }
 
 export async function revokeMediaAsset(context: RequestContext, assetId: string, reason: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const asset = assetStore().assets.get(assetId);
     if (!asset || asset.tenantId !== context.tenantId || asset.approval !== "approved") throw new Response("Media asset not found or cannot be revoked", { status: 409 });

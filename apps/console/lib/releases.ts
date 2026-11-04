@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 
@@ -26,11 +26,13 @@ function releaseStore(): ReleaseStore {
 const columns = "id, tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, notes, approval_status, approved_at, revoked_at, revocation_reason";
 
 export async function listModelReleases(context: RequestContext) {
+  requireTenantWideAccess(context);
   if (!databasePool()) return [...releaseStore().releases.values()].filter((release) => release.tenantId === context.tenantId);
   return withTenantTransaction(context.tenantId, async (client) => (await client.query<PersistentReleaseRow>(`select ${columns} from model_releases order by created_at desc`)).rows.map(persistentRelease));
 }
 
 export async function createModelRelease(context: RequestContext, input: CreateModelReleaseInput) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     if ([...releaseStore().releases.values()].some((release) => release.tenantId === context.tenantId && release.component === input.component && release.name === input.name && release.version === input.version)) throw new Response("Model release already exists", { status: 409 });
     const release: ModelRelease = { id: `release_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input };
@@ -46,6 +48,7 @@ export async function createModelRelease(context: RequestContext, input: CreateM
 }
 
 export async function approveModelRelease(context: RequestContext, releaseId: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const release = releaseStore().releases.get(releaseId);
     if (!release || release.tenantId !== context.tenantId || release.approval !== "pending") throw new Response("Model release not found or cannot be approved", { status: 409 });
@@ -61,6 +64,7 @@ export async function approveModelRelease(context: RequestContext, releaseId: st
 }
 
 export async function revokeModelRelease(context: RequestContext, releaseId: string, reason: string) {
+  requireTenantWideAccess(context);
   if (!databasePool()) {
     const release = releaseStore().releases.get(releaseId);
     if (!release || release.tenantId !== context.tenantId || release.approval !== "approved") throw new Response("Model release not found or cannot be revoked", { status: 409 });

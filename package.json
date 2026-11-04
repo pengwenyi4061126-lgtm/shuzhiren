@@ -38,6 +38,7 @@
     "console:client-requests:check": "node scripts/check-console-client-requests.mjs",
     "membership:authz:check": "node scripts/check-membership-authorization.mjs",
     "membership:scopes:check": "node scripts/check-membership-resource-scopes.mjs",
+    "governance:tenant-scope:check": "node scripts/check-tenant-wide-governance-access.mjs",
     "membership:bootstrap-admin": "node apps/console/scripts/bootstrap-admin.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "governance:immutability:check": "node scripts/check-governed-evidence-immutability.mjs",

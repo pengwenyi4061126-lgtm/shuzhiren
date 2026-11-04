@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { LiveCommand, LiveCommandAction, LiveRun, LiveRunState } from "@/lib/domain";
 import { canTransition, nextStateFor } from "@/lib/live-run";
-import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { findApprovedProductVersion, frozenProductVersionStatusForRun, frozenProductVersionStatusForRunInTransaction, type ProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { approveShowProgramInTransaction, hasApprovedFallbackProgram, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
@@ -129,6 +129,7 @@ export async function listRuns(context: RequestContext) {
 }
 
 export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean }) {
+  requireTenantWideAccess(context);
   const product = await findApprovedProductVersion(context, input.productVersionId);
   if (!product) throw new Response("An approved product version is required", { status: 409 });
   const channel = await validateChannelConnection(context, input.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: input.aiDisclosureEnabled });

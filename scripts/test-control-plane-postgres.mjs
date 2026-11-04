@@ -161,6 +161,16 @@ try {
   assert.equal(scopedForeignRun.status, 404, "a restricted operator must not read an unassigned live run");
   const scopedChannels = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections`, { headers: operatorRequestHeaders });
   assert.deepEqual((await scopedChannels.json()).data, [], "a direct live-run scope must not grant tenant channel administration");
+  const scopedRunEvents = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/events`, { headers: operatorRequestHeaders });
+  assert.equal(scopedRunEvents.status, 200, "a restricted operator must retain the evidence timeline for an assigned live run");
+  const scopedProducts = await fetch(`http://127.0.0.1:${consolePort}/api/v1/products`, { headers: operatorRequestHeaders });
+  assert.equal(scopedProducts.status, 403, "a restricted operator must not read the tenant product catalog");
+  const scopedAssets = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { headers: operatorRequestHeaders });
+  assert.equal(scopedAssets.status, 403, "a restricted operator must not read the tenant media inventory");
+  const scopedAudit = await fetch(`http://127.0.0.1:${consolePort}/api/v1/audit-events`, { headers: operatorRequestHeaders });
+  assert.equal(scopedAudit.status, 403, "a restricted operator must not read the tenant audit ledger");
+  const scopedRunCreation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ showName: "Restricted creation must fail", channelConnectionId: recoverRun.channelId, productVersionId: randomUUID(), aiDisclosureEnabled: true }) });
+  assert.equal(scopedRunCreation.status, 403, "a restricted operator must not create a tenant-wide live run");
   const restoreOperator = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships/${operatorMembership.id}`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ accessScope: "tenant" }) });
   assert.equal(restoreOperator.status, 200, "an admin should restore tenant-wide access for later integration checks");
   const analystMemberDirectory = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: analystRequestHeaders });
