@@ -10,6 +10,7 @@ import sqlite3
 import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -35,6 +36,9 @@ MEDIA_COMMAND_CACHE_TTL_SECONDS = float(os.environ.get("MEDIA_COMMAND_CACHE_TTL_
 MEDIA_COMMAND_CACHE_MAX_ENTRIES = int(os.environ.get("MEDIA_COMMAND_CACHE_MAX_ENTRIES", "2048"))
 RUNTIME_COMMAND_JOURNAL_PATH = os.environ.get("RUNTIME_COMMAND_JOURNAL_PATH", "")
 RUNTIME_COMMAND_JOURNAL_REQUIRED = os.environ.get("RUNTIME_COMMAND_JOURNAL_REQUIRED", "false").lower() == "true"
+PREVIEW_BROKER_URL = os.environ.get("PREVIEW_BROKER_URL", "").rstrip("/")
+PREVIEW_BROKER_TOKEN = os.environ.get("PREVIEW_BROKER_TOKEN", "")
+PREVIEW_GRANT_MAX_SECONDS = int(os.environ.get("PREVIEW_GRANT_MAX_SECONDS", "600"))
 runtime_command_cache_lock = asyncio.Lock()
 runtime_command_cache: OrderedDict[str, dict] = OrderedDict()
 runtime_command_locks: dict[str, dict] = {}
@@ -97,6 +101,19 @@ async def livetalking_get(path: str) -> dict:
         logger.warning("LiveTalking rejected request for %s with code %r", path, data.get("code"))
         raise HTTPException(status_code=502, detail="LiveTalking rejected request")
     return data
+
+async def preview_broker_get(session_id: str) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                f"{PREVIEW_BROKER_URL}/v1/previews/{session_id}",
+                headers={"authorization": f"Bearer {PREVIEW_BROKER_TOKEN}"},
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as error:
+        logger.warning("Preview broker request failed for session %s: %s", session_id, error)
+        raise HTTPException(status_code=502, detail="Preview broker request failed") from error
+    return validate_preview_grant(response.json())
 
 async def service_health(url: str, path: str, expected_code: int | None = None) -> dict:
     try:
@@ -164,6 +181,12 @@ def validate_runtime_configuration() -> None:
     validate_number_range("RUNTIME_REQUEST_TIMEOUT_SECONDS", REQUEST_TIMEOUT_SECONDS, 0.1, 120)
     validate_number_range("MEDIA_COMMAND_CACHE_TTL_SECONDS", MEDIA_COMMAND_CACHE_TTL_SECONDS, 60, 604_800)
     validate_integer_range("MEDIA_COMMAND_CACHE_MAX_ENTRIES", MEDIA_COMMAND_CACHE_MAX_ENTRIES, 1, 100_000)
+    validate_integer_range("PREVIEW_GRANT_MAX_SECONDS", PREVIEW_GRANT_MAX_SECONDS, 30, 3_600)
+    if bool(PREVIEW_BROKER_URL) != bool(PREVIEW_BROKER_TOKEN):
+        raise RuntimeError("PREVIEW_BROKER_URL and PREVIEW_BROKER_TOKEN must be configured together")
+    if PREVIEW_BROKER_URL:
+        validate_service_url("PREVIEW_BROKER_URL", PREVIEW_BROKER_URL)
+        validate_secret("PREVIEW_BROKER_TOKEN", PREVIEW_BROKER_TOKEN)
     action_slots = {
         "PROGRAM_AUDIOTYPE": PROGRAM_AUDIOTYPE,
         "FALLBACK_AUDIOTYPE": FALLBACK_AUDIOTYPE,
@@ -181,6 +204,10 @@ def validate_service_url(name: str, value: str) -> None:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise RuntimeError(f"{name} must be an HTTP(S) base URL without embedded credentials")
 
+def validate_secret(name: str, value: str) -> None:
+    if len(value) < 32 or any(character.isspace() for character in value):
+        raise RuntimeError(f"{name} must contain at least 32 non-whitespace characters")
+
 def validate_number_range(name: str, value: float, minimum: float, maximum: float) -> None:
     if not math.isfinite(value) or value < minimum or value > maximum:
         raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
@@ -188,6 +215,28 @@ def validate_number_range(name: str, value: float, minimum: float, maximum: floa
 def validate_integer_range(name: str, value: int, minimum: int, maximum: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum or value > maximum:
         raise RuntimeError(f"{name} must be an integer between {minimum} and {maximum}")
+
+def validate_preview_grant(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=502, detail="Preview broker response is invalid")
+    url = value.get("url")
+    mode = value.get("mode")
+    expires_at = value.get("expiresAt")
+    if not isinstance(url, str) or not isinstance(mode, str) or not isinstance(expires_at, str):
+        raise HTTPException(status_code=502, detail="Preview broker response is invalid")
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or mode != "webrtc":
+        raise HTTPException(status_code=502, detail="Preview broker response is invalid")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            raise ValueError("timezone is required")
+        seconds_remaining = (expiry.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail="Preview broker response is invalid") from error
+    if seconds_remaining < 15 or seconds_remaining > PREVIEW_GRANT_MAX_SECONDS:
+        raise HTTPException(status_code=502, detail="Preview broker response is invalid")
+    return {"url": url, "mode": "webrtc", "expiresAt": expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")}
 
 def require_runtime_command_journal() -> sqlite3.Connection | None:
     try:
@@ -405,6 +454,20 @@ async def observation(session_id: str, authorization: str | None = Header(defaul
         },
         "limitations": ["writer_accepting_frames_is_not_destination_receipt", "actual_bitrate_not_available", "av_sync_not_available"],
     }
+
+@app.get("/v1/previews/{session_id}")
+async def preview(session_id: str, authorization: str | None = Header(default=None)) -> dict:
+    authorize(authorization)
+    if not SESSION_ID_PATTERN.fullmatch(session_id):
+        raise HTTPException(status_code=400, detail="Invalid runtime session id")
+    if not PREVIEW_BROKER_URL:
+        return {"available": False, "reason": "not_configured"}
+    data = await livetalking_get("/api/admin/runtime-metrics")
+    sessions = data.get("data", {}).get("sessions", [])
+    active = any(isinstance(item, dict) and item.get("sessionid") == session_id for item in sessions)
+    if not active:
+        return {"available": False, "reason": "session_inactive"}
+    return {"available": True, **(await preview_broker_get(session_id))}
 
 def numeric_metric(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None

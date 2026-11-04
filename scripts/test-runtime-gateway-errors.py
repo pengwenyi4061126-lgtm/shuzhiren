@@ -52,18 +52,25 @@ async def expect_detail(operation, expected: str) -> None:
 
 async def main() -> None:
     original_client = gateway.httpx.AsyncClient
+    original_preview_url = gateway.PREVIEW_BROKER_URL
+    original_preview_token = gateway.PREVIEW_BROKER_TOKEN
     try:
+        gateway.PREVIEW_BROKER_URL = "https://preview-broker.example"
+        gateway.PREVIEW_BROKER_TOKEN = "p" * 32
         gateway.httpx.AsyncClient = lambda **_kwargs: FailingClient()
         await expect_detail(gateway.livetalking_post("/private", {}), "LiveTalking request failed")
         await expect_detail(gateway.livetalking_get("/private"), "LiveTalking request failed")
         await expect_detail(gateway.cosyvoice_synthesize("hello", "voice"), "CosyVoice request failed")
         await expect_detail(gateway.livetalking_audio("session", b"audio"), "LiveTalking audio request failed")
+        await expect_detail(gateway.preview_broker_get("session"), "Preview broker request failed")
 
         gateway.httpx.AsyncClient = lambda **_kwargs: RejectingClient()
         await expect_detail(gateway.livetalking_post("/private", {}), "LiveTalking rejected request")
         await expect_detail(gateway.livetalking_audio("session", b"audio"), "LiveTalking rejected audio request")
     finally:
         gateway.httpx.AsyncClient = original_client
+        gateway.PREVIEW_BROKER_URL = original_preview_url
+        gateway.PREVIEW_BROKER_TOKEN = original_preview_token
 
 
 asyncio.run(main())

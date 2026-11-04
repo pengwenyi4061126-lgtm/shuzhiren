@@ -170,6 +170,14 @@ try {
   assert.deepEqual((await scopedRecordings.json()).data.map((recording) => recording.id), [scopeArtifacts.recoverRecordingId], "a restricted operator must list recording evidence only for assigned live runs");
   const scopedOutbox = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox`, { headers: operatorRequestHeaders });
   assert.deepEqual((await scopedOutbox.json()).data.map((event) => event.id), [scopeArtifacts.recoverOutboxEventId], "a restricted operator must list runtime outbox events only for assigned live runs");
+  const scopedPreview = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/preview`, { headers: operatorRequestHeaders });
+  assert.equal(scopedPreview.status, 200, "a restricted operator must request a controlled preview for an assigned live run");
+  const scopedPreviewPayload = await scopedPreview.json();
+  assert.equal(scopedPreviewPayload.data.available, true, "an assigned live run preview must return an authorized short-lived grant");
+  const scopedForeignPreview = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${staleRunId}/preview`, { headers: operatorRequestHeaders });
+  assert.equal(scopedForeignPreview.status, 404, "a restricted operator must not request a preview for an unassigned live run");
+  const previewAudit = await client.query("select detail from audit_events where event_type = 'runtime_preview.requested' and resource_key = $1 order by occurred_at desc limit 1", [recoverRunId]);
+  assert.equal(previewAudit.rows[0].detail.url, undefined, "preview audit evidence must never retain the temporary viewer URL");
   const scopedForeignAlertAcknowledgement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/alerts/${scopeArtifacts.staleAlertId}/acknowledge`, { method: "POST", headers: operatorRequestHeaders });
   assert.equal(scopedForeignAlertAcknowledgement.status, 404, "a restricted operator must not acknowledge an unassigned live-run alert");
   const scopedForeignIncidentCreation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/incidents`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ alertId: scopeArtifacts.staleAlertId }) });
@@ -939,6 +947,10 @@ async function startMockServer() {
     if (url.pathname === "/v1/observations/missing_session" && request.method === "GET") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
       return json(response, 200, { session: { id: "missing_session", active: false } });
+    }
+    if (url.pathname === "/v1/previews/session_recover" && request.method === "GET") {
+      assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
+      return json(response, 200, { available: true, mode: "webrtc", url: "https://preview.internal/embed/session_recover", expiresAt: new Date(Date.now() + 60_000).toISOString() });
     }
     if (url.pathname === "/v1/media" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);

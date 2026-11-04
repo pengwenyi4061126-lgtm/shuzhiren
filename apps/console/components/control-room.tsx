@@ -10,6 +10,7 @@ import type { LiveInteraction } from "@/lib/interactions";
 import type { RuntimeOutboxEvent } from "@/lib/control-plane/outbox";
 import { canTransition } from "@/lib/live-run";
 import { ChannelReplyWorkflow } from "@/components/channel-reply-workflow";
+import { ControlledPreview } from "@/components/controlled-preview";
 
 type Props = { initialRun: LiveRun; initialTelemetry: RuntimeTelemetry | null; initialAlerts: RuntimeAlert[]; initialInteractions: LiveInteraction[]; canOperate: boolean; canReview: boolean };
 type CommandResponse = { data: { command: LiveCommand; run: LiveRun; mediaEvent: Pick<RuntimeOutboxEvent, "id" | "state">; duplicate: boolean } };
@@ -256,8 +257,8 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
       <section className="workspace" aria-label="直播指挥台">
         <div className="primary-grid">
           <section className="panel stage-panel">
-            <div className="panel-header"><div><h2>直播预览</h2><span>主运行时 · 720p · {telemetry?.outputFps ?? "--"} FPS</span></div><span className={telemetryHealthy && !alerts.length ? "healthy" : "unhealthy"}><span />{telemetryHealthy && !alerts.length ? "输出健康" : `待处理 ${alerts.length} 项`}</span></div>
-            <div className="preview" aria-label="数字人直播预览"><div className="live-badge"><span />{run.state === "LIVE" ? "LIVE" : stateLabel[run.state]}</div><div className="avatar" aria-hidden="true" /><div className="caption">现在下单，赠旅行装三件套</div></div>
+            <div className="panel-header"><div><h2>直播预览</h2><span>受控 WebRTC 授权 · {telemetry?.outputFps ?? "--"} FPS</span></div><span className={telemetryHealthy && !alerts.length ? "healthy" : "unhealthy"}><span />{telemetryHealthy && !alerts.length ? "输出健康" : `待处理 ${alerts.length} 项`}</span></div>
+            <ControlledPreview canOperate={canOperate} runId={run.id} />
             <div className="stage-metrics"><Metric label="视频帧率" value={telemetry ? telemetry.outputFps.toFixed(1) : "--"} unit="FPS" /><Metric label="音画同步" value={telemetry ? String(telemetry.avSyncMs) : "--"} unit="ms" /><Metric label="输出码率" value={telemetry ? String(telemetry.bitrateMbps) : "--"} unit="Mbps" /><Metric label="备用节目" value={telemetry?.fallbackReady ? "就绪" : "未就绪"} unit="" /></div>
             <div className="control-row"><CommandButton action="START" icon={Play} label="开始" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="PAUSE" icon={Pause} label="暂停" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="HANDOFF" icon={UserRoundCheck} label="人工接管" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="RECOVER" icon={RotateCcw} label="恢复运行" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} /><CommandButton action="END" icon={CircleStop} label="结束" run={run} pendingAction={pendingAction} onDispatch={requestDispatch} canOperate={canOperate} gatewayConfirmation={gatewayConfirmation} danger /></div>
             {commandNotice ? <p className="command-notice" role="status">{commandNotice}</p> : null}

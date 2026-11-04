@@ -3,6 +3,7 @@ import math
 import pathlib
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
@@ -56,6 +57,44 @@ async def main() -> None:
     await reject_configuration("MEDIA_COMMAND_CACHE_MAX_ENTRIES", 0, "MEDIA_COMMAND_CACHE_MAX_ENTRIES")
     await reject_configuration("LIVE_TALKING_URL", "ftp://untrusted.example", "LIVETALKING_BASE_URL")
     await reject_configuration("FALLBACK_AUDIOTYPE", gateway.PROGRAM_AUDIOTYPE, "must be distinct")
+
+    gateway.PREVIEW_BROKER_URL = "https://preview-broker.example"
+    gateway.PREVIEW_BROKER_TOKEN = ""
+    try:
+        async with gateway.lifespan(gateway.app):
+            raise AssertionError("Runtime Gateway must reject a preview broker without its dedicated token")
+    except RuntimeError as error:
+        assert "PREVIEW_BROKER_URL and PREVIEW_BROKER_TOKEN" in str(error)
+    finally:
+        gateway.PREVIEW_BROKER_URL = ""
+
+    gateway.PREVIEW_BROKER_URL = "ftp://untrusted.example"
+    gateway.PREVIEW_BROKER_TOKEN = "p" * 32
+    try:
+        async with gateway.lifespan(gateway.app):
+            raise AssertionError("Runtime Gateway must reject an unsafe preview broker URL")
+    except RuntimeError as error:
+        assert "PREVIEW_BROKER_URL" in str(error)
+    finally:
+        gateway.PREVIEW_BROKER_URL = ""
+        gateway.PREVIEW_BROKER_TOKEN = ""
+
+    valid_preview = gateway.validate_preview_grant({
+        "url": "https://preview-broker.example/embed/session",
+        "mode": "webrtc",
+        "expiresAt": (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+    })
+    assert valid_preview["mode"] == "webrtc"
+    try:
+        gateway.validate_preview_grant({
+            "url": "rtmp://preview-broker.example/embed/session",
+            "mode": "webrtc",
+            "expiresAt": (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+        })
+    except HTTPException as error:
+        assert error.status_code == 502
+    else:
+        raise AssertionError("Runtime Gateway must reject non-HTTPS preview grants")
 
     with tempfile.TemporaryDirectory() as directory:
         blocked_parent = pathlib.Path(directory) / "not-a-directory"

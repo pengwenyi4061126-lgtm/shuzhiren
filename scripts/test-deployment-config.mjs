@@ -110,6 +110,7 @@ const gateway = env({
   RUNTIME_COMMAND_JOURNAL_REQUIRED: "true",
   RUNTIME_GATEWAY_STATE_PATH: "/srv/shuzhiren/runtime-gateway-state",
   RUNTIME_GATEWAY_HOST_BIND: "127.0.0.1",
+  PREVIEW_GRANT_MAX_SECONDS: "600",
   STREAM_RTMP_URL: "rtmp://ingest.internal/live",
   STREAM_KEY: "fixture-stream-key-not-a-placeholder",
   PROGRAM_AUDIOTYPE: "0",
@@ -317,6 +318,18 @@ try {
   const publicGatewayBind = check(["--require-cosyvoice"]);
   assert.notEqual(publicGatewayBind.status, 0, "production Gateway must reject an all-interface host port binding");
   assert.match(publicGatewayBind.stderr, /RUNTIME_GATEWAY_HOST_BIND/, "public Gateway binding rejection must identify the network exposure gate");
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.gateway, gateway.replace("PREVIEW_GRANT_MAX_SECONDS=600", "PREVIEW_GRANT_MAX_SECONDS=600\nPREVIEW_BROKER_URL=https://preview.internal"));
+  const incompletePreviewBroker = check(["--require-cosyvoice"]);
+  assert.notEqual(incompletePreviewBroker.status, 0, "a configured preview broker must have a distinct private credential");
+  assert.match(incompletePreviewBroker.stderr, /PREVIEW_BROKER_URL 与 PREVIEW_BROKER_TOKEN/, "incomplete preview broker must identify the controlled-preview configuration gate");
+  await writeFile(files.gateway, gateway);
+
+  await writeFile(files.gateway, gateway.replace("PREVIEW_GRANT_MAX_SECONDS=600", "PREVIEW_GRANT_MAX_SECONDS=600\nPREVIEW_BROKER_URL=rtmp://preview.internal\nPREVIEW_BROKER_TOKEN=preview-broker-token-at-least-32-bytes"));
+  const unsafePreviewBroker = check(["--require-cosyvoice"]);
+  assert.notEqual(unsafePreviewBroker.status, 0, "a preview broker must use a credential-free HTTPS endpoint");
+  assert.match(unsafePreviewBroker.stderr, /PREVIEW_BROKER_URL/, "unsafe preview broker must identify the controlled-preview URL gate");
   await writeFile(files.gateway, gateway);
 
   await writeFile(files.runtime, runtime([{ ...validProbeTarget[0], expectedHeight: undefined }]));

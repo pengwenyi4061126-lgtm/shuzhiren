@@ -3,6 +3,7 @@ import type { SpeechCommand } from "@/lib/speech-protocol";
 
 type RuntimeGatewayConfig = { url?: string; token?: string; demoMode: boolean; requestTimeoutMs: number };
 type RuntimeSessionObservation = { session: { id: string; active: boolean } };
+export type RuntimePreview = { available: false; reason: "demo_mode" | "not_configured" | "session_inactive" } | { available: true; url: string; mode: "webrtc"; expiresAt: string };
 
 function runtimeGatewayConfig(): RuntimeGatewayConfig {
   const url = process.env.RUNTIME_GATEWAY_URL;
@@ -36,6 +37,30 @@ export async function observeRuntimeSession(sessionId: string): Promise<RuntimeS
   const session = body.session;
   if (!session || typeof session !== "object" || typeof (session as { id?: unknown }).id !== "string" || typeof (session as { active?: unknown }).active !== "boolean") throw new Error("Runtime session observation response is invalid");
   return { session: session as RuntimeSessionObservation["session"] };
+}
+
+export async function getRuntimePreview(sessionId: string): Promise<RuntimePreview> {
+  const config = runtimeGatewayConfig();
+  if (config.demoMode) return { available: false, reason: "demo_mode" };
+  const response = await fetch(`${config.url}/v1/previews/${encodeURIComponent(sessionId)}`, { cache: "no-store", headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(config.requestTimeoutMs) });
+  if (!response.ok) throw new Error(`Runtime preview request failed: ${response.status}`);
+  const body = await response.json() as Record<string, unknown>;
+  if (body.available === false && (body.reason === "not_configured" || body.reason === "session_inactive")) return { available: false, reason: body.reason };
+  if (body.available !== true || typeof body.url !== "string" || body.mode !== "webrtc" || typeof body.expiresAt !== "string") throw new Error("Runtime preview response is invalid");
+  const url = previewUrl(body.url);
+  const expiresAt = new Date(body.expiresAt);
+  const remainingMs = expiresAt.getTime() - Date.now();
+  if (!url || Number.isNaN(expiresAt.getTime()) || remainingMs < 15_000 || remainingMs > 3_600_000) throw new Error("Runtime preview response is invalid");
+  return { available: true, url, mode: "webrtc", expiresAt: expiresAt.toISOString() };
+}
+
+function previewUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.hash ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function dispatchMediaCommand(command: MediaCommand, sessionId: string) {
