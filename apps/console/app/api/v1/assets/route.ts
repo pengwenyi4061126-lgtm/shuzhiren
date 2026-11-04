@@ -7,7 +7,9 @@ import { isSafeObjectKey, isSha256Digest } from "@/lib/governance-input";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  return Response.json({ data: await listAssets(await requestContextFrom(request)) });
+  const actor = await requestContextFrom(request);
+  requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
+  return Response.json({ data: await listAssets(actor) });
 }
 
 export async function POST(request: Request) {

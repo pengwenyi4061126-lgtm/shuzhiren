@@ -36,6 +36,8 @@
     "console:page-auth:check": "node scripts/check-console-page-auth.mjs",
     "console:security-headers:check": "node scripts/check-console-security-headers.mjs",
     "console:client-requests:check": "node scripts/check-console-client-requests.mjs",
+    "membership:authz:check": "node scripts/check-membership-authorization.mjs",
+    "membership:bootstrap-admin": "node apps/console/scripts/bootstrap-admin.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "governance:immutability:check": "node scripts/check-governed-evidence-immutability.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",

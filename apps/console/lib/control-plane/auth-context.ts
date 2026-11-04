@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { withTenantTransaction } from "@/lib/database";
 
 export type ActorRole = "admin" | "operator" | "reviewer" | "analyst";
 
@@ -45,15 +46,27 @@ async function contextFromBearerToken(request: Request): Promise<RequestContext>
     const keys = jwksFor(jwksUrl);
     const { payload } = await jwtVerify(token, keys, { issuer, audience });
     const tenantId = stringClaim(payload, "tenant_id");
-    const role = stringClaim(payload, "role");
     const actorId = stringClaim(payload, "sub");
-    if (!tenantId || !actorId || !role || !roles.has(role as ActorRole)) throw new Response("Token does not contain a valid tenant role", { status: 403 });
-    const actorName = stringClaim(payload, "name") ?? stringClaim(payload, "preferred_username") ?? actorId;
-    return { tenantId, actorId, actorName, role: role as ActorRole };
+    if (!isUuid(tenantId) || !actorId) throw new Response("Token does not contain a valid tenant subject", { status: 403 });
+    return resolveActiveMembership(tenantId, actorId);
   } catch (error) {
     if (error instanceof Response) throw error;
     throw new Response("Bearer token verification failed", { status: 401 });
   }
+}
+
+async function resolveActiveMembership(tenantId: string, actorId: string): Promise<RequestContext> {
+  const membership = await withTenantTransaction(tenantId, async (client) => {
+    const result = await client.query<{ role: ActorRole; display_name: string }>(
+      `select m.role, u.display_name
+       from memberships m join users u on u.id = m.user_id
+       where m.tenant_id = $1::uuid and u.external_subject = $2 and m.status = 'active'`,
+      [tenantId, actorId]
+    );
+    return result.rows[0] ?? null;
+  });
+  if (!membership || !roles.has(membership.role)) throw new Response("No active tenant membership", { status: 403 });
+  return { tenantId, actorId, actorName: membership.display_name, role: membership.role };
 }
 
 function jwksFor(url: string) {
@@ -77,6 +90,10 @@ function accessTokenFrom(request: Request) {
 function stringClaim(payload: Record<string, unknown>, claim: string) {
   const value = payload[claim];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isUuid(value: string | undefined): value is string {
+  return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
 }
 
 export function requireRole(context: RequestContext, allowed: ActorRole[]) {

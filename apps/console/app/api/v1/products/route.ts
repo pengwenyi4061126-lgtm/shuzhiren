@@ -4,7 +4,7 @@ import { createProduct, listProducts } from "@/lib/catalog";
 import { recordAuditEvent } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
-export async function GET(request: Request) { const context = await requestContextFrom(request); return Response.json({ data: await listProducts(context) }); }
+export async function GET(request: Request) { const context = await requestContextFrom(request); requireRole(context, ["admin", "operator", "reviewer", "analyst"]); return Response.json({ data: await listProducts(context) }); }
 export async function POST(request: Request) {
   const context = await requestContextFrom(request); requireRole(context, ["admin", "operator"]);
   let body: unknown;

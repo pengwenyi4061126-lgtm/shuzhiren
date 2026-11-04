@@ -5,7 +5,7 @@ import { createModelRelease, listModelReleases, type CreateModelReleaseInput, ty
 import { isGitCommit, isSha256Digest } from "@/lib/governance-input";
 
 export const dynamic = "force-dynamic";
-export async function GET(request: Request) { const context = await requestContextFrom(request); return Response.json({ data: await listModelReleases(context) }); }
+export async function GET(request: Request) { const context = await requestContextFrom(request); requireRole(context, ["admin", "operator", "reviewer", "analyst"]); return Response.json({ data: await listModelReleases(context) }); }
 export async function POST(request: Request) {
   const context = await requestContextFrom(request); requireRole(context, ["admin", "operator"]);
   let body: unknown;

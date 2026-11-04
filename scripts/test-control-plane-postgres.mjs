@@ -65,6 +65,22 @@ try {
     .setIssuedAt()
     .setExpirationTime("5m")
     .sign(privateKey);
+  const forgedRoleToken = await new SignJWT({ tenant_id: tenantId, role: "admin", name: "Integration Analyst" })
+    .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
+    .setSubject("integration-analyst")
+    .setIssuer(issuer)
+    .setAudience("shuzhiren-integration")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
+  const suspendedToken = await new SignJWT({ tenant_id: tenantId, role: "operator", name: "Suspended Integration Operator" })
+    .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
+    .setSubject("integration-suspended-operator")
+    .setIssuer(issuer)
+    .setAudience("shuzhiren-integration")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
   const isolatedToken = await new SignJWT({ tenant_id: isolatedTenantId, role: "admin", name: "Isolated Tenant Admin" })
     .setProtectedHeader({ alg: "RS256", kid: "integration-key" })
     .setSubject("isolated-operator")
@@ -78,6 +94,10 @@ try {
   const staleRun = await seedRun("LIVE", "session_stale", new Date(Date.now() - 120_000));
   const archivableRun = await seedRun("ENDED", "session_archivable", new Date());
   await client.query("insert into tenants (id, slug, name) values ($1, $2, $3)", [isolatedTenantId, `isolated-${isolatedTenantId}`, "Isolated integration tenant"]);
+  await seedMembership(tenantId, "integration-operator", "Integration Admin", "admin");
+  await seedMembership(tenantId, "integration-second-operator", "Integration Operator", "operator");
+  await seedMembership(tenantId, "integration-analyst", "Integration Analyst", "analyst");
+  await seedMembership(isolatedTenantId, "isolated-operator", "Isolated Tenant Admin", "admin");
   const recoverRunId = recoverRun.runId;
   const staleRunId = staleRun.runId;
   next = spawn(process.execPath, [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(consolePort)], {
@@ -123,6 +143,27 @@ try {
   const operatorRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${operatorToken}` };
   const analystRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${analystToken}` };
   const isolatedRequestHeaders = { authorization: `Bearer ${isolatedToken}` };
+  const forgedRoleRequestHeaders = { "content-type": "application/json", authorization: `Bearer ${forgedRoleToken}` };
+  const suspendedRequestHeaders = { authorization: `Bearer ${suspendedToken}` };
+  const forgedRoleEntitlement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: forgedRoleRequestHeaders, body: JSON.stringify({ limitValue: 1 }) });
+  assert.equal(forgedRoleEntitlement.status, 403, "a JWT role claim must not elevate an analyst database membership");
+  const memberDirectory = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: requestHeaders });
+  assert.equal(memberDirectory.status, 200, "an admin should list tenant memberships");
+  assert.equal((await memberDirectory.json()).data.length, 3, "the membership directory must expose seeded tenant members only");
+  const analystMemberDirectory = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: analystRequestHeaders });
+  assert.equal(analystMemberDirectory.status, 403, "only tenant admins may list memberships");
+  const createdMembershipResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ externalSubject: "integration-suspended-operator", displayName: "Suspended Integration Operator", role: "operator" }) });
+  assert.equal(createdMembershipResponse.status, 201, "an admin should provision an explicit tenant membership");
+  const createdMembership = await createdMembershipResponse.json();
+  const suspendMembershipResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships/${createdMembership.data.id}`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ status: "suspended" }) });
+  assert.equal(suspendMembershipResponse.status, 200, "an admin should suspend an operator membership");
+  const suspendedRead = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { headers: suspendedRequestHeaders });
+  assert.equal(suspendedRead.status, 403, "a suspended membership must reject its otherwise valid JWT immediately");
+  await assert.rejects(
+    client.query("update memberships set status = 'suspended' where tenant_id = $1 and role = 'admin'", [tenantId]),
+    /last active tenant admin/i,
+    "the database must reject removal of the final active tenant admin"
+  );
   const forgedMediaSession = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/media`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ runId: recoverRunId, sessionId: "another_livetalking_session", type: "switch_to_human" }) });
   assert.equal(forgedMediaSession.status, 400, "runtime media commands must reject caller-provided session IDs");
   const lifecycleBypass = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/media`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ runId: recoverRunId, type: "start_program" }) });
@@ -781,6 +822,20 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id, product_version_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7, $8)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId, productVersionId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, $3)", [tenantId, runId, sampledAt]);
   return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
+}
+
+async function seedMembership(targetTenantId, subject, displayName, role) {
+  const user = await client.query(
+    `insert into users (external_subject, display_name) values ($1, $2)
+     on conflict (external_subject) do update set display_name = excluded.display_name
+     returning id`,
+    [subject, displayName]
+  );
+  await client.query(
+    `insert into memberships (tenant_id, user_id, role) values ($1, $2, $3::membership_role)
+     on conflict (tenant_id, user_id) do update set role = excluded.role, status = 'active'`,
+    [targetTenantId, user.rows[0].id, role]
+  );
 }
 
 async function startMockServer() {
