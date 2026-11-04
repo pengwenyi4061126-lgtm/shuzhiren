@@ -8,7 +8,8 @@ import type { PoolClient } from "pg";
 export type OutboxState = "pending" | "delivering" | "delivered" | "failed" | "cancelled";
 export type MediaOutboxEvent = { id: string; tenantId: string; type: "media.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: MediaCommand; createdAt: string; deliveredAt?: string; lastError?: string };
 export type SpeechOutboxEvent = { id: string; tenantId: string; type: "speech.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: SpeechCommand; createdAt: string; deliveredAt?: string; lastError?: string };
-export type RuntimeOutboxEvent = MediaOutboxEvent | SpeechOutboxEvent;
+export type ChannelReplyOutboxEvent = { id: string; tenantId: string; type: "channel.reply.dispatch"; state: OutboxState; attempts: number; replyId: string; runId: string; interactionId: string; channelConnectionId: string; bodySha256: string; createdAt: string; deliveredAt?: string; lastError?: string };
+export type RuntimeOutboxEvent = MediaOutboxEvent | SpeechOutboxEvent | ChannelReplyOutboxEvent;
 export type SpeechEnqueueResult = { event: SpeechOutboxEvent; duplicate: boolean };
 
 type OutboxStore = { events: Map<string, RuntimeOutboxEvent>; speechCommandEvents: Map<string, string> };
@@ -104,8 +105,15 @@ export async function listOutboxEvents(context: RequestContext) {
 }
 
 export async function deliverOutboxEvent(context: RequestContext, eventId: string) {
+  const existing = await getOutboxEvent(context, eventId);
+  if (!existing) throw new Response("Outbox event not found", { status: 404 });
+  if (existing.type === "channel.reply.dispatch") throw new Response("Channel replies are delivered only by the runtime worker", { status: 409 });
   const claimed = await claimOutboxEvent(context, eventId);
-  if (claimed.duplicate) return claimed;
+  if (claimed.duplicate) {
+    if (claimed.event.type === "channel.reply.dispatch") throw new Response("Channel replies are delivered only by the runtime worker", { status: 409 });
+    return claimed;
+  }
+  if (claimed.event.type === "channel.reply.dispatch") throw new Response("Channel replies are delivered only by the runtime worker", { status: 409 });
   try {
     const result = claimed.event.type === "media.dispatch"
       ? await dispatchMediaCommand(claimed.event.command, claimed.event.sessionId)
@@ -184,6 +192,7 @@ async function markFailed(context: RequestContext, input: RuntimeOutboxEvent, la
 }
 
 async function openDeliveryExhaustedAlert(client: PoolClient, context: RequestContext, event: RuntimeOutboxEvent, lastError: string) {
+  if (event.type === "channel.reply.dispatch") return;
   const severity = event.type === "media.dispatch" ? "critical" : "warning";
   const code = "runtime_command_delivery_exhausted";
   const existing = await client.query<{ id: string }>("select id from runtime_alerts where live_run_id = $1 and code = $2 and status = 'open' for update", [event.command.runId, code]);
@@ -203,12 +212,18 @@ async function openDeliveryExhaustedAlert(client: PoolClient, context: RequestCo
 }
 
 function persistentEvent(row: PersistentOutboxRow): RuntimeOutboxEvent {
-  const payload = typeof row.payload === "string" ? JSON.parse(row.payload) as { sessionId: string; command: MediaCommand | SpeechCommand } : row.payload as { sessionId: string; command: MediaCommand | SpeechCommand };
-  const base = { id: row.id, tenantId: row.tenant_id, state: row.state, attempts: row.attempts, sessionId: payload.sessionId, createdAt: new Date(row.created_at).toISOString(), deliveredAt: row.delivered_at ? new Date(row.delivered_at).toISOString() : undefined, lastError: row.last_error ?? undefined };
-  if (row.event_type === "media.dispatch") return { ...base, type: row.event_type, command: payload.command as MediaCommand };
-  if (row.event_type === "speech.dispatch") return { ...base, type: row.event_type, command: payload.command as SpeechCommand };
+  const payload = typeof row.payload === "string" ? JSON.parse(row.payload) as Record<string, unknown> : row.payload as Record<string, unknown>;
+  const base = { id: row.id, tenantId: row.tenant_id, state: row.state, attempts: row.attempts, createdAt: new Date(row.created_at).toISOString(), deliveredAt: row.delivered_at ? new Date(row.delivered_at).toISOString() : undefined, lastError: row.last_error ?? undefined };
+  if (row.event_type === "media.dispatch") return { ...base, type: row.event_type, sessionId: payload.sessionId as string, command: payload.command as MediaCommand };
+  if (row.event_type === "speech.dispatch") return { ...base, type: row.event_type, sessionId: payload.sessionId as string, command: payload.command as SpeechCommand };
+  if (row.event_type === "channel.reply.dispatch") {
+    const replyId = requiredPayloadString(payload.replyId); const runId = requiredPayloadString(payload.runId); const interactionId = requiredPayloadString(payload.interactionId); const channelConnectionId = requiredPayloadString(payload.channelConnectionId); const bodySha256 = requiredPayloadString(payload.bodySha256);
+    return { ...base, type: row.event_type, replyId, runId, interactionId, channelConnectionId, bodySha256 };
+  }
   throw new Error(`Unsupported outbox event type: ${row.event_type}`);
 }
+
+function requiredPayloadString(value: unknown) { if (typeof value !== "string") throw new Error("Invalid channel reply outbox payload"); return value; }
 
 function sameSpeechCommand(existing: SpeechCommand, existingSessionId: string, requested: SpeechCommand, requestedSessionId: string) {
   return existing.id === requested.id

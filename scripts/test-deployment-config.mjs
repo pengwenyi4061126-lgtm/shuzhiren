@@ -58,6 +58,8 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     RUNTIME_SHARED_TOKEN: runtimeToken,
     RUNTIME_GATEWAY_DEMO_MODE: "false",
     RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
+    CHANNEL_ADAPTER_URL: "http://channel-adapter.internal:8082",
+    CHANNEL_ADAPTER_DISPATCH_TOKEN: "channel-adapter-dispatch-token-at-least-32-bytes",
     DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
     DATABASE_QUERY_TIMEOUT_MS: "5000",
     CONTROL_PLANE_URL: "https://control-plane.internal",
@@ -122,7 +124,8 @@ const channel = env({
   CHANNEL_ADAPTER_PORT: "8082",
   CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS: "60",
   CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE: "120",
-  CHANNEL_ADAPTER_TARGETS: [{ tenantId, channelConnectionId, signingSecret: "channel-signing-secret-at-least-32-bytes", interactionToken: "channel-ingest-token-at-least-32-bytes", commerceToken: "commerce-ingest-token-at-least-32-bytes" }]
+  CHANNEL_ADAPTER_DISPATCH_TOKEN: "channel-adapter-dispatch-token-at-least-32-bytes",
+  CHANNEL_ADAPTER_TARGETS: [{ tenantId, channelConnectionId, signingSecret: "channel-signing-secret-at-least-32-bytes", interactionToken: "channel-ingest-token-at-least-32-bytes", commerceToken: "commerce-ingest-token-at-least-32-bytes", providerReplyEndpoint: "https://provider-bridge.internal/v1/replies", providerReplyToken: "provider-reply-token-at-least-32-bytes" }]
 });
 
 const alert = env({

@@ -75,14 +75,15 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
     if (path === "/api/v1/audit-events/export") return reviewerRoles;
     if (path === "/api/v1/audit-events" || path === "/api/v1/audit-events/verification") return reviewObserverRoles;
     if (path === "/api/v1/channels/connections" || path === "/api/v1/channels/capabilities") return observerRoles;
-    if (/^\/api\/v1\/live-runs\/[^/]+\/(events|interactions)$/.test(path) || path === "/api/v1/live-runs") return allRoles;
+    if (/^\/api\/v1\/live-runs\/[^/]+\/(events|interactions|reply-drafts)$/.test(path) || path === "/api/v1/live-runs") return allRoles;
     if (path === "/api/v1/runtime/health") return operatorRoles;
     return undefined;
   }
 
   if (method === "POST") {
     if (path === "/api/v1/assets" || path === "/api/v1/channels/connections" || path === "/api/v1/live-runs" || path === "/api/v1/releases" || path === "/api/v1/products" || /^\/api\/v1\/products\/[^/]+\/versions$/.test(path)) return operatorRoles;
-    if (/^\/api\/v1\/assets\/[^/]+\/(approve|revoke)$/.test(path) || /^\/api\/v1\/releases\/[^/]+\/(approve|revoke)$/.test(path) || /^\/api\/v1\/products\/[^/]+\/versions\/[^/]+\/approve$/.test(path)) return reviewerRoles;
+    if (/^\/api\/v1\/assets\/[^/]+\/(approve|revoke)$/.test(path) || /^\/api\/v1\/releases\/[^/]+\/(approve|revoke)$/.test(path) || /^\/api\/v1\/products\/[^/]+\/versions\/[^/]+\/approve$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/reply-drafts\/[^/]+\/(approve|reject)$/.test(path)) return reviewerRoles;
+    if (/^\/api\/v1\/live-runs\/[^/]+\/reply-drafts(?:\/[^/]+\/(submit|send|retry))?$/.test(path)) return operatorRoles;
     if (/^\/api\/v1\/channels\/connections\/[^/]+\/verify$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/(commands|interactions|response-drafts|speech-dispatches)$/.test(path) || /^\/api\/v1\/live-runs\/[^/]+\/interactions\/[^/]+\/handle$/.test(path) || /^\/api\/v1\/alerts\/[^/]+\/acknowledge$/.test(path) || path === "/api/v1/incidents" || /^\/api\/v1\/incidents\/[^/]+\/resolve$/.test(path) || path === "/api/v1/runtime/media" || /^\/api\/v1\/runtime\/outbox\/[^/]+\/deliver$/.test(path)) return operatorRoles;
     if (path === "/api/v1/policy/evaluate") return ["admin", "operator", "reviewer"];
     if (path === "/api/v1/policy/profiles") return operatorRoles;
@@ -95,6 +96,7 @@ async function requiredRoles(request: NextRequest): Promise<Role[] | undefined> 
   }
 
   if (method === "PUT" && /^\/api\/v1\/entitlements\/[^/]+$/.test(path)) return ["admin"];
+  if (method === "PUT" && /^\/api\/v1\/live-runs\/[^/]+\/reply-drafts\/[^/]+$/.test(path)) return operatorRoles;
   if (method === "PUT" && /^\/api\/v1\/live-runs\/[^/]+\/runtime-session$/.test(path)) return operatorRoles;
   return undefined;
 }

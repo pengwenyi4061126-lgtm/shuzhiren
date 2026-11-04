@@ -1,7 +1,7 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
-export type ChannelCapability = { channel: string; supportsRtmp: boolean; supportsSrt: boolean; supportsComments: boolean; supportsProductPins: boolean; requiresAiDisclosure: boolean; maxResolution: "720p" | "1080p"; supportsReplay: boolean; supportsWebhook: boolean };
+export type ChannelCapability = { channel: string; supportsRtmp: boolean; supportsSrt: boolean; supportsComments: boolean; supportsOutboundReplies: boolean; supportsProductPins: boolean; requiresAiDisclosure: boolean; maxResolution: "720p" | "1080p"; supportsReplay: boolean; supportsWebhook: boolean };
 export type ChannelStatus = "connected" | "degraded" | "disabled";
 export type OutputProtocol = "rtmp" | "srt";
 export type ChannelProvider = "generic-rtmp" | "normalized-webhook-rtmp";
@@ -14,14 +14,14 @@ export interface ChannelAdapter { readonly provider: ChannelProvider; readonly c
 
 export class RtmpOnlyAdapter implements ChannelAdapter {
   readonly provider: ChannelProvider = "generic-rtmp";
-  readonly capability: ChannelCapability = { channel: "generic-rtmp", supportsRtmp: true, supportsSrt: false, supportsComments: false, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: false };
+  readonly capability: ChannelCapability = { channel: "generic-rtmp", supportsRtmp: true, supportsSrt: false, supportsComments: false, supportsOutboundReplies: false, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: false };
   supportsOutput(protocol: OutputProtocol) { return protocol === "rtmp"; }
   validateShow(input: { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean }) { const errors: string[] = []; if (input.resolution === "1080p" && this.capability.maxResolution !== "1080p") errors.push("目标渠道不支持 1080p"); if (this.capability.requiresAiDisclosure && !input.aiDisclosureEnabled) errors.push("目标渠道要求 AI 标识"); return errors; }
 }
 
 export class NormalizedWebhookRtmpAdapter implements ChannelAdapter {
   readonly provider: ChannelProvider = "normalized-webhook-rtmp";
-  readonly capability: ChannelCapability = { channel: "normalized-webhook-rtmp", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
+  readonly capability: ChannelCapability = { channel: "normalized-webhook-rtmp", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsOutboundReplies: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
   supportsOutput(protocol: OutputProtocol) { return protocol === "rtmp"; }
   validateShow(input: { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean }) { const errors: string[] = []; if (input.resolution === "1080p" && this.capability.maxResolution !== "1080p") errors.push("目标渠道不支持 1080p"); if (this.capability.requiresAiDisclosure && !input.aiDisclosureEnabled) errors.push("目标渠道要求 AI 标识"); return errors; }
 }
@@ -147,7 +147,7 @@ export function isChannelCapability(value: unknown): value is ChannelCapability 
   if (!value || typeof value !== "object") return false;
   const capability = value as Record<string, unknown>;
   return typeof capability.channel === "string" && capability.channel.length > 0
-    && ["supportsRtmp", "supportsSrt", "supportsComments", "supportsProductPins", "requiresAiDisclosure", "supportsReplay", "supportsWebhook"].every((key) => typeof capability[key] === "boolean")
+    && ["supportsRtmp", "supportsSrt", "supportsComments", "supportsOutboundReplies", "supportsProductPins", "requiresAiDisclosure", "supportsReplay", "supportsWebhook"].every((key) => typeof capability[key] === "boolean")
     && (capability.maxResolution === "720p" || capability.maxResolution === "1080p");
 }
 

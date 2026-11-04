@@ -110,9 +110,9 @@ const channelAdapter = parseEnv(channelAdapterText);
 const alertNotifier = parseEnv(alertNotifierText);
 
 required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_DEMO_MODE", "RELEASE_REVISION", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OUTBOX_MAX_ATTEMPTS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS"]);
-required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
+required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
-required(channelAdapter, "渠道适配器", ["DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_TARGETS"]);
+required(channelAdapter, "渠道适配器", ["DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "CHANNEL_ADAPTER_TARGETS"]);
 required(alertNotifier, "告警通知器", ["DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS", "ALERT_NOTIFIER_TARGETS"]);
 outboundControlPlaneUrl(channelAdapter, "渠道适配器");
 positiveInteger(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_PORT");
@@ -170,14 +170,17 @@ for (const [service, tokens] of tenantServiceTokenMaps) {
   }
 }
 claimPrivateToken(runtime.get("RUNTIME_SHARED_TOKEN"), "runtime-gateway");
+claimPrivateToken(runtime.get("CHANNEL_ADAPTER_DISPATCH_TOKEN"), "channel-adapter-dispatch");
+if (runtime.get("CHANNEL_ADAPTER_DISPATCH_TOKEN") !== channelAdapter.get("CHANNEL_ADAPTER_DISPATCH_TOKEN")) errors.push("运行时与渠道适配器的 CHANNEL_ADAPTER_DISPATCH_TOKEN 必须一致");
 claimPrivateToken(runtime.get("OUTPUT_PROBE_SHARED_TOKEN"), "output-probe");
 try {
   const targets = JSON.parse(channelAdapter.get("CHANNEL_ADAPTER_TARGETS") ?? "");
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
     && uuid.test(target.tenantId ?? "") && uuid.test(target.channelConnectionId ?? "")
-    && [target.signingSecret, target.interactionToken, target.commerceToken].every((value) => typeof value === "string" && value.length >= 32 && !/\s/.test(value))
-    && new Set([target.signingSecret, target.interactionToken, target.commerceToken]).size === 3;
+    && [target.signingSecret, target.interactionToken, target.commerceToken, target.providerReplyToken].every((value) => typeof value === "string" && value.length >= 32 && !/\s/.test(value))
+    && typeof target.providerReplyEndpoint === "string" && /^https?:\/\//.test(target.providerReplyEndpoint) && !/\/@/.test(target.providerReplyEndpoint)
+    && new Set([target.signingSecret, target.interactionToken, target.commerceToken, target.providerReplyToken]).size === 4;
   if (!Array.isArray(targets) || !targets.length || !targets.every(targetValid)) throw new Error("invalid");
   const interactionTokens = tenantServiceTokenMaps.get("CHANNEL_INGEST_TENANT_TOKENS") ?? {};
   const commerceTokens = tenantServiceTokenMaps.get("CHANNEL_COMMERCE_TENANT_TOKENS") ?? {};
@@ -185,9 +188,10 @@ try {
     if (target.interactionToken !== interactionTokens[target.tenantId]) errors.push("渠道适配器的 interactionToken 必须匹配控制面同租户的 CHANNEL_INGEST_TENANT_TOKENS");
     if (target.commerceToken !== commerceTokens[target.tenantId]) errors.push("渠道适配器的 commerceToken 必须匹配控制面同租户的 CHANNEL_COMMERCE_TENANT_TOKENS");
     claimPrivateToken(target.signingSecret, `channel-adapter-signature:${target.tenantId}:${target.channelConnectionId}`);
+    claimPrivateToken(target.providerReplyToken, `channel-adapter-reply:${target.tenantId}:${target.channelConnectionId}`);
   }
 } catch {
-  const message = "渠道适配器的 CHANNEL_ADAPTER_TARGETS 必须包含 UUID 租户/渠道和三种不同的高熵密钥";
+  const message = "渠道适配器的 CHANNEL_ADAPTER_TARGETS 必须包含 UUID 租户/渠道、私有 providerReplyEndpoint 和四种不同的高熵密钥";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);
 }
 try {

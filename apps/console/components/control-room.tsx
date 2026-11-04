@@ -9,8 +9,9 @@ import type { RuntimeAlert, RuntimeTelemetry } from "@/lib/monitoring";
 import type { LiveInteraction } from "@/lib/interactions";
 import type { RuntimeOutboxEvent } from "@/lib/control-plane/outbox";
 import { canTransition } from "@/lib/live-run";
+import { ChannelReplyWorkflow } from "@/components/channel-reply-workflow";
 
-type Props = { initialRun: LiveRun; initialTelemetry: RuntimeTelemetry | null; initialAlerts: RuntimeAlert[]; initialInteractions: LiveInteraction[]; canOperate: boolean };
+type Props = { initialRun: LiveRun; initialTelemetry: RuntimeTelemetry | null; initialAlerts: RuntimeAlert[]; initialInteractions: LiveInteraction[]; canOperate: boolean; canReview: boolean };
 type CommandResponse = { data: { command: LiveCommand; run: LiveRun; mediaEvent: Pick<RuntimeOutboxEvent, "id" | "state">; duplicate: boolean } };
 type GatewayConfirmedAction = Extract<LiveCommand["action"], "START" | "RECOVER" | "END">;
 type GatewayConfirmation = { action: GatewayConfirmedAction; waitingState: LiveRunState; eventId: string };
@@ -44,7 +45,7 @@ const commandConfirmationNotice: Record<LiveCommand["action"], string> = {
   END: "该动作会向运行时投递停止指令；Gateway 确认后场次结束，不能撤销。"
 };
 
-export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initialInteractions, canOperate }: Props) {
+export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initialInteractions, canOperate, canReview }: Props) {
   const [run, setRun] = useState(initialRun);
   const [commands, setCommands] = useState<LiveCommand[]>(initialRun.commandHistory);
   const [telemetry, setTelemetry] = useState<RuntimeTelemetry | null>(initialTelemetry);
@@ -263,6 +264,7 @@ export function ControlRoom({ initialRun, initialTelemetry, initialAlerts, initi
           </section>
           <section className="panel queue-panel"><div className="panel-header"><div><h2>互动与风险</h2><span>高风险问题必须人工确认</span></div><AlertTriangle size={18} className="warning-icon" /></div><div className="queue-list">{interactions.length ? interactions.map((interaction) => <button className={selectedQuestion === interaction.id ? "question selected" : "question"} key={interaction.id} onClick={() => { setSelectedQuestion(interaction.id); setDraftReply(null); setSpeechStatus(null); }} type="button"><span className={`risk ${interaction.risk}`}>{interaction.risk === "high" ? "需人工确认" : interaction.risk === "medium" ? "需商品证据" : "有证据"}</span><strong>{interaction.text}</strong><small>{interaction.detail}</small></button>) : <div className="queue-empty">暂无待处理互动</div>}</div><div className="handoff-box"><Volume2 size={16} /><div><span>{selectedInteraction ? `${selectedInteraction.decision === "handoff" ? "建议人工接管后" : "已核验策略后"}处理此问题` : alerts.length ? `有 ${alerts.length} 条运行告警待处理` : "选择一条互动查看处理建议"}</span>{draftReply ? <small className="draft-reply">{draftReply}</small> : null}{speechStatus ? <small className="speech-status">{speechStatus}</small> : null}</div>{canOperate && selectedInteraction?.decision === "answer" ? <button className="handle-interaction" disabled={draftLoading || speechLoading} onClick={createDraftReply} type="button">{draftLoading ? "生成中" : "生成草稿"}</button> : null}{canOperate && selectedInteraction?.decision === "answer" && draftReply ? <button className="handle-interaction" disabled={speechLoading} onClick={dispatchGroundedSpeech} type="button">{speechLoading ? "入队中" : "确认播报"}</button> : null}{canOperate && selectedInteraction ? <button className="handle-interaction" disabled={Boolean(handlingInteractionId)} onClick={handleSelectedInteraction} type="button">{handlingInteractionId ? "处理中" : "标记已处理"}</button> : null}</div></section>
         </div>
+        <ChannelReplyWorkflow runId={run.id} canOperate={canOperate} canReview={canReview} />
         <section className="panel timeline-panel"><div className="panel-header"><div><h2>节目单与命令记录</h2><span>命令使用幂等键与预期状态校验</span></div><Clock3 size={17} /></div><div className="timeline-content"><div className="program-track"><span className="segment preset">预制讲品 · A-102</span><span className="segment live">实时问答</span><span className="segment queued">成分讲解 · A-103</span></div><div className="command-list">{commands.slice(0, 3).map((command) => <div className="command" key={command.id}><span>{command.action}</span><small>{command.actorName} · {new Date(command.issuedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small><b>{command.result}</b></div>)}</div></div></section>
       </section>
     </main>

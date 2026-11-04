@@ -497,6 +497,25 @@ try {
   const conflictingChannelInteraction = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/channel-interactions`, { method: "POST", headers: interactionHeaders, body: JSON.stringify({ ...channelInteractionBody, question: "换一条不同问题" }) });
   assert.equal(conflictingChannelInteraction.status, 409, "a channel interaction event id must not be reused with different content");
   assert.equal((await client.query("select count(*) as count from audit_events where event_type = 'channel_interaction.received'")).rows[0].count, "1", "a newly ingested channel interaction must be audited once");
+  const replyInteractionId = (await client.query("select id from live_interactions where live_run_id = $1 and external_event_id = 'interaction-1'", [recoverRunId])).rows[0].id;
+  const analystReplyDraft = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/reply-drafts`, { method: "POST", headers: analystRequestHeaders, body: JSON.stringify({ interactionId: replyInteractionId, channelConnectionId: recoverRun.channelId, body: "分析员不应创建渠道回复" }) });
+  assert.equal(analystReplyDraft.status, 403, "an analyst must not create a channel reply draft");
+  const replyDraftResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/reply-drafts`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ interactionId: replyInteractionId, channelConnectionId: recoverRun.channelId, body: "当前已批准资料显示商品卖点以详情页说明为准。" }) });
+  assert.equal(replyDraftResponse.status, 201, "an operator should create a persistent channel reply draft");
+  const replyDraft = (await replyDraftResponse.json()).data;
+  const replyEdited = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/reply-drafts/${replyDraft.id}`, { method: "PUT", headers: operatorRequestHeaders, body: JSON.stringify({ body: "当前已批准资料显示商品卖点以详情页和平台结算页为准。" }) });
+  assert.equal(replyEdited.status, 200, "an operator should edit a draft reply before submission");
+  const replySubmitted = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/reply-drafts/${replyDraft.id}/submit`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(replySubmitted.status, 200, "an operator should submit a channel reply for approval");
+  const operatorApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/reply-drafts/${replyDraft.id}/approve`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(operatorApproval.status, 403, "an operator must not approve a channel reply");
+  const replyApproved = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/reply-drafts/${replyDraft.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(replyApproved.status, 200, "a reviewer-capable admin should approve a channel reply created by another actor");
+  const replyQueued = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/reply-drafts/${replyDraft.id}/send`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(replyQueued.status, 202, "an approved channel reply should enter the durable outbox");
+  const queuedReply = await replyQueued.json();
+  const manualReplyDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${queuedReply.meta.outboxEventId}/deliver`, { method: "POST", headers: requestHeaders });
+  assert.equal(manualReplyDelivery.status, 409, "manual runtime delivery must not bypass the channel-reply worker");
 
   const adapterPort = await availablePort();
   const adapterSigningSecret = "control-plane-integration-adapter-signing-secret";
@@ -508,7 +527,8 @@ try {
       CONTROL_PLANE_URL: `http://127.0.0.1:${consolePort}`,
       CHANNEL_ADAPTER_PORT: String(adapterPort),
       CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE: "1",
-      CHANNEL_ADAPTER_TARGETS: JSON.stringify([{ tenantId, channelConnectionId: recoverRun.channelId, signingSecret: adapterSigningSecret, interactionToken, commerceToken }])
+      CHANNEL_ADAPTER_DISPATCH_TOKEN: "channel-adapter-dispatch-token-at-least-32-bytes",
+      CHANNEL_ADAPTER_TARGETS: JSON.stringify([{ tenantId, channelConnectionId: recoverRun.channelId, signingSecret: adapterSigningSecret, interactionToken, commerceToken, providerReplyEndpoint: `${mock.baseUrl}/provider-reply-fixture`, providerReplyToken: "provider-reply-token-at-least-32-bytes" }])
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -572,6 +592,8 @@ try {
       DATABASE_URL: databaseUrl,
       RUNTIME_GATEWAY_URL: mock.baseUrl,
       RUNTIME_SHARED_TOKEN: gatewayToken,
+      CHANNEL_ADAPTER_URL: `http://127.0.0.1:${adapterPort}`,
+      CHANNEL_ADAPTER_DISPATCH_TOKEN: "channel-adapter-dispatch-token-at-least-32-bytes",
       OUTBOX_POLL_MS: "20",
       SCHEDULER_POLL_MS: "1000",
       SCHEDULER_BATCH_SIZE: "1",
@@ -585,6 +607,10 @@ try {
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  await waitFor(async () => (await client.query("select status, provider_message_id from channel_reply_drafts where id = $1", [replyDraft.id])).rows[0]?.status === "sent", 10_000, "channel reply worker delivery");
+  assert.equal(mock.channelReplies.length, 1, "the channel adapter should forward the approved reply to its provider bridge once");
+  assert.deepEqual((await client.query("select status from live_interactions where id = $1", [replyInteractionId])).rows[0], { status: "handled" }, "only a delivered channel reply should close the source interaction");
+  assert.equal((await client.query("select event_type from audit_events where resource_id = $1 and event_type = 'channel_reply.delivered'", [replyDraft.id])).rows.length, 1, "channel reply delivery must be recorded in the audit chain");
   await waitFor(async () => (await client.query("select state from live_runs where id = $1", [staleRunId])).rows[0]?.state === "DEGRADED", 10_000, "stale telemetry watchdog");
   await waitFor(async () => Number((await client.query("select count(*) as count from usage_records where live_run_id = $1 and code = 'monthly_live_minutes'", [recoverRunId])).rows[0]?.count) >= 1, 10_000, "live-minute metering");
   await waitFor(async () => Number((await client.query("select count(*) as count from usage_records where live_run_id = $1 and code = 'monthly_live_minutes'", [degradedOccupyingRun.runId])).rows[0]?.count) >= 1, 10_000, "degraded live-minute metering");
@@ -750,7 +776,7 @@ async function seedRun(state, sessionId, sampledAt) {
   const profileRules = [{ id: "integration_block_term", terms: ["集成策略禁播词"], reason: "集成策略包禁止该类提问", action: "refuse", riskLevel: "high", requiredEvidence: [] }];
   await client.query("insert into policy_profiles (id, tenant_id, name, version, rules, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, '1.0.0', $4::jsonb, 'evidence://integration/seed', 'Seeded binding for integration validation.', 'approved', now())", [policyProfileId, tenantId, `Integration policy ${runId}`, JSON.stringify(profileRules)]);
   await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
-  const capabilities = { channel: "integration-webhook", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
+  const capabilities = { channel: "integration-webhook", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsOutboundReplies: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
   await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now())", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities)]);
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id, product_version_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7, $8)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId, productVersionId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, $3)", [tenantId, runId, sampledAt]);
@@ -760,6 +786,7 @@ async function seedRun(state, sessionId, sampledAt) {
 async function startMockServer() {
   const mediaCommands = [];
   const alertNotifications = [];
+  const channelReplies = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/jwks") return json(response, 200, { keys: [jwk] });
@@ -778,6 +805,12 @@ async function startMockServer() {
       if (command.command_id.startsWith("fail_media_")) return json(response, 503, { error: "injected_delivery_failure" });
       return json(response, 200, { accepted: true });
     }
+    if (url.pathname === "/provider-reply-fixture" && request.method === "POST") {
+      assert.equal(request.headers.authorization, "Bearer provider-reply-token-at-least-32-bytes");
+      const reply = await requestBody(request);
+      channelReplies.push(reply);
+      return json(response, 200, { providerMessageId: `provider_${reply.replyId}` });
+    }
     if (url.pathname === "/alert-webhook" && request.method === "POST") {
       const raw = await requestRawBody(request);
       const timestamp = request.headers["x-shuzhiren-timestamp"];
@@ -792,7 +825,7 @@ async function startMockServer() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("mock server did not bind a TCP port");
-  return { server, mediaCommands, alertNotifications, baseUrl: `http://127.0.0.1:${address.port}` };
+  return { server, mediaCommands, alertNotifications, channelReplies, baseUrl: `http://127.0.0.1:${address.port}` };
 }
 
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); }

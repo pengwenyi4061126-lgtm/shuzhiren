@@ -1,6 +1,6 @@
 # 系统迁移恢复交接
 
-更新日期：2026-11-03（Asia/Shanghai）
+更新日期：2026-11-04（Asia/Shanghai）
 
 ## 当前检查点
 
@@ -79,5 +79,7 @@ npm run build
 - 渠道适配器出站控制面 URL 的安全约束已在 `fc43a91` 完成并由 `npm run channel-adapter:test`、`npm run deploy:check:test` 验证。
 - 已执行 `npm run verify:local`：44 项本机配置契约、策略、权限、运行时可靠性、observer、输出探针、渠道、告警、类型检查、lint 与生产构建均通过。该命令不连接 PostgreSQL、不启动 Docker，也不能证明 Python Gateway、GPU 或平台验收。
 - 逐项审计仍在进行，不能以没有 `TODO` 或本地门禁通过替代完成判定。已修复渠道出站 URL、运行时 Compose CI 渲染/LiveTalking 构建门禁，以及商品版本、节目修订、策略、模型发布和直播命令的数据库级不可变性；节目修订已补齐 `DRAFT` 全量编辑、送审冻结、审批人/时间证据、同事务生命周期审计和控制台工作区。CI 的 PostgreSQL 架构与控制面集成测试覆盖草稿改写、送审后拒绝改写及批准状态；本机不启动 PostgreSQL，因此这部分实际数据库执行仍由 CI 负责。
-- 仍待完成的仓库内工作包括：受控插播/新修订流程、受控直播预览与人工回复闭环、OIDC 身份声明之外的成员授权与资源范围、对象/镜像证据的实际内容校验，以及选定平台的具体 OAuth/Webhook/商品/结算 Adapter。它们不能误列为 GPU 或账号外部前置条件。
+- 本轮已补齐渠道人工回复的仓库内闭环：`053_channel_reply_workflow.sql`、控制台草稿/送审/审批/拒绝/投递/失败重试界面与 API、来源渠道绑定、不可变证据快照、独立渠道 outbox、worker -> 私网 adapter -> provider bridge 回执，以及“只有 `sent` 才关闭互动”的约束。`npm run verify:local` 44 项通过；CI PostgreSQL 集成测试新增该闭环的角色、状态、outbox 和回执断言。本机不启动 PostgreSQL，因此最终迁移/集成执行仍由 CI 或 Linux 数据库环境负责。
+- 仍待完成的仓库内工作包括：受控插播/新修订流程、受控直播预览、OIDC 身份声明之外的成员授权与资源范围、对象/镜像证据的实际内容校验，以及选定平台的具体 OAuth/Webhook/商品/结算 Adapter。它们不能误列为 GPU 或账号外部前置条件。
+- 渠道回复的 `providerReplyEndpoint` 只是受控标准化桥接契约；抖音、淘宝、视频号等实际 API、OAuth scope、应用审核和商家账号权限仍是外部平台前置条件。缺少回执时 worker 保持失败/可重试状态，不会把互动伪装成已处理。
 - 恢复受控 SSH 凭据后推送全部本地提交；继续按上述代码审计项实现，再按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。

@@ -9,6 +9,7 @@ export type LiveInteraction = LiveQuestion & {
   tenantId: string;
   runId: string;
   source: string;
+  channelConnectionId?: string;
   externalEventId?: string;
   status: "queued" | "handled";
   decision: PolicyDecision["action"];
@@ -23,13 +24,13 @@ export type LiveInteraction = LiveQuestion & {
 
 type InteractionStore = { interactions: Map<string, LiveInteraction>; externalEvents: Map<string, string> };
 type PersistentInteractionRow = {
-  id: string; tenant_id: string; live_run_id: string; source: string; external_event_id: string | null; question_text: string;
+  id: string; tenant_id: string; live_run_id: string; source: string; channel_connection_id: string | null; external_event_id: string | null; question_text: string;
   risk_level: LiveInteraction["risk"]; policy_action: LiveInteraction["decision"]; policy_reasons: unknown;
   required_evidence: unknown; evidence_ids: unknown; status: LiveInteraction["status"]; created_at: Date | string;
   handled_at: Date | string | null; handled_by_name: string | null; resolution_note: string | null;
 };
 
-type CreateInteractionInput = { runId: string; question: string; source?: string; externalEventId?: string; evidenceIds: string[] };
+type CreateInteractionInput = { runId: string; question: string; source?: string; channelConnectionId?: string; externalEventId?: string; evidenceIds: string[] };
 
 declare global { var shuzhirenInteractionStore: InteractionStore | undefined; }
 
@@ -49,7 +50,7 @@ export async function listInteractions(context: RequestContext, runId: string, s
   if (!databasePool()) return [...interactionStore().interactions.values()].filter((item) => item.tenantId === context.tenantId && item.runId === runId && (!status || item.status === status)).sort((left, right) => right.submittedAt.localeCompare(left.submittedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentInteractionRow>(
-       `select i.id, i.tenant_id, i.live_run_id, i.source, i.external_event_id, i.question_text, i.risk_level, i.policy_action,
+       `select i.id, i.tenant_id, i.live_run_id, i.source, i.channel_connection_id, i.external_event_id, i.question_text, i.risk_level, i.policy_action,
         i.policy_reasons, i.required_evidence, i.evidence_ids, i.status, i.created_at, i.handled_at,
         u.display_name as handled_by_name, i.resolution_note
        from live_interactions i left join users u on u.id = i.handled_by
@@ -76,7 +77,7 @@ export async function createInteraction(context: RequestContext, input: CreateIn
         return { ...existing, duplicate: true };
       }
     }
-    const interaction: LiveInteraction = { id: `interaction_${crypto.randomUUID()}`, tenantId: context.tenantId, runId: input.runId, source, externalEventId: input.externalEventId, text: input.question, detail, risk: decision.riskLevel, status: "queued", decision: decision.action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: input.evidenceIds, submittedAt: new Date().toISOString() };
+    const interaction: LiveInteraction = { id: `interaction_${crypto.randomUUID()}`, tenantId: context.tenantId, runId: input.runId, source, channelConnectionId: input.channelConnectionId, externalEventId: input.externalEventId, text: input.question, detail, risk: decision.riskLevel, status: "queued", decision: decision.action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: input.evidenceIds, submittedAt: new Date().toISOString() };
     interactionStore().interactions.set(interaction.id, interaction);
     if (eventKey) interactionStore().externalEvents.set(eventKey, interaction.id);
     return interaction;
@@ -101,16 +102,16 @@ export async function createChannelInteraction(context: RequestContext, input: C
 
 async function createPersistentInteraction(client: import("pg").PoolClient, context: RequestContext, input: CreateInteractionInput, decision: PolicyDecision): Promise<LiveInteraction & { duplicate?: boolean }> {
   const result = await client.query<PersistentInteractionRow>(
-      `insert into live_interactions (tenant_id, live_run_id, source, external_event_id, question_text, risk_level, policy_action, policy_reasons, required_evidence, evidence_ids)
-       values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
+      `insert into live_interactions (tenant_id, live_run_id, source, channel_connection_id, external_event_id, question_text, risk_level, policy_action, policy_reasons, required_evidence, evidence_ids)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb)
        on conflict (tenant_id, live_run_id, source, external_event_id) where external_event_id is not null do nothing
-       returning id, tenant_id, live_run_id, source, external_event_id, question_text, risk_level, policy_action, policy_reasons,
+       returning id, tenant_id, live_run_id, source, channel_connection_id, external_event_id, question_text, risk_level, policy_action, policy_reasons,
          required_evidence, evidence_ids, status, created_at, handled_at, null::text as handled_by_name, resolution_note`,
-      [context.tenantId, input.runId, input.source ?? "viewer", input.externalEventId ?? null, input.question, decision.riskLevel, decision.action, JSON.stringify(decision.reasons), JSON.stringify(decision.requiredEvidence), JSON.stringify(input.evidenceIds)]
+      [context.tenantId, input.runId, input.source ?? "viewer", input.channelConnectionId ?? null, input.externalEventId ?? null, input.question, decision.riskLevel, decision.action, JSON.stringify(decision.reasons), JSON.stringify(decision.requiredEvidence), JSON.stringify(input.evidenceIds)]
     );
   if (result.rows[0]) return persistentInteraction(result.rows[0]);
   const existing = await client.query<PersistentInteractionRow>(
-      `select id, tenant_id, live_run_id, source, external_event_id, question_text, risk_level, policy_action, policy_reasons,
+      `select id, tenant_id, live_run_id, source, channel_connection_id, external_event_id, question_text, risk_level, policy_action, policy_reasons,
         required_evidence, evidence_ids, status, created_at, handled_at, null::text as handled_by_name, resolution_note
        from live_interactions where live_run_id = $1 and source = $2 and external_event_id = $3`,
       [input.runId, input.source ?? "viewer", input.externalEventId]
@@ -131,6 +132,7 @@ export async function handleInteraction(context: RequestContext, runId: string, 
   if (!databasePool()) {
     const interaction = interactionStore().interactions.get(interactionId);
     if (!interaction || interaction.tenantId !== context.tenantId || interaction.runId !== runId) throw new Response("Interaction not found", { status: 404 });
+    if (interaction.channelConnectionId) throw new Response("Channel interactions are handled only after a channel reply is delivered", { status: 409 });
     if (interaction.status === "handled") return interaction;
     const handled = { ...interaction, status: "handled" as const, handledAt: new Date().toISOString(), handledBy: context.actorName, resolutionNote: resolutionNote?.trim() || undefined };
     interactionStore().interactions.set(interaction.id, handled);
@@ -140,14 +142,15 @@ export async function handleInteraction(context: RequestContext, runId: string, 
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentInteractionRow>(
       `update live_interactions set status = 'handled', handled_by = $3, handled_at = now(), resolution_note = $4
-       where id = $1 and live_run_id = $2 and status = 'queued'
-       returning id, tenant_id, live_run_id, source, external_event_id, question_text, risk_level, policy_action, policy_reasons,
+       where id = $1 and live_run_id = $2 and status = 'queued' and channel_connection_id is null
+       returning id, tenant_id, live_run_id, source, channel_connection_id, external_event_id, question_text, risk_level, policy_action, policy_reasons,
          required_evidence, evidence_ids, status, created_at, handled_at, $5::text as handled_by_name, resolution_note`,
       [interactionId, runId, actor.rows[0].id, resolutionNote?.trim() || null, context.actorName]
     );
     if (!result.rows[0]) {
-      const exists = await client.query("select id from live_interactions where id = $1 and live_run_id = $2", [interactionId, runId]);
+      const exists = await client.query<{ channel_connection_id: string | null }>("select channel_connection_id from live_interactions where id = $1 and live_run_id = $2", [interactionId, runId]);
       if (!exists.rows[0]) throw new Response("Interaction not found", { status: 404 });
+      if (exists.rows[0].channel_connection_id) throw new Response("Channel interactions are handled only after a channel reply is delivered", { status: 409 });
       throw new Response("Interaction was already handled", { status: 409 });
     }
     return persistentInteraction(result.rows[0]);
@@ -164,5 +167,5 @@ function asStringArray(value: unknown) { return Array.isArray(value) ? value.fil
 
 function persistentInteraction(row: PersistentInteractionRow): LiveInteraction {
   const decision = { action: row.policy_action, riskLevel: row.risk_level, reasons: asStringArray(row.policy_reasons), requiredEvidence: asStringArray(row.required_evidence) } as PolicyDecision;
-  return { id: row.id, tenantId: row.tenant_id, runId: row.live_run_id, source: row.source, externalEventId: row.external_event_id ?? undefined, text: row.question_text, detail: interactionDetail(decision), risk: row.risk_level, status: row.status, decision: row.policy_action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: asStringArray(row.evidence_ids), submittedAt: new Date(row.created_at).toISOString(), handledAt: row.handled_at ? new Date(row.handled_at).toISOString() : undefined, handledBy: row.handled_by_name ?? undefined, resolutionNote: row.resolution_note ?? undefined };
+  return { id: row.id, tenantId: row.tenant_id, runId: row.live_run_id, source: row.source, channelConnectionId: row.channel_connection_id ?? undefined, externalEventId: row.external_event_id ?? undefined, text: row.question_text, detail: interactionDetail(decision), risk: row.risk_level, status: row.status, decision: row.policy_action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: asStringArray(row.evidence_ids), submittedAt: new Date(row.created_at).toISOString(), handledAt: row.handled_at ? new Date(row.handled_at).toISOString() : undefined, handledBy: row.handled_by_name ?? undefined, resolutionNote: row.resolution_note ?? undefined };
 }

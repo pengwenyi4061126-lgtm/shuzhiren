@@ -36,12 +36,12 @@ export async function listRunEvents(context: RequestContext, runId: string) {
       detail: `${command.actorName} · 期望状态 ${command.expectedState}`,
       state: "accepted" as const
     })),
-    ...outbox.filter((event) => event.command.runId === runId).map((event) => ({
+    ...outbox.filter((event) => (event.type === "channel.reply.dispatch" ? event.runId : event.command.runId) === runId).map((event) => ({
       id: `media:${event.id}`,
       category: "media" as const,
       occurredAt: event.deliveredAt ?? event.createdAt,
-      title: event.type === "speech.dispatch" ? "受控语音播报" : mediaTitle(event.command.type),
-      detail: `${event.type === "speech.dispatch" ? `商品事实 v${event.command.productRevision}` : "媒体动作"} · 运行时会话 ${event.sessionId} · 第 ${event.attempts} 次投递${event.lastError ? ` · ${event.lastError}` : ""}`,
+      title: event.type === "channel.reply.dispatch" ? "渠道文字回复" : event.type === "speech.dispatch" ? "受控语音播报" : mediaTitle(event.command.type),
+      detail: event.type === "channel.reply.dispatch" ? `渠道 ${event.channelConnectionId} · 互动 ${event.interactionId} · 第 ${event.attempts} 次投递${event.lastError ? ` · ${event.lastError}` : ""}` : `${event.type === "speech.dispatch" ? `商品事实 v${event.command.productRevision}` : "媒体动作"} · 运行时会话 ${event.sessionId} · 第 ${event.attempts} 次投递${event.lastError ? ` · ${event.lastError}` : ""}`,
       state: event.state
     })),
     ...alerts.map((alert) => ({

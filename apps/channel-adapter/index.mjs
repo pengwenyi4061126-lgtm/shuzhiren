@@ -1,10 +1,12 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import pg from "pg";
-import { parseControlPlaneUrl, parseNormalizedEvent, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
+import { parseControlPlaneUrl, parseNormalizedEvent, parseOutboundReply, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
 
 const port = positiveInt(process.env.CHANNEL_ADAPTER_PORT, 8082, "CHANNEL_ADAPTER_PORT");
 const controlPlaneUrl = parseControlPlaneUrl(process.env.CONTROL_PLANE_URL);
 const targets = parseTargets(process.env.CHANNEL_ADAPTER_TARGETS);
+const dispatchToken = requiredSecret("CHANNEL_ADAPTER_DISPATCH_TOKEN");
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for durable webhook replay protection");
 const replayLeaseSeconds = positiveInt(process.env.CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS, 60, "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS");
@@ -19,7 +21,9 @@ const server = http.createServer(async (request, response) => {
       await pool.query("select 1");
       return json(response, 200, { ok: true, channels: targets.size });
     }
-    const match = request.method === "POST" ? new URL(request.url ?? "/", "http://localhost").pathname.match(/^\/v1\/webhooks\/([^/]+)$/) : null;
+    const path = new URL(request.url ?? "/", "http://localhost").pathname;
+    if (request.method === "POST" && path === "/v1/replies") return dispatchReply(request, response);
+    const match = request.method === "POST" ? path.match(/^\/v1\/webhooks\/([^/]+)$/) : null;
     if (!match) return json(response, 404, { error: "not_found" });
     const target = targets.get(decodeURIComponent(match[1]));
     if (!target) return json(response, 404, { error: "unknown_channel" });
@@ -54,6 +58,22 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, "0.0.0.0", () => console.log(`channel-adapter listening on ${port}`));
+async function dispatchReply(request, response) {
+  if (!hasBearerToken(request, dispatchToken)) return json(response, 401, { error: "invalid_dispatch_token" });
+  const reply = parseOutboundReply(JSON.parse(await readBody(request)));
+  const target = targets.get(reply.channelConnectionId);
+  if (!target || target.tenantId !== reply.tenantId) return json(response, 404, { error: "unknown_channel" });
+  const forwarded = await fetch(target.providerReplyEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${target.providerReplyToken}` },
+    body: JSON.stringify({ channelConnectionId: reply.channelConnectionId, replyId: reply.replyId, runId: reply.runId, interactionId: reply.interactionId, body: reply.body, bodySha256: reply.bodySha256, idempotencyKey: reply.idempotencyKey }),
+    signal: AbortSignal.timeout(8_000)
+  });
+  if (!forwarded.ok) return json(response, forwarded.status >= 500 || forwarded.status === 429 ? 502 : 422, { error: "provider_reply_rejected", status: forwarded.status });
+  const receipt = await forwarded.json().catch(() => null);
+  if (!receipt || typeof receipt !== "object" || typeof receipt.providerMessageId !== "string" || !receipt.providerMessageId || receipt.providerMessageId.length > 200) return json(response, 502, { error: "invalid_provider_reply_receipt" });
+  return json(response, 200, { providerMessageId: receipt.providerMessageId });
+}
 async function reserveReplay(target, eventId, hash) {
   const client = await pool.connect();
   try {
@@ -74,6 +94,8 @@ async function reserveReplay(target, eventId, hash) {
 async function markDelivered(target, eventId) { const client = await pool.connect(); try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]); await client.query("update channel_webhook_replays set state = 'delivered', delivered_at = now(), lease_expires_at = null where channel_connection_id = $1 and external_event_id = $2", [target.channelConnectionId, eventId]); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); } }
 async function releaseReplay(target, eventId) { const client = await pool.connect(); try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]); await client.query("update channel_webhook_replays set state = 'pending', lease_expires_at = null where channel_connection_id = $1 and external_event_id = $2 and state = 'delivering'", [target.channelConnectionId, eventId]); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); } }
 function asHeader(value) { return typeof value === "string" ? value : ""; }
+function requiredSecret(name) { const value = process.env[name]; if (!value || value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`); return value; }
+function hasBearerToken(request, token) { const supplied = Buffer.from(asHeader(request.headers.authorization)); const expected = Buffer.from(`Bearer ${token}`); return supplied.length === expected.length && timingSafeEqual(supplied, expected); }
 function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
 function boundedPositiveInt(value, fallback, name, minimum, maximum) { const parsed = positiveInt(value, fallback, name); if (parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); }

@@ -21,15 +21,34 @@ export function parseTargets(value) {
   const byChannel = new Map();
   for (const item of parsed) {
     if (!item || typeof item !== "object") throw new Error("Invalid channel adapter target");
-    const { tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken } = item;
-    if (![tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken].every((entry) => typeof entry === "string" && entry.length >= 32 && !/\s/.test(entry))) throw new Error("Each channel adapter target requires tenantId, channelConnectionId and distinct 32-character secrets without whitespace");
+    const { tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken, providerReplyEndpoint, providerReplyToken } = item;
+    if (![tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken, providerReplyToken].every((entry) => typeof entry === "string" && entry.length >= 32 && !/\s/.test(entry))) throw new Error("Each channel adapter target requires tenantId, channelConnectionId and distinct 32-character secrets without whitespace");
+    const replyEndpoint = parseProviderReplyEndpoint(providerReplyEndpoint);
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tenantId) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(channelConnectionId)) throw new Error("Channel adapter target IDs must be UUIDs");
-    if (new Set([signingSecret, interactionToken, commerceToken]).size !== 3) throw new Error("Channel adapter signing, interaction, and commerce secrets must differ");
+    if (new Set([signingSecret, interactionToken, commerceToken, providerReplyToken]).size !== 4) throw new Error("Channel adapter signing, interaction, commerce, and reply secrets must differ");
     if (byChannel.has(channelConnectionId)) throw new Error(`Duplicate channelConnectionId: ${channelConnectionId}`);
-    byChannel.set(channelConnectionId, { tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken });
+    byChannel.set(channelConnectionId, { tenantId, channelConnectionId, signingSecret, interactionToken, commerceToken, providerReplyEndpoint: replyEndpoint, providerReplyToken });
   }
   return byChannel;
 }
+
+export function parseOutboundReply(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid channel reply payload");
+  const { tenantId, replyId, runId, interactionId, channelConnectionId, body, bodySha256, idempotencyKey } = value;
+  if (![tenantId, replyId, interactionId, channelConnectionId].every(isUuid) || typeof runId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runId)) throw new Error("Invalid channel reply identity");
+  if (typeof body !== "string" || !body.trim() || body.length > 1000 || typeof bodySha256 !== "string" || !/^[a-f0-9]{64}$/i.test(bodySha256) || payloadSha256(body) !== bodySha256) throw new Error("Invalid channel reply body");
+  if (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(idempotencyKey)) throw new Error("Invalid channel reply idempotency key");
+  return { tenantId, replyId, runId, interactionId, channelConnectionId, body: body.trim(), bodySha256: bodySha256.toLowerCase(), idempotencyKey };
+}
+
+function parseProviderReplyEndpoint(value) {
+  if (typeof value !== "string") throw new Error("Each channel adapter target requires providerReplyEndpoint");
+  let url;
+  try { url = new URL(value); } catch { throw new Error("providerReplyEndpoint must be an HTTP(S) URL"); }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("providerReplyEndpoint must be an HTTP(S) URL without embedded credentials");
+  return url.toString();
+}
+function isUuid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
 
 export function payloadSha256(rawBody) { return createHash("sha256").update(rawBody).digest("hex"); }
 
