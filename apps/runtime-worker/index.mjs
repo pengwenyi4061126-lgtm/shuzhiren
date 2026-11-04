@@ -126,7 +126,7 @@ async function scheduleDueRun() {
         if (!existing.rows[0]) {
           const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'warning', 'entitlement_exhausted', $3, 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id, `场次因额度 ${blockedCode} 而未自动开播`]);
           if (opened.rows[0]) {
-            const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-scheduler', '运行时排期器', 'operator'::membership_role) as id", [run.tenant_id]);
+            const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-scheduler') as id", [run.tenant_id]);
             await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
               values ($1, $2, 'live_run.start_blocked_by_entitlement', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ entitlement: blockedCode })]);
           }
@@ -135,7 +135,7 @@ async function scheduleDueRun() {
       }
       const resolvedEntitlementAlert = await client.query("update runtime_alerts set status = 'resolved', resolved_at = now() where live_run_id = $1 and code = 'entitlement_exhausted' and status = 'open' returning id", [run.id]);
       if (resolvedEntitlementAlert.rows[0]) {
-        const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-scheduler', '运行时排期器', 'operator'::membership_role) as id", [run.tenant_id]);
+        const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-scheduler') as id", [run.tenant_id]);
         await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
           values ($1, $2, 'runtime_alert.resolved', 'runtime_alert', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, resolvedEntitlementAlert.rows[0].id, JSON.stringify({ runId: run.id, code: "entitlement_exhausted" })]);
       }
@@ -228,7 +228,7 @@ async function degradeStaleLiveRun() {
           [run.tenant_id, run.id, `运行时遥测超过 ${maxTelemetryAgeSeconds} 秒未更新`]
         );
       }
-      const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-watchdog', '运行时健康看门狗', 'operator'::membership_role) as id", [run.tenant_id]);
+      const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-watchdog') as id", [run.tenant_id]);
       await client.query(
         `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
          values ($1, $2, 'runtime_guard.degraded', 'live_run', $3::uuid, $3, $4::jsonb)`,
@@ -255,7 +255,7 @@ async function markDelivered(event, receipt = {}) {
       if (typeof providerMessageId !== "string" || !providerMessageId || providerMessageId.length > 200) throw new Error("Channel adapter response omitted providerMessageId");
       const delivered = await client.query("update channel_reply_drafts set status = 'sent', sent_at = now(), provider_message_id = $2, updated_at = now() where id = $1 and outbox_event_id = $3 and status = 'sending' returning id, interaction_id, live_run_id", [event.aggregate_id, providerMessageId, event.id]);
       if (!delivered.rows[0]) throw new Error("Channel reply delivery state was not found");
-      const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-worker', '运行时投递器', 'operator'::membership_role) as id", [event.tenant_id]);
+      const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
       await client.query("update live_interactions set status = 'handled', handled_by = $2, handled_at = now(), resolution_note = '渠道回复已送达' where id = $1 and status = 'queued'", [delivered.rows[0].interaction_id, actor.rows[0].id]);
       await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
         values ($1, $2, 'channel_reply.delivered', 'channel_reply_draft', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, delivered.rows[0].id, JSON.stringify({ runId: delivered.rows[0].live_run_id, interactionId: delivered.rows[0].interaction_id, outboxEventId: event.id, providerMessageId })]);
@@ -302,7 +302,7 @@ async function openDeliveryExhaustedAlert(client, event, lastError) {
     [event.tenant_id, runId, severity, code, `运行时 ${event.event_type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`]
   );
   if (!opened.rows[0]) return;
-  const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-worker', '运行时投递器', 'operator'::membership_role) as id", [event.tenant_id]);
+  const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
   await client.query(
     `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
      values ($1, $2, 'runtime_command.delivery_exhausted', 'runtime_alert', $3::uuid, $3, $4::jsonb)`,
@@ -314,7 +314,7 @@ async function failChannelReply(client, event, lastError) {
   const failureReason = String(lastError).replace(/[\r\n\t]+/g, " ").slice(0, 1000);
   const failed = await client.query("update channel_reply_drafts set status = 'failed', failure_reason = $2, updated_at = now() where id = $1 and outbox_event_id = $3 and status = 'sending' returning id, interaction_id, live_run_id", [event.aggregate_id, failureReason, event.id]);
   if (!failed.rows[0]) return;
-  const actor = await client.query("select sync_control_plane_actor($1::uuid, 'runtime-worker', '运行时投递器', 'operator'::membership_role) as id", [event.tenant_id]);
+  const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
   await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
     values ($1, $2, 'channel_reply.delivery_failed', 'channel_reply_draft', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, failed.rows[0].id, JSON.stringify({ runId: failed.rows[0].live_run_id, interactionId: failed.rows[0].interaction_id, outboxEventId: event.id, error: failureReason })]);
 }

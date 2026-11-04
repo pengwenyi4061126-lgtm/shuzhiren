@@ -18,7 +18,7 @@ for (const source of ["runtime/livetalking/Dockerfile", "../../runtime/gateway",
 for (const [name, key] of [["runtime", "RUNTIME_SHARED_TOKEN="], ["gateway", "RUNTIME_GATEWAY_STATE_PATH="], ["channel", "CHANNEL_ADAPTER_TARGETS="], ["notifier", "ALERT_NOTIFIER_TARGETS="]]) {
   if (!contents[name].includes(key)) throw new Error(`${name} template must supply ${key} for Compose interpolation`);
 }
-for (const required of ["DATABASE_URL", "CONTROL_PLANE_URL", "LIVETALKING_AVATAR_ID", "STREAM_RTMP_URL", "STREAM_KEY", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_MODEL_PATH", "COSYVOICE_MODEL_DIR"]) {
+for (const required of ["RUNTIME_WORKER_DATABASE_URL", "CHANNEL_ADAPTER_DATABASE_URL", "ALERT_NOTIFIER_DATABASE_URL", "CONTROL_PLANE_URL", "LIVETALKING_AVATAR_ID", "STREAM_RTMP_URL", "STREAM_KEY", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_MODEL_PATH", "COSYVOICE_MODEL_DIR"]) {
   if (!Object.values(contents).some((content) => content.includes(`${required}=`))) throw new Error(`Runtime Compose template set must supply ${required}`);
 }
 

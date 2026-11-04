@@ -60,7 +60,7 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
     CHANNEL_ADAPTER_URL: "http://channel-adapter.internal:8082",
     CHANNEL_ADAPTER_DISPATCH_TOKEN: "channel-adapter-dispatch-token-at-least-32-bytes",
-    DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
+    RUNTIME_WORKER_DATABASE_URL: "postgresql://runtime_worker:fixture-password@postgres.internal:5432/shuzhiren",
     DATABASE_QUERY_TIMEOUT_MS: "5000",
     CONTROL_PLANE_URL: "https://control-plane.internal",
     RUNTIME_OBSERVER_TARGETS_DIR: "/srv/shuzhiren/observer-config",
@@ -118,7 +118,7 @@ const gateway = env({
 });
 
 const channel = env({
-  DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
+  CHANNEL_ADAPTER_DATABASE_URL: "postgresql://channel_adapter:fixture-password@postgres.internal:5432/shuzhiren",
   DATABASE_QUERY_TIMEOUT_MS: "5000",
   CONTROL_PLANE_URL: "https://control-plane.internal",
   CHANNEL_ADAPTER_PORT: "8082",
@@ -129,7 +129,7 @@ const channel = env({
 });
 
 const alert = env({
-  DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
+  ALERT_NOTIFIER_DATABASE_URL: "postgresql://alert_notifier:fixture-password@postgres.internal:5432/shuzhiren",
   DATABASE_QUERY_TIMEOUT_MS: "5000",
   ALERT_NOTIFIER_PORT: "8083",
   ALERT_NOTIFIER_POLL_MS: "5000",
@@ -157,6 +157,12 @@ try {
   await Promise.all([writeFile(files.control, control), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  await writeFile(files.channel, channel.replace("postgresql://channel_adapter:fixture-password", "postgresql://runtime_worker:fixture-password"));
+  const reusedDatabasePrincipal = check(["--require-cosyvoice"]);
+  assert.notEqual(reusedDatabasePrincipal.status, 0, "service deployments must not reuse a database principal");
+  assert.match(reusedDatabasePrincipal.stderr, /四个不同的 PostgreSQL 用户名/, "database-principal reuse must identify the least-privilege deployment gate");
+  await writeFile(files.channel, channel);
 
   await writeFile(files.control, control.replace("DATABASE_QUERY_TIMEOUT_MS=5000", "DATABASE_QUERY_TIMEOUT_MS=61000"));
   const excessiveDatabaseTimeout = check(["--require-cosyvoice"]);

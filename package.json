@@ -45,6 +45,8 @@
     "lifecycle:authz:check": "node scripts/check-lifecycle-authorization.mjs",
     "command:confirmation:check": "node scripts/check-command-confirmation.mjs",
     "service-ingest:auth:check": "node scripts/check-service-ingest-auth.mjs",
+    "service-principals:check": "node scripts/check-service-principal-privileges.mjs",
+    "service-principals:integration": "node scripts/test-service-principal-privileges.mjs",
     "start:ack:check": "node scripts/check-start-ack-gate.mjs",
     "runtime:watchdog:check": "node scripts/check-runtime-watchdog.mjs",
     "runtime:outbox:check": "node scripts/check-runtime-outbox-alerting.mjs",

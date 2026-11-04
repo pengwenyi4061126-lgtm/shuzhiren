@@ -25,6 +25,7 @@ const checks = [
   ["run", "lifecycle:authz:check"],
   ["run", "command:confirmation:check"],
   ["run", "service-ingest:auth:check"],
+  ["run", "service-principals:check"],
   ["run", "start:ack:check"],
   ["run", "runtime:watchdog:check"],
   ["run", "runtime:outbox:check"],

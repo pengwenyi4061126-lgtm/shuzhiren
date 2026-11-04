@@ -68,6 +68,7 @@ jobs:
       - run: npm run lifecycle:authz:check
       - run: npm run command:confirmation:check
       - run: npm run service-ingest:auth:check
+      - run: npm run service-principals:check
       - run: npm run start:ack:check
       - run: npm run runtime:watchdog:check
       - run: npm run runtime:outbox:check
@@ -103,6 +104,7 @@ jobs:
       - run: node --check apps/channel-adapter/index.mjs
       - run: node --check apps/alert-notifier/index.mjs
       - run: npm run db:migrate
+      - run: npm run service-principals:integration
       - run: npm run db:migrate:lock:test
       - run: npm run db:verify -- --allow-privileged
       - run: npm run typecheck

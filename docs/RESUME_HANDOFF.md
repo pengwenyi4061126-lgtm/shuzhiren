@@ -82,6 +82,7 @@ npm run build
 - 本轮补齐开播前节目修订闭环：`055_governed_show_program_revisions.sql` 建立候选修订请求、RLS、单场次活动请求唯一约束、创建人不得自审、候选依赖绑定封存与场次重绑触发器；服务/API/工作台克隆已批准版本，运营编辑和送审候选段落，独立审核人批准后在同一事务重绑场次、重建发布清单并要求重新预检。`ARMED`、`LIVE`、`DEGRADED` 场次一律拒绝创建或应用候选修订；这不是实时插播功能。`npm run program:revisions:check`、`db:verify` 与 PostgreSQL 控制面集成测试覆盖状态机、封存、独立审批、重绑和重新预检边界。
 - 本轮已补齐渠道人工回复的仓库内闭环：`053_channel_reply_workflow.sql`、控制台草稿/送审/审批/拒绝/投递/失败重试界面与 API、来源渠道绑定、不可变证据快照、独立渠道 outbox、worker -> 私网 adapter -> provider bridge 回执，以及“只有 `sent` 才关闭互动”的约束。CI PostgreSQL 集成测试新增该闭环的角色、状态、outbox 和回执断言。本机不启动 PostgreSQL，因此最终迁移/集成执行仍由 CI 或 Linux 数据库环境负责。
 - 本轮继续完成成员授权第一层：`054_governed_membership_authorization.sql`、管理员成员 API、首位管理员受审计引导脚本、数据库成员状态/RLS/最后管理员保护，以及所有人工 API 的服务端角色门禁。生产 OIDC 仅确认主体与租户，角色由有效数据库成员关系决定；旧 JWT 角色无法恢复已暂停/撤销成员或覆盖降权。`npm run membership:authz:check`、类型检查与 lint 已覆盖静态授权边界；CI PostgreSQL 集成测试覆盖伪造角色 claim、暂停成员和最后管理员约束。
-- 仍待完成的仓库内工作包括：受控直播预览、成员资源范围与服务主体最小权限、对象/镜像证据的实际内容校验，以及选定平台的具体 OAuth/Webhook/商品/结算 Adapter。实时插播不属于当前已支持能力，必须另行完成运行时安全切换、回滚与平台时序审计后才能列为可交付功能；它不能误列为 GPU 或账号外部前置条件。
+- 本轮完成服务主体最小权限第一层：`056_service_actor_security.sql` 将 worker 审计主体收敛为只接受固定标识的 `SECURITY DEFINER` 函数，`service-principals.sql` 为 runtime worker、channel adapter 和 alert notifier 分别授予最小表权限；运行时 Compose 与模板要求三个独立数据库 URL，部署预检拒绝与控制面或彼此复用用户名。CI PostgreSQL 会在迁移后实际应用授权脚本并验证允许和禁止的权限；生产仍须由数据库管理员创建三个 `LOGIN NOINHERIT` 账号并保管各自密码。
+- 仍待完成的仓库内工作包括：受控直播预览、成员资源范围、对象/镜像证据的实际内容校验，以及选定平台的具体 OAuth/Webhook/商品/结算 Adapter。实时插播不属于当前已支持能力，必须另行完成运行时安全切换、回滚与平台时序审计后才能列为可交付功能；它不能误列为 GPU 或账号外部前置条件。
 - 渠道回复的 `providerReplyEndpoint` 只是受控标准化桥接契约；抖音、淘宝、视频号等实际 API、OAuth scope、应用审核和商家账号权限仍是外部平台前置条件。缺少回执时 worker 保持失败/可重试状态，不会把互动伪装成已处理。
 - 恢复受控 SSH 凭据后推送全部本地提交；继续按上述代码审计项实现，再按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。

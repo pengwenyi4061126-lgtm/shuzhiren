@@ -38,7 +38,7 @@ services:
       context: ../..
       dockerfile: apps/runtime-worker/Dockerfile
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set-in-control-plane-env}
+      DATABASE_URL: ${RUNTIME_WORKER_DATABASE_URL:?set-in-runtime-env}
       DATABASE_QUERY_TIMEOUT_MS: ${DATABASE_QUERY_TIMEOUT_MS:-5000}
       RUNTIME_GATEWAY_URL: http://runtime-gateway:8090
       RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
@@ -126,7 +126,7 @@ services:
       context: ../..
       dockerfile: apps/channel-adapter/Dockerfile
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set-in-control-plane-env}
+      DATABASE_URL: ${CHANNEL_ADAPTER_DATABASE_URL:?set-in-channel-adapter-env}
       DATABASE_QUERY_TIMEOUT_MS: ${DATABASE_QUERY_TIMEOUT_MS:-5000}
       CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set-in-runtime-env}
       CHANNEL_ADAPTER_PORT: ${CHANNEL_ADAPTER_PORT:-8082}
@@ -149,7 +149,7 @@ services:
       context: ../..
       dockerfile: apps/alert-notifier/Dockerfile
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set-in-control-plane-env}
+      DATABASE_URL: ${ALERT_NOTIFIER_DATABASE_URL:?set-in-alert-notifier-env}
       DATABASE_QUERY_TIMEOUT_MS: ${DATABASE_QUERY_TIMEOUT_MS:-5000}
       ALERT_NOTIFIER_PORT: ${ALERT_NOTIFIER_PORT:-8083}
       ALERT_NOTIFIER_POLL_MS: ${ALERT_NOTIFIER_POLL_MS:-5000}
