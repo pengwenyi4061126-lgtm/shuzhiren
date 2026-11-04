@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { advanceRunLifecycle, type RunLifecycleAction } from "@/lib/control-plane/store";
@@ -17,7 +16,6 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   const { runId } = await context.params;
   try {
     const run = await advanceRunLifecycle(actor, runId, action as RunLifecycleAction);
-    await recordAuditEvent(actor, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: run.state } });
     return Response.json({ data: run });
   } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "lifecycle_conflict" }, { status: error.status }); throw error; }
 }

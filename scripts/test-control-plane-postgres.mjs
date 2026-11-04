@@ -169,6 +169,23 @@ try {
   const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true }) });
   assert.equal(createdRunResponse.status, 201, "creating a production run should freeze currently approved media rights");
   const createdRun = await createdRunResponse.json();
+  const initialProgramResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { headers: requestHeaders });
+  assert.equal(initialProgramResponse.status, 200, "operators should read a new draft program");
+  const initialProgram = await initialProgramResponse.json();
+  assert.equal(initialProgram.data.status, "draft", "a newly planned live run must start with a draft program revision");
+  const invalidProgram = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ segments: initialProgram.data.segments.slice(0, 1).map(({ kind, title, durationSeconds, purpose }) => ({ kind, title, durationSeconds, purpose })) }) });
+  assert.equal(invalidProgram.status, 409, "a program without fallback and human handoff must be rejected");
+  const analystProgramWrite = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { method: "PUT", headers: analystRequestHeaders, body: JSON.stringify({ segments: [] }) });
+  assert.equal(analystProgramWrite.status, 403, "an analyst must not edit a draft program");
+  const editedSegments = initialProgram.data.segments.map(({ kind, title, durationSeconds, purpose }, index) => ({ kind, title: index === 0 ? "Integration edited opening" : title, durationSeconds, purpose }));
+  const savedProgram = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ segments: editedSegments }) });
+  assert.equal(savedProgram.status, 200, "an operator should edit a draft program through the controlled API");
+  assert.equal((await savedProgram.json()).data.segments[0].title, "Integration edited opening");
+  const programSubmitReview = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "submit_review" }) });
+  assert.equal(programSubmitReview.status, 200, "a valid draft program should enter review");
+  const lockedProgramWrite = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ segments: editedSegments }) });
+  assert.equal(lockedProgramWrite.status, 409, "reviewed program edits must be rejected by the API");
+  await assert.rejects(client.query("update show_revision_segments set title = 'illegal mutation' where show_revision_id = (select show_revision_id from live_runs where id = $1) and position = 1", [createdRun.data.id]), /editable only while.*DRAFT/i, "reviewed program edits must be rejected by the database");
   const liveSessionRebind = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${staleRunId}/runtime-session`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ runtimeSessionId: "0" }) });
   assert.equal(liveSessionRebind.status, 409, "operators must not redirect a live run to another runtime session");
   const runtimeSessionBinding = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/runtime-session`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ runtimeSessionId: "0" }) });
@@ -190,11 +207,14 @@ try {
   assert.equal(manifest.data.frozenSha256, manifest.data.sha256, "new runs must seal their creation manifest hash");
   assert.equal(manifest.data.frozenSnapshotVerified, true, "the stored release manifest snapshot must verify against its hash");
   await assert.rejects(client.query("update show_revision_release_manifest_snapshots set manifest = '{}'::jsonb where show_revision_id = (select show_revision_id from live_runs where id = $1)", [createdRun.data.id]), /append-only/, "release manifest snapshots must reject direct mutation");
-  for (const [action, expectedState] of [["submit_review", "REVIEW"], ["approve", "APPROVED"], ["begin_preflight", "PREFLIGHT"], ["arm", "ARMED"]]) {
+  for (const [action, expectedState] of [["approve", "APPROVED"], ["begin_preflight", "PREFLIGHT"], ["arm", "ARMED"]]) {
     const lifecycleResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action }) });
     assert.equal(lifecycleResponse.status, 200, `lifecycle action ${action} should advance a fully governed run`);
     assert.equal((await lifecycleResponse.json()).data.state, expectedState, `lifecycle action ${action} should reach ${expectedState}`);
   }
+  const approvedProgram = await client.query("select approval_status, approved_by, approved_at from show_revisions where id = (select show_revision_id from live_runs where id = $1)", [createdRun.data.id]);
+  assert.equal(approvedProgram.rows[0]?.approval_status, "approved", "approving a live run must approve its frozen program revision");
+  assert.ok(approvedProgram.rows[0]?.approved_by && approvedProgram.rows[0]?.approved_at, "program approval must retain the approver identity and timestamp");
   const armAudit = await client.query("select event_type from audit_events where resource_id = $1 and event_type = 'live_run.arm'", [createdRun.data.id]);
   assert.equal(armAudit.rows.length, 1, "arming a preflight-ready run must leave an audit record");
   const competingRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration competing runtime session run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "0", aiDisclosureEnabled: true }) });

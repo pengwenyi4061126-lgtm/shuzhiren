@@ -5,8 +5,7 @@ import { canTransition, nextStateFor } from "@/lib/live-run";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { findApprovedProductVersion, frozenProductVersionStatusForRun, frozenProductVersionStatusForRunInTransaction, type ProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
-import { hasApprovedFallbackProgram } from "@/lib/show-program";
-import { registerDemoProgram, type ShowProgram } from "@/lib/show-program";
+import { approveShowProgramInTransaction, hasApprovedFallbackProgram, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
 import { activeMediaAssetStatus, activeMediaAssetStatusInTransaction, currentApprovedMediaAssetsInTransaction, hasApprovedLiveRights, requiredLiveAssetKinds, runtimeVoiceForRun, runtimeVoiceForRunInTransaction } from "@/lib/assets";
 import { activeModelReleaseStatus, activeModelReleaseStatusInTransaction, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
 import { validateChannelConnection } from "@/lib/channels";
@@ -143,13 +142,13 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     if (!requiredLiveAssetKinds.every((kind) => mediaAssets.has(kind))) throw new Response("Approved portrait, voice, product clip, and music assets are required", { status: 409 });
     if (!mediaAssets.get("voice")?.runtimeVoiceId) throw new Response("Approved voice asset requires a runtime voice identifier", { status: 409 });
     const show = await client.query<{ id: string }>("insert into shows (tenant_id, name) values ($1, $2) returning id", [context.tenantId, input.showName]);
-    const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'approved') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId, modelReleaseIds: Object.fromEntries(frozenReleases), mediaAssetIds: Object.fromEntries(mediaAssets), policyProfileId: policyProfile.id })]);
+    const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'draft') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId, modelReleaseIds: Object.fromEntries(frozenReleases), mediaAssetIds: Object.fromEntries(mediaAssets), policyProfileId: policyProfile.id })]);
     await client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [context.tenantId, revision.rows[0].id, input.productVersionId]);
     for (const component of requiredProductionReleaseComponents) await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, frozenReleases.get(component), component]);
     await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [context.tenantId, revision.rows[0].id, policyProfile.id]);
     for (const kind of requiredLiveAssetKinds) await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, $4)", [context.tenantId, revision.rows[0].id, mediaAssets.get(kind)?.id, kind]);
+    const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, true, true, false, true, false, $6, $7, $8::timestamptz) returning id, tenant_id, show_revision_id, $9::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
-    const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, true, true, true, true, false, $6, $7, $8::timestamptz) returning id, tenant_id, show_revision_id, $9::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
     await createReleaseManifestSnapshotInTransaction(client, { tenantId: context.tenantId, revisionId: revision.rows[0].id, runId: run.rows[0].id });
     return persistentRun(run.rows[0], []);
   });
@@ -162,22 +161,33 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     const next = lifecycleTarget(run.state, action);
     if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
     if (reservesRuntimeSession(next) && run.runtimeSessionId && [...store().runs.values()].some((candidate) => candidate.id !== run.id && candidate.tenantId === context.tenantId && candidate.runtimeSessionId === run.runtimeSessionId && reservesRuntimeSession(candidate.state))) throw new Response("Runtime session is already reserved by another active run", { status: 409 });
+    if (action === "submit_review" || action === "approve") updateDemoProgramLifecycle(run.id, action);
     run.state = next;
+    if (action === "approve") run.hasFallbackProgram = true;
+    await recordAuditEvent(context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: run.state } });
     return run;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    if (action === "disarm") return disarmPersistentRun(client, runId);
+    if (action === "disarm") {
+      const disarmed = await disarmPersistentRun(client, runId);
+      await recordAuditEventInTransaction(client, context, { type: "live_run.disarm", resource: "live_run", resourceId: disarmed.id, detail: { state: disarmed.state } });
+      return disarmed;
+    }
     const run = await loadPersistentRun(client, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
     const next = lifecycleTarget(run.state, action);
+    if (action === "submit_review") await validateShowProgramInTransaction(client, run.id, run.revisionId, run.productVersionId);
+    if (action === "approve") await approveShowProgramInTransaction(client, context, run.id, run.revisionId, run.productVersionId);
     if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
     try {
-      await client.query("update live_runs set state = $2, updated_at = now() where id = $1", [run.id, next]);
+      await client.query("update live_runs set state = $2, has_fallback_program = case when $3 then true else has_fallback_program end, updated_at = now() where id = $1", [run.id, next, action === "approve"]);
     } catch (error) {
       if (isUniqueConstraintError(error)) throw new Response("Runtime session is already reserved by another active run", { status: 409 });
       throw error;
     }
-    return { ...run, state: next };
+    const updated = { ...run, state: next, hasFallbackProgram: action === "approve" ? true : run.hasFallbackProgram };
+    await recordAuditEventInTransaction(client, context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: next } });
+    return updated;
   });
 }
 
@@ -214,9 +224,9 @@ function isUniqueConstraintError(error: unknown) {
 async function createDemoRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean }) {
   const id = `run_${crypto.randomUUID()}`;
   const revisionId = `show_revision_${crypto.randomUUID()}`;
-  const run: StoredRun = { id, tenantId: context.tenantId, revisionId, channelConnectionId: input.channelConnectionId, productVersionId: input.productVersionId, showName: input.showName, state: "DRAFT", traceId: id, scheduledAt: input.scheduledAt, hasOperator: true, hasApprovedRights: await hasApprovedLiveRights(context), hasApprovedSkuVersion: true, hasFallbackProgram: true, channelReady: true, outputReady: false, aiDisclosureEnabled: input.aiDisclosureEnabled, runtimeSessionId: input.runtimeSessionId, commandHistory: [], questions: [] };
+  const run: StoredRun = { id, tenantId: context.tenantId, revisionId, channelConnectionId: input.channelConnectionId, productVersionId: input.productVersionId, showName: input.showName, state: "DRAFT", traceId: id, scheduledAt: input.scheduledAt, hasOperator: true, hasApprovedRights: await hasApprovedLiveRights(context), hasApprovedSkuVersion: true, hasFallbackProgram: false, channelReady: true, outputReady: false, aiDisclosureEnabled: input.aiDisclosureEnabled, runtimeSessionId: input.runtimeSessionId, commandHistory: [], questions: [] };
   store().runs.set(id, run);
-  const program: ShowProgram = { runId: id, tenantId: context.tenantId, revisionId, status: "approved", segments: [{ id: `${id}_product`, position: 1, kind: "prepared_product", title: "商品讲解", durationSeconds: 180, productVersionId: input.productVersionId, purpose: "受审核商品事实", fallback: false }, { id: `${id}_interactive`, position: 2, kind: "interactive", title: "受控互动", durationSeconds: 120, productVersionId: input.productVersionId, purpose: "仅低风险可追溯问答", fallback: false }, { id: `${id}_fallback`, position: 3, kind: "fallback", title: "备用节目", durationSeconds: 150, productVersionId: input.productVersionId, purpose: "运行异常降级", fallback: true }, { id: `${id}_handoff`, position: 4, kind: "human_handoff", title: "人工接管", durationSeconds: 0, purpose: "高风险人工处理", fallback: true }] };
+  const program: ShowProgram = { runId: id, tenantId: context.tenantId, revisionId, status: "draft", editable: true, segments: [{ id: `${id}_product`, position: 1, kind: "prepared_product", title: "商品讲解", durationSeconds: 180, productVersionId: input.productVersionId, purpose: "受审核商品事实", fallback: false }, { id: `${id}_interactive`, position: 2, kind: "interactive", title: "受控互动", durationSeconds: 120, productVersionId: input.productVersionId, purpose: "仅低风险可追溯问答", fallback: false }, { id: `${id}_fallback`, position: 3, kind: "fallback", title: "备用节目", durationSeconds: 150, productVersionId: input.productVersionId, purpose: "运行异常降级", fallback: true }, { id: `${id}_handoff`, position: 4, kind: "human_handoff", title: "人工接管", durationSeconds: 0, purpose: "高风险人工处理", fallback: true }] };
   registerDemoProgram(program);
   return run;
 }

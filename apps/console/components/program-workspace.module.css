@@ -1,0 +1,11 @@
+.actions { display: flex; align-items: center; gap: 7px; }
+.actions button, .tools button { width: 30px; height: 30px; display: inline-grid; place-items: center; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.actions button:disabled, .tools button:disabled { cursor: default; opacity: .45; }
+.command { width: auto !important; padding: 0 9px; display: inline-flex !important; gap: 5px; color: var(--green) !important; font-size: 12px; font-weight: 700; }
+.feedback { margin: 0; padding: 9px 16px; border-bottom: 1px solid var(--line); color: var(--green); font-size: 12px; }
+.kindSelect, .titleInput, .purposeInput, .durationInput { width: 100%; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--text); font: inherit; }
+.kindSelect, .durationInput { height: 30px; padding: 0 6px; font-size: 12px; }
+.titleInput { height: 30px; padding: 0 8px; font-size: 13px; font-weight: 700; }
+.purposeInput { min-height: 40px; margin-top: 5px; padding: 6px 8px; resize: vertical; font-size: 12px; }
+.tools { display: flex; justify-self: end; gap: 3px; }
+@media (max-width: 780px) { .actions { flex-wrap: wrap; justify-content: flex-end; }.tools { grid-column: 3; grid-row: 2; }.kindSelect { grid-column: 2; }.durationInput { grid-column: 3; grid-row: 1; } }
