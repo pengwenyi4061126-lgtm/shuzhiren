@@ -509,6 +509,13 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
             raise HTTPException(status_code=400, detail="Program insertion requires segment, script, and script hash")
         if not hmac.compare_digest(hashlib.sha256(request.program_script.encode("utf-8")).hexdigest(), request.script_sha256):
             raise HTTPException(status_code=400, detail="Program script hash does not match script")
+    elif request.action == "start_program":
+        if (request.program_script is None) != (request.script_sha256 is None):
+            raise HTTPException(status_code=400, detail="Program start script and hash must be supplied together")
+        if request.program_script and not request.program_segment_id:
+            raise HTTPException(status_code=400, detail="Program start script requires a segment")
+        if request.program_script and not hmac.compare_digest(hashlib.sha256(request.program_script.encode("utf-8")).hexdigest(), request.script_sha256 or ""):
+            raise HTTPException(status_code=400, detail="Program script hash does not match script")
     elif request.action == "resume_program":
         if (request.program_script is None) != (request.script_sha256 is None):
             raise HTTPException(status_code=400, detail="Program resume script and hash must be supplied together")
@@ -537,6 +544,9 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
             downstream_actions.append("set_program_audiotype")
             await livetalking_post("/record", {"sessionid": request.session_id, "type": "start_record"})
             downstream_actions.append("start_record")
+            if request.program_script:
+                await livetalking_post("/human", {"sessionid": request.session_id, "text": request.program_script, "type": "echo", "interrupt": True})
+                downstream_actions.append("play_frozen_program_script")
         elif request.action in ("insert_program", "resume_program"):
             await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
             downstream_actions.append("interrupt_talk")

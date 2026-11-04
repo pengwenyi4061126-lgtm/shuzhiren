@@ -71,9 +71,10 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
   const runtimeScript = command.payload.runtimeScript;
   const scriptSha256 = command.payload.scriptSha256;
   if (command.type === "insert_program" && (!programSegmentIdValid(programSegmentId) || !runtimeScript || !/^[a-f0-9]{64}$/i.test(scriptSha256 ?? ""))) throw new Error("Program insertion command is missing frozen script evidence");
+  if (command.type === "start_program" && ((runtimeScript && (!programSegmentIdValid(programSegmentId) || !/^[a-f0-9]{64}$/i.test(scriptSha256 ?? ""))) || (!runtimeScript && (programSegmentId || scriptSha256)))) throw new Error("Program start command contains incomplete frozen script evidence");
   if (command.type === "resume_program" && ((runtimeScript && (!programSegmentIdValid(programSegmentId) || !/^[a-f0-9]{64}$/i.test(scriptSha256 ?? ""))) || (!runtimeScript && (programSegmentId || scriptSha256)))) throw new Error("Program resume command contains incomplete frozen script evidence");
   if (runtimeScript && createHash("sha256").update(runtimeScript).digest("hex") !== scriptSha256) throw new Error("Program script hash does not match frozen script");
-  if (command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Non-program media command cannot include a runtime script");
+  if (command.type !== "start_program" && command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Non-program media command cannot include a runtime script");
   const response = await fetch(`${config.url}/v1/media`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },

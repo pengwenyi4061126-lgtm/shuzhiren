@@ -103,6 +103,7 @@ try {
   await seedMembership(tenantId, "integration-analyst", "Integration Analyst", "analyst");
   await seedMembership(isolatedTenantId, "isolated-operator", "Isolated Tenant Admin", "admin");
   const programTransitionRun = await seedProgramTransitionRun();
+  const scheduledProgramRun = await seedProgramTransitionRun({ state: "ARMED", scheduledAt: new Date(Date.now() - 60_000) });
   const recoverRunId = recoverRun.runId;
   const staleRunId = staleRun.runId;
   next = spawn(process.execPath, [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(consolePort)], {
@@ -785,6 +786,7 @@ try {
   const settlementAudit = await client.query("select event_type from audit_events where resource_type in ('settlement_batch', 'settlement_exception') order by chain_sequence");
   assert.deepEqual(settlementAudit.rows.map((row) => row.event_type), ["settlement_batch.imported", "settlement_batch.imported", "settlement_exception.resolved"], "settlement imports and exception resolution must enter the audit chain");
 
+  await client.query("update tenant_entitlements set limit_value = 999 where tenant_id = $1 and code = 'max_concurrent_live_runs'", [tenantId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, programTransitionRun.runId]);
   workerProcess = spawn(process.execPath, [worker], {
     cwd: root,
@@ -808,6 +810,15 @@ try {
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  await waitFor(async () => {
+    const result = await client.query("select state, active_program_segment_id, scheduled_start_event_id from live_runs where id = $1", [scheduledProgramRun.runId]);
+    const run = result.rows[0];
+    return run?.state === "LIVE" && run?.active_program_segment_id === scheduledProgramRun.primarySegmentId && run?.scheduled_start_event_id === null;
+  }, 10_000, "scheduled start program baseline acknowledgement");
+  const scheduledStartCommand = mock.mediaCommands.find((command) => command.action === "start_program" && command.program_segment_id === scheduledProgramRun.primarySegmentId);
+  assert.deepEqual({ program_segment_id: scheduledStartCommand?.program_segment_id, program_script: scheduledStartCommand?.program_script, script_sha256: scheduledStartCommand?.script_sha256 }, { program_segment_id: scheduledProgramRun.primarySegmentId, program_script: scheduledProgramRun.primaryScript, script_sha256: scheduledProgramRun.primaryScriptSha256 }, "scheduled start must dispatch and acknowledge the frozen baseline script");
+  const scheduledActivationAudit = await client.query("select count(*)::int as count from audit_events where resource_key = $1 and event_type = 'live_program.activation_accepted'", [scheduledProgramRun.runId]);
+  assert.equal(scheduledActivationAudit.rows[0].count, 1, "a scheduled baseline activation must enter the immutable audit chain");
   await waitFor(async () => {
     const result = await client.query("select active_program_segment_id, active_insert_source_segment_id, active_insert_program_segment_id, pending_program_transition_event_id from live_runs where id = $1", [programTransitionRun.runId]);
     const cursor = result.rows[0];
@@ -1012,7 +1023,7 @@ async function seedRun(state, sessionId, sampledAt) {
   return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
 }
 
-async function seedProgramTransitionRun() {
+async function seedProgramTransitionRun({ state = "LIVE", scheduledAt } = {}) {
   const showId = randomUUID();
   const revisionId = randomUUID();
   const runId = randomUUID();
@@ -1027,7 +1038,7 @@ async function seedProgramTransitionRun() {
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id) values ($1, $2, $3, 'DRAFT', $4, $5)", [runId, tenantId, revisionId, `trace_${runId}`, `session_program_${runId}`]);
   await client.query("insert into show_revision_segments (id, tenant_id, show_revision_id, position, kind, title, purpose, duration_seconds, runtime_script) values ($1, $2, $3, 1, 'prepared_product', '主节目', '受审核主节目内容', 120, $4), ($5, $2, $3, 2, 'interactive', '限时插播', '受审核插播内容', 60, $6)", [primarySegmentId, tenantId, revisionId, primaryScript, insertSegmentId, insertScript]);
   await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, approver.rows[0].id]);
-  await client.query("update live_runs set state = 'LIVE', active_program_segment_id = $2 where id = $1", [runId, primarySegmentId]);
+  await client.query("update live_runs set state = $2::live_run_state, scheduled_at = $3::timestamptz, active_program_segment_id = case when $2::live_run_state = 'LIVE' then $4::uuid else null end where id = $1", [runId, state, scheduledAt ?? null, primarySegmentId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, runId]);
   const digest = (value) => createHash("sha256").update(value).digest("hex");
   return { runId, primarySegmentId, insertSegmentId, primaryScript, insertScript, primaryScriptSha256: digest(primaryScript), insertScriptSha256: digest(insertScript) };

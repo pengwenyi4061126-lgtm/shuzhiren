@@ -98,7 +98,7 @@ async function scheduleDueRun() {
   for (const tenantId of ordered) {
     const scheduled = await inTenantTransaction(tenantId, async (client) => {
       const due = await client.query(`
-      select id, tenant_id, trace_id, runtime_session_id
+      select id, tenant_id, show_revision_id, trace_id, runtime_session_id
       from live_runs
       where state = 'ARMED'
         and scheduled_at <= now()
@@ -110,6 +110,17 @@ async function scheduleDueRun() {
     `);
       const run = due.rows[0];
       if (!run) return null;
+      const initialProgram = await client.query("select id, runtime_script from show_revision_segments where tenant_id = $1 and show_revision_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position limit 1", [run.tenant_id, run.show_revision_id]);
+      if (!initialProgram.rows[0]) {
+        await client.query("update live_runs set scheduled_at = null, updated_at = now() where id = $1 and scheduled_at is not null", [run.id]);
+        const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'program_script_missing', '场次缺少已批准的冻结主节目脚本，已拒绝定时开播', 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id]);
+        if (opened.rows[0]) {
+          const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-scheduler') as id", [run.tenant_id]);
+          await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+            values ($1, $2, 'live_run.start_blocked_by_program_script', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ showRevisionId: run.show_revision_id })]);
+        }
+        return null;
+      }
       const entitlements = await client.query("select code, limit_value from tenant_entitlements where effective_from <= current_date and (effective_until is null or effective_until >= current_date) for update");
       let blockedCode = null;
       for (const entitlement of entitlements.rows) {
@@ -140,7 +151,9 @@ async function scheduleDueRun() {
         await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
           values ($1, $2, 'runtime_alert.resolved', 'runtime_alert', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, resolvedEntitlementAlert.rows[0].id, JSON.stringify({ runId: run.id, code: "entitlement_exhausted" })]);
       }
-      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START" } };
+      const segment = initialProgram.rows[0];
+      const scriptSha256 = createHash("sha256").update(segment.runtime_script).digest("hex");
+      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: segment.runtime_script, scriptSha256 } };
       const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
       values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)
@@ -262,10 +275,11 @@ async function markDelivered(event, receipt = {}) {
         values ($1, $2, 'channel_reply.delivered', 'channel_reply_draft', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, delivered.rows[0].id, JSON.stringify({ runId: delivered.rows[0].live_run_id, interactionId: delivered.rows[0].interaction_id, outboxEventId: event.id, providerMessageId })]);
     }
     if (["SCHEDULED_START", "START", "RECOVER"].includes(event.payload?.command?.payload?.controlAction)) {
-      await client.query(
+      const promoted = await client.query(
         "update live_runs set state = 'LIVE', scheduled_start_event_id = null, updated_at = now() where id = $1 and tenant_id = $2 and state in ('ARMED', 'DEGRADED') and scheduled_start_event_id = $3",
         [event.payload.command.runId, event.tenant_id, event.id]
       );
+      if (promoted.rowCount && event.payload?.command?.payload?.programSegmentId) await applyActivationProgramReceipt(client, event, receipt.mediaReceipt);
     }
     if (event.payload?.command?.payload?.controlAction === "END") {
       await client.query(
@@ -298,6 +312,17 @@ async function applyProgramTransitionReceipt(client, event, receipt) {
   const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
   await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
     values ($1, $2, 'live_program.transition_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, command.runId, JSON.stringify({ outboxEventId: event.id, commandId: command.id, action: payload.controlAction, programSegmentId: target, sourceProgramSegmentId: source, receipt })]);
+}
+
+async function applyActivationProgramReceipt(client, event, receipt) {
+  const command = event.payload?.command;
+  const payload = command?.payload;
+  if (!command || !payload || !receipt || typeof payload.programSegmentId !== "string") throw new Error("Program activation receipt is missing");
+  const updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, updated_at = now() where id = $1 and tenant_id = $3 and state = 'LIVE' returning id", [command.runId, payload.programSegmentId, event.tenant_id]);
+  if (!updated.rows[0]) throw new Error("Program activation cursor was not available for this receipt");
+  const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
+  await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+    values ($1, $2, 'live_program.activation_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, command.runId, JSON.stringify({ outboxEventId: event.id, commandId: command.id, action: payload.controlAction, programSegmentId: payload.programSegmentId, receipt })]);
 }
 
 async function markFailed(event, lastError, retryable = true) {
@@ -371,9 +396,10 @@ function deliveryRequest(event) {
     const runtimeScript = command.payload?.runtimeScript;
     const scriptSha256 = command.payload?.scriptSha256;
     if (command.type === "insert_program" && (!programSegmentIdValid(programSegmentId) || typeof runtimeScript !== "string" || runtimeScript.length < 1 || runtimeScript.length > 800 || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) throw new Error("Invalid program insertion command");
+    if (command.type === "start_program" && ((typeof runtimeScript === "string" && (!programSegmentIdValid(programSegmentId) || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) || (runtimeScript === undefined && (programSegmentId || scriptSha256)))) throw new Error("Invalid program start command");
     if (command.type === "resume_program" && ((typeof runtimeScript === "string" && (!programSegmentIdValid(programSegmentId) || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) || (runtimeScript === undefined && (programSegmentId || scriptSha256)))) throw new Error("Invalid program resume command");
     if (typeof runtimeScript === "string" && createHash("sha256").update(runtimeScript).digest("hex") !== scriptSha256) throw new Error("Program script hash does not match frozen script");
-    if (command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Invalid media command payload");
+    if (command.type !== "start_program" && command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Invalid media command payload");
     return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}) } };
   }
   if (event.event_type === "speech.dispatch") {

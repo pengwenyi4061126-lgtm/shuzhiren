@@ -336,16 +336,17 @@ export async function issueCommand(context: RequestContext, runId: string, input
       const pending = await client.query<{ pending_media_event_id: string | null }>("select pending_media_event_id from live_runs where id = $1", [run.id]);
       if (pending.rows[0]?.pending_media_event_id) throw new Response("A runtime stop command is already pending confirmation", { status: 409 });
     }
+    const activationProgram = requiresActivationConfirmation ? await resolveActivationProgram(client, run) : undefined;
     const programTransition = isProgramTransition ? await resolveProgramTransition(client, run, input) : undefined;
 
     const nextState = nextStateFor(run.state, input.action);
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const inserted = await client.query<PersistentCommandRow>(
       "insert into live_commands (tenant_id, live_run_id, actor_id, idempotency_key, expected_state, action, result) values ($1, $2, $3, $4, $5, $6, $7::jsonb) returning id, action, expected_state, issued_at, result, $8::text as actor_name",
-      [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted", programSegmentId: programTransition?.target?.id ?? null, sourceProgramSegmentId: programTransition?.source?.id ?? null }), context.actorName]
+      [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted", programSegmentId: programTransition?.target?.id ?? activationProgram?.id ?? null, sourceProgramSegmentId: programTransition?.source?.id ?? null }), context.actorName]
     );
     const command = persistentCommand(inserted.rows[0]);
-    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition)), run.runtimeSessionId);
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram)), run.runtimeSessionId);
     if (requiresActivationConfirmation) {
       await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = $3 and scheduled_start_event_id is null", [run.id, mediaEvent.id, run.state]);
       return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
@@ -366,6 +367,16 @@ export async function issueCommand(context: RequestContext, runId: string, input
 
 type FrozenRuntimeSegment = { id: string; runtimeScript: string };
 type ProgramTransition = { kind: "insert" | "rollback"; target?: FrozenRuntimeSegment; source?: FrozenRuntimeSegment };
+
+async function resolveActivationProgram(client: PoolClient, run: StoredRun): Promise<FrozenRuntimeSegment | undefined> {
+  if (run.activeProgramSegmentId) {
+    const current = await loadFrozenRuntimeSegment(client, run, run.activeProgramSegmentId);
+    if (current) return current;
+  }
+  const initial = await client.query<{ id: string; runtime_script: string }>("select id, runtime_script from show_revision_segments where show_revision_id = $1 and tenant_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position limit 1", [run.revisionId, run.tenantId]);
+  const row = initial.rows[0];
+  return row ? { id: row.id, runtimeScript: row.runtime_script } : undefined;
+}
 
 async function resolveProgramTransition(client: PoolClient, run: StoredRun, input: CommandInput): Promise<ProgramTransition> {
   if (run.pendingProgramTransitionEventId) throw new Response("A program transition is already pending runtime confirmation", { status: 409 });
@@ -467,6 +478,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
     throw new Response("Runtime health is not ready for recovery", { status: 409 });
   }
+  const activationProgram = input.action === "START" || input.action === "RECOVER" ? await resolveDemoActivationProgram(context, run) : undefined;
   const programTransition = input.action === "INSERT_PROGRAM" || input.action === "ROLLBACK_PROGRAM" ? await resolveDemoProgramTransition(context, run, input) : undefined;
 
   const command: LiveCommand = {
@@ -476,14 +488,17 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
     issuedAt: new Date().toISOString(),
     expectedState: input.expectedState,
     result: "accepted",
-    programSegmentId: programTransition?.target?.id
+    programSegmentId: programTransition?.target?.id ?? activationProgram?.id
   };
-  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition), sessionId: run.runtimeSessionId });
+  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram), sessionId: run.runtimeSessionId });
   if (programTransition) {
     run.activeProgramSegmentId = programTransition.target?.id;
     run.activeInsertSourceSegmentId = programTransition.kind === "insert" ? programTransition.source?.id : undefined;
     run.activeInsertProgramSegmentId = programTransition.kind === "insert" ? programTransition.target?.id : undefined;
-  } else run.state = nextStateFor(run.state, input.action);
+  } else {
+    if (activationProgram) run.activeProgramSegmentId = activationProgram.id;
+    run.state = nextStateFor(run.state, input.action);
+  }
   run.commandHistory.unshift(command);
   activeStore.idempotency.set(`${context.tenantId}:${input.idempotencyKey}`, { command, runId: run.id });
   return { command, mediaEvent, run, duplicate: false as const };
@@ -506,9 +521,17 @@ async function resolveDemoProgramTransition(context: RequestContext, run: Stored
   return { kind: "rollback", target: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined, source: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined };
 }
 
-function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition): Omit<MediaCommand, "id" | "issuedAt"> {
+async function resolveDemoActivationProgram(context: RequestContext, run: StoredRun): Promise<FrozenRuntimeSegment | undefined> {
+  const program = await getShowProgram(context, run.id);
+  if (!program) throw new Response("Show program not found", { status: 404 });
+  const runnable = (segmentId: string | undefined) => program.segments.find((segment) => segment.id === segmentId && (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript));
+  const target = runnable(run.activeProgramSegmentId) ?? program.segments.find((segment) => (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript));
+  return target?.runtimeScript ? { id: target.id, runtimeScript: target.runtimeScript } : undefined;
+}
+
+function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment): Omit<MediaCommand, "id" | "issuedAt"> {
   const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program", INSERT_PROGRAM: "insert_program", ROLLBACK_PROGRAM: "resume_program" } as const;
-  const segment = transition?.target;
+  const segment = transition?.target ?? activationProgram;
   return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...(transition ? { programTransition: transition.kind, ...(transition.source ? { sourceProgramSegmentId: transition.source.id } : {}), ...(run.activeInsertProgramSegmentId ? { insertedProgramSegmentId: run.activeInsertProgramSegmentId } : {}), ...(segment ? { programSegmentId: segment.id, runtimeScript: segment.runtimeScript, scriptSha256: createHash("sha256").update(segment.runtimeScript).digest("hex") } : {}) } : {}) } };
 }
 

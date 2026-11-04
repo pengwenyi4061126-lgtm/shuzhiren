@@ -177,10 +177,11 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent,
     if (!result.rows[0]) throw new Error("Outbox event disappeared during delivery");
     const event = persistentEvent(result.rows[0]);
     if (event.type === "media.dispatch" && ["SCHEDULED_START", "START", "RECOVER"].includes(event.command.payload.controlAction)) {
-      await client.query(
+      const promoted = await client.query(
         "update live_runs set state = 'LIVE', scheduled_start_event_id = null, updated_at = now() where id = $1 and state in ('ARMED', 'DEGRADED') and scheduled_start_event_id = $2",
         [event.command.runId, event.id]
       );
+      if (promoted.rowCount && event.command.payload.programSegmentId) await applyActivationProgramReceipt(client, context, event, dispatchResult?.provider);
     }
     if (event.type === "media.dispatch" && event.command.payload.controlAction === "END") {
       await client.query(
@@ -214,6 +215,17 @@ async function applyProgramTransitionReceipt(client: PoolClient, context: Reques
   const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
   await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
     values ($1, $2, 'live_program.transition_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [context.tenantId, actor.rows[0].id, event.command.runId, JSON.stringify({ outboxEventId: event.id, commandId: event.command.id, action: payload.controlAction, programSegmentId: target, sourceProgramSegmentId: source, receipt })]);
+}
+
+async function applyActivationProgramReceipt(client: PoolClient, context: RequestContext, event: MediaOutboxEvent, provider: unknown) {
+  const receipt = provider && typeof provider === "object" ? (provider as { receipt?: unknown }).receipt : undefined;
+  const segmentId = event.command.payload.programSegmentId;
+  if (!receipt || typeof receipt !== "object" || typeof segmentId !== "string") throw new Error("Program activation receipt is missing");
+  const updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, updated_at = now() where id = $1 and state = 'LIVE' returning id", [event.command.runId, segmentId]);
+  if (!updated.rows[0]) throw new Error("Program activation cursor was not available for this receipt");
+  const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
+  await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+    values ($1, $2, 'live_program.activation_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [context.tenantId, actor.rows[0].id, event.command.runId, JSON.stringify({ outboxEventId: event.id, commandId: event.command.id, action: event.command.payload.controlAction, programSegmentId: segmentId, receipt })]);
 }
 
 async function markFailed(context: RequestContext, input: RuntimeOutboxEvent, lastError: string) {

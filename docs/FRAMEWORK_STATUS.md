@@ -61,7 +61,7 @@ npm run membership:bootstrap-admin -- --tenant-id <tenant-uuid> --subject <oidc-
 
 `064_governed_runtime_program_scripts.sql` 为节目段落增加 `runtime_script`，并要求预制讲品与受控互动段落在批准或候选修订送审前具有 1 至 800 字符的冻结脚本。脚本被纳入节目哈希、草稿保存、候选修订克隆和运营编辑器；数据库分别在节目批准与候选修订送审时拒绝缺失脚本的可运行段落。历史批准节目保持可读，运营需通过受控候选修订补齐脚本，不能直接改写历史内容。
 
-`065_governed_program_transition_cursor.sql` 进一步为直播场次增加当前节目、插播来源、当前插播和待确认 outbox 游标，并在数据库层验证这些段落属于场次冻结修订、插播游标一致、待确认事件确为该场次的媒体 outbox。控制台只允许在 `LIVE` 场次插播已批准修订中的冻结脚本；插播和回退在 Gateway 回执前均保持原游标，并拒绝并发或嵌套插播。worker 和人工 outbox 投递会校验 UUID 段落、脚本 SHA-256、回执中的命令/会话/动作/段落和新鲜时间，随后才原子移动游标并写入 `live_program.transition_accepted` 审计事件。Gateway 仅将冻结脚本交给 LiveTalking 并返回 `livetalking_api_accepted` 回执；它证明下游 API 已接受请求，不证明平台目的端、视频画面或音频已经实际播放。
+`065_governed_program_transition_cursor.sql` 进一步为直播场次增加当前节目、插播来源、当前插播和待确认 outbox 游标，并在数据库层验证这些段落属于场次冻结修订、插播游标一致、待确认事件确为该场次的媒体 outbox。`START`、`RECOVER` 和定时开播会优先携带当前或首个冻结可运行段落；仅在受绑定 Gateway 回执后建立主节目游标并写入 `live_program.activation_accepted`，使首次插播也有可恢复来源。缺少冻结首段的定时场次会清除排期、告警并等待人工修复后重新排期。控制台只允许在 `LIVE` 场次插播已批准修订中的冻结脚本；插播和回退在 Gateway 回执前均保持原游标，并拒绝并发或嵌套插播。worker 和人工 outbox 投递会校验 UUID 段落、脚本 SHA-256、回执中的命令/会话/动作/段落和新鲜时间，随后才原子移动游标并写入 `live_program.transition_accepted` 审计事件。Gateway 仅将冻结脚本交给 LiveTalking 并返回 `livetalking_api_accepted` 回执；它证明下游 API 已接受请求，不证明平台目的端、视频画面或音频已经实际播放。
 
 当前仍不能把该能力作为真实直播质量结论：部署验收必须用同网段输出探针和平台侧回放/指标，关联确认插播段落已到达实际输出，并覆盖 Gateway 重启、回执丢失、多 worker、RTMP 拒绝、黑屏和静音。仓库内仍需继续完成目标平台 Adapter 及将输出观测与节目段落关联的取证；GPU、平台账号、推流密钥、探针和真实回放证据则是外部前置条件。
 

@@ -47,6 +47,9 @@ async def main() -> None:
 
     frozen_script = "This is an approved frozen program script."
     approved_segment_id = "10000000-0000-4000-8000-000000000001"
+    started = await gateway.media(gateway.MediaRequest(command_id="command_start_frozen", session_id="session_1", action="start_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest()), authorization)
+    assert started["receipt"]["program_segment_id"] == approved_segment_id
+    assert any(path == "/human" and payload["text"] == frozen_script for path, payload in calls), "a governed start must deliver the frozen baseline script to LiveTalking"
     inserted = await gateway.media(gateway.MediaRequest(command_id="command_insert", session_id="session_1", action="insert_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest()), authorization)
     assert inserted["accepted"] is True
     assert inserted["receipt"]["program_segment_id"] == approved_segment_id
