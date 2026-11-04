@@ -12,6 +12,7 @@ const checks = [
   ["run", "deploy:check", "--", "--allow-placeholders"],
   ["run", "deploy:check:test"],
   ["run", "backup:automation:check"],
+  ["run", "backup:restore:drill:test"],
   ["run", "control-plane:compose:check"],
   ["run", "runtime:compose:check"],
   ["run", "console:page-auth:check"],

@@ -118,7 +118,19 @@ BACKUP_FILE=/srv/shuzhiren/backups/runtime-gateway/shuzhiren-runtime-gateway-sta
 bash scripts/verify-runtime-gateway-state-backup.sh
 ```
 
-恢复只能在隔离的空数据库演练环境中由值班负责人执行：先创建独立数据库，人工检查 `pg_restore --list`，再以明确的目标数据库名执行 `pg_restore`。Gateway 快照同样只能在隔离 Gateway 实例中恢复，且必须保持只读的原始备份；不要为方便而提供一键覆盖生产库、命令日志或运行中挂载目录的脚本。每月完成一次恢复演练，并将归档校验值、演练目标、开始/结束时间、RPO、RTO 和结果写入发布证据。
+恢复只能在隔离的空数据库演练环境中由值班负责人执行。先由 DBA 创建名称以 `shuzhiren_restore_` 开头、无 public 表的独立数据库，再执行仓库脚本；脚本会先验证 archive/manifest，要求确认值精确绑定 archive SHA-256，拒绝非隔离数据库名、非空目标、覆盖既有证据或缺失关键表/迁移：
+
+```bash
+ARCHIVE=/srv/shuzhiren/backups/postgres/shuzhiren-postgres-YYYYMMDDTHHMMSSZ.dump
+ARCHIVE_SHA256="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+BACKUP_FILE="$ARCHIVE" \
+DRILL_DATABASE_URL='postgresql://restore_owner:***@restore-postgres:5432/shuzhiren_restore_YYYYMMDD' \
+DRILL_EVIDENCE_FILE=/srv/shuzhiren/evidence/restore/postgres-YYYYMMDD.manifest \
+RESTORE_DRILL_CONFIRM="restore-${ARCHIVE_SHA256}" \
+bash scripts/restore-postgres-drill.sh
+```
+
+Gateway 快照同样只能在隔离 Gateway 实例中恢复，且必须保持只读的原始备份；不要为方便而提供一键覆盖生产库、命令日志或运行中挂载目录的脚本。每月完成一次恢复演练，并将归档校验值、演练目标、开始/结束时间、RPO、RTO 和结果写入发布证据。
 
 MinIO 对象、模型权重和录屏不由上述数据库脚本覆盖。上线前必须在对象存储层启用版本控制，并配置已验证的站外复制；在此之前不得把对象恢复能力表述为已完成。
 

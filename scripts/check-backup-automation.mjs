@@ -5,6 +5,8 @@ const files = {
   backupPrincipal: "../infra/postgres/backup-principal.sql",
   postgresVerify: "../scripts/verify-postgres-backup.sh",
   postgresDirectTest: "../scripts/test-postgres-backup-direct.sh",
+  postgresRestoreDrill: "../scripts/restore-postgres-drill.sh",
+  postgresRestoreDrillTest: "../scripts/test-postgres-restore-drill.sh",
   gatewayBackup: "../scripts/backup-runtime-gateway-state.sh",
   gatewayVerify: "../scripts/verify-runtime-gateway-state-backup.sh",
   environment: "../config/backup.example.env",
@@ -26,6 +28,12 @@ for (const source of ['pg_restore --list "$backup_file"', "pg_restore or docker 
 }
 for (const source of ["DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren'", "source=database_url", "verify-postgres-backup.sh", "another PostgreSQL backup is already running"]) {
   if (!contents.postgresDirectTest.includes(source)) throw new Error(`PostgreSQL direct backup test must cover ${source}`);
+}
+for (const source of ["DRILL_DATABASE_URL", "DRILL_EVIDENCE_FILE", "RESTORE_DRILL_CONFIRM", "shuzhiren_restore_[a-z0-9_]+", "restore drill target database must be empty", "pg_restore --exit-on-error --no-owner --no-privileges", "migration_count"]) {
+  if (!contents.postgresRestoreDrill.includes(source)) throw new Error(`PostgreSQL restore drill must remain isolated and evidenced: ${source}`);
+}
+for (const source of ["shuzhiren_restore_fixture", "must target an isolation database", "RESTORE_DRILL_CONFIRM"]) {
+  if (!contents.postgresRestoreDrillTest.includes(source)) throw new Error(`PostgreSQL restore drill test must cover ${source}`);
 }
 if (!contents.gatewayBackup.includes("GATEWAY_BACKUP_DIR")) throw new Error("Gateway backup must support its dedicated scheduled backup directory");
 for (const source of ['manifest_file="${backup_file%.sqlite3}.manifest"', "Gateway backup manifest snapshot does not match BACKUP_FILE", "Gateway backup bytes do not match gateway backup manifest"]) {

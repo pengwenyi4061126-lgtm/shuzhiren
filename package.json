@@ -35,6 +35,7 @@
     "deploy:check": "node scripts/check-deployment-config.mjs",
     "deploy:check:test": "node scripts/test-deployment-config.mjs",
     "backup:automation:check": "node scripts/check-backup-automation.mjs",
+    "backup:restore:drill:test": "bash scripts/test-postgres-restore-drill.sh",
     "control-plane:compose:check": "node scripts/check-control-plane-compose.mjs",
     "runtime:compose:check": "node scripts/check-runtime-compose.mjs",
     "console:page-auth:check": "node scripts/check-console-page-auth.mjs",
