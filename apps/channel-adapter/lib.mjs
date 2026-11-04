@@ -45,9 +45,12 @@ function parseProviderReplyEndpoint(value) {
   if (typeof value !== "string") throw new Error("Each channel adapter target requires providerReplyEndpoint");
   let url;
   try { url = new URL(value); } catch { throw new Error("providerReplyEndpoint must be an HTTP(S) URL"); }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("providerReplyEndpoint must be an HTTP(S) URL without embedded credentials");
-  return url.toString();
+  if (url.username || url.password) throw new Error("providerReplyEndpoint must not contain embedded credentials");
+  if (url.protocol === "https:") return url.toString();
+  if (url.protocol === "http:" && isLoopbackHost(url.hostname)) return url.toString();
+  throw new Error("providerReplyEndpoint must be an HTTPS URL (HTTP is limited to loopback integration testing)");
 }
+function isLoopbackHost(hostname) { return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"; }
 function isUuid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
 
 export function payloadSha256(rawBody) { return createHash("sha256").update(rawBody).digest("hex"); }

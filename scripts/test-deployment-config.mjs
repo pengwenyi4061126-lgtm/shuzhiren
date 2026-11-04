@@ -255,6 +255,18 @@ try {
   assert.match(adapterControlPlaneProtocol.stderr, /CONTROL_PLANE_URL.*HTTP\(S\)/, "control-plane protocol rejection must identify the channel adapter URL gate");
   await writeFile(files.channel, channel);
 
+  await writeFile(files.channel, channel.replace("https://provider-bridge.internal/v1/replies", "http://provider-bridge.internal/v1/replies"));
+  const adapterProviderReplyHttp = check(["--require-cosyvoice"]);
+  assert.notEqual(adapterProviderReplyHttp.status, 0, "production channel adapter provider replies must use HTTPS");
+  assert.match(adapterProviderReplyHttp.stderr, /HTTPS providerReplyEndpoint/, "provider reply transport rejection must identify the deployment gate");
+  await writeFile(files.channel, channel);
+
+  await writeFile(files.channel, channel.replace("https://provider-bridge.internal/v1/replies", "https://operator:password@provider-bridge.internal/v1/replies"));
+  const adapterProviderReplyCredentials = check(["--require-cosyvoice"]);
+  assert.notEqual(adapterProviderReplyCredentials.status, 0, "channel adapter provider reply URLs must not embed credentials");
+  assert.match(adapterProviderReplyCredentials.stderr, /HTTPS providerReplyEndpoint/, "provider reply credential rejection must identify the deployment gate");
+  await writeFile(files.channel, channel);
+
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=20000", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS=61000"));
   const excessiveGatewayTimeout = check(["--require-cosyvoice"]);
   assert.notEqual(excessiveGatewayTimeout.status, 0, "runtime Gateway delivery timeout must remain bounded");

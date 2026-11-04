@@ -5,10 +5,11 @@ export type ChannelCapability = { channel: string; supportsRtmp: boolean; suppor
 export type ChannelStatus = "connected" | "degraded" | "disabled";
 export type OutputProtocol = "rtmp" | "srt";
 export type ChannelProvider = "generic-rtmp" | "normalized-webhook-rtmp";
-export type ChannelConnection = { id: string; tenantId: string; name: string; provider: ChannelProvider; status: ChannelStatus; outputProtocol: OutputProtocol; capability: ChannelCapability; secretRef: string; lastVerifiedAt?: string; verificationEvidenceRef?: string };
+export type ChannelConnection = { id: string; tenantId: string; name: string; provider: ChannelProvider; status: ChannelStatus; outputProtocol: OutputProtocol; capability: ChannelCapability; secretRef: string; lastVerifiedAt?: string; verificationEvidenceRef?: string; verifiedBy?: string };
 export type CreateChannelConnectionInput = Pick<ChannelConnection, "name" | "provider" | "outputProtocol" | "secretRef">;
 export type ChannelVerificationInput = { status: ChannelStatus; evidenceRef: string };
 export const maxChannelVerificationAgeMs = 24 * 60 * 60 * 1000;
+const channelVerificationEvidenceRefPattern = /^(?:(?:evidence|demo):\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}|urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255})$/;
 
 export interface ChannelAdapter { readonly provider: ChannelProvider; readonly capability: ChannelCapability; supportsOutput(protocol: OutputProtocol): boolean; validateShow(input: { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean }): string[]; }
 
@@ -41,13 +42,14 @@ type PersistentConnectionRow = {
   capabilities: unknown;
   last_verified_at: Date | string | null;
   verification_evidence_ref: string | null;
+  verified_by: string | null;
 };
 
 declare global { var shuzhirenChannelStore: ChannelStore | undefined; }
 
 function channelStore(): ChannelStore {
   const adapter = new NormalizedWebhookRtmpAdapter();
-  globalThis.shuzhirenChannelStore ??= { connections: new Map([["channel_demo", { id: "channel_demo", tenantId: "tenant_demo", name: "店播 RTMP 主通道", provider: "normalized-webhook-rtmp", status: "connected", outputProtocol: "rtmp", capability: adapter.capability, secretRef: "kms://shuzhiren/tenant_demo/channel/rtmp-main", lastVerifiedAt: "2026-11-01T14:30:00.000Z", verificationEvidenceRef: "demo://channel-verification-fixture" }]]) };
+  globalThis.shuzhirenChannelStore ??= { connections: new Map([["channel_demo", { id: "channel_demo", tenantId: "tenant_demo", name: "店播 RTMP 主通道", provider: "normalized-webhook-rtmp", status: "connected", outputProtocol: "rtmp", capability: adapter.capability, secretRef: "kms://shuzhiren/tenant_demo/channel/rtmp-main", lastVerifiedAt: "2026-11-01T14:30:00.000Z", verificationEvidenceRef: "demo://channel-verification-fixture", verifiedBy: "demo-channel-verifier" }]]) };
   return globalThis.shuzhirenChannelStore;
 }
 
@@ -58,7 +60,7 @@ export async function listChannelConnections(context: RequestContext) {
       ? "where exists (select 1 from membership_resource_scopes scope where scope.membership_id = $1::uuid and scope.resource_type = 'channel_connection' and scope.resource_id = channel_connections.id)"
       : "";
     const result = await client.query<PersistentConnectionRow>(
-      `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref from channel_connections ${scopeClause} order by created_at desc`,
+      `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by from channel_connections ${scopeClause} order by created_at desc`,
       restrictedMembership(context) ? [context.membershipId] : []
     );
     return result.rows.map(persistentConnection);
@@ -75,7 +77,7 @@ export async function getChannelConnection(context: RequestContext, id: string) 
       ? "and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and scope.resource_type = 'channel_connection' and scope.resource_id = channel_connections.id)"
       : "";
     const result = await client.query<PersistentConnectionRow>(
-      `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref from channel_connections where id = $1 ${scopeClause}`,
+      `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by from channel_connections where id = $1 ${scopeClause}`,
       restrictedMembership(context) ? [id, context.membershipId] : [id]
     );
     return result.rows[0] ? persistentConnection(result.rows[0]) : null;
@@ -96,7 +98,7 @@ export async function createChannelConnection(context: RequestContext, input: Cr
   try {
     return await withTenantTransaction(context.tenantId, async (client) => {
       const result = await client.query<PersistentConnectionRow>(
-        "insert into channel_connections (tenant_id, name, provider, status, output_protocol, secret_ref, capabilities) values ($1, $2, $3, 'disabled', $4, $5, $6::jsonb) returning id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref",
+        "insert into channel_connections (tenant_id, name, provider, status, output_protocol, secret_ref, capabilities) values ($1, $2, $3, 'disabled', $4, $5, $6::jsonb) returning id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by",
         [context.tenantId, input.name, input.provider, input.outputProtocol, input.secretRef, JSON.stringify(adapter.capability)]
       );
       return persistentConnection(result.rows[0]);
@@ -108,12 +110,14 @@ export async function createChannelConnection(context: RequestContext, input: Cr
 }
 
 export async function recordChannelVerification(context: RequestContext, id: string, input: ChannelVerificationInput) {
+  const evidenceRef = input.evidenceRef.trim();
+  if (!isChannelVerificationEvidenceRef(evidenceRef)) throw new Response("Channel verification evidence must use an opaque evidence:// or urn: reference", { status: 400 });
   if (!databasePool()) {
     const connection = channelStore().connections.get(id);
     if (!connection || connection.tenantId !== context.tenantId) throw new Response("Channel connection not found", { status: 404 });
     connection.status = input.status;
     connection.lastVerifiedAt = new Date().toISOString();
-    connection.verificationEvidenceRef = input.evidenceRef;
+    connection.verificationEvidenceRef = evidenceRef;
     return connection;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -126,8 +130,8 @@ export async function recordChannelVerification(context: RequestContext, id: str
     }
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentConnectionRow>(
-      "update channel_connections set status = $2, last_verified_at = now(), verification_evidence_ref = $3, verified_by = $4 where id = $1 returning id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref",
-      [id, input.status, input.evidenceRef, actor.rows[0].id]
+      "update channel_connections set status = $2, last_verified_at = now(), verification_evidence_ref = $3, verified_by = $4 where id = $1 returning id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by",
+      [id, input.status, evidenceRef, actor.rows[0].id]
     );
     if (!result.rows[0]) throw new Response("Channel connection not found", { status: 404 });
     return persistentConnection(result.rows[0]);
@@ -138,7 +142,8 @@ export async function validateChannelConnection(context: RequestContext, id: str
   const connection = id ? await getChannelConnection(context, id) : null;
   if (!connection) return { passed: false, detail: "未绑定有效的平台连接" };
   if (connection.status !== "connected") return { passed: false, detail: `渠道连接当前为 ${connection.status}` };
-  if (!connection.lastVerifiedAt || !connection.verificationEvidenceRef) return { passed: false, detail: "渠道连接缺少可审计的验证证据" };
+  if (!connection.lastVerifiedAt || !connection.verificationEvidenceRef || !connection.verifiedBy) return { passed: false, detail: "渠道连接缺少可审计的验证时间、证据或验证人" };
+  if (!isChannelVerificationEvidenceRef(connection.verificationEvidenceRef)) return { passed: false, detail: "渠道连接验证证据格式不符合受控引用要求" };
   const verifiedAt = Date.parse(connection.lastVerifiedAt);
   if (!Number.isFinite(verifiedAt) || Date.now() - verifiedAt > maxChannelVerificationAgeMs) return { passed: false, detail: "渠道连接验证已过期（超过 24 小时）" };
   let adapter: ChannelAdapter;
@@ -149,6 +154,7 @@ export async function validateChannelConnection(context: RequestContext, id: str
 }
 
 export function isChannelProvider(value: unknown): value is ChannelProvider { return typeof value === "string" && adapters.has(value as ChannelProvider); }
+export function isChannelVerificationEvidenceRef(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 300 && channelVerificationEvidenceRefPattern.test(value); }
 
 function getChannelAdapter(provider: ChannelProvider) {
   const adapter = adapters.get(provider);
@@ -182,7 +188,8 @@ function persistentConnection(row: PersistentConnectionRow): ChannelConnection {
     capability: row.capabilities,
     secretRef: row.secret_ref,
     lastVerifiedAt: row.last_verified_at ? new Date(row.last_verified_at).toISOString() : undefined,
-    verificationEvidenceRef: row.verification_evidence_ref ?? undefined
+    verificationEvidenceRef: row.verification_evidence_ref ?? undefined,
+    verifiedBy: row.verified_by ?? undefined
   };
 }
 

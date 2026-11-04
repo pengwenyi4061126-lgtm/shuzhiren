@@ -18,6 +18,7 @@
 3. `87a1922`：渠道 Webhook 对外使用稳定错误码，内部异常仅写服务日志。
 4. `8514765`：runtime-observer 在首次遥测成功前明确报告 `lastSuccessfulCycleAt: null`。
 5. `fc43a91`：渠道适配器与部署预检拒绝包含嵌入凭据或非 HTTP(S) 的 `CONTROL_PLANE_URL`；渠道和部署测试均已覆盖。
+6. 本轮渠道桥治理：`providerReplyEndpoint` 在受控部署中必须是无嵌入凭据的 HTTPS 地址；渠道连接只有具备验证时间、受控 `evidence://`/`urn:` 引用和验证人才能标记 `connected`。`059_channel_connection_verification_governance.sql` 冻结连接配置并在数据库层拒绝无证据启用；历史记录缺少任一验证要素时，预检按失败关闭，必须重新验证。
 
 ## 新系统恢复步骤
 
@@ -57,6 +58,7 @@ npm run runtime:gateway:config:test
 ```powershell
 npm run deploy:check:test
 npm run channel-adapter:test
+npm run channel:verification:check
 npm run observer:runtime:test
 npm run lint
 npm run build
@@ -76,7 +78,7 @@ npm run build
 
 ## 代码审计结果与下一步
 
-- 渠道适配器出站控制面 URL 的安全约束已在 `fc43a91` 完成并由 `npm run channel-adapter:test`、`npm run deploy:check:test` 验证。
+- 渠道适配器的出站控制面 URL 约束已在 `fc43a91` 完成；本轮补齐 provider bridge 的 HTTPS/无嵌入凭据要求、渠道连接的验证人/时间/受控证据三要素、数据库配置不可变性和 PostgreSQL/路由测试。`npm run channel-adapter:test`、`npm run channel:verification:check`、`npm run deploy:check:test` 覆盖本机可运行部分；PostgreSQL 迁移实际执行仍由 CI 或 Linux 数据库环境负责。
 - 已执行 `npm run verify:local`：本机配置契约、策略、权限、运行时可靠性、observer、输出探针、渠道、告警、类型检查、lint 与生产构建均通过。该命令不连接 PostgreSQL、不启动 Docker，也不能证明 Python Gateway、GPU 或平台验收。
 - 逐项审计仍在进行，不能以没有 `TODO` 或本地门禁通过替代完成判定。已修复渠道出站 URL、运行时 Compose CI 渲染/LiveTalking 构建门禁，以及商品版本、节目修订、策略、模型发布和直播命令的数据库级不可变性；节目修订已补齐 `DRAFT` 全量编辑、送审冻结、审批人/时间证据、同事务生命周期审计和控制台工作区。CI 的 PostgreSQL 架构与控制面集成测试覆盖草稿改写、送审后拒绝改写及批准状态；本机不启动 PostgreSQL，因此这部分实际数据库执行仍由 CI 负责。
 - 受控直播预览不再以控制台中的静态人像示意冒充运行时视频。Gateway 仅在配置独立 `PREVIEW_BROKER_URL` 与专属高熵 token 后，向私有 broker 请求每场次、短时、HTTPS WebRTC embed 授权；拒绝 RTMP、嵌入凭据、片段 URL、非 WebRTC 或过期/过长授权。控制面只允许管理员或运营员为其有范围权限的、已绑定会话场次请求预览，并把请求事实（不含授权 URL）写入审计链。真正预览服务、TLS 域名、WebRTC TURN/STUN 和 broker 实现仍是 4090/私网部署前置条件；未配置时 UI 显示明确状态，不伪造视频或影响 RTMP 主输出。

@@ -49,6 +49,7 @@ const checks = [
   ["run", "output-probe:config:test"],
   ["run", "output-probe:response:check"],
   ["run", "channel-adapter:test"],
+  ["run", "channel:verification:check"],
   ["run", "alert-notifier:test"],
   ["run", "alert-notifier:health:check"],
   ["run", "typecheck"],

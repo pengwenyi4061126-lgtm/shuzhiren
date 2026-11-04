@@ -228,10 +228,17 @@ claimPrivateToken(runtime.get("OUTPUT_PROBE_SHARED_TOKEN"), "output-probe");
 try {
   const targets = JSON.parse(channelAdapter.get("CHANNEL_ADAPTER_TARGETS") ?? "");
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const privateProviderReplyEndpoint = (value) => {
+    if (typeof value !== "string") return false;
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password;
+    } catch { return false; }
+  };
   const targetValid = (target) => target && typeof target === "object" && !Array.isArray(target)
     && uuid.test(target.tenantId ?? "") && uuid.test(target.channelConnectionId ?? "")
     && [target.signingSecret, target.interactionToken, target.commerceToken, target.providerReplyToken].every((value) => typeof value === "string" && value.length >= 32 && !/\s/.test(value))
-    && typeof target.providerReplyEndpoint === "string" && /^https?:\/\//.test(target.providerReplyEndpoint) && !/\/@/.test(target.providerReplyEndpoint)
+    && privateProviderReplyEndpoint(target.providerReplyEndpoint)
     && new Set([target.signingSecret, target.interactionToken, target.commerceToken, target.providerReplyToken]).size === 4;
   if (!Array.isArray(targets) || !targets.length || !targets.every(targetValid)) throw new Error("invalid");
   const interactionTokens = tenantServiceTokenMaps.get("CHANNEL_INGEST_TENANT_TOKENS") ?? {};
@@ -243,7 +250,7 @@ try {
     claimPrivateToken(target.providerReplyToken, `channel-adapter-reply:${target.tenantId}:${target.channelConnectionId}`);
   }
 } catch {
-  const message = "渠道适配器的 CHANNEL_ADAPTER_TARGETS 必须包含 UUID 租户/渠道、私有 providerReplyEndpoint 和四种不同的高熵密钥";
+  const message = "渠道适配器的 CHANNEL_ADAPTER_TARGETS 必须包含 UUID 租户/渠道、无嵌入凭据的 HTTPS providerReplyEndpoint 和四种不同的高熵密钥";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);
 }
 try {
