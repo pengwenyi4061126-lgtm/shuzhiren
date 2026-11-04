@@ -64,6 +64,20 @@ REQUIRED_GPU_NAME='RTX 4090D' MIN_FREE_GIB=250 bash scripts/check-runtime-host.s
 12. `audit_events` 在数据库层是 append-only：运行时账号不能更新或删除审计记录。用户注销、保留期或隐私请求必须走独立的合规数据处理流程，不能用普通业务 SQL 改写历史事件。
 13. 租户业务表均启用并强制 PostgreSQL RLS。即使部署时应用数据库账号是表所有者，也必须在每个事务内设置 `app.tenant_id`；禁止为应用账号授予 `BYPASSRLS`。runtime worker 只能无范围读取 `tenants.id`，随后对每个租户分别设置该上下文并领取/回写任务，不能对业务表执行无租户范围的扫描。
 
+### 2.1 迁移文件完整性
+
+`schema_migrations` 会保存每个已执行 SQL 文件的 SHA-256。正常的新库只需以迁移 schema owner 执行 `npm run db:migrate`；迁移器会在执行前拒绝仓库中缺失的历史文件、数据库记录之外的文件，以及任何已执行 SQL 内容的哈希漂移。
+
+早于该机制的既有数据库首次升级时，迁移器会因缺少 checksum 而失败关闭。先审阅当前 checkout 的全部 `infra/postgres/migrations/*.sql` 和数据库已执行列表，再由迁移 schema owner 显式建立一次基线：
+
+```bash
+npm run db:migrate:checksum-baseline
+npm run db:migrate:checksum-baseline -- --approve-current-files
+npm run db:migrate
+```
+
+第一条命令只列出未校验的历史记录并以非零状态退出；第二条命令才会将已审核的当前文件哈希写入数据库。它绝不接受内容已漂移的记录，也不能用于跳过缺失迁移或把未知 SQL 标记为可信。不得让控制面运行时、worker、渠道 Adapter 或日常人工账号执行该基线命令。
+
 ## 3. 备份与恢复演练
 
 - 目标：数据库 RPO 不高于 15 分钟，控制面 RTO 不高于 60 分钟。录屏和对象存储必须在生成后复制到已批准的站外存储；单机 Docker volume 不构成备份。

@@ -113,6 +113,7 @@ jobs:
       - run: node --check apps/channel-adapter/index.mjs
       - run: node --check apps/alert-notifier/index.mjs
       - run: npm run db:migrate
+      - run: npm run db:migrate:integrity:test
       - run: npm run service-principals:integration
       - run: npm run db:migrate:lock:test
       - run: npm run db:verify -- --allow-privileged
