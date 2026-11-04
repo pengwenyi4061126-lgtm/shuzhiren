@@ -18,13 +18,19 @@ function databaseTimeoutMs() {
   return Number.isInteger(configured) && configured >= 100 && configured <= 60_000 ? configured : 5000;
 }
 
-export async function withTenantTransaction<T>(tenantId: string, operation: (client: PoolClient) => Promise<T>) {
+export type TenantTransactionOptions = {
+  isolationLevel?: "read committed" | "repeatable read" | "serializable";
+  readOnly?: boolean;
+};
+
+export async function withTenantTransaction<T>(tenantId: string, operation: (client: PoolClient) => Promise<T>, options: TenantTransactionOptions = {}) {
   const pool = databasePool();
   if (!pool) throw new Error("PostgreSQL is not configured; use demo mode only for local development");
   const client = await pool.connect();
 
   try {
-    await client.query("begin");
+    const isolation = options.isolationLevel ?? "read committed";
+    await client.query(`begin isolation level ${isolation}${options.readOnly ? " read only" : ""}`);
     await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
     const result = await operation(client);
     await client.query("commit");
