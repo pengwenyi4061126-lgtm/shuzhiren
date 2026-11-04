@@ -1,0 +1,33 @@
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+
+ARG MINIFORGE_URL
+ARG MINIFORGE_SHA256
+ARG RELEASE_REVISION
+
+LABEL org.opencontainers.image.revision=$RELEASE_REVISION
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PATH=/opt/conda/envs/cosyvoice/bin:/opt/conda/bin:$PATH
+ENV PYTHONPATH=/opt/CosyVoice/CosyVoice:/opt/CosyVoice/CosyVoice/third_party/Matcha-TTS
+
+RUN test -n "$MINIFORGE_URL" && test -n "$MINIFORGE_SHA256" && \
+    case "$MINIFORGE_URL" in https://*) ;; *) exit 1 ;; esac && \
+    echo "$MINIFORGE_SHA256" | grep -Eq '^[a-f0-9]{64}$'
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl build-essential ffmpeg libsndfile1 sox libsox-dev && rm -rf /var/lib/apt/lists/*
+RUN groupadd --system --gid 10003 cosyvoice && useradd --system --uid 10003 --gid 10003 --home-dir /tmp --no-create-home cosyvoice
+RUN curl --fail --location --retry 3 "$MINIFORGE_URL" --output /tmp/miniforge.sh && \
+    echo "$MINIFORGE_SHA256  /tmp/miniforge.sh" | sha256sum -c - && \
+    bash /tmp/miniforge.sh -b -p /opt/conda && \
+    rm /tmp/miniforge.sh
+COPY --chown=cosyvoice:cosyvoice vendor/CosyVoice /opt/CosyVoice/CosyVoice
+RUN conda config --system --add channels conda-forge && \
+    conda config --system --set channel_priority strict && \
+    conda create -y -n cosyvoice python=3.10 && \
+    conda install -y -n cosyvoice -c conda-forge pynini==2.1.5 && \
+    /opt/conda/envs/cosyvoice/bin/pip install --no-cache-dir -r /opt/CosyVoice/CosyVoice/requirements.txt && \
+    chown -R cosyvoice:cosyvoice /opt/CosyVoice
+
+WORKDIR /opt/CosyVoice/CosyVoice
+EXPOSE 50000
+USER cosyvoice

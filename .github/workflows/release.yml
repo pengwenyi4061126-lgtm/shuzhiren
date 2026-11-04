@@ -1,0 +1,201 @@
+name: Release Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      registry:
+        description: OCI registry host, optionally including a port
+        required: true
+        type: string
+      image_namespace:
+        description: Registry namespace containing the ten service repositories
+        required: true
+        default: shuzhiren
+        type: string
+      release_issuer:
+        description: Trusted Ed25519 release-manifest issuer
+        required: true
+        type: string
+      release_key_id:
+        description: Trusted Ed25519 release-manifest key ID
+        required: true
+        type: string
+      signing_key_path:
+        description: Absolute path to the mounted Ed25519 private key on the trusted release runner
+        required: true
+        default: /run/shuzhiren-release/ed25519-private.pem
+        type: string
+      miniforge_url:
+        description: Pinned HTTPS Miniforge installer URL for the CosyVoice build
+        required: true
+        type: string
+      miniforge_sha256:
+        description: SHA-256 for the exact Miniforge installer bytes
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: shuzhiren-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    if: github.ref_protected
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: CONTROL_PLANE_IMAGE
+            image: control-plane
+            context: .
+            dockerfile: apps/console/Dockerfile
+            target: runner
+          - key: CONTROL_PLANE_MIGRATOR_IMAGE
+            image: control-plane-migrator
+            context: .
+            dockerfile: apps/console/Dockerfile
+            target: migrator
+          - key: RUNTIME_GATEWAY_IMAGE
+            image: runtime-gateway
+            context: runtime/gateway
+            dockerfile: runtime/gateway/Dockerfile
+            target: ""
+          - key: RUNTIME_WORKER_IMAGE
+            image: runtime-worker
+            context: .
+            dockerfile: apps/runtime-worker/Dockerfile
+            target: ""
+          - key: RUNTIME_OBSERVER_IMAGE
+            image: runtime-observer
+            context: .
+            dockerfile: apps/runtime-observer/Dockerfile
+            target: ""
+          - key: OUTPUT_PROBE_IMAGE
+            image: output-probe
+            context: .
+            dockerfile: apps/output-probe/Dockerfile
+            target: ""
+          - key: CHANNEL_ADAPTER_IMAGE
+            image: channel-adapter
+            context: .
+            dockerfile: apps/channel-adapter/Dockerfile
+            target: ""
+          - key: ALERT_NOTIFIER_IMAGE
+            image: alert-notifier
+            context: .
+            dockerfile: apps/alert-notifier/Dockerfile
+            target: ""
+          - key: LIVETALKING_IMAGE
+            image: livetalking
+            context: .
+            dockerfile: runtime/livetalking/Dockerfile
+            target: ""
+          - key: COSYVOICE_IMAGE
+            image: cosyvoice
+            context: .
+            dockerfile: runtime/cosyvoice/Dockerfile
+            target: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - id: build-args
+        shell: bash
+        run: |
+          {
+            echo "value<<EOF"
+            echo "RELEASE_REVISION=${GITHUB_SHA}"
+            if [[ "${{ matrix.key }}" == "COSYVOICE_IMAGE" ]]; then
+              echo "MINIFORGE_URL=${{ inputs.miniforge_url }}"
+              echo "MINIFORGE_SHA256=${{ inputs.miniforge_sha256 }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ inputs.registry }}/${{ inputs.image_namespace }}/${{ matrix.image }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          build-args: ${{ steps.build-args.outputs.value }}
+          sbom: true
+          provenance: mode=max
+      - run: >-
+          node scripts/write-release-image-result.mjs
+          --key "${{ matrix.key }}"
+          --repository "${{ inputs.registry }}/${{ inputs.image_namespace }}/${{ matrix.image }}"
+          --digest "${{ steps.build.outputs.digest }}"
+          --revision "${{ github.sha }}"
+          --output "${{ runner.temp }}/${{ matrix.key }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image-${{ matrix.key }}
+          path: ${{ runner.temp }}/${{ matrix.key }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble-and-sign:
+    if: github.ref_protected
+    needs: build-and-push
+    runs-on: [self-hosted, linux, x64, shuzhiren-release]
+    environment: release-production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-image-*
+          path: ${{ runner.temp }}/release-image-results
+          merge-multiple: true
+      - run: >-
+          node scripts/assemble-release-evidence.mjs
+          --input-dir "${{ runner.temp }}/release-image-results"
+          --revision "${{ github.sha }}"
+          --source "${{ github.server_url }}/${{ github.repository }}"
+          --images-output "${{ runner.temp }}/images.json"
+          --sbom-output "${{ runner.temp }}/release-sbom-index.json"
+          --provenance-output "${{ runner.temp }}/release-provenance-index.json"
+      - run: >-
+          node scripts/create-deployment-release-manifest.mjs
+          --images "${{ runner.temp }}/images.json"
+          --sbom "${{ runner.temp }}/release-sbom-index.json"
+          --provenance "${{ runner.temp }}/release-provenance-index.json"
+          --private-key "${{ inputs.signing_key_path }}"
+          --issuer "${{ inputs.release_issuer }}"
+          --key-id "${{ inputs.release_key_id }}"
+          --revision "${{ github.sha }}"
+          --output "${{ runner.temp }}/deployment-release-manifest.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-release-evidence-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/images.json
+            ${{ runner.temp }}/release-sbom-index.json
+            ${{ runner.temp }}/release-provenance-index.json
+            ${{ runner.temp }}/deployment-release-manifest.json
+          if-no-files-found: error
+          retention-days: 30

@@ -12,12 +12,13 @@
 | 素材与合规 | 素材/发布包/策略审批、冻结修订、撤销隔离、人工接管 | 肖像、声音、音乐、商品、脚本的书面授权和审核证据 | 场次发布清单、审计导出、授权文件引用 |
 | 商品与渠道 | PIM/渠道标准化私网接入、幂等、商品审核；渠道连接须由私网 verifier 签发、绑定配置哈希且 24 小时内有效的证据后才能启用；账单批次、不可变账单行、订单级差异和带证据结案已建立 | 平台账号、OAuth/Webhook、应用审核、真实订单/结算数据；部署私网 `CHANNEL_EVIDENCE_VERIFIER_*` 与 `SETTLEMENT_INGEST_TENANT_TOKENS` | verifier 回执、渠道验证报告、事实来源与时间窗、账单原件 SHA-256、对账记录 |
 | 录制与恢复 | 录制证据登记、独立 `RECORDING_EVIDENCE_VERIFIER_*` 回执封存、数据库备份校验脚本、Gateway 命令日志隔离恢复脚本与媒体/CosyVoice 不重放 CI 演练 | 对象存储版本化与保留锁、站外复制、独立 verifier、加密备份、恢复演练负责人及真实 Gateway 下游日志 | verifier 绑定对象版本/SHA-256/字节/时间窗/留存期的证据、数据库与 Gateway 状态隔离恢复、零下游重放演练记录 |
+| 发布供应链 | 受保护引用手动 release workflow、十个 `linux/amd64` image target、Buildx SBOM/provenance attachment、image result/evidence index、Ed25519 manifest 生产器、部署前 digest/OCI revision 核验 | OCI registry 与十个 repository、registry 凭据、受保护 GitHub environment、trusted signing runner、KMS/HSM 或受限 key mount、漏洞/许可证策略、artifact 交付与保留 | release workflow run、十个 OCI digest/attestation、签名 manifest、部署前 `deploy:check` 和 `deploy:images:verify` 输出 |
 
 ## 发布判定
 
 1. 在任意开发机先运行 `npm run verify:local`。它执行可在本地完成的配置契约、策略红队、observer/探针/渠道/告警模拟、所有常驻 Node 服务入口解析、控制台类型检查、lint 和生产构建；它不连接 PostgreSQL、不启动 Docker，也不代表 Python 运行时、GPU 或平台验收。
    若本机已用同一解释器安装 `runtime/gateway/requirements.txt`，再运行 `npm run verify:local -- --with-gateway --python /absolute/path/to/python`，将额外编译 Gateway 并执行 PCM/WAV 与并发幂等测试；缺少依赖时该命令会失败，不会静默跳过。
-2. 再运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --control-compose /srv/shuzhiren/control-plane-compose.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --channel-adapter /srv/shuzhiren/channel-adapter.env --alert-notifier /srv/shuzhiren/alert-notifier.env --require-output-probe --require-cosyvoice`。它会拒绝没有 digest、带 tag 或跨服务复用的生产镜像引用，并验证受信任 Ed25519 签名的部署 release manifest 精确绑定提交、十个服务镜像、SBOM 与 provenance 摘要。该项目的实时问答语音链路依赖 CosyVoice；仅预制内容试播才可省略后一个门禁。
+2. 再运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --control-compose /srv/shuzhiren/control-plane-compose.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --channel-adapter /srv/shuzhiren/channel-adapter.env --alert-notifier /srv/shuzhiren/alert-notifier.env --require-output-probe --require-cosyvoice`。它会拒绝没有 digest、带 tag 或跨服务复用的生产镜像引用，并验证受信任 Ed25519 签名的部署 release manifest 精确绑定完整 40 位提交、十个服务镜像、SBOM 与 provenance 摘要。镜像已拉取后必须再运行 `npm run deploy:images:verify -- --manifest /srv/shuzhiren/release/deployment-release-manifest.json`，确认十个本地 `RepoDigest` 和 OCI revision label 均与签名清单一致；该命令只读，不会启动服务。该项目的实时问答语音链路依赖 CosyVoice；仅预制内容试播才可省略后一个门禁。
 3. 主机、权重、账号和密钥就绪后，执行内部试播、故障演练与独立输出探针验证；至少由水印/指纹、目的端回放或指标验证器产生一条 Ed25519 签名的输出观测，绑定同租户场次、节目命令、冻结段落、内容 SHA-256、受众和短时有效期。控制面只接受专用输出证明凭据，不能复用遥测凭据。
 4. 只有 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json` 通过，且所有外部项有可审计证据（包括 PostgreSQL 与 Gateway 命令日志的隔离恢复及不重放验证），才允许真实小规模开播。
 

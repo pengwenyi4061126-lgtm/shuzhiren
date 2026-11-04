@@ -36,6 +36,7 @@ const releaseSigner = generateKeyPairSync("ed25519");
 const releaseIssuer = "release_automation";
 const releaseKeyId = "fixture-2026";
 const releaseTrust = { [releaseIssuer]: { [releaseKeyId]: releaseSigner.publicKey.export({ type: "spki", format: "pem" }) } };
+const releaseRevision = "a".repeat(40);
 const commits = {
   MuseTalk: "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
   CosyVoice: "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
@@ -52,12 +53,12 @@ function canonicalJson(value) {
   return JSON.stringify(value) ?? "null";
 }
 
-function deploymentReleaseManifest({ releaseRevision = "a1b2c3d4e5f6a7b8c9d0", manifestImages = undefined } = {}) {
+function deploymentReleaseManifest({ releaseRevision: manifestRevision = releaseRevision, manifestImages = undefined } = {}) {
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + 24 * 60 * 60 * 1000);
   const unsigned = {
     schemaVersion: 1,
-    releaseRevision,
+    releaseRevision: manifestRevision,
     issuedAt: issuedAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
     images: manifestImages ?? {
@@ -83,7 +84,7 @@ const control = env({
   DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
   DATABASE_QUERY_TIMEOUT_MS: "5000",
   CONTROL_PLANE_DEMO_MODE: "false",
-  RELEASE_REVISION: "a1b2c3d4e5f6a7b8c9d0",
+  RELEASE_REVISION: releaseRevision,
   DEPLOYMENT_RELEASE_MANIFEST: deploymentReleaseManifestPath,
   DEPLOYMENT_RELEASE_MANIFEST_TRUST: releaseTrust,
   OIDC_ISSUER_URL: "https://issuer.internal",
@@ -254,7 +255,7 @@ try {
   assert.match(invalidManifestSignature.stderr, /Ed25519 签名无效/, "tampered signature rejection must identify the release-signature gate");
   await writeFile(files.releaseManifest, deploymentReleaseManifest());
 
-  await writeFile(files.releaseManifest, deploymentReleaseManifest({ releaseRevision: "b1b2c3d4e5f6a7b8c9d0" }));
+  await writeFile(files.releaseManifest, deploymentReleaseManifest({ releaseRevision: "b".repeat(40) }));
   const manifestRevisionMismatch = check(["--require-cosyvoice"]);
   assert.notEqual(manifestRevisionMismatch.status, 0, "signed manifests must bind the deployed source revision");
   assert.match(manifestRevisionMismatch.stderr, /releaseRevision 必须匹配 RELEASE_REVISION/, "manifest revision mismatch must identify the release binding gate");
@@ -284,7 +285,7 @@ try {
   assert.match(excessiveDatabaseTimeout.stderr, /DATABASE_QUERY_TIMEOUT_MS/, "database timeout rejection must identify the readiness gate");
   await writeFile(files.control, control);
 
-  await writeFile(files.control, control.replace("RELEASE_REVISION=a1b2c3d4e5f6a7b8c9d0", "RELEASE_REVISION=not-a-git-revision"));
+  await writeFile(files.control, control.replace(`RELEASE_REVISION=${releaseRevision}`, "RELEASE_REVISION=not-a-git-revision"));
   const invalidReleaseRevision = check(["--require-cosyvoice"]);
   assert.notEqual(invalidReleaseRevision.status, 0, "production deployments must expose an immutable control-plane source revision");
   assert.match(invalidReleaseRevision.stderr, /RELEASE_REVISION/, "release revision rejection must identify the traceability gate");
