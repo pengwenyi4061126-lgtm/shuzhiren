@@ -12,6 +12,7 @@ const tenantId = "11111111-1111-4111-8111-111111111111";
 const channelConnectionId = "22222222-2222-4222-8222-222222222222";
 const runtimeToken = "runtime-shared-token-at-least-32-bytes";
 const mediaEvidenceToken = "media-evidence-verifier-token-at-least-32-bytes";
+const recordingEvidenceToken = "recording-evidence-verifier-token-at-least-32-bytes";
 const channelEvidenceToken = "channel-evidence-verifier-token-at-least-32-bytes";
 const telemetryToken = "telemetry-token-at-least-32-bytes";
 const outputProbeToken = "output-probe-token-at-least-32-bytes";
@@ -42,6 +43,9 @@ const control = env({
   MEDIA_EVIDENCE_VERIFIER_URL: "https://media-evidence.internal",
   MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
   MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
+  RECORDING_EVIDENCE_VERIFIER_URL: "https://recording-evidence.internal",
+  RECORDING_EVIDENCE_VERIFIER_TOKEN: recordingEvidenceToken,
+  RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
   CHANNEL_EVIDENCE_VERIFIER_URL: "https://channel-evidence.internal",
   CHANNEL_EVIDENCE_VERIFIER_TOKEN: channelEvidenceToken,
   CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
@@ -208,6 +212,12 @@ try {
   const shortMediaEvidenceToken = check(["--require-cosyvoice"]);
   assert.notEqual(shortMediaEvidenceToken.status, 0, "media evidence verification must reject a short private credential");
   assert.match(shortMediaEvidenceToken.stderr, /MEDIA_EVIDENCE_VERIFIER_TOKEN/, "media evidence credential rejection must identify the object-verification gate");
+  await writeFile(files.control, control);
+
+  await writeFile(files.control, control.replace(recordingEvidenceToken, mediaEvidenceToken));
+  const reusedRecordingEvidenceToken = check(["--require-cosyvoice"]);
+  assert.notEqual(reusedRecordingEvidenceToken.status, 0, "recording evidence verification must use a separate private credential");
+  assert.match(reusedRecordingEvidenceToken.stderr, /私网服务 token 不得跨服务或跨租户复用/, "recording evidence token reuse must identify the verifier boundary");
   await writeFile(files.control, control);
 
   await writeFile(files.control, control.replace("https://media-evidence.internal", "rtmp://media-evidence.internal"));

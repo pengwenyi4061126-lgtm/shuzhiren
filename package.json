@@ -61,6 +61,7 @@
     "runtime:journal:check": "node scripts/check-runtime-gateway-journal.mjs",
     "runtime:preview:check": "node scripts/check-controlled-preview.mjs",
     "media:evidence:check": "node scripts/check-media-evidence-verification.mjs",
+    "recording:evidence:check": "node scripts/check-recording-evidence-verification.mjs",
     "runtime:gateway:config:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-config.py",
     "runtime:gateway:errors:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-errors.py",
     "runtime:images:check": "node scripts/check-runtime-service-images.mjs",

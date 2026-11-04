@@ -22,6 +22,7 @@ const tenantId = randomUUID();
 const isolatedTenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const mediaEvidenceToken = "control-plane-integration-media-evidence-token";
+const recordingEvidenceToken = "control-plane-integration-recording-evidence-token";
 const channelEvidenceToken = "control-plane-integration-channel-evidence-token";
 const telemetryToken = "control-plane-integration-telemetry-token";
 const interactionToken = "control-plane-integration-interaction-token";
@@ -117,6 +118,9 @@ try {
       MEDIA_EVIDENCE_VERIFIER_URL: mock.baseUrl,
       MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
       MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
+      RECORDING_EVIDENCE_VERIFIER_URL: mock.baseUrl,
+      RECORDING_EVIDENCE_VERIFIER_TOKEN: recordingEvidenceToken,
+      RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
       CHANNEL_EVIDENCE_VERIFIER_URL: mock.baseUrl,
       CHANNEL_EVIDENCE_VERIFIER_TOKEN: channelEvidenceToken,
       CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
@@ -560,6 +564,9 @@ try {
   const recordingHeaders = { "content-type": "application/json", authorization: `Bearer ${recordingToken}` };
   const recordingRegistered = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify(recordingInput) });
   assert.equal(recordingRegistered.status, 201, "verified recording evidence should be accepted once");
+  const recordingRegisteredBody = await recordingRegistered.json();
+  assert.equal(recordingRegisteredBody.data.contentVerification.objectVersion, "integration-recording-version-1", "recording registration must preserve the verifier-bound object version");
+  assert.match(recordingRegisteredBody.data.contentVerification.evidenceRef, /^evidence:\/\/integration\/recording\//, "recording registration must preserve verifier-issued evidence");
   const recordingRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify(recordingInput) });
   assert.equal(recordingRetry.status, 200, "recording evidence retries must be idempotent");
   const recordingConflict = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify({ ...recordingInput, checksumSha256: "b".repeat(64) }) });
@@ -571,8 +578,9 @@ try {
   const recordingsBody = await recordings.json();
   assert.equal(recordingsBody.data.length, 1);
   assert.equal(recordingsBody.data[0].objectKey, recordingInput.objectKey);
-  const recordingAudit = await client.query("select event_type from audit_events where resource_type = 'recording_evidence'");
+  const recordingAudit = await client.query("select event_type, detail from audit_events where resource_type = 'recording_evidence'");
   assert.deepEqual(recordingAudit.rows.map((row) => row.event_type), ["recording_evidence.registered"]);
+  assert.match(recordingAudit.rows[0].detail.evidenceRef, /^evidence:\/\/integration\/recording\//, "recording registration audit must retain verifier-issued evidence");
 
   const productFactInput = { tenantId, eventId: "pim-product-fact-1", externalSku: `pim-${tenantId}`, name: "PIM managed product", facts: { priceCent: 12900, stock: 18, highlights: ["PIM evidence"], faq: ["PIM FAQ"], sourceRef: "pim://integration/product-fact-1", sourceSyncedAt: new Date().toISOString(), validFrom: new Date(Date.now() - 60_000).toISOString() } };
   const productFactHeaders = { "content-type": "application/json", authorization: `Bearer ${pimToken}` };
@@ -974,8 +982,8 @@ async function seedRunScopeArtifacts(recoverRunId, staleRunId) {
   const staleAlert = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message) values ($1, $2, 'warning', 'scope_stale_alert', 'Unauthorized scope fixture') returning id", [tenantId, staleRunId]);
   const recoverIncident = await client.query("insert into incidents (tenant_id, live_run_id, runtime_alert_id, severity, title, owner_id) values ($1, $2, $3, 'warning', 'Authorized scope fixture', $4) returning id", [tenantId, recoverRunId, recoverAlert.rows[0].id, owner.rows[0].id]);
   const staleIncident = await client.query("insert into incidents (tenant_id, live_run_id, runtime_alert_id, severity, title, owner_id) values ($1, $2, $3, 'warning', 'Unauthorized scope fixture', $4) returning id", [tenantId, staleRunId, staleAlert.rows[0].id, owner.rows[0].id]);
-  const recoverRecording = await client.query("insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, idempotency_key) values ($1, $2, $3, $4, 1024, 10, $5) returning id", [tenantId, recoverRunId, `recordings/${recoverRunId}/scope-fixture.mp4`, "a".repeat(64), `scope-recover-${recoverRunId}`]);
-  const staleRecording = await client.query("insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, idempotency_key) values ($1, $2, $3, $4, 1024, 10, $5) returning id", [tenantId, staleRunId, `recordings/${staleRunId}/scope-fixture.mp4`, "b".repeat(64), `scope-stale-${staleRunId}`]);
+  const recoverRecording = await client.query("insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, idempotency_key, verified_object_version, verification_evidence_ref, verified_at) values ($1, $2, $3, $4, 1024, 10, $5, 'scope-version-1', $6, now()) returning id", [tenantId, recoverRunId, `recordings/${recoverRunId}/scope-fixture.mp4`, "a".repeat(64), `scope-recover-${recoverRunId}`, `evidence://integration/recording/${recoverRunId}`]);
+  const staleRecording = await client.query("insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, idempotency_key, verified_object_version, verification_evidence_ref, verified_at) values ($1, $2, $3, $4, 1024, 10, $5, 'scope-version-1', $6, now()) returning id", [tenantId, staleRunId, `recordings/${staleRunId}/scope-fixture.mp4`, "b".repeat(64), `scope-stale-${staleRunId}`, `evidence://integration/recording/${staleRunId}`]);
   const outboxPayload = (runId) => JSON.stringify({ sessionId: `scope_${runId}`, command: { id: `scope_command_${runId}`, runId, type: "switch_to_human", issuedAt: new Date().toISOString(), traceId: `scope_trace_${runId}`, payload: { reason: "scope-fixture" } } });
   const recoverOutbox = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id", [tenantId, recoverRunId, outboxPayload(recoverRunId)]);
   const staleOutbox = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id", [tenantId, staleRunId, outboxPayload(staleRunId)]);
@@ -1021,6 +1029,11 @@ async function startMockServer() {
       const evidence = await requestBody(request);
       const contentType = evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
       return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
+    }
+    if (url.pathname === "/v1/recording-evidence/verify" && request.method === "POST") {
+      assert.equal(request.headers.authorization, `Bearer ${recordingEvidenceToken}`);
+      const evidence = await requestBody(request);
+      return json(response, 200, { tenantId: evidence.tenantId, runId: evidence.runId, objectKey: evidence.objectKey, checksumSha256: evidence.checksumSha256, bytes: evidence.bytes, durationSeconds: evidence.durationSeconds, startedAt: evidence.startedAt, endedAt: evidence.endedAt, retentionUntil: evidence.retentionUntil, objectVersion: "integration-recording-version-1", evidenceRef: `evidence://integration/recording/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
     }
     if (url.pathname === "/v1/channel-evidence/verify" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${channelEvidenceToken}`);

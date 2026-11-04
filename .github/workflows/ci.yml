@@ -79,6 +79,7 @@ jobs:
       - run: npm run runtime:journal:check
       - run: npm run runtime:preview:check
       - run: npm run media:evidence:check
+      - run: npm run recording:evidence:check
       - run: npm run runtime:images:check
       - run: npm run runtime:worker:config:test
       - run: npm run runtime:worker:health:test

@@ -10,7 +10,7 @@
 | 身份与租户 | OIDC JWT 校验、RBAC、RLS、CSRF Origin 校验、审计哈希链、控制台 standalone 容器与私网 Compose | OIDC issuer、真实成员/角色同步、生产 PostgreSQL 账号与密钥、TLS 反向代理 | `/api/health`、`npm run db:verify`、控制台 Compose 健康检查、租户隔离集成回归 |
 | 素材与合规 | 素材/发布包/策略审批、冻结修订、撤销隔离、人工接管 | 肖像、声音、音乐、商品、脚本的书面授权和审核证据 | 场次发布清单、审计导出、授权文件引用 |
 | 商品与渠道 | PIM/渠道标准化私网接入、幂等、商品审核；渠道连接须由私网 verifier 签发、绑定配置哈希且 24 小时内有效的证据后才能启用；账单批次、不可变账单行、订单级差异和带证据结案已建立 | 平台账号、OAuth/Webhook、应用审核、真实订单/结算数据；部署私网 `CHANNEL_EVIDENCE_VERIFIER_*` 与 `SETTLEMENT_INGEST_TENANT_TOKENS` | verifier 回执、渠道验证报告、事实来源与时间窗、账单原件 SHA-256、对账记录 |
-| 录制与恢复 | 录制证据登记、数据库备份校验脚本、Gateway 命令日志与隔离恢复流程 | 对象存储版本化、站外复制、加密备份、恢复演练负责人 | 对象复制与 SHA-256、数据库与 Gateway 状态隔离恢复演练记录 |
+| 录制与恢复 | 录制证据登记、独立 `RECORDING_EVIDENCE_VERIFIER_*` 回执封存、数据库备份校验脚本、Gateway 命令日志与隔离恢复流程 | 对象存储版本化与保留锁、站外复制、独立 verifier、加密备份、恢复演练负责人 | verifier 绑定对象版本/SHA-256/字节/时间窗/留存期的证据、数据库与 Gateway 状态隔离恢复演练记录 |
 
 ## 发布判定
 

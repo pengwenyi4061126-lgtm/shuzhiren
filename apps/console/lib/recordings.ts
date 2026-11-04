@@ -1,6 +1,7 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { verifyRecordingEvidence, type RecordingContentVerification } from "@/lib/recording-evidence";
 
 export type RecordingEvidence = {
   id: string;
@@ -14,6 +15,7 @@ export type RecordingEvidence = {
   endedAt?: string;
   recordedAt: string;
   retentionUntil?: string;
+  contentVerification: RecordingContentVerification;
 };
 
 export type RegisterRecordingInput = Pick<RecordingEvidence, "runId" | "objectKey" | "checksumSha256" | "bytes" | "durationSeconds" | "startedAt" | "endedAt" | "retentionUntil"> & { idempotencyKey: string };
@@ -32,6 +34,9 @@ type PersistentRecordingRow = {
   ended_at: Date | string | null;
   recorded_at: Date | string;
   retention_until: Date | string | null;
+  verified_object_version: string;
+  verification_evidence_ref: string;
+  verified_at: Date | string;
 };
 
 declare global { var shuzhirenRecordingStore: RecordingStore | undefined; }
@@ -45,7 +50,7 @@ export async function listRecordings(context: RequestContext) {
   if (!databasePool()) return [...recordingStore().recordings.values()].filter((recording) => recording.tenantId === context.tenantId).sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentRecordingRow>(
-      "select evidence.id, evidence.tenant_id, evidence.live_run_id, evidence.object_key, evidence.checksum_sha256, evidence.bytes, evidence.duration_seconds, evidence.started_at, evidence.ended_at, evidence.recorded_at, evidence.retention_until from recording_evidence evidence where not $1::boolean or exists (select 1 from live_runs r where r.id = evidence.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))) order by evidence.recorded_at desc limit 500",
+      "select evidence.id, evidence.tenant_id, evidence.live_run_id, evidence.object_key, evidence.checksum_sha256, evidence.bytes, evidence.duration_seconds, evidence.started_at, evidence.ended_at, evidence.recorded_at, evidence.retention_until, evidence.verified_object_version, evidence.verification_evidence_ref, evidence.verified_at from recording_evidence evidence where evidence.verified_object_version is not null and evidence.verification_evidence_ref is not null and evidence.verified_at is not null and (not $1::boolean or exists (select 1 from live_runs r where r.id = evidence.live_run_id and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) order by evidence.recorded_at desc limit 500",
       [hasRestrictedMembership(context), context.membershipId ?? null]
     );
     return result.rows.map(persistentRecording);
@@ -53,6 +58,7 @@ export async function listRecordings(context: RequestContext) {
 }
 
 export async function registerRecording(context: RequestContext, input: RegisterRecordingInput) {
+  const verification = await verifyRecordingEvidence(context, input);
   if (!databasePool()) {
     const store = recordingStore();
     const key = `${context.tenantId}:${input.idempotencyKey}`;
@@ -62,7 +68,7 @@ export async function registerRecording(context: RequestContext, input: Register
       if (!sameRecording(existing, input)) throw new Response("Recording idempotency key was already used with different content", { status: 409 });
       return { recording: existing, duplicate: true };
     }
-    const recording: RecordingEvidence = { id: `recording_${crypto.randomUUID()}`, tenantId: context.tenantId, recordedAt: new Date().toISOString(), ...input };
+    const recording: RecordingEvidence = { id: `recording_${crypto.randomUUID()}`, tenantId: context.tenantId, recordedAt: new Date().toISOString(), ...input, contentVerification: verification };
     store.recordings.set(recording.id, recording);
     store.idempotency.set(key, recording.id);
     return { recording, duplicate: false };
@@ -72,7 +78,7 @@ export async function registerRecording(context: RequestContext, input: Register
     const run = await client.query("select id from live_runs where id = $1::uuid", [input.runId]);
     if (!run.rows[0]) throw new Response("Live run not found", { status: 404 });
     const existing = await client.query<PersistentRecordingRow>(
-      "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until from recording_evidence where idempotency_key = $1",
+      "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until, verified_object_version, verification_evidence_ref, verified_at from recording_evidence where idempotency_key = $1",
       [input.idempotencyKey],
     );
     if (existing.rows[0]) {
@@ -81,15 +87,15 @@ export async function registerRecording(context: RequestContext, input: Register
       return { recording, duplicate: true };
     }
     const result = await client.query<PersistentRecordingRow>(
-      `insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, retention_until, idempotency_key)
-       values ($1, $2::uuid, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9::date, $10)
+      `insert into recording_evidence (tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, retention_until, idempotency_key, verified_object_version, verification_evidence_ref, verified_at)
+       values ($1, $2::uuid, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9::date, $10, $11, $12, $13::timestamptz)
        on conflict do nothing
-       returning id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until`,
-      [context.tenantId, input.runId, input.objectKey, input.checksumSha256, input.bytes, input.durationSeconds, input.startedAt ?? null, input.endedAt ?? null, input.retentionUntil ?? null, input.idempotencyKey],
+       returning id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until, verified_object_version, verification_evidence_ref, verified_at`,
+      [context.tenantId, input.runId, input.objectKey, input.checksumSha256, input.bytes, input.durationSeconds, input.startedAt ?? null, input.endedAt ?? null, input.retentionUntil ?? null, input.idempotencyKey, verification.objectVersion, verification.evidenceRef, verification.verifiedAt],
     );
     if (result.rows[0]) return { recording: persistentRecording(result.rows[0]), duplicate: false };
     const conflicted = await client.query<PersistentRecordingRow>(
-      "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until from recording_evidence where idempotency_key = $1",
+      "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until, verified_object_version, verification_evidence_ref, verified_at from recording_evidence where idempotency_key = $1",
       [input.idempotencyKey],
     );
     if (conflicted.rows[0]) {
@@ -114,6 +120,7 @@ function persistentRecording(row: PersistentRecordingRow): RecordingEvidence {
     endedAt: timestamp(row.ended_at),
     recordedAt: new Date(row.recorded_at).toISOString(),
     retentionUntil: row.retention_until ? new Date(row.retention_until).toISOString().slice(0, 10) : undefined,
+    contentVerification: { objectVersion: row.verified_object_version, evidenceRef: row.verification_evidence_ref, verifiedAt: new Date(row.verified_at).toISOString() },
   };
 }
 

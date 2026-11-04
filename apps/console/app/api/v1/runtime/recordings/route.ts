@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     requireRuntimeRecordingService(request, body.tenantId);
     const context: RequestContext = { tenantId: body.tenantId, actorId: "runtime-recording-service", actorName: "运行时录制归档服务", role: "operator" };
     const registration = await registerRecording(context, body);
-    if (!registration.duplicate) await recordAuditEvent(context, { type: "recording_evidence.registered", resource: "recording_evidence", resourceId: registration.recording.id, detail: { runId: registration.recording.runId, objectKey: registration.recording.objectKey, bytes: registration.recording.bytes, durationSeconds: registration.recording.durationSeconds } });
+    if (!registration.duplicate) await recordAuditEvent(context, { type: "recording_evidence.registered", resource: "recording_evidence", resourceId: registration.recording.id, detail: { runId: registration.recording.runId, objectKey: registration.recording.objectKey, bytes: registration.recording.bytes, durationSeconds: registration.recording.durationSeconds, objectVersion: registration.recording.contentVerification.objectVersion, evidenceRef: registration.recording.contentVerification.evidenceRef } });
     return Response.json({ data: registration.recording }, { status: registration.duplicate ? 200 : 201 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "recording_registration_rejected" }, { status: error.status });
@@ -30,9 +30,9 @@ function isRecordingBody(value: unknown): value is RecordingBody {
   const objectKey = typeof body.objectKey === "string" ? body.objectKey : "";
   return typeof body.tenantId === "string" && body.tenantId.length > 0
     && typeof body.runId === "string" && body.runId.length > 0
-    && objectKey.length > 0 && objectKey.length <= 512 && !objectKey.startsWith("/") && !objectKey.includes("\\") && !objectKey.includes("..") && !/^[a-z][a-z0-9+.-]*:/i.test(objectKey)
+    && objectKey.length > 0 && objectKey.length <= 500 && !objectKey.startsWith("/") && !objectKey.includes("\\") && !objectKey.includes("..") && !/^[a-z][a-z0-9+.-]*:/i.test(objectKey)
     && typeof body.checksumSha256 === "string" && /^[0-9a-f]{64}$/.test(body.checksumSha256)
-    && typeof body.bytes === "number" && Number.isSafeInteger(body.bytes) && body.bytes >= 0
+    && typeof body.bytes === "number" && Number.isSafeInteger(body.bytes) && body.bytes > 0
     && typeof body.durationSeconds === "number" && Number.isSafeInteger(body.durationSeconds) && body.durationSeconds >= 0
     && typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0 && body.idempotencyKey.length <= 200
     && timestamp(body.startedAt) && timestamp(body.endedAt)
