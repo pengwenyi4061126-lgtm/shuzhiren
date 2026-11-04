@@ -1,4 +1,4 @@
-import { getChannelConnection } from "@/lib/channels";
+import { channelVerificationStatus, getChannelConnection } from "@/lib/channels";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
 import { createChannelInteraction } from "@/lib/interactions";
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     if (!run || !channel) return Response.json({ error: "channel_or_live_run_not_found" }, { status: 404 });
     if (run.channelConnectionId !== channel.id) return Response.json({ error: "channel_not_bound_to_live_run" }, { status: 409 });
     if (run.state !== "LIVE" && run.state !== "DEGRADED") return Response.json({ error: "live_run_not_accepting_interactions" }, { status: 409 });
-    if (channel.status !== "connected" || !channel.capability.supportsWebhook || !channel.capability.supportsComments) return Response.json({ error: "channel_not_enabled_for_interactions" }, { status: 409 });
+    if (!channelVerificationStatus(channel).active || !channel.capability.supportsWebhook || !channel.capability.supportsComments) return Response.json({ error: "channel_not_enabled_for_interactions" }, { status: 409 });
 
     const interaction = await createChannelInteraction(context, {
       runId: run.id,

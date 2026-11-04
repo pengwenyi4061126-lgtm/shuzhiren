@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
-import { getChannelConnection } from "@/lib/channels";
+import { channelVerificationStatus, getChannelConnection } from "@/lib/channels";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
@@ -184,10 +184,11 @@ async function lockedInteraction(client: PoolClient, runId: string, interactionI
 
 async function assertReplyChannel(client: PoolClient, requested: string | undefined, source: string | undefined) {
   if (!requested || requested !== source) throw new Response("Channel reply must use the interaction source channel", { status: 409 });
-  const result = await client.query<{ id: string; status: string; capabilities: unknown }>("select id, status, capabilities from channel_connections where id = $1", [requested]);
+  const result = await client.query<{ id: string; status: "connected" | "degraded" | "disabled"; capabilities: unknown; last_verified_at: Date | string | null; verification_evidence_ref: string | null; verified_by: string | null }>("select id, status, capabilities, last_verified_at, verification_evidence_ref, verified_by from channel_connections where id = $1", [requested]);
   const channel = result.rows[0];
   if (!channel) throw new Response("Channel connection not found", { status: 404 });
-  if (channel.status !== "connected" || !supportsOutboundReplyCapability(channel.capabilities)) throw new Response("Channel does not support outbound replies", { status: 409 });
+  const verification = channelVerificationStatus({ status: channel.status, lastVerifiedAt: channel.last_verified_at ? new Date(channel.last_verified_at).toISOString() : undefined, verificationEvidenceRef: channel.verification_evidence_ref ?? undefined, verifiedBy: channel.verified_by ?? undefined });
+  if (!verification.active || !supportsOutboundReplyCapability(channel.capabilities)) throw new Response("Channel does not support outbound replies", { status: 409 });
   return channel;
 }
 
@@ -263,4 +264,4 @@ async function enqueueDemoDelivery(context: RequestContext, runId: string, draft
 }
 
 function demoReply(context: RequestContext, runId: string, draftId: string) { const draft = replyStore().drafts.get(draftId); if (!draft || draft.tenantId !== context.tenantId || draft.runId !== runId) throw new Response("Channel reply draft not found", { status: 404 }); return draft; }
-async function assertDemoReplyChannel(context: RequestContext, requested: string | undefined, source: string | undefined) { if (!requested || requested !== source) throw new Response("Channel reply must use the interaction source channel", { status: 409 }); const channel = await getChannelConnection(context, requested); if (!channel || channel.status !== "connected" || !supportsOutboundReplyCapability(channel.capability)) throw new Response("Channel does not support outbound replies", { status: 409 }); return channel; }
+async function assertDemoReplyChannel(context: RequestContext, requested: string | undefined, source: string | undefined) { if (!requested || requested !== source) throw new Response("Channel reply must use the interaction source channel", { status: 409 }); const channel = await getChannelConnection(context, requested); if (!channel || !channelVerificationStatus(channel).active || !supportsOutboundReplyCapability(channel.capability)) throw new Response("Channel does not support outbound replies", { status: 409 }); return channel; }

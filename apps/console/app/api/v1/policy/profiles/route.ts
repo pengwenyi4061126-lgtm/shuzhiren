@@ -2,6 +2,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { createPolicyProfile, isPolicyRule, listPolicyProfiles, type CreatePolicyProfileInput } from "@/lib/policy-profiles";
+import { isControlledEvidenceRef } from "@/lib/governance-input";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ export async function POST(request: Request) {
 function isInput(value: unknown): value is CreatePolicyProfileInput {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
-  return ["name", "version", "evidenceRef", "validationSummary"].every((key) => typeof body[key] === "string" && body[key].trim().length > 0)
+  return ["name", "version", "validationSummary"].every((key) => typeof body[key] === "string" && body[key].trim().length > 0)
+    && typeof body.evidenceRef === "string" && isControlledEvidenceRef(body.evidenceRef.trim())
     && Array.isArray(body.rules) && body.rules.length <= 30 && body.rules.every(isPolicyRule);
 }

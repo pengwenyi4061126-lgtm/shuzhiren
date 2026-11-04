@@ -77,6 +77,8 @@ jobs:
       - run: npm run runtime:media:check
       - run: npm run runtime:voice:check
       - run: npm run runtime:journal:check
+      - run: npm run runtime:preview:check
+      - run: npm run media:evidence:check
       - run: npm run runtime:images:check
       - run: npm run runtime:worker:config:test
       - run: npm run runtime:worker:health:test
@@ -88,6 +90,7 @@ jobs:
       - run: npm run output-probe:config:test
       - run: npm run output-probe:response:check
       - run: npm run channel-adapter:test
+      - run: npm run channel:verification:check
       - run: npm run alert-notifier:test
       - run: npm run alert-notifier:health:check
       - run: python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt

@@ -1,4 +1,4 @@
-import { getChannelConnection } from "@/lib/channels";
+import { channelVerificationStatus, getChannelConnection } from "@/lib/channels";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { commerceEventTypes, createChannelCommerceEvent, type CommerceEventType } from "@/lib/commerce";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     if (!run || !channel) return Response.json({ error: "channel_or_live_run_not_found" }, { status: 404 });
     if (run.channelConnectionId !== channel.id) return Response.json({ error: "channel_not_bound_to_live_run" }, { status: 409 });
     if (!["LIVE", "DEGRADED", "ENDED"].includes(run.state)) return Response.json({ error: "live_run_not_accepting_commerce_events" }, { status: 409 });
-    if (channel.status !== "connected" || !channel.capability.supportsWebhook) return Response.json({ error: "channel_not_enabled_for_commerce_events" }, { status: 409 });
+    if (!channelVerificationStatus(channel).active || !channel.capability.supportsWebhook) return Response.json({ error: "channel_not_enabled_for_commerce_events" }, { status: 409 });
     const event = await createChannelCommerceEvent(context, { runId: run.id, channelConnectionId: channel.id, externalEventId: body.eventId, eventType: body.eventType, occurredAt: body.occurredAt, orderReference: body.orderReference, amountCents: body.amountCents, quantity: body.quantity });
     return Response.json({ data: event }, { status: event.duplicate ? 200 : 202 });
   } catch (error) {

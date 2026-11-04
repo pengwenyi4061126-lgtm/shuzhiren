@@ -12,6 +12,7 @@ const tenantId = "11111111-1111-4111-8111-111111111111";
 const channelConnectionId = "22222222-2222-4222-8222-222222222222";
 const runtimeToken = "runtime-shared-token-at-least-32-bytes";
 const mediaEvidenceToken = "media-evidence-verifier-token-at-least-32-bytes";
+const channelEvidenceToken = "channel-evidence-verifier-token-at-least-32-bytes";
 const telemetryToken = "telemetry-token-at-least-32-bytes";
 const outputProbeToken = "output-probe-token-at-least-32-bytes";
 const commits = {
@@ -41,6 +42,9 @@ const control = env({
   MEDIA_EVIDENCE_VERIFIER_URL: "https://media-evidence.internal",
   MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
   MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
+  CHANNEL_EVIDENCE_VERIFIER_URL: "https://channel-evidence.internal",
+  CHANNEL_EVIDENCE_VERIFIER_TOKEN: channelEvidenceToken,
+  CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
   RUNTIME_TELEMETRY_TENANT_TOKENS: { [tenantId]: telemetryToken },
   RUNTIME_RECORDING_TENANT_TOKENS: { [tenantId]: "recording-token-at-least-32-bytes" },
   PIM_INGEST_TENANT_TOKENS: { [tenantId]: "pim-ingest-token-at-least-32-bytes" },

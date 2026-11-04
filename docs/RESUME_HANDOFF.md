@@ -8,7 +8,7 @@
 - 分支：`master`
 - 远端检查点：`a42b6c4 docs: add system migration resume handoff`
 - 本地检查点：`master` 当前领先远端；恢复 SSH 凭据后用 `git log origin/master..HEAD --oneline` 核对并推送全部本地提交。
-- 工作区状态：干净；没有未提交的代码、配置或密钥文件。
+- 工作区状态：恢复前先以 `git status --short` 为准；不得通过重装依赖、解压运行时或清理工作区覆盖已有审计修复。
 - 本文件不保存任何平台密钥、SSH 私钥、GPU 租机凭据、OIDC 凭据或数据库口令。
 
 最近的运行可靠性与部署安全改进：
@@ -18,7 +18,7 @@
 3. `87a1922`：渠道 Webhook 对外使用稳定错误码，内部异常仅写服务日志。
 4. `8514765`：runtime-observer 在首次遥测成功前明确报告 `lastSuccessfulCycleAt: null`。
 5. `fc43a91`：渠道适配器与部署预检拒绝包含嵌入凭据或非 HTTP(S) 的 `CONTROL_PLANE_URL`；渠道和部署测试均已覆盖。
-6. 本轮渠道桥治理：`providerReplyEndpoint` 在受控部署中必须是无嵌入凭据的 HTTPS 地址；渠道连接只有具备验证时间、受控 `evidence://`/`urn:` 引用和验证人才能标记 `connected`。`059_channel_connection_verification_governance.sql` 冻结连接配置并在数据库层拒绝无证据启用；历史记录缺少任一验证要素时，预检按失败关闭，必须重新验证。
+6. 本轮渠道桥治理：`providerReplyEndpoint` 在受控部署中必须是无嵌入凭据的 HTTPS 地址；渠道连接只有取得私网 `CHANNEL_EVIDENCE_VERIFIER_*` 签发、绑定连接配置哈希的 `evidence://`/`urn:` 证明后才能标记 `connected`。`061_channel_verification_remediation.sql` 将旧的自报证据迁移为失败关闭：不合格历史连接被禁用，验证人与租户有效成员关系、连接配置不可变性和验证审计同一事务均由数据库/服务层约束。
 
 ## 新系统恢复步骤
 
@@ -71,14 +71,14 @@ npm run build
 代码框架、控制面、治理、审计、运行时 Gateway、observer、输出探针、渠道桥、部署门禁和 CI 已持续实现并推送；但以下事项必须在真实受控环境完成，不能用本地 fixture 声称完成：
 
 - 4090 租机上的 LiveTalking + MuseTalk + CosyVoice 端到端推流、显存、首帧、长时稳定性与故障演练。
-- 平台账号、RTMP 推流地址/密钥、OAuth/Webhook、商品与订单真实对接。
+- 平台账号、RTMP 推流地址/密钥、应用审核、目标平台 OAuth scope 与真实订单/结算数据。
 - OIDC、TLS、私网 PostgreSQL、KMS/密钥管理、对象存储、告警 Webhook、录播归档与隔离恢复演练。
 - 真实授权素材、声线/肖像授权、模型许可证和发布包验收证据。
 - 4 小时单路验收和 `npm run runtime:acceptance:verify` 所需的真实验收证据。
 
 ## 代码审计结果与下一步
 
-- 渠道适配器的出站控制面 URL 约束已在 `fc43a91` 完成；本轮补齐 provider bridge 的 HTTPS/无嵌入凭据要求、渠道连接的验证人/时间/受控证据三要素、数据库配置不可变性和 PostgreSQL/路由测试。`npm run channel-adapter:test`、`npm run channel:verification:check`、`npm run deploy:check:test` 覆盖本机可运行部分；PostgreSQL 迁移实际执行仍由 CI 或 Linux 数据库环境负责。
+- 渠道适配器的出站控制面 URL 约束已在 `fc43a91` 完成；本轮把渠道验证改为私网 verifier 签发的配置绑定回执，移除运营者自报证据入口，并在连接状态变化和审计写入间使用同一数据库事务。互动、商品事件、渠道回复和开播预检都会拒绝过期、未来时间或不受控的验证。`npm run channel-adapter:test`、`npm run channel:verification:check`、`npm run deploy:check:test` 覆盖本机可运行部分；PostgreSQL 迁移实际执行仍由 CI 或 Linux 数据库环境负责。
 - 已执行 `npm run verify:local`：本机配置契约、策略、权限、运行时可靠性、observer、输出探针、渠道、告警、类型检查、lint 与生产构建均通过。该命令不连接 PostgreSQL、不启动 Docker，也不能证明 Python Gateway、GPU 或平台验收。
 - 逐项审计仍在进行，不能以没有 `TODO` 或本地门禁通过替代完成判定。已修复渠道出站 URL、运行时 Compose CI 渲染/LiveTalking 构建门禁，以及商品版本、节目修订、策略、模型发布和直播命令的数据库级不可变性；节目修订已补齐 `DRAFT` 全量编辑、送审冻结、审批人/时间证据、同事务生命周期审计和控制台工作区。CI 的 PostgreSQL 架构与控制面集成测试覆盖草稿改写、送审后拒绝改写及批准状态；本机不启动 PostgreSQL，因此这部分实际数据库执行仍由 CI 负责。
 - 受控直播预览不再以控制台中的静态人像示意冒充运行时视频。Gateway 仅在配置独立 `PREVIEW_BROKER_URL` 与专属高熵 token 后，向私有 broker 请求每场次、短时、HTTPS WebRTC embed 授权；拒绝 RTMP、嵌入凭据、片段 URL、非 WebRTC 或过期/过长授权。控制面只允许管理员或运营员为其有范围权限的、已绑定会话场次请求预览，并把请求事实（不含授权 URL）写入审计链。真正预览服务、TLS 域名、WebRTC TURN/STUN 和 broker 实现仍是 4090/私网部署前置条件；未配置时 UI 显示明确状态，不伪造视频或影响 RTMP 主输出。
@@ -90,6 +90,6 @@ npm run build
 - 本轮完成成员资源范围第二层：受限成员不能读取或更改全租户的商品目录、授权素材、模型发布包、策略档案、额度或审计账本，也不能创建全租户场次；控制台同时隐藏这些治理页面及新建频道/场次入口。被授权场次的时间线改用 `runId` 限定的审计查询，不因阻断全租户审计而丢失取证能力。`npm run governance:tenant-scope:check` 覆盖服务与页面边界，CI PostgreSQL 集成测试增加受限成员对商品、素材、审计和场次创建均为 `403` 的断言。本机尚未执行该数据库集成测试。
 - 本轮完成成员资源范围第三层：告警、事故单、录制证据、运行时 outbox 和场次经营汇总均按其关联 `live_run` 重新验证受限成员范围；受限成员的全局列表只返回已分配场次的记录，不能借助未授权的告警/事故/outbox ID 确认告警、创建或关闭事故、读取或人工投递命令。`npm run membership:scopes:check` 会阻止这些运行证据服务移除范围过滤，CI PostgreSQL 集成测试为两条不同场次分别构造运行事实并断言列表隔离与未授权操作 `404`。本机尚未执行该数据库集成测试。
 - 对象内容验证不再接受调用方自报的 checksum：控制面经独立私网 `MEDIA_EVIDENCE_VERIFIER_*` 凭据向 verifier 请求对象键、不可变版本、SHA-256、字节数、媒体类型、验证时间和证据引用；登记及批准都会验证，数据库只允许带完整验证回执的待审核素材转为已批准，预检和运行时声线派发会拒绝缺少该回执的冻结素材。真实 S3/OSS/MinIO、版本化策略、验证器实现和存储凭据仍是受控部署前置条件，不能进入浏览器、控制面环境模板以外的密钥系统或仓库。
-- 仍待完成的仓库内工作包括：选定平台的具体 OAuth/Webhook/商品/结算 Adapter。实时插播不属于当前已支持能力，必须另行完成运行时安全切换、回滚与平台时序审计后才能列为可交付功能；它不能误列为 GPU 或账号外部前置条件。
+- 仍待完成的仓库内工作包括：选定平台的具体 OAuth/Webhook/商品同步 Adapter，以及通用结算批次、明细和对账异常模型。平台账号、应用审核和真实数据是外部前置条件，但前两类实现本身不是。实时插播不属于当前已支持能力，必须另行完成运行时安全切换、回滚与平台时序审计后才能列为可交付功能；它不能误列为 GPU 或账号外部前置条件。
 - 渠道回复的 `providerReplyEndpoint` 只是受控标准化桥接契约；抖音、淘宝、视频号等实际 API、OAuth scope、应用审核和商家账号权限仍是外部平台前置条件。缺少回执时 worker 保持失败/可重试状态，不会把互动伪装成已处理。
 - 恢复受控 SSH 凭据后推送全部本地提交；继续按上述代码审计项实现，再按部署就绪矩阵在受控环境收集外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。

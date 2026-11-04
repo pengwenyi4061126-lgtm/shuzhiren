@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
+import { isControlledEvidenceRef } from "@/lib/governance-input";
 
 export type ReleaseComponent = "runtime" | "avatar" | "lip_sync" | "voice";
 export type ReleaseApproval = "pending" | "approved" | "revoked";
@@ -33,14 +34,16 @@ export async function listModelReleases(context: RequestContext) {
 
 export async function createModelRelease(context: RequestContext, input: CreateModelReleaseInput) {
   requireTenantWideAccess(context);
+  const evidenceRef = input.evidenceRef.trim();
+  if (!isControlledEvidenceRef(evidenceRef)) throw new Response("Model release evidence must use an opaque evidence:// or urn: reference", { status: 400 });
   if (!databasePool()) {
     if ([...releaseStore().releases.values()].some((release) => release.tenantId === context.tenantId && release.component === input.component && release.name === input.name && release.version === input.version)) throw new Response("Model release already exists", { status: 409 });
-    const release: ModelRelease = { id: `release_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input };
+    const release: ModelRelease = { id: `release_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input, evidenceRef };
     releaseStore().releases.set(release.id, release);
     return release;
   }
   try {
-    return await withTenantTransaction(context.tenantId, async (client) => persistentRelease((await client.query<PersistentReleaseRow>(`insert into model_releases (tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, notes) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning ${columns}`, [context.tenantId, input.name, input.version, input.component, input.sourceCommit, input.imageDigest, input.artifactHash, input.driverVersion, input.license, input.rightsScope, input.evidenceRef, input.validationSummary, input.notes ?? null])).rows[0]));
+    return await withTenantTransaction(context.tenantId, async (client) => persistentRelease((await client.query<PersistentReleaseRow>(`insert into model_releases (tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, notes) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning ${columns}`, [context.tenantId, input.name, input.version, input.component, input.sourceCommit, input.imageDigest, input.artifactHash, input.driverVersion, input.license, input.rightsScope, evidenceRef, input.validationSummary, input.notes ?? null])).rows[0]));
   } catch (error) {
     if (databaseErrorCode(error) === "23505") throw new Response("Model release already exists", { status: 409 });
     throw error;
@@ -101,7 +104,7 @@ export async function activeModelReleaseStatusInTransaction(client: PoolClient, 
     const matches = result.rows.filter((release) => release.component === component);
     if (matches.length !== 1) return [`${component} 缺少唯一冻结发布包`];
     const release = matches[0];
-    return release.approval_status === "approved" && release.evidence_ref.trim() && release.validation_summary.trim() ? [] : [`${component} ${release.name} v${release.version} 已撤销、未批准或缺少验收证据`];
+    return release.approval_status === "approved" && isControlledEvidenceRef(release.evidence_ref) && release.validation_summary.trim() ? [] : [`${component} ${release.name} v${release.version} 已撤销、未批准或缺少受控验收证据`];
   });
   return failures.length === 0 ? { active: true, detail: revisionId ? "已冻结运行时、口型驱动与语音发布包均有效" : "运行时、口型驱动与语音发布包均已批准" } : { active: false, detail: failures.join("；") };
 }

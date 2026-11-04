@@ -3,12 +3,13 @@ import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plan
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { isControlledEvidenceRef } from "@/lib/governance-input";
 
 export type PolicyProfileApproval = "pending" | "approved" | "revoked";
 export type PolicyProfile = { id: string; tenantId: string; name: string; version: string; rules: PolicyRule[]; evidenceRef: string; validationSummary: string; approval: PolicyProfileApproval; approvedAt?: string; revokedAt?: string; revocationReason?: string };
 export type CreatePolicyProfileInput = Pick<PolicyProfile, "name" | "version" | "rules" | "evidenceRef" | "validationSummary">;
 type PersistentProfileRow = { id: string; tenant_id: string; name: string; version: string; rules: unknown; evidence_ref: string; validation_summary: string; approval_status: PolicyProfileApproval; approved_at: Date | string | null; revoked_at: Date | string | null; revocation_reason: string | null };
-type BoundPolicyProfileRow = Pick<PersistentProfileRow, "name" | "version" | "rules" | "approval_status">;
+type BoundPolicyProfileRow = Pick<PersistentProfileRow, "name" | "version" | "rules" | "evidence_ref" | "validation_summary" | "approval_status">;
 type ProfileStore = { profiles: Map<string, PolicyProfile> };
 
 declare global { var shuzhirenPolicyProfileStore: ProfileStore | undefined; }
@@ -30,13 +31,15 @@ export async function listPolicyProfiles(context: RequestContext) {
 
 export async function createPolicyProfile(context: RequestContext, input: CreatePolicyProfileInput) {
   requireTenantWideAccess(context);
+  const evidenceRef = input.evidenceRef.trim();
+  if (!isControlledEvidenceRef(evidenceRef)) throw new Response("Policy profile evidence must use an opaque evidence:// or urn: reference", { status: 400 });
   if (!databasePool()) {
     if ([...profileStore().profiles.values()].some((profile) => profile.tenantId === context.tenantId && profile.name === input.name && profile.version === input.version)) throw new Response("Policy profile already exists", { status: 409 });
-    const profile: PolicyProfile = { id: `policy_profile_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input };
+    const profile: PolicyProfile = { id: `policy_profile_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input, evidenceRef };
     profileStore().profiles.set(profile.id, profile); return profile;
   }
   try {
-    return await withTenantTransaction(context.tenantId, async (client) => persistentProfile((await client.query<PersistentProfileRow>(`insert into policy_profiles (tenant_id, name, version, rules, evidence_ref, validation_summary) values ($1, $2, $3, $4::jsonb, $5, $6) returning ${columns}`, [context.tenantId, input.name, input.version, JSON.stringify(input.rules), input.evidenceRef, input.validationSummary])).rows[0]));
+    return await withTenantTransaction(context.tenantId, async (client) => persistentProfile((await client.query<PersistentProfileRow>(`insert into policy_profiles (tenant_id, name, version, rules, evidence_ref, validation_summary) values ($1, $2, $3, $4::jsonb, $5, $6) returning ${columns}`, [context.tenantId, input.name, input.version, JSON.stringify(input.rules), evidenceRef, input.validationSummary])).rows[0]));
   } catch (error) {
     if (databaseErrorCode(error) === "23505") throw new Response("Policy profile already exists", { status: 409 });
     throw error;
@@ -75,8 +78,9 @@ export async function revokePolicyProfile(context: RequestContext, profileId: st
 }
 
 export async function latestApprovedPolicyProfile(client: PoolClient) {
-  const result = await client.query<PersistentProfileRow>(`select ${columns} from policy_profiles where approval_status = 'approved' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' order by approved_at desc limit 1`);
-  return result.rows[0] ? persistentProfile(result.rows[0]) : null;
+  const result = await client.query<PersistentProfileRow>(`select ${columns} from policy_profiles where approval_status = 'approved' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' order by approved_at desc`);
+  const profile = result.rows.find((row) => isControlledEvidenceRef(row.evidence_ref));
+  return profile ? persistentProfile(profile) : null;
 }
 
 export async function policyRulesForRun(context: RequestContext, runId: string) {
@@ -88,7 +92,7 @@ export async function policyRulesForRun(context: RequestContext, runId: string) 
 export async function policyRulesForRunInTransaction(client: PoolClient, runId: string) {
   const profile = await boundPolicyProfile(client, runId);
   if (!profile) throw new Response("Live run has no policy profile binding", { status: 409 });
-  if (profile.approval_status !== "approved") throw new Response("Live run policy profile is not active", { status: 409 });
+  if (profile.approval_status !== "approved" || !isControlledEvidenceRef(profile.evidence_ref) || !profile.validation_summary.trim()) throw new Response("Live run policy profile is not active", { status: 409 });
   return parseRules(profile.rules);
 }
 
@@ -98,12 +102,12 @@ export async function activePolicyProfileStatusForRun(context: RequestContext, r
   return withTenantTransaction(context.tenantId, async (client) => {
     const profile = await boundPolicyProfile(client, runId);
     if (!profile) return { active: false, detail: "场次修订未绑定策略包" };
-    return profile.approval_status === "approved" ? { active: true, detail: `已冻结策略包 ${profile.name} v${profile.version}` } : { active: false, detail: `已冻结策略包 ${profile.name} v${profile.version} 已撤销或未批准` };
+    return profile.approval_status === "approved" && isControlledEvidenceRef(profile.evidence_ref) && profile.validation_summary.trim() ? { active: true, detail: `已冻结策略包 ${profile.name} v${profile.version}` } : { active: false, detail: `已冻结策略包 ${profile.name} v${profile.version} 已撤销、未批准或缺少受控验收证据` };
   });
 }
 
 async function boundPolicyProfile(client: PoolClient, runId: string) {
-  const result = await client.query<BoundPolicyProfileRow>(`select p.name, p.version, p.rules, p.approval_status from live_runs r join show_revision_policy_profiles binding on binding.show_revision_id = r.show_revision_id join policy_profiles p on p.id = binding.policy_profile_id where r.id = $1`, [runId]);
+  const result = await client.query<BoundPolicyProfileRow>(`select p.name, p.version, p.rules, p.evidence_ref, p.validation_summary, p.approval_status from live_runs r join show_revision_policy_profiles binding on binding.show_revision_id = r.show_revision_id join policy_profiles p on p.id = binding.policy_profile_id where r.id = $1`, [runId]);
   return result.rows[0] ?? null;
 }
 

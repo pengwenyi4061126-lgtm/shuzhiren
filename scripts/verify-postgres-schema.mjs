@@ -27,6 +27,7 @@ requiredIndexes.push("membership_resource_scopes_membership_idx", "membership_re
 rlsTables.add("membership_resource_scopes");
 requiredPolicies.push("tenant_isolation_membership_resource_scopes");
 const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only", "product_versions_governed_immutable", "show_revisions_append_only", "policy_profiles_governed_immutable", "model_releases_governed_immutable", "live_commands_append_only", "media_assets_governed_evidence_mutation", "channel_connections_governed_verification", "channel_reply_drafts_governed_mutation", "show_program_change_requests_governed_mutation", "live_runs_governed_show_revision_rebind"];
+const requiredConstraints = new Map([["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true]]);
 const expectedMigrations = (await readdir(migrationsDirectory)).filter((name) => name.endsWith(".sql")).sort();
 const errors = [];
 
@@ -72,6 +73,13 @@ try {
 
   const triggers = new Set((await client.query("select tgname from pg_trigger where not tgisinternal")).rows.map((row) => row.tgname));
   for (const trigger of requiredTriggers) if (!triggers.has(trigger)) errors.push(`缺少关键触发器：${trigger}`);
+
+  const constraints = new Map((await client.query("select conname, convalidated from pg_constraint where connamespace = 'public'::regnamespace")).rows.map((row) => [row.conname, row]));
+  for (const [constraint, mustValidate] of requiredConstraints) {
+    const row = constraints.get(constraint);
+    if (!row) errors.push(`缺少关键约束：${constraint}`);
+    else if (mustValidate && !row.convalidated) errors.push(`关键约束尚未验证：${constraint}`);
+  }
 
   const extension = await client.query("select exists(select 1 from pg_extension where extname = 'pgcrypto') as installed");
   if (!extension.rows[0].installed) errors.push("缺少 pgcrypto 扩展");
@@ -171,6 +179,9 @@ async function verifyGovernedEvidenceImmutability() {
     await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Governed evidence verifier')", [tenantId, `governed-evidence-${tenantId}`]);
     const actor = await client.query("insert into users (external_subject, display_name) values ($1, 'Governed evidence verifier') returning id", [`governed-evidence-${tenantId}`]);
     const actorId = actor.rows[0].id;
+    await client.query("insert into memberships (tenant_id, user_id, role) values ($1, $2, 'reviewer')", [tenantId, actorId]);
+    const outsider = await client.query("insert into users (external_subject, display_name) values ($1, 'Governed evidence outsider') returning id", [`governed-evidence-outsider-${tenantId}`]);
+    const outsiderId = outsider.rows[0].id;
 
     await client.query("insert into products (id, tenant_id, external_sku, name) values ($1, $2, 'governed-evidence-sku', 'Governed evidence product')", [productId, tenantId]);
     await client.query("insert into product_versions (id, tenant_id, product_id, revision, facts, approval_status) values ($1, $2, $3, 1, $4::jsonb, 'draft')", [productVersionId, tenantId, productId, JSON.stringify({ priceCent: 100, stock: 1 })]);
@@ -214,6 +225,7 @@ async function verifyGovernedEvidenceImmutability() {
     await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities) values ($1, $2, 'Governed evidence channel', 'normalized-webhook-rtmp', 'disabled', 'rtmp', 'kms://governed/channel', $3::jsonb)", [channelId, tenantId, JSON.stringify({ supportsOutboundReplies: true })]);
     await expectImmutableRejection("update channel_connections set status = 'connected' where id = $1", [channelId], "无验证证据的渠道不得启用");
     await client.query("update channel_connections set status = 'connected', last_verified_at = now(), verification_evidence_ref = 'evidence://governed/channel-verification', verified_by = $2 where id = $1", [channelId, actorId]);
+    await expectImmutableRejection("update channel_connections set verified_by = $2 where id = $1", [channelId, outsiderId], "非租户成员不得作为渠道验证人");
     await expectImmutableRejection("update channel_connections set secret_ref = 'kms://governed/channel-mutated' where id = $1", [channelId], "渠道密钥引用不得改写");
     await client.query("insert into live_interactions (id, tenant_id, live_run_id, source, channel_connection_id, question_text, risk_level, policy_action, evidence_ids) values ($1, $2, $3, 'channel:governed', $4, 'Can this be sent?', 'low', 'answer', '[\"product_version\"]'::jsonb)", [interactionId, tenantId, runId, channelId]);
     await client.query("insert into channel_reply_drafts (id, tenant_id, live_run_id, interaction_id, channel_connection_id, body, body_sha256, policy_action, evidence_snapshot, created_by) values ($1, $2, $3, $4, $5, 'Initial governed reply', encode(digest('Initial governed reply', 'sha256'), 'hex'), 'answer', '[{\"type\":\"product_version\",\"id\":\"evidence\"}]'::jsonb, $6)", [replyId, tenantId, runId, interactionId, channelId, actorId]);
@@ -237,7 +249,7 @@ async function expectImmutableRejection(statement, parameters, label) {
     await client.query(statement, parameters);
     errors.push(`${label}未被数据库触发器拒绝`);
   } catch (error) {
-    if (!(error instanceof Error) || !/immutable|only permits|editable only|channel reply|channel connection/i.test(error.message)) errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
+    if (!(error instanceof Error) || !/immutable|only permits|editable only|channel reply|channel connection|channel verification/i.test(error.message)) errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
   } finally {
     await client.query("rollback to savepoint governed_evidence_mutation");
     await client.query("release savepoint governed_evidence_mutation");

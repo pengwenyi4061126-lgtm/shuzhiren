@@ -22,6 +22,7 @@ const tenantId = randomUUID();
 const isolatedTenantId = randomUUID();
 const gatewayToken = "control-plane-integration-gateway-token";
 const mediaEvidenceToken = "control-plane-integration-media-evidence-token";
+const channelEvidenceToken = "control-plane-integration-channel-evidence-token";
 const telemetryToken = "control-plane-integration-telemetry-token";
 const interactionToken = "control-plane-integration-interaction-token";
 const commerceToken = "control-plane-integration-commerce-token";
@@ -115,6 +116,9 @@ try {
       MEDIA_EVIDENCE_VERIFIER_URL: mock.baseUrl,
       MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
       MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
+      CHANNEL_EVIDENCE_VERIFIER_URL: mock.baseUrl,
+      CHANNEL_EVIDENCE_VERIFIER_TOKEN: channelEvidenceToken,
+      CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
       OUTBOX_MAX_ATTEMPTS: "1",
       OIDC_ISSUER_URL: issuer,
       OIDC_AUDIENCE: "shuzhiren-integration",
@@ -151,8 +155,10 @@ try {
   const suspendedRequestHeaders = { authorization: `Bearer ${suspendedToken}` };
   const unsafeChannelVerification = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections/${recoverRun.channelId}/verify`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ status: "connected", evidenceRef: "https://operator:secret@evidence.internal/report" }) });
   assert.equal(unsafeChannelVerification.status, 400, "channel verification must reject credential-bearing or non-opaque evidence references");
-  const governedChannelVerification = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections/${recoverRun.channelId}/verify`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ status: "connected", evidenceRef: "evidence://integration/channel-reverification" }) });
-  assert.equal(governedChannelVerification.status, 200, "channel verification must retain a controlled evidence reference and verifier");
+  const governedChannelVerification = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections/${recoverRun.channelId}/verify`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ status: "connected" }) });
+  assert.equal(governedChannelVerification.status, 200, "channel verification must require a private verifier attestation rather than operator-provided evidence");
+  const governedChannelAudit = await client.query("select detail from audit_events where event_type = 'channel_connection.verified' and resource_key = $1 order by chain_sequence desc limit 1", [recoverRun.channelId]);
+  assert.match(governedChannelAudit.rows[0].detail.evidenceRef, /^evidence:\/\/integration\/channel\//, "channel verification and its immutable audit event must share verifier-issued evidence");
   const scopeArtifacts = await seedRunScopeArtifacts(recoverRunId, staleRunId);
   const verifiedAssetCreate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ kind: "music", name: "Integration verified music", rightsScope: "Integration test only", source: "evidence://integration/new-media", objectKey: `assets/${tenantId}/verified-music.mp3`, checksum: `sha256:${"c".repeat(64)}` }) });
   assert.equal(verifiedAssetCreate.status, 201, "a media asset must be registered only after private content verification");
@@ -166,7 +172,7 @@ try {
   const memberDirectory = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: requestHeaders });
   assert.equal(memberDirectory.status, 200, "an admin should list tenant memberships");
   const memberDirectoryPayload = await memberDirectory.json();
-  assert.equal(memberDirectoryPayload.data.length, 3, "the membership directory must expose seeded tenant members only");
+  assert.equal(memberDirectoryPayload.data.length, 4, "the membership directory must expose seeded tenant members only");
   const operatorMembership = memberDirectoryPayload.data.find((member) => member.externalSubject === "integration-second-operator");
   assert.ok(operatorMembership, "the seeded operator membership must be available for resource-scope tests");
   const restrictOperator = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships/${operatorMembership.id}`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ accessScope: "restricted", resourceScopes: [{ resourceType: "live_run", resourceId: recoverRunId }] }) });
@@ -913,8 +919,8 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into policy_profiles (id, tenant_id, name, version, rules, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, '1.0.0', $4::jsonb, 'evidence://integration/seed', 'Seeded binding for integration validation.', 'approved', now())", [policyProfileId, tenantId, `Integration policy ${runId}`, JSON.stringify(profileRules)]);
   await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
   const capabilities = { channel: "integration-webhook", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsOutboundReplies: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
-  const channelVerifier = await client.query("insert into users (external_subject, display_name) values ('integration-channel-verifier', 'Integration channel verifier') on conflict (external_subject) do update set display_name = excluded.display_name returning id");
-  await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now(), 'evidence://integration/channel-verification', $5)", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities), channelVerifier.rows[0].id]);
+  const channelVerifierId = await seedMembership(tenantId, "integration-channel-verifier", "Integration channel verifier", "reviewer");
+  await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by) values ($1, $2, $3, 'normalized-webhook-rtmp', 'connected', 'rtmp', 'secret://integration/channel', $4::jsonb, now(), 'evidence://integration/channel-verification', $5)", [channelId, tenantId, `Integration channel ${runId}`, JSON.stringify(capabilities), channelVerifierId]);
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id, channel_connection_id, product_version_id) values ($1, $2, $3, $4::live_run_state, $5, $6, $7, $8)", [runId, tenantId, revisionId, state, `trace_${runId}`, sessionId, channelId, productVersionId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, $3)", [tenantId, runId, sampledAt]);
   return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
@@ -947,6 +953,7 @@ async function seedMembership(targetTenantId, subject, displayName, role) {
      on conflict (tenant_id, user_id) do update set role = excluded.role, status = 'active'`,
     [targetTenantId, user.rows[0].id, role]
   );
+  return user.rows[0].id;
 }
 
 async function startMockServer() {
@@ -973,6 +980,11 @@ async function startMockServer() {
       const evidence = await requestBody(request);
       const contentType = evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
       return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
+    }
+    if (url.pathname === "/v1/channel-evidence/verify" && request.method === "POST") {
+      assert.equal(request.headers.authorization, `Bearer ${channelEvidenceToken}`);
+      const evidence = await requestBody(request);
+      return json(response, 200, { channelConnectionId: evidence.channelConnectionId, configurationSha256: evidence.configurationSha256, evidenceRef: `evidence://integration/channel/${evidence.channelConnectionId}`, verifiedAt: new Date().toISOString() });
     }
     if (url.pathname === "/v1/media" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);

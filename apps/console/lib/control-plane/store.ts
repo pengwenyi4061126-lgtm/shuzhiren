@@ -136,7 +136,7 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
   if (!channel.passed) throw new Response(`Channel is not ready: ${channel.detail}`, { status: 409 });
   if (!databasePool()) return createDemoRun(context, input);
   return withTenantTransaction(context.tenantId, async (client) => {
-    const releases = await client.query<{ id: string; component: ReleaseComponent }>("select id, component from model_releases where approval_status = 'approved' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' and component = any($1::model_release_component[]) order by approved_at desc", [requiredProductionReleaseComponents]);
+    const releases = await client.query<{ id: string; component: ReleaseComponent }>("select id, component from model_releases where approval_status = 'approved' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' and (evidence_ref ~ '^evidence://[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$' or evidence_ref ~ '^urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$') and component = any($1::model_release_component[]) order by approved_at desc", [requiredProductionReleaseComponents]);
     const frozenReleases = new Map<ReleaseComponent, string>();
     for (const release of releases.rows) if (!frozenReleases.has(release.component)) frozenReleases.set(release.component, release.id);
     if (!requiredProductionReleaseComponents.every((component) => frozenReleases.has(component))) throw new Response("Approved runtime, lip-sync, and voice releases are required", { status: 409 });

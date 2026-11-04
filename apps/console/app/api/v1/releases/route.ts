@@ -2,7 +2,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { createModelRelease, listModelReleases, type CreateModelReleaseInput, type ReleaseComponent } from "@/lib/releases";
-import { isGitCommit, isSha256Digest } from "@/lib/governance-input";
+import { isControlledEvidenceRef, isGitCommit, isSha256Digest } from "@/lib/governance-input";
 
 export const dynamic = "force-dynamic";
 export async function GET(request: Request) { const context = await requestContextFrom(request); requireRole(context, ["admin", "operator", "reviewer", "analyst"]); return Response.json({ data: await listModelReleases(context) }); }
@@ -18,7 +18,8 @@ function isReleaseInput(value: unknown): value is CreateModelReleaseInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>; const components = new Set<ReleaseComponent>(["runtime", "avatar", "lip_sync", "voice"]);
   return typeof input.component === "string" && components.has(input.component as ReleaseComponent)
-    && ["name", "version", "driverVersion", "license", "rightsScope", "evidenceRef", "validationSummary"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0)
+    && ["name", "version", "driverVersion", "license", "rightsScope", "validationSummary"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0)
+    && typeof input.evidenceRef === "string" && isControlledEvidenceRef(input.evidenceRef.trim())
     && isGitCommit(input.sourceCommit) && isSha256Digest(input.imageDigest) && isSha256Digest(input.artifactHash)
     && (input.notes === undefined || typeof input.notes === "string");
 }

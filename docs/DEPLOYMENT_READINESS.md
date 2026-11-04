@@ -9,7 +9,7 @@
 | 平台推流 | 已实现 RTMP 运行时配置、输出探针、降级和人工接管命令；SRT 需先扩展 Gateway 与验收链路 | 平台账号、私有推流地址/密钥、平台 AI 标识要求、目的端回放或中继探针 | 30 分钟内部试播、目的端输出探针记录 |
 | 身份与租户 | OIDC JWT 校验、RBAC、RLS、CSRF Origin 校验、审计哈希链、控制台 standalone 容器与私网 Compose | OIDC issuer、真实成员/角色同步、生产 PostgreSQL 账号与密钥、TLS 反向代理 | `/api/health`、`npm run db:verify`、控制台 Compose 健康检查、租户隔离集成回归 |
 | 素材与合规 | 素材/发布包/策略审批、冻结修订、撤销隔离、人工接管 | 肖像、声音、音乐、商品、脚本的书面授权和审核证据 | 场次发布清单、审计导出、授权文件引用 |
-| 商品与渠道 | PIM/渠道标准化私网接入、幂等、商品审核、渠道验证证据 | ERP/PIM Adapter、平台 OAuth/Webhook、真实结算和对账数据 | 渠道验证报告、事实来源与时间窗、对账记录 |
+| 商品与渠道 | PIM/渠道标准化私网接入、幂等、商品审核；渠道连接须由私网 verifier 签发、绑定配置哈希且 24 小时内有效的证据后才能启用 | 平台账号、OAuth/Webhook、应用审核、真实订单/结算数据；部署私网 `CHANNEL_EVIDENCE_VERIFIER_*` 服务与凭据 | verifier 回执、渠道验证报告、事实来源与时间窗、对账记录 |
 | 录制与恢复 | 录制证据登记、数据库备份校验脚本、Gateway 命令日志与隔离恢复流程 | 对象存储版本化、站外复制、加密备份、恢复演练负责人 | 对象复制与 SHA-256、数据库与 Gateway 状态隔离恢复演练记录 |
 
 ## 发布判定
@@ -21,3 +21,9 @@
 4. 只有 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json` 通过，且所有外部项有可审计证据（包括 PostgreSQL 与 Gateway 命令日志的隔离恢复及不重放验证），才允许真实小规模开播。
 
 任何缺失的外部项都是上线阻断，不应通过开发态 fixture、Gateway `/healthz`、容器 `running` 状态或口头确认绕过。
+
+## 尚未完成的仓库工作
+
+- 选定单一目标平台后，仍需实现该平台的 OAuth、Webhook、商品同步和能力映射 Adapter；账号、应用审核、scope 和密钥是外部前置条件，但 Adapter 代码本身不是。
+- 通用结算批次、结算明细和对账异常模型尚未实现。现有渠道经营事件只支持漏斗和经营估算，不能作为平台结算或财务对账结论。
+- `CHANNEL_EVIDENCE_VERIFIER_*` 已有控制面契约和门禁；验证器服务对目标平台实际连通性、回执和证据归档的实现/部署仍须由受控私网完成。
