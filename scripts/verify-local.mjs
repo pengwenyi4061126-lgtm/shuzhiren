@@ -23,6 +23,7 @@ const checks = [
   ["run", "policy:red-team"],
   ["run", "governance:immutability:check"],
   ["run", "program:revisions:check"],
+  ["run", "program:runtime-scripts:check"],
   ["run", "preflight:check"],
   ["run", "lifecycle:authz:check"],
   ["run", "command:confirmation:check"],

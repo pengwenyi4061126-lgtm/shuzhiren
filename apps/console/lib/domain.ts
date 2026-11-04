@@ -24,6 +24,9 @@ export type LiveRun = {
   state: LiveRunState;
   traceId: string;
   scheduledAt?: string;
+  activeProgramSegmentId?: string;
+  activeInsertSourceSegmentId?: string;
+  pendingProgramTransitionEventId?: string;
   commandHistory: LiveCommand[];
   questions: LiveQuestion[];
 };
