@@ -2,6 +2,16 @@
 .github
 .agents
 .codex
+.env
+.env.*
+secrets
+config
+models
+weights
+recordings
+exports
+cache
+logs
 node_modules
 .npm
 apps/*/node_modules

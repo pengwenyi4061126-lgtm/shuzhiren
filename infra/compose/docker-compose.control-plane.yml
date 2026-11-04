@@ -1,8 +1,6 @@
 services:
   control-plane:
-    build:
-      context: ../..
-      dockerfile: apps/console/Dockerfile
+    image: ${CONTROL_PLANE_IMAGE:?set-in-control-plane-compose-env}
     restart: unless-stopped
     env_file:
       - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
@@ -21,11 +19,8 @@ services:
 
   control-plane-migrate:
     profiles: ["migrate"]
-    build:
-      context: ../..
-      dockerfile: apps/console/Dockerfile
-      target: build
+    image: ${CONTROL_PLANE_MIGRATOR_IMAGE:?set-in-control-plane-compose-env}
     restart: "no"
     env_file:
       - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
-    command: ["npm", "run", "db:migrate", "--workspace", "@shuzhiren/console"]
+    command: ["node", "scripts/migrate.mjs"]

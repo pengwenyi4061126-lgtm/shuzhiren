@@ -12,9 +12,10 @@ const contents = Object.fromEntries(await Promise.all(Object.entries(files).map(
 for (const profile of ["output-probe", "channel-adapter", "alert-notifier", "cosyvoice"]) {
   if (!contents.compose.includes(`profiles: ["${profile}"]`)) throw new Error(`Runtime Compose must retain the ${profile} profile`);
 }
-for (const source of ["runtime/livetalking/Dockerfile", "../../runtime/gateway", "vendor/CosyVoice"]) {
-  if (!contents.compose.includes(source)) throw new Error(`Runtime Compose must retain the governed build source: ${source}`);
+for (const source of ["RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE"]) {
+  if (!contents.compose.includes(source) || !contents.runtime.includes(`${source}=`)) throw new Error(`Runtime Compose must retain immutable deployment image input: ${source}`);
 }
+if (contents.compose.includes("build:")) throw new Error("Runtime production Compose must not build mutable local images");
 for (const [name, key] of [["runtime", "RUNTIME_SHARED_TOKEN="], ["gateway", "RUNTIME_GATEWAY_STATE_PATH="], ["gateway", "PREVIEW_GRANT_MAX_SECONDS="], ["channel", "CHANNEL_ADAPTER_TARGETS="], ["notifier", "ALERT_NOTIFIER_TARGETS="]]) {
   if (!contents[name].includes(key)) throw new Error(`${name} template must supply ${key} for Compose interpolation`);
 }

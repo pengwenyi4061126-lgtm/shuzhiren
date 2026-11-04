@@ -16,6 +16,7 @@ const option = (name, fallback) => {
 };
 const files = {
   control: option("--control", "config/control-plane.example.env"),
+  controlCompose: option("--control-compose", "config/control-plane-compose.example.env"),
   runtime: option("--runtime", "config/runtime.example.env"),
   gateway: option("--gateway", "config/runtime-gateway.example.env"),
   channelAdapter: option("--channel-adapter", "config/channel-adapter.example.env"),
@@ -44,6 +45,22 @@ function required(values, fileName, keys) {
     const value = values.get(key);
     if (!value) errors.push(`${fileName} 缺少 ${key}`);
     else if (!allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(value)) errors.push(`${fileName} 的 ${key} 仍是占位符`);
+  }
+}
+
+function isPlaceholder(value) {
+  return /replace-with|replace-me|example\.com|<|>/.test(value);
+}
+
+function immutableImages(values, fileName, keys) {
+  for (const key of keys) {
+    const value = values.get(key);
+    if (!value || (allowPlaceholders && isPlaceholder(value))) continue;
+    const [repository, digest, ...rest] = value.split("@");
+    const imageName = repository.slice(repository.lastIndexOf("/") + 1);
+    if (rest.length || !repository.includes("/") || !repository || imageName.includes(":") || !/^sha256:[a-f0-9]{64}$/.test(digest ?? "")) {
+      errors.push(`${fileName} 的 ${key} 必须是无 tag 的 registry/repository@sha256:<64位十六进制> 不可变镜像引用`);
+    }
   }
 }
 
@@ -158,18 +175,26 @@ function git(directory, args) {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
-const [controlText, runtimeText, gatewayText, channelAdapterText, alertNotifierText, lockText] = await Promise.all([files.control, files.runtime, files.gateway, files.channelAdapter, files.alertNotifier, files.lock].map((file) => readFile(file, "utf8").catch((error) => { errors.push(`无法读取 ${file}: ${error.message}`); return ""; })));
+const [controlText, controlComposeText, runtimeText, gatewayText, channelAdapterText, alertNotifierText, lockText] = await Promise.all([files.control, files.controlCompose, files.runtime, files.gateway, files.channelAdapter, files.alertNotifier, files.lock].map((file) => readFile(file, "utf8").catch((error) => { errors.push(`无法读取 ${file}: ${error.message}`); return ""; })));
 const control = parseEnv(controlText);
+const controlCompose = parseEnv(controlComposeText);
 const runtime = parseEnv(runtimeText);
 const gateway = parseEnv(gatewayText);
 const channelAdapter = parseEnv(channelAdapterText);
 const alertNotifier = parseEnv(alertNotifierText);
 
 required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_DEMO_MODE", "RELEASE_REVISION", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OUTBOX_MAX_ATTEMPTS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS", "RECORDING_EVIDENCE_VERIFIER_URL", "RECORDING_EVIDENCE_VERIFIER_TOKEN", "RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS", "CHANNEL_EVIDENCE_VERIFIER_URL", "CHANNEL_EVIDENCE_VERIFIER_TOKEN", "CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS", "RUNTIME_TELEMETRY_TENANT_TOKENS", "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "PROGRAM_OUTPUT_VERIFIER_TRUST", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]);
-required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "RUNTIME_WORKER_DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
+required(controlCompose, "控制面 Compose", ["CONTROL_PLANE_IMAGE", "CONTROL_PLANE_MIGRATOR_IMAGE"]);
+required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "RUNTIME_WORKER_DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "PREVIEW_GRANT_MAX_SECONDS", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 required(channelAdapter, "渠道适配器", ["CHANNEL_ADAPTER_DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "CHANNEL_ADAPTER_TARGETS"]);
 required(alertNotifier, "告警通知器", ["ALERT_NOTIFIER_DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS", "ALERT_NOTIFIER_TARGETS"]);
+const controlImageKeys = ["CONTROL_PLANE_IMAGE", "CONTROL_PLANE_MIGRATOR_IMAGE"];
+const runtimeImageKeys = ["RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE"];
+immutableImages(controlCompose, "控制面 Compose", controlImageKeys);
+immutableImages(runtime, "运行时", runtimeImageKeys);
+const concreteImages = [...controlImageKeys.map((key) => controlCompose.get(key)), ...runtimeImageKeys.map((key) => runtime.get(key))].filter((value) => !(allowPlaceholders && isPlaceholder(value)));
+if (concreteImages.length === 10 && new Set(concreteImages).size !== concreteImages.length) errors.push("控制面和运行时服务必须使用各自独立的不可变镜像摘要");
 const databasePrincipals = [
   databasePrincipal(control, "控制面", "DATABASE_URL"),
   databasePrincipal(runtime, "运行时", "RUNTIME_WORKER_DATABASE_URL"),
@@ -395,7 +420,7 @@ try {
   if (!patchText.includes("last_output_error=type(error).__name__")) errors.push("LiveTalking 观测指标不得暴露原始推流异常内容");
   if (!dockerfileText.includes("livetalking-observability.patch") || !dockerfileText.includes("git apply --check --recount")) errors.push("LiveTalking 镜像没有强制应用观测补丁");
   for (const expected of ["USER livetalking", "ENV HOME=/tmp", "chown -R livetalking:livetalking /app"]) if (!dockerfileText.includes(expected)) errors.push(`LiveTalking 镜像必须以非 root 用户运行：${expected}`);
-  for (const expected of ["vendor/*", "!vendor/LiveTalking/**", "runtime/patches/livetalking-observability.patch"]) if (!dockerignoreText.includes(expected)) errors.push(`LiveTalking 镜像构建上下文缺少最小化规则：${expected}`);
+  for (const expected of ["vendor/*", "!vendor/LiveTalking/**", "runtime/patches/livetalking-observability.patch", ".env", ".env.*", "secrets", "models", "weights", "recordings", "exports", "cache", "logs"]) if (!dockerignoreText.includes(expected)) errors.push(`LiveTalking 镜像构建上下文缺少最小化规则：${expected}`);
   git(liveTalkingSource, ["apply", "--check", "--recount", observabilityPatch]);
 } catch (error) {
   errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);

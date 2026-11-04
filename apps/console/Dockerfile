@@ -16,6 +16,14 @@ COPY apps/console apps/console
 COPY infra/postgres/migrations infra/postgres/migrations
 RUN npm run build --workspace @shuzhiren/console
 
+FROM dependencies AS migrator
+
+COPY apps/console/scripts/migrate.mjs apps/console/scripts/migration-integrity.mjs ./apps/console/scripts/
+COPY infra/postgres/migrations ./infra/postgres/migrations
+WORKDIR /app/apps/console
+USER node
+CMD ["node", "scripts/migrate.mjs"]
+
 FROM node:20-alpine AS runner
 
 WORKDIR /app

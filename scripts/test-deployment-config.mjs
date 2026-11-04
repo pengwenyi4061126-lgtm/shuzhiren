@@ -17,6 +17,19 @@ const channelEvidenceToken = "channel-evidence-verifier-token-at-least-32-bytes"
 const telemetryToken = "telemetry-token-at-least-32-bytes";
 const programOutputToken = "program-output-token-at-least-32-bytes";
 const outputProbeToken = "output-probe-token-at-least-32-bytes";
+const image = (name, digit) => `registry.internal/shuzhiren/${name}@sha256:${digit.repeat(64)}`;
+const images = {
+  controlPlane: image("control-plane", "0"),
+  controlPlaneMigrator: image("control-plane-migrator", "1"),
+  gateway: image("runtime-gateway", "2"),
+  worker: image("runtime-worker", "3"),
+  observer: image("runtime-observer", "4"),
+  probe: image("output-probe", "5"),
+  adapter: image("channel-adapter", "6"),
+  notifier: image("alert-notifier", "7"),
+  livetalking: image("livetalking", "8"),
+  cosyvoice: image("cosyvoice", "9")
+};
 const commits = {
   MuseTalk: "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
   CosyVoice: "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
@@ -60,9 +73,25 @@ const control = env({
   SETTLEMENT_INGEST_TENANT_TOKENS: { [tenantId]: "settlement-ingest-token-at-least-32" }
 });
 
+const controlCompose = env({
+  CONTROL_PLANE_ENV_FILE: "/srv/shuzhiren/control.env",
+  CONSOLE_HOST_BIND: "127.0.0.1",
+  CONSOLE_PORT: "3000",
+  CONTROL_PLANE_IMAGE: images.controlPlane,
+  CONTROL_PLANE_MIGRATOR_IMAGE: images.controlPlaneMigrator
+});
+
 function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, programOutputToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }]) {
   return env({
     NVIDIA_VISIBLE_DEVICES: "0",
+    RUNTIME_GATEWAY_IMAGE: images.gateway,
+    RUNTIME_WORKER_IMAGE: images.worker,
+    RUNTIME_OBSERVER_IMAGE: images.observer,
+    OUTPUT_PROBE_IMAGE: images.probe,
+    CHANNEL_ADAPTER_IMAGE: images.adapter,
+    ALERT_NOTIFIER_IMAGE: images.notifier,
+    LIVETALKING_IMAGE: images.livetalking,
+    COSYVOICE_IMAGE: images.cosyvoice,
     STREAM_OUTPUT_MODE: "rtmp",
     STREAM_RTMP_URL: "rtmp://ingest.internal/live",
     STREAM_KEY: "fixture-stream-key-not-a-placeholder",
@@ -159,6 +188,7 @@ const alert = env({
 
 const files = {
   control: path.join(fixtureDirectory, "control.env"),
+  controlCompose: path.join(fixtureDirectory, "control-compose.env"),
   runtime: path.join(fixtureDirectory, "runtime.env"),
   gateway: path.join(fixtureDirectory, "gateway.env"),
   channel: path.join(fixtureDirectory, "channel.env"),
@@ -166,14 +196,26 @@ const files = {
 };
 
 function check(options = []) {
-  return spawnSync(process.execPath, [checker, "--control", files.control, "--runtime", files.runtime, "--gateway", files.gateway, "--channel-adapter", files.channel, "--alert-notifier", files.alert, "--source-root", root, "--require-output-probe", ...options], { cwd: root, encoding: "utf8" });
+  return spawnSync(process.execPath, [checker, "--control", files.control, "--control-compose", files.controlCompose, "--runtime", files.runtime, "--gateway", files.gateway, "--channel-adapter", files.channel, "--alert-notifier", files.alert, "--source-root", root, "--require-output-probe", ...options], { cwd: root, encoding: "utf8" });
 }
 
 try {
   const validProbeTarget = [{ id: "fixture", streamUrl: "rtmp://relay.internal/live/fixture", avSyncProbeUrl: "https://av-sync.internal/fixture", expectedFps: 25, expectedWidth: 1280, expectedHeight: 720 }];
-  await Promise.all([writeFile(files.control, control), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
+  await Promise.all([writeFile(files.control, control), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replace(images.gateway, "registry.internal/shuzhiren/runtime-gateway:latest"));
+  const floatingRuntimeImage = check(["--require-cosyvoice"]);
+  assert.notEqual(floatingRuntimeImage.status, 0, "production deployments must reject floating image tags");
+  assert.match(floatingRuntimeImage.stderr, /RUNTIME_GATEWAY_IMAGE.*不可变镜像引用/, "floating image rejection must identify the immutable-image gate");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
+  await writeFile(files.controlCompose, controlCompose.replace(images.controlPlaneMigrator, images.controlPlane));
+  const reusedImage = check(["--require-cosyvoice"]);
+  assert.notEqual(reusedImage.status, 0, "production services must not reuse an unrelated image digest");
+  assert.match(reusedImage.stderr, /各自独立的不可变镜像摘要/, "image digest reuse must identify the deployment-image gate");
+  await writeFile(files.controlCompose, controlCompose);
 
   await writeFile(files.channel, channel.replace("postgresql://channel_adapter:fixture-password", "postgresql://runtime_worker:fixture-password"));
   const reusedDatabasePrincipal = check(["--require-cosyvoice"]);

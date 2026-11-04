@@ -54,6 +54,7 @@ jobs:
           CONTROL_PLANE_ENV_FILE: config/control-plane.example.env
       - run: docker compose --env-file config/runtime.example.env --env-file config/runtime-gateway.example.env --env-file config/channel-adapter.example.env --env-file config/alert-notifier.example.env --profile output-probe --profile channel-adapter --profile alert-notifier --profile cosyvoice -f infra/compose/docker-compose.runtime.yml config
       - run: docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .
+      - run: docker build --file apps/console/Dockerfile --target migrator --tag shuzhiren-control-plane-migrator-ci .
       - run: docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .
       - run: docker build --file apps/runtime-observer/Dockerfile --tag shuzhiren-runtime-observer-ci .
       - run: docker build --file apps/output-probe/Dockerfile --tag shuzhiren-output-probe-ci .

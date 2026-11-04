@@ -35,13 +35,13 @@ Console / Policy / Product Truth
 4. 先启动画面和回退 TTS：
 
 ```bash
-docker compose --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env -f infra/compose/docker-compose.runtime.yml up --build
+docker compose --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env -f infra/compose/docker-compose.runtime.yml up
 ```
 
 5. 启用 CosyVoice 语音链路时使用 profile：
 
 ```bash
-docker compose --profile cosyvoice --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env -f infra/compose/docker-compose.runtime.yml up --build
+docker compose --profile cosyvoice --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env -f infra/compose/docker-compose.runtime.yml up
 ```
 
 CosyVoice 与 MuseTalk 同占一张 4090 时必须做真实压测。首版只开一个 Avatar 会话；如果长时间直播中显存、帧率或首包延迟不稳定，优先将 CosyVoice 改为第二 GPU 或独立语音服务，不能牺牲画面稳定性。仓库锁定的 `Fun-CosyVoice3-0.5B-2512` 输出原始 16-bit PCM 为 24 kHz，因此 Gateway 默认 `COSYVOICE_SAMPLE_RATE=24000` 并将 PCM 封装为 WAV 后投给 LiveTalking；切换模型前必须按该模型实际采样率显式修改此值并试听验收，不能沿用 22,050 Hz 造成音高和时长异常。`COSYVOICE_MODEL_PATH` 是宿主机权重目录，Compose 将它只读挂载到容器 `/opt/CosyVoice/CosyVoice/pretrained_models`；`COSYVOICE_MODEL_DIR` 必须写成该容器内的绝对模型路径，不能写相对路径。
@@ -80,7 +80,7 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 
 首个 `normalized-webhook-rtmp` Adapter 只是受控的标准化桥接契约，不能被描述成已完成某个平台的 OAuth、评论或商品 API 集成。实际接入每个平台时仍必须分别实现签名校验、重放保护、错误码映射、限流、审核要求和验收证据。
 
-仓库还提供 `apps/channel-adapter` 作为私网参考桥接服务：使用 `CHANNEL_ADAPTER_TARGETS` 中每个渠道独立的 HMAC secret，对 `x-shuzhiren-timestamp`、`x-shuzhiren-event-id` 和 `x-shuzhiren-signature` 校验五分钟时间窗与正文签名。无效签名不会消耗渠道速率额度；服务先把事件 ID 和正文 SHA-256 以持久化 `delivering/delivered` 状态写入 PostgreSQL，再只对首次需要出站的已验证事件计入本地限流。已投递的重试不会被限流误伤；被限流的新事件会释放本次租约，使平台可以稍后安全重试。租约内同一事件只允许一个实例出站，异常后可在租约到期安全重试，正文不同的重用 ID 会被拒绝。它还按渠道执行 `CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE` 本地速率上限；多副本部署仍必须由反向代理或平台网关提供全局限流。`/healthz` 会查询 PostgreSQL，数据库不可用时返回失败，不能只因进程存活而显示健康。它只接受标准化的 `interaction` 或 `commerce` JSON，不是任何真实平台的签名算法实现。通过 `docker compose --profile channel-adapter --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env --env-file /srv/shuzhiren/channel-adapter.env -f infra/compose/docker-compose.runtime.yml up --build` 启动，必须放在完成平台验签或由平台直连的受控反向代理之后；不可把其 HMAC secret、控制面服务 token 或数据库地址交给浏览器。未启用的可选 profile 不会因缺少其自身目标变量阻塞基础 Compose 解析；一旦启用，服务会拒绝空目标配置。
+仓库还提供 `apps/channel-adapter` 作为私网参考桥接服务：使用 `CHANNEL_ADAPTER_TARGETS` 中每个渠道独立的 HMAC secret，对 `x-shuzhiren-timestamp`、`x-shuzhiren-event-id` 和 `x-shuzhiren-signature` 校验五分钟时间窗与正文签名。无效签名不会消耗渠道速率额度；服务先把事件 ID 和正文 SHA-256 以持久化 `delivering/delivered` 状态写入 PostgreSQL，再只对首次需要出站的已验证事件计入本地限流。已投递的重试不会被限流误伤；被限流的新事件会释放本次租约，使平台可以稍后安全重试。租约内同一事件只允许一个实例出站，异常后可在租约到期安全重试，正文不同的重用 ID 会被拒绝。它还按渠道执行 `CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE` 本地速率上限；多副本部署仍必须由反向代理或平台网关提供全局限流。`/healthz` 会查询 PostgreSQL，数据库不可用时返回失败，不能只因进程存活而显示健康。它只接受标准化的 `interaction` 或 `commerce` JSON，不是任何真实平台的签名算法实现。通过 `docker compose --profile channel-adapter --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env --env-file /srv/shuzhiren/channel-adapter.env -f infra/compose/docker-compose.runtime.yml up` 启动，必须放在完成平台验签或由平台直连的受控反向代理之后；不可把其 HMAC secret、控制面服务 token 或数据库地址交给浏览器。未启用的可选 profile 不会因缺少其自身目标变量阻塞基础 Compose 解析；一旦启用，服务会拒绝空目标配置。
 ### 渠道 Adapter 凭据对应关系
 
 每个 `CHANNEL_ADAPTER_TARGETS` 项的 `interactionToken` 必须等于控制面 `CHANNEL_INGEST_TENANT_TOKENS` 中同一租户的值，`commerceToken` 必须等于 `CHANNEL_COMMERCE_TENANT_TOKENS` 中同一租户的值。部署预检会拒绝不一致配置，避免服务看似启动正常但每一次下游回调都被控制面拒绝。

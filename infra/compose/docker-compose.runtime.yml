@@ -1,7 +1,6 @@
 services:
   runtime-gateway:
-    build:
-      context: ../../runtime/gateway
+    image: ${RUNTIME_GATEWAY_IMAGE:?set-in-runtime-env}
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
       LIVETALKING_BASE_URL: http://livetalking:8010
@@ -37,9 +36,7 @@ services:
         condition: service_healthy
 
   runtime-worker:
-    build:
-      context: ../..
-      dockerfile: apps/runtime-worker/Dockerfile
+    image: ${RUNTIME_WORKER_IMAGE:?set-in-runtime-env}
     environment:
       DATABASE_URL: ${RUNTIME_WORKER_DATABASE_URL:?set-in-runtime-env}
       DATABASE_QUERY_TIMEOUT_MS: ${DATABASE_QUERY_TIMEOUT_MS:-5000}
@@ -73,9 +70,7 @@ services:
         condition: service_healthy
 
   runtime-observer:
-    build:
-      context: ../..
-      dockerfile: apps/runtime-observer/Dockerfile
+    image: ${RUNTIME_OBSERVER_IMAGE:?set-in-runtime-env}
     environment:
       CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set-in-runtime-env}
       RUNTIME_GATEWAY_URL: http://runtime-gateway:8090
@@ -103,9 +98,7 @@ services:
   output-probe:
     profiles: ["output-probe"]
     restart: unless-stopped
-    build:
-      context: ../..
-      dockerfile: apps/output-probe/Dockerfile
+    image: ${OUTPUT_PROBE_IMAGE:?set-in-runtime-env}
     environment:
       OUTPUT_PROBE_SHARED_TOKEN: ${OUTPUT_PROBE_SHARED_TOKEN:-}
       OUTPUT_PROBE_TARGETS: ${OUTPUT_PROBE_TARGETS:-[]}
@@ -125,9 +118,7 @@ services:
   channel-adapter:
     profiles: ["channel-adapter"]
     restart: unless-stopped
-    build:
-      context: ../..
-      dockerfile: apps/channel-adapter/Dockerfile
+    image: ${CHANNEL_ADAPTER_IMAGE:?set-in-runtime-env}
     environment:
       DATABASE_URL: ${CHANNEL_ADAPTER_DATABASE_URL:?set-in-channel-adapter-env}
       DATABASE_QUERY_TIMEOUT_MS: ${DATABASE_QUERY_TIMEOUT_MS:-5000}
@@ -148,9 +139,7 @@ services:
   alert-notifier:
     profiles: ["alert-notifier"]
     restart: unless-stopped
-    build:
-      context: ../..
-      dockerfile: apps/alert-notifier/Dockerfile
+    image: ${ALERT_NOTIFIER_IMAGE:?set-in-runtime-env}
     environment:
       DATABASE_URL: ${ALERT_NOTIFIER_DATABASE_URL:?set-in-alert-notifier-env}
       DATABASE_QUERY_TIMEOUT_MS: ${DATABASE_QUERY_TIMEOUT_MS:-5000}
@@ -170,9 +159,7 @@ services:
       retries: 12
 
   livetalking:
-    build:
-      context: ../..
-      dockerfile: runtime/livetalking/Dockerfile
+    image: ${LIVETALKING_IMAGE:?set-in-runtime-env}
     runtime: nvidia
     restart: unless-stopped
     environment:
@@ -197,9 +184,7 @@ services:
   cosyvoice:
     profiles: ["cosyvoice"]
     restart: unless-stopped
-    build:
-      context: ../../vendor/CosyVoice
-      dockerfile: runtime/python/Dockerfile
+    image: ${COSYVOICE_IMAGE:?set-in-runtime-env}
     runtime: nvidia
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
