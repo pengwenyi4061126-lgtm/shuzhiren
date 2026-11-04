@@ -18,7 +18,7 @@
 1. 在任意开发机先运行 `npm run verify:local`。它执行可在本地完成的配置契约、策略红队、observer/探针/渠道/告警模拟、所有常驻 Node 服务入口解析、控制台类型检查、lint 和生产构建；它不连接 PostgreSQL、不启动 Docker，也不代表 Python 运行时、GPU 或平台验收。
    若本机已用同一解释器安装 `runtime/gateway/requirements.txt`，再运行 `npm run verify:local -- --with-gateway --python /absolute/path/to/python`，将额外编译 Gateway 并执行 PCM/WAV 与并发幂等测试；缺少依赖时该命令会失败，不会静默跳过。
 2. 再运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --channel-adapter /srv/shuzhiren/channel-adapter.env --alert-notifier /srv/shuzhiren/alert-notifier.env --require-output-probe --require-cosyvoice`。该项目的实时问答语音链路依赖 CosyVoice；仅预制内容试播才可省略后一个门禁。
-3. 主机、权重、账号和密钥就绪后，执行内部试播、故障演练与独立输出探针验证；至少由水印/指纹、目的端回放或指标验证器产生一条绑定节目命令、冻结段落和内容 SHA-256 的输出观测。
+3. 主机、权重、账号和密钥就绪后，执行内部试播、故障演练与独立输出探针验证；至少由水印/指纹、目的端回放或指标验证器产生一条 Ed25519 签名的输出观测，绑定同租户场次、节目命令、冻结段落、内容 SHA-256、受众和短时有效期。控制面只接受专用输出证明凭据，不能复用遥测凭据。
 4. 只有 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json` 通过，且所有外部项有可审计证据（包括 PostgreSQL 与 Gateway 命令日志的隔离恢复及不重放验证），才允许真实小规模开播。
 
 任何缺失的外部项都是上线阻断，不应通过开发态 fixture、Gateway `/healthz`、容器 `running` 状态或口头确认绕过。

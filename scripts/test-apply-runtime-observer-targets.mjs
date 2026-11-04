@@ -18,7 +18,7 @@ const runtimeEnv = path.join(directory, "runtime.env");
 const controlEnv = path.join(directory, "control.env");
 const otherDirectory = await mkdtemp(path.join(os.tmpdir(), "shuzhiren-observer-target-apply-other-"));
 const crossDirectoryCandidate = path.join(otherDirectory, "runtime-observer-targets.next.json");
-const validPayload = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-32-chars" }]);
+const validPayload = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-32-chars" }]);
 
 function apply(candidate) {
   return spawnSync(process.execPath, ["scripts/apply-runtime-observer-targets.mjs", "--candidate", candidate, "--destination", destination, "--require-targets", "--runtime-env", runtimeEnv, "--control-env", controlEnv], { cwd: root, encoding: "utf8" });
@@ -31,7 +31,7 @@ function applyWithoutControlEnv(candidate) {
 try {
   await writeFile(destination, "[]");
   await writeFile(runtimeEnv, "OUTPUT_PROBE_SHARED_TOKEN=output-probe-token-at-least-32-chars\n");
-  await writeFile(controlEnv, 'RUNTIME_TELEMETRY_TENANT_TOKENS={"tenant_demo":"telemetry-token-at-least-32-chars"}\n');
+  await writeFile(controlEnv, 'RUNTIME_TELEMETRY_TENANT_TOKENS={"tenant_demo":"telemetry-token-at-least-32-chars"}\nPROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS={"tenant_demo":"program-output-token-at-least-32-chars"}\n');
   await writeFile(missingControlCandidate, validPayload);
   const missingControl = applyWithoutControlEnv(missingControlCandidate);
   assert.notEqual(missingControl.status, 0, "required observer targets must not be published without the control-plane token map");
@@ -48,12 +48,12 @@ try {
   assert.notEqual(invalid.status, 0, "invalid candidate must not replace the active target file");
   assert.equal(await readFile(destination, "utf8"), validPayload);
 
-  await writeFile(mismatchedCandidate, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "different-output-probe-token-at-least-32-chars" }]));
+  await writeFile(mismatchedCandidate, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "different-output-probe-token-at-least-32-chars" }]));
   const mismatched = apply(mismatchedCandidate);
   assert.notEqual(mismatched.status, 0, "mismatched output probe tokens must not replace the active target file");
   assert.equal(await readFile(destination, "utf8"), validPayload);
 
-  await writeFile(mismatchedTelemetryCandidate, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "different-telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-32-chars" }]));
+  await writeFile(mismatchedTelemetryCandidate, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "different-telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-32-chars" }]));
   const telemetryMismatched = apply(mismatchedTelemetryCandidate);
   assert.notEqual(telemetryMismatched.status, 0, "mismatched telemetry tokens must not replace the active target file");
   assert.equal(await readFile(destination, "utf8"), validPayload);

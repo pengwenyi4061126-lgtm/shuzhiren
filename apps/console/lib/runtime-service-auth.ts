@@ -1,4 +1,4 @@
-type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "RUNTIME_RECORDING_TENANT_TOKENS" | "PIM_INGEST_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS" | "CHANNEL_COMMERCE_TENANT_TOKENS" | "SETTLEMENT_INGEST_TENANT_TOKENS";
+type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS" | "RUNTIME_RECORDING_TENANT_TOKENS" | "PIM_INGEST_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS" | "CHANNEL_COMMERCE_TENANT_TOKENS" | "SETTLEMENT_INGEST_TENANT_TOKENS";
 
 function configuredTenantTokens(variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
   const value = process.env[variable];
@@ -25,6 +25,7 @@ function requireTenantService(request: Request, tenantId: string, variable: Tena
 }
 
 export function requireRuntimeService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "RUNTIME_TELEMETRY_TENANT_TOKENS", "demo-runtime-token", "runtime service"); }
+export function requireProgramOutputObservationService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "demo-program-output-observation-token", "program output observation service"); }
 export function requireRuntimeRecordingService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "RUNTIME_RECORDING_TENANT_TOKENS", "demo-runtime-recording-token", "runtime recording service"); }
 export function requirePimIngestService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "PIM_INGEST_TENANT_TOKENS", "demo-pim-ingest-token", "PIM ingest service"); }
 export function requireChannelIngestService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "CHANNEL_INGEST_TENANT_TOKENS", "demo-channel-ingest-token", "channel ingest service"); }

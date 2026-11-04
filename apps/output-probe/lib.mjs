@@ -105,14 +105,17 @@ async function fetchProgramEvidence(target, { timeoutMs, fetchImpl }) {
 
 export function validateProgramObservation(value, label = "program observation") {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-  const observation = value;
+  const envelope = value;
+  const observation = envelope.observation;
+  if (!observation || typeof observation !== "object" || Array.isArray(observation)) throw new Error(`${label} observation is invalid`);
+  if (typeof envelope.issuer !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(envelope.issuer) || typeof envelope.keyId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(envelope.keyId) || typeof envelope.audience !== "string" || envelope.audience.length === 0 || envelope.audience.length > 200 || !isSessionTimestamp(envelope.issuedAt) || !isSessionTimestamp(envelope.expiresAt) || typeof envelope.signature !== "string" || !/^[A-Za-z0-9_-]{80,1024}$/.test(envelope.signature)) throw new Error(`${label} attestation is invalid`);
   if (!isUuid(observation.outboxEventId) || !isMediaCommandId(observation.commandId) || !isUuid(observation.programSegmentId)) throw new Error(`${label} command binding is invalid`);
   if (!allowedAction(observation.action) || !isSessionTimestamp(observation.observedAt) || !Number.isInteger(observation.mediaTimeMs) || observation.mediaTimeMs < 0) throw new Error(`${label} timing is invalid`);
   if (typeof observation.source !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(observation.source)) throw new Error(`${label} source is invalid`);
   if (typeof observation.evidenceRef !== "string" || !(/^evidence:\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(observation.evidenceRef) || /^urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$/.test(observation.evidenceRef))) throw new Error(`${label} evidence reference is invalid`);
   if (typeof observation.contentSha256 !== "string" || !/^[0-9a-f]{64}$/.test(observation.contentSha256)) throw new Error(`${label} content hash is invalid`);
   if (typeof observation.confidence !== "number" || !Number.isFinite(observation.confidence) || observation.confidence < 0 || observation.confidence > 1) throw new Error(`${label} confidence is invalid`);
-  return { outboxEventId: observation.outboxEventId, commandId: observation.commandId, programSegmentId: observation.programSegmentId, action: observation.action, source: observation.source, evidenceRef: observation.evidenceRef, contentSha256: observation.contentSha256, confidence: observation.confidence, mediaTimeMs: observation.mediaTimeMs, observedAt: new Date(observation.observedAt).toISOString() };
+  return { outboxEventId: observation.outboxEventId, commandId: observation.commandId, programSegmentId: observation.programSegmentId, action: observation.action, source: observation.source, evidenceRef: observation.evidenceRef, contentSha256: observation.contentSha256, confidence: observation.confidence, mediaTimeMs: observation.mediaTimeMs, observedAt: new Date(observation.observedAt).toISOString(), attestation: { issuer: envelope.issuer, keyId: envelope.keyId, audience: envelope.audience, issuedAt: new Date(envelope.issuedAt).toISOString(), expiresAt: new Date(envelope.expiresAt).toISOString(), signature: envelope.signature } };
 }
 
 async function detectAudioActivity(sourceUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute }) {

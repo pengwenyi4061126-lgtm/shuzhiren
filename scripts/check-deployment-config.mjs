@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { createPublicKey } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateTarget as validateOutputProbeTarget } from "../apps/output-probe/lib.mjs";
@@ -164,7 +165,7 @@ const gateway = parseEnv(gatewayText);
 const channelAdapter = parseEnv(channelAdapterText);
 const alertNotifier = parseEnv(alertNotifierText);
 
-required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_DEMO_MODE", "RELEASE_REVISION", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OUTBOX_MAX_ATTEMPTS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS", "RECORDING_EVIDENCE_VERIFIER_URL", "RECORDING_EVIDENCE_VERIFIER_TOKEN", "RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS", "CHANNEL_EVIDENCE_VERIFIER_URL", "CHANNEL_EVIDENCE_VERIFIER_TOKEN", "CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS", "RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]);
+required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_DEMO_MODE", "RELEASE_REVISION", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OUTBOX_MAX_ATTEMPTS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS", "RECORDING_EVIDENCE_VERIFIER_URL", "RECORDING_EVIDENCE_VERIFIER_TOKEN", "RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS", "CHANNEL_EVIDENCE_VERIFIER_URL", "CHANNEL_EVIDENCE_VERIFIER_TOKEN", "CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS", "RUNTIME_TELEMETRY_TENANT_TOKENS", "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "PROGRAM_OUTPUT_VERIFIER_TRUST", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]);
 required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "RUNTIME_WORKER_DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "PREVIEW_GRANT_MAX_SECONDS", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 required(channelAdapter, "渠道适配器", ["CHANNEL_ADAPTER_DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "CHANNEL_ADAPTER_TARGETS"]);
@@ -211,7 +212,8 @@ equal(control, "控制面", "RUNTIME_GATEWAY_DEMO_MODE", "false");
 if (!allowPlaceholders && !/^[0-9a-f]{7,40}$/i.test(control.get("RELEASE_REVISION") ?? "")) errors.push("控制面 的 RELEASE_REVISION 必须是 7 至 40 位 Git 提交");
 
 const tenantServiceTokenMaps = new Map();
-for (const key of ["RUNTIME_TELEMETRY_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]) {
+const tenantUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+for (const key of ["RUNTIME_TELEMETRY_TENANT_TOKENS", "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]) {
   const value = control.get(key);
   try {
     const tokens = value ? JSON.parse(value) : null;
@@ -241,6 +243,17 @@ claimPrivateToken(control.get("CHANNEL_EVIDENCE_VERIFIER_TOKEN"), "channel-evide
 claimPrivateToken(runtime.get("CHANNEL_ADAPTER_DISPATCH_TOKEN"), "channel-adapter-dispatch");
 if (runtime.get("CHANNEL_ADAPTER_DISPATCH_TOKEN") !== channelAdapter.get("CHANNEL_ADAPTER_DISPATCH_TOKEN")) errors.push("运行时与渠道适配器的 CHANNEL_ADAPTER_DISPATCH_TOKEN 必须一致");
 claimPrivateToken(runtime.get("OUTPUT_PROBE_SHARED_TOKEN"), "output-probe");
+try {
+  const trust = JSON.parse(control.get("PROGRAM_OUTPUT_VERIFIER_TRUST") ?? "");
+  if (!trust || typeof trust !== "object" || Array.isArray(trust) || !Object.entries(trust).every(([tenantId, value]) => tenantUuid.test(tenantId) && value && typeof value === "object" && !Array.isArray(value) && /^[a-z][a-z0-9_-]{1,63}$/.test(value.issuer ?? "") && value.keys && typeof value.keys === "object" && !Array.isArray(value.keys) && Object.entries(value.keys).length > 0 && Object.entries(value.keys).every(([keyId, pem]) => {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(keyId) || typeof pem !== "string") return false;
+    try { return createPublicKey(pem).asymmetricKeyType === "ed25519"; } catch { return false; }
+  }))) throw new Error("invalid");
+  for (const tenantId of Object.keys(tenantServiceTokenMaps.get("PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS") ?? {})) if (!(tenantId in trust)) errors.push("PROGRAM_OUTPUT_VERIFIER_TRUST 必须覆盖每个输出证明租户");
+} catch {
+  const message = "控制面 的 PROGRAM_OUTPUT_VERIFIER_TRUST 必须是每租户 Ed25519 验证器公钥 JSON 对象";
+  if (allowPlaceholders) warnings.push(message); else errors.push(message);
+}
 try {
   const targets = JSON.parse(channelAdapter.get("CHANNEL_ADAPTER_TARGETS") ?? "");
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -294,10 +307,12 @@ equal(runtime, "运行时", "STREAM_FPS", "25");
 try {
   const targets = parseObserverTargets(runtime.get("RUNTIME_OBSERVER_TARGETS") ?? "[]", "RUNTIME_OBSERVER_TARGETS");
   const telemetryTokens = tenantServiceTokenMaps.get("RUNTIME_TELEMETRY_TENANT_TOKENS") ?? {};
+  const outputTokens = tenantServiceTokenMaps.get("PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS") ?? {};
   const outputProbeToken = runtime.get("OUTPUT_PROBE_SHARED_TOKEN");
   if (targets.length > 0 && (!outputProbeToken || outputProbeToken.length < 32 || /\s/.test(outputProbeToken) || (!allowPlaceholders && /replace-with|replace-me|example\.com|<|>/.test(outputProbeToken)))) errors.push("运行时 observer 目标需要有效的 OUTPUT_PROBE_SHARED_TOKEN");
   for (const target of targets) {
     if (target.telemetryToken !== telemetryTokens[target.tenantId]) errors.push("运行时 observer 的 telemetryToken 必须匹配控制面同租户的 RUNTIME_TELEMETRY_TENANT_TOKENS");
+    if (target.programOutputToken !== outputTokens[target.tenantId]) errors.push("运行时 observer 的 programOutputToken 必须匹配控制面同租户的 PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS");
     if (target.outputProbeToken !== outputProbeToken) errors.push("运行时 observer 的 outputProbeToken 必须匹配 OUTPUT_PROBE_SHARED_TOKEN");
   }
 } catch {

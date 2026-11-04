@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
@@ -25,12 +25,15 @@ const mediaEvidenceToken = "control-plane-integration-media-evidence-token";
 const recordingEvidenceToken = "control-plane-integration-recording-evidence-token";
 const channelEvidenceToken = "control-plane-integration-channel-evidence-token";
 const telemetryToken = "control-plane-integration-telemetry-token";
+const programOutputToken = "control-plane-integration-program-output-token";
 const interactionToken = "control-plane-integration-interaction-token";
 const commerceToken = "control-plane-integration-commerce-token";
 const settlementToken = "control-plane-integration-settlement-token";
 const recordingToken = "control-plane-integration-recording-token";
 const pimToken = "control-plane-integration-pim-token";
 const isolatedPimToken = "control-plane-integration-isolated-pim-token";
+const outputVerifier = generateKeyPairSync("ed25519");
+const outputVerifierPublicKey = outputVerifier.publicKey.export({ type: "spki", format: "pem" });
 const { publicKey, privateKey } = await generateKeyPair("RS256");
 const jwk = { ...(await exportJWK(publicKey)), kid: "integration-key", alg: "RS256", use: "sig" };
 const client = new Client({ connectionString: databaseUrl });
@@ -131,6 +134,8 @@ try {
       OIDC_AUDIENCE: "shuzhiren-integration",
       OIDC_JWKS_URL: `${mock.baseUrl}/jwks`,
       RUNTIME_TELEMETRY_TENANT_TOKENS: JSON.stringify({ [tenantId]: telemetryToken }),
+      PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS: JSON.stringify({ [tenantId]: programOutputToken }),
+      PROGRAM_OUTPUT_VERIFIER_TRUST: JSON.stringify({ [tenantId]: { issuer: "watermark_verifier", keys: { "integration-2026": outputVerifierPublicKey } } }),
       CHANNEL_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: interactionToken }),
       CHANNEL_COMMERCE_TENANT_TOKENS: JSON.stringify({ [tenantId]: commerceToken }),
       SETTLEMENT_INGEST_TENANT_TOKENS: JSON.stringify({ [tenantId]: settlementToken }),
@@ -844,12 +849,17 @@ try {
     mediaTimeMs: 5000,
     observedAt: new Date().toISOString()
   };
-  const outputObservationAccepted = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` }, body: JSON.stringify(programOutputObservation) });
+  const { tenantId: _attestationTenantId, ...attestedObservation } = programOutputObservation;
+  const attestationPayload = { issuer: "watermark_verifier", keyId: "integration-2026", audience: `${tenantId}:${programTransitionRun.runId}`, issuedAt: new Date(Date.now() - 1_000).toISOString(), expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), observation: attestedObservation };
+  const signedProgramOutputObservation = { ...programOutputObservation, attestation: { ...attestationPayload, signature: sign(null, Buffer.from(canonicalJson(attestationPayload)), outputVerifier.privateKey).toString("base64url") } };
+  const telemetryAuthorizedOutputObservation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` }, body: JSON.stringify(signedProgramOutputObservation) });
+  assert.equal(telemetryAuthorizedOutputObservation.status, 401, "telemetry service credentials must not submit output attestation evidence");
+  const outputObservationAccepted = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${programOutputToken}` }, body: JSON.stringify(signedProgramOutputObservation) });
   assert.equal(outputObservationAccepted.status, 202, "a verifier attestation bound to a delivered program command must be accepted");
-  const outputObservationDuplicate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` }, body: JSON.stringify(programOutputObservation) });
+  const outputObservationDuplicate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${programOutputToken}` }, body: JSON.stringify(signedProgramOutputObservation) });
   assert.equal(outputObservationDuplicate.status, 200, "an identical output observation retry must be idempotent");
-  const outputObservationConflict = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${telemetryToken}` }, body: JSON.stringify({ ...programOutputObservation, confidence: 0.5 }) });
-  assert.equal(outputObservationConflict.status, 409, "a delivered command must not accept conflicting output evidence");
+  const outputObservationBadSignature = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/program-output-observations`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${programOutputToken}` }, body: JSON.stringify({ ...signedProgramOutputObservation, confidence: 0.5 }) });
+  assert.equal(outputObservationBadSignature.status, 403, "a modified signed output observation must be rejected before it reaches immutable evidence storage");
   await assert.rejects(client.query("update program_output_observations set confidence = 0 where outbox_event_id = $1", [programInsertBody.data.mediaEvent.id]), /program output observations are immutable/i, "program output observation evidence must be append-only at the database layer");
   const outputObservationAudit = await client.query("select detail ->> 'programSegmentId' as program_segment_id, detail ->> 'outboxEventId' as outbox_event_id from audit_events where resource_key = $1 and event_type = 'live_program.output_observed'", [programTransitionRun.runId]);
   assert.deepEqual(outputObservationAudit.rows, [{ program_segment_id: programTransitionRun.insertSegmentId, outbox_event_id: programInsertBody.data.mediaEvent.id }], "a real output observation must enter the immutable audit chain with its command binding");
@@ -1164,6 +1174,7 @@ async function startMockServer() {
 }
 
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); }
+function canonicalJson(value) { if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return JSON.stringify(value); if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`; return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`; }
 async function requestRawBody(request) { const chunks = []; for await (const chunk of request) chunks.push(chunk); return Buffer.concat(chunks).toString("utf8"); }
 async function requestBody(request) { return JSON.parse(await requestRawBody(request)); }
 async function availablePort() { const server = http.createServer(); await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); await new Promise((resolve) => server.close(resolve)); if (!address || typeof address === "string") throw new Error("could not reserve a TCP port"); return address.port; }

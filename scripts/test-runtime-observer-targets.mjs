@@ -17,8 +17,8 @@ function check(file, requireTargets = false, checkRuntimeEnv) {
 }
 
 try {
-  await writeFile(valid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-32-chars" }]));
-  await writeFile(invalid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "short", outputProbeUrl: "https://probe.internal/v1/probes/demo" }]));
+  await writeFile(valid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "output-probe-token-at-least-32-chars" }]));
+  await writeFile(invalid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "short", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo" }]));
   await writeFile(empty, "[]");
   await writeFile(runtimeEnv, "OUTPUT_PROBE_SHARED_TOKEN=output-probe-token-at-least-32-chars\n");
   const accepted = check(valid, true, runtimeEnv);
@@ -29,20 +29,20 @@ try {
   const emptyRejected = check(empty, true);
   assert.notEqual(emptyRejected.status, 0, "empty live target files must be rejected when requested");
   assert.match(emptyRejected.stderr, /at least one target/);
-  await writeFile(invalid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "different-output-probe-token-at-least-32-chars" }]));
+  await writeFile(invalid, JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/demo", outputProbeToken: "different-output-probe-token-at-least-32-chars" }]));
   const probeTokenRejected = check(invalid, true, runtimeEnv);
   assert.notEqual(probeTokenRejected.status, 0, "observer target probe tokens must match the configured output probe secret");
   assert.match(probeTokenRejected.stderr, /OUTPUT_PROBE_SHARED_TOKEN/);
   await writeFile(invalid, JSON.stringify([
-    { tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_one", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/one", outputProbeToken: "output-probe-token-at-least-32-chars" },
-    { tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_two", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/two", outputProbeToken: "output-probe-token-at-least-32-chars" }
+    { tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_one", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/one", outputProbeToken: "output-probe-token-at-least-32-chars" },
+    { tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_two", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/two", outputProbeToken: "output-probe-token-at-least-32-chars" }
   ]));
   const duplicateRunRejected = check(invalid, true, runtimeEnv);
   assert.notEqual(duplicateRunRejected.status, 0, "observer targets must not report one run twice");
   assert.match(duplicateRunRejected.stderr, /duplicates tenantId\/runId/);
   await writeFile(invalid, JSON.stringify([
-    { tenantId: "tenant_demo", runId: "run_one", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/one", outputProbeToken: "output-probe-token-at-least-32-chars" },
-    { tenantId: "tenant_demo", runId: "run_two", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/two", outputProbeToken: "output-probe-token-at-least-32-chars" }
+    { tenantId: "tenant_demo", runId: "run_one", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/one", outputProbeToken: "output-probe-token-at-least-32-chars" },
+    { tenantId: "tenant_demo", runId: "run_two", sessionId: "session_demo", telemetryToken: "telemetry-token-at-least-32-chars", programOutputToken: "program-output-token-at-least-32-chars", outputProbeUrl: "https://probe.internal/v1/probes/two", outputProbeToken: "output-probe-token-at-least-32-chars" }
   ]));
   const duplicateSessionRejected = check(invalid, true, runtimeEnv);
   assert.notEqual(duplicateSessionRejected.status, 0, "observer targets must not bind one runtime session twice");

@@ -6,7 +6,9 @@
 
 控制面五类私网服务 token 必须按“服务类型 + 租户”唯一分配；部署预检会拒绝跨服务或跨租户复用的 token。
 
-发布 `runtime-observer-targets.json` 时，`--require-targets` 必须同时传入 `--control-env /srv/shuzhiren/control.env` 与 `--runtime-env /srv/shuzhiren/runtime.env`。发布脚本会验证每个场次的遥测 token 来自同租户控制面映射，且 output-probe token 与运行时配置一致。
+发布 `runtime-observer-targets.json` 时，`--require-targets` 必须同时传入 `--control-env /srv/shuzhiren/control.env` 与 `--runtime-env /srv/shuzhiren/runtime.env`。发布脚本会验证每个场次的遥测 token 和独立 `programOutputToken` 分别来自同租户控制面映射，且 output-probe token 与运行时配置一致；两个控制面 token 不得复用。
+
+若配置 `programEvidenceUrl`，验证器响应必须是 Ed25519 签名证明包。控制面仅信任 `PROGRAM_OUTPUT_VERIFIER_TRUST` 中该租户的 issuer/keyId/public key，且要求证明的 audience 精确为 `<tenantId>:<liveRunId>`、观测绑定已送达媒体命令和冻结段落、签发到期窗口不超过 10 分钟。Probe 与 observer 只转发该包，不能用帧率、连通性、Gateway 回执或未签名 JSON 代替。
 
 ```bash
 npm run observer:targets:apply -- --candidate /srv/shuzhiren/observer-config/runtime-observer-targets.next.json --destination /srv/shuzhiren/observer-config/runtime-observer-targets.json --control-env /srv/shuzhiren/control.env --runtime-env /srv/shuzhiren/runtime.env --require-targets

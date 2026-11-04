@@ -15,6 +15,7 @@ const mediaEvidenceToken = "media-evidence-verifier-token-at-least-32-bytes";
 const recordingEvidenceToken = "recording-evidence-verifier-token-at-least-32-bytes";
 const channelEvidenceToken = "channel-evidence-verifier-token-at-least-32-bytes";
 const telemetryToken = "telemetry-token-at-least-32-bytes";
+const programOutputToken = "program-output-token-at-least-32-bytes";
 const outputProbeToken = "output-probe-token-at-least-32-bytes";
 const commits = {
   MuseTalk: "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
@@ -50,6 +51,8 @@ const control = env({
   CHANNEL_EVIDENCE_VERIFIER_TOKEN: channelEvidenceToken,
   CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
   RUNTIME_TELEMETRY_TENANT_TOKENS: { [tenantId]: telemetryToken },
+  PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS: { [tenantId]: programOutputToken },
+  PROGRAM_OUTPUT_VERIFIER_TRUST: { [tenantId]: { issuer: "watermark_verifier", keys: { "fixture-2026": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAx6+4e3XimNCIWqFItVRpuI4MZG36NG/ZkeWIAfIpwKg=\n-----END PUBLIC KEY-----\n" } } },
   RUNTIME_RECORDING_TENANT_TOKENS: { [tenantId]: "recording-token-at-least-32-bytes" },
   PIM_INGEST_TENANT_TOKENS: { [tenantId]: "pim-ingest-token-at-least-32-bytes" },
   CHANNEL_INGEST_TENANT_TOKENS: { [tenantId]: "channel-ingest-token-at-least-32-bytes" },
@@ -57,7 +60,7 @@ const control = env({
   SETTLEMENT_INGEST_TENANT_TOKENS: { [tenantId]: "settlement-ingest-token-at-least-32" }
 });
 
-function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }]) {
+function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, programOutputToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }]) {
   return env({
     NVIDIA_VISIBLE_DEVICES: "0",
     STREAM_OUTPUT_MODE: "rtmp",

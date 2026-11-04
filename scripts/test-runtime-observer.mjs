@@ -9,6 +9,7 @@ import path from "node:path";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const observer = path.join(root, "apps", "runtime-observer", "index.mjs");
 const telemetryToken = "observer-tenant-token-at-least-16";
+const programOutputToken = "observer-program-output-token-at-least-32";
 const gatewayToken = "gateway-shared-token-at-least-16";
 const observerPort = 18084;
 
@@ -24,7 +25,8 @@ async function startServer(probeMode) {
     }
     if (url.pathname === "/probe") {
       if (probeMode === "unavailable") return json(response, 503, { error: "probe_unavailable" });
-      const programObservation = probeMode === "program_observation" ? { outboxEventId: "11111111-1111-4111-8111-111111111111", commandId: "media_22222222-2222-4222-8222-222222222222", programSegmentId: "33333333-3333-4333-8333-333333333333", action: "INSERT_PROGRAM", source: "watermark_verifier", evidenceRef: "evidence://observer/fixture/1", contentSha256: "a".repeat(64), confidence: 0.99, mediaTimeMs: 5000, observedAt: new Date().toISOString() } : undefined;
+      const observedAt = new Date().toISOString();
+      const programObservation = probeMode === "program_observation" ? { outboxEventId: "11111111-1111-4111-8111-111111111111", commandId: "media_22222222-2222-4222-8222-222222222222", programSegmentId: "33333333-3333-4333-8333-333333333333", action: "INSERT_PROGRAM", source: "watermark_verifier", evidenceRef: "evidence://observer/fixture/1", contentSha256: "a".repeat(64), confidence: 0.99, mediaTimeMs: 5000, observedAt, attestation: { issuer: "watermark_verifier", keyId: "fixture-2026", audience: "tenant_demo:run_demo", issuedAt: observedAt, expiresAt: new Date(Date.now() + 60_000).toISOString(), signature: "a".repeat(86) } } : undefined;
       return json(response, 200, { outputConnected: true, outputFps: 25, avSyncMs: 19, bitrateMbps: 4.1, audioActive: probeMode !== "silent", fallbackReady: true, ...(programObservation ? { programObservation } : {}) });
     }
     if (url.pathname === "/api/v1/runtime/telemetry" && request.method === "POST") {
@@ -34,7 +36,7 @@ async function startServer(probeMode) {
       return json(response, 202, { data: { accepted: true } });
     }
     if (url.pathname === "/api/v1/runtime/program-output-observations" && request.method === "POST") {
-      assert.equal(request.headers.authorization, `Bearer ${telemetryToken}`);
+      assert.equal(request.headers.authorization, `Bearer ${programOutputToken}`);
       programOutputObservations.push(await requestBody(request));
       return json(response, 202, { data: { accepted: true } });
     }
@@ -59,7 +61,7 @@ async function requestBody(request) {
 
 async function observeOnce(probeMode) {
   const fixture = await startServer(probeMode);
-  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
+  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
   const child = spawn(process.execPath, [observer], {
     cwd: root,
     env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
@@ -87,7 +89,7 @@ async function observeReloadedTargets() {
   const fixture = await startServer("healthy");
   const directory = await mkdtemp(path.join(os.tmpdir(), "shuzhiren-observer-targets-"));
   const targetsFile = path.join(directory, "runtime-observer-targets.json");
-  const target = (runId) => [{ tenantId: "tenant_demo", runId, sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }];
+  const target = (runId) => [{ tenantId: "tenant_demo", runId, sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }];
   await writeFile(targetsFile, JSON.stringify(target("run_file_before")));
   const child = spawn(process.execPath, [observer], {
     cwd: root,
@@ -124,7 +126,7 @@ async function observeReloadedTargets() {
 
 async function observeTelemetryDeliveryFailure() {
   const fixture = await startServer("telemetry_unavailable");
-  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
+  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
   const child = spawn(process.execPath, [observer], {
     cwd: root,
     env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
@@ -149,7 +151,7 @@ async function observeTelemetryDeliveryFailure() {
 
 async function observeStartupHealth() {
   const fixture = await startServer("slow");
-  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
+  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
   const child = spawn(process.execPath, [observer], {
     cwd: root,
     env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
@@ -192,7 +194,7 @@ const failed = await observeOnce("unavailable");
 assert.deepEqual(failed.telemetry, { tenantId: "tenant_demo", runId: "run_demo", outputConnected: false, inferenceFps: 0, outputFps: 0, avSyncMs: 0, bitrateMbps: 0, gpuUtilization: 0, gpuMemoryMiB: 0, audioActive: false, fallbackReady: false });
 
 const observed = await observeOnce("program_observation");
-assert.deepEqual(observed.programOutputObservation, { tenantId: "tenant_demo", runId: "run_demo", runtimeSessionId: "session_demo", outboxEventId: "11111111-1111-4111-8111-111111111111", commandId: "media_22222222-2222-4222-8222-222222222222", programSegmentId: "33333333-3333-4333-8333-333333333333", action: "INSERT_PROGRAM", source: "watermark_verifier", evidenceRef: "evidence://observer/fixture/1", contentSha256: "a".repeat(64), confidence: 0.99, mediaTimeMs: 5000, observedAt: observed.programOutputObservation.observedAt });
+assert.deepEqual(observed.programOutputObservation, { tenantId: "tenant_demo", runId: "run_demo", runtimeSessionId: "session_demo", outboxEventId: "11111111-1111-4111-8111-111111111111", commandId: "media_22222222-2222-4222-8222-222222222222", programSegmentId: "33333333-3333-4333-8333-333333333333", action: "INSERT_PROGRAM", source: "watermark_verifier", evidenceRef: "evidence://observer/fixture/1", contentSha256: "a".repeat(64), confidence: 0.99, mediaTimeMs: 5000, observedAt: observed.programOutputObservation.observedAt, attestation: { issuer: "watermark_verifier", keyId: "fixture-2026", audience: "tenant_demo:run_demo", issuedAt: observed.programOutputObservation.attestation.issuedAt, expiresAt: observed.programOutputObservation.attestation.expiresAt, signature: "a".repeat(86) } });
 
 await observeReloadedTargets();
 await observeTelemetryDeliveryFailure();

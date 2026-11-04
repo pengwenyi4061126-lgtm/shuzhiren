@@ -32,8 +32,8 @@ try {
 
   const targets = parseObserverTargets(await readFile(candidatePath, "utf8"), candidatePath);
   if (requireTargets && targets.length === 0) throw new Error("target file must contain at least one target");
-  if (requireTargets && !controlEnv) throw new Error("--require-targets requires --control-env to validate telemetry tokens");
-  if (controlEnv) requireTelemetryTokens(targets, await readFile(path.resolve(controlEnv), "utf8"));
+  if (requireTargets && !controlEnv) throw new Error("--require-targets requires --control-env to validate observer service tokens");
+  if (controlEnv) requireObserverServiceTokens(targets, await readFile(path.resolve(controlEnv), "utf8"));
   if (runtimeEnv) requireOutputProbeToken(targets, outputProbeToken(await readFile(path.resolve(runtimeEnv), "utf8")));
 
   // Tokens are present in this file. Preserve owner-only access while replacing it atomically.
@@ -55,12 +55,18 @@ function outputProbeToken(text) {
   return "";
 }
 
-function requireTelemetryTokens(targets, text) {
-  const raw = environmentValue(text, "RUNTIME_TELEMETRY_TENANT_TOKENS");
-  let tokens;
-  try { tokens = JSON.parse(raw); } catch { throw new Error("RUNTIME_TELEMETRY_TENANT_TOKENS must be a JSON object"); }
-  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) throw new Error("RUNTIME_TELEMETRY_TENANT_TOKENS must be a JSON object");
-  if (!targets.every((target) => typeof tokens[target.tenantId] === "string" && target.telemetryToken === tokens[target.tenantId])) throw new Error("every observer target must use the control-plane telemetry token for its tenant");
+function requireObserverServiceTokens(targets, text) {
+  const parseMap = (key) => {
+    const raw = environmentValue(text, key);
+    let tokens;
+    try { tokens = JSON.parse(raw); } catch { throw new Error(`${key} must be a JSON object`); }
+    if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) throw new Error(`${key} must be a JSON object`);
+    return tokens;
+  };
+  const telemetry = parseMap("RUNTIME_TELEMETRY_TENANT_TOKENS");
+  const output = parseMap("PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS");
+  if (!targets.every((target) => typeof telemetry[target.tenantId] === "string" && target.telemetryToken === telemetry[target.tenantId])) throw new Error("every observer target must use the control-plane telemetry token for its tenant");
+  if (!targets.every((target) => typeof output[target.tenantId] === "string" && target.programOutputToken === output[target.tenantId])) throw new Error("every observer target must use the control-plane program output token for its tenant");
 }
 
 function environmentValue(text, expectedKey) {

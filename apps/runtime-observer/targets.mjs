@@ -7,9 +7,11 @@ export function parseObserverTargets(rawText, source) {
   return parsed.map((target, index) => {
     if (!target || typeof target !== "object" || Array.isArray(target)) throw new Error(`${source}[${index}] must be an object`);
     const value = target;
-    for (const key of ["tenantId", "runId", "sessionId", "telemetryToken", "outputProbeUrl"]) if (typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 2000) throw new Error(`${source}[${index}].${key} is invalid`);
+    for (const key of ["tenantId", "runId", "sessionId", "telemetryToken", "programOutputToken", "outputProbeUrl"]) if (typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 2000) throw new Error(`${source}[${index}].${key} is invalid`);
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.sessionId)) throw new Error(`${source}[${index}].sessionId is invalid`);
     if (value.telemetryToken.length < 32 || /\s/.test(value.telemetryToken)) throw new Error(`${source}[${index}].telemetryToken is too short or contains whitespace`);
+    if (value.programOutputToken.length < 32 || /\s/.test(value.programOutputToken)) throw new Error(`${source}[${index}].programOutputToken is too short or contains whitespace`);
+    if (value.programOutputToken === value.telemetryToken) throw new Error(`${source}[${index}].programOutputToken must differ from telemetryToken`);
     if (value.outputProbeToken !== undefined && (typeof value.outputProbeToken !== "string" || value.outputProbeToken.length < 32 || value.outputProbeToken.length > 2000 || /\s/.test(value.outputProbeToken))) throw new Error(`${source}[${index}].outputProbeToken is invalid`);
     const probeUrl = new URL(value.outputProbeUrl);
     if (!/^https?:$/.test(probeUrl.protocol) || probeUrl.username || probeUrl.password) throw new Error(`${source}[${index}].outputProbeUrl is invalid`);
@@ -18,7 +20,7 @@ export function parseObserverTargets(rawText, source) {
     if (sessionIds.has(value.sessionId)) throw new Error(`${source}[${index}] duplicates sessionId ${value.sessionId}`);
     runKeys.add(runKey);
     sessionIds.add(value.sessionId);
-    return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, outputProbeUrl: probeUrl.toString(), outputProbeToken: value.outputProbeToken };
+    return { tenantId: value.tenantId, runId: value.runId, sessionId: value.sessionId, telemetryToken: value.telemetryToken, programOutputToken: value.programOutputToken, outputProbeUrl: probeUrl.toString(), outputProbeToken: value.outputProbeToken };
   });
 }
 

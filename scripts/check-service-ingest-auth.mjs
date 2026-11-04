@@ -4,7 +4,7 @@ const proxy = await readFile(new URL("../apps/console/proxy.ts", import.meta.url
 const serviceAuth = await readFile(new URL("../apps/console/lib/runtime-service-auth.ts", import.meta.url), "utf8");
 const protectedServiceRoutes = [
   ["/api/v1/runtime/telemetry", "../apps/console/app/api/v1/runtime/telemetry/route.ts", "requireRuntimeService(request, body.tenantId)"],
-  ["/api/v1/runtime/program-output-observations", "../apps/console/app/api/v1/runtime/program-output-observations/route.ts", "requireRuntimeService(request, tenantId)"],
+  ["/api/v1/runtime/program-output-observations", "../apps/console/app/api/v1/runtime/program-output-observations/route.ts", "requireProgramOutputObservationService(request, tenantId)"],
   ["/api/v1/runtime/recordings", "../apps/console/app/api/v1/runtime/recordings/route.ts", "requireRuntimeRecordingService(request, body.tenantId)"],
   ["/api/v1/integrations/product-facts", "../apps/console/app/api/v1/integrations/product-facts/route.ts", "requirePimIngestService(request, body.tenantId)"],
   ["/api/v1/runtime/channel-interactions", "../apps/console/app/api/v1/runtime/channel-interactions/route.ts", "requireChannelIngestService(request, body.tenantId)"],
