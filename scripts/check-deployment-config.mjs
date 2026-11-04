@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { createPublicKey } from "node:crypto";
+import { createPublicKey, verify } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateTarget as validateOutputProbeTarget } from "../apps/output-probe/lib.mjs";
@@ -62,6 +62,73 @@ function immutableImages(values, fileName, keys) {
       errors.push(`${fileName} 的 ${key} 必须是无 tag 的 registry/repository@sha256:<64位十六进制> 不可变镜像引用`);
     }
   }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+async function verifyDeploymentReleaseManifest(control, controlCompose, runtime, controlImageKeys, runtimeImageKeys) {
+  const manifestPath = control.get("DEPLOYMENT_RELEASE_MANIFEST");
+  const trustSource = control.get("DEPLOYMENT_RELEASE_MANIFEST_TRUST");
+  if (!manifestPath || !trustSource || (allowPlaceholders && (isPlaceholder(manifestPath) || isPlaceholder(trustSource)))) return;
+  if (!path.isAbsolute(manifestPath)) {
+    errors.push("控制面 的 DEPLOYMENT_RELEASE_MANIFEST 必须是部署主机绝对路径");
+    return;
+  }
+  let trust;
+  try {
+    trust = JSON.parse(trustSource);
+    if (!trust || typeof trust !== "object" || Array.isArray(trust) || !Object.entries(trust).every(([issuer, keys]) => /^[a-z][a-z0-9_-]{1,63}$/.test(issuer) && keys && typeof keys === "object" && !Array.isArray(keys) && Object.entries(keys).length > 0 && Object.entries(keys).every(([keyId, pem]) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(keyId) && typeof pem === "string" && createPublicKey(pem).asymmetricKeyType === "ed25519"))) throw new Error("invalid");
+  } catch {
+    errors.push("控制面 的 DEPLOYMENT_RELEASE_MANIFEST_TRUST 必须是 issuer 到 Ed25519 公钥的 JSON 对象");
+    return;
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error) {
+    errors.push(`无法读取 DEPLOYMENT_RELEASE_MANIFEST：${error instanceof Error ? error.message : "无效 JSON"}`);
+    return;
+  }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    errors.push("DEPLOYMENT_RELEASE_MANIFEST 必须是 JSON 对象");
+    return;
+  }
+  const signature = manifest.signature;
+  if (!signature || typeof signature !== "object" || Array.isArray(signature) || typeof signature.issuer !== "string" || typeof signature.keyId !== "string" || typeof signature.value !== "string") {
+    errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少 issuer、keyId 和 Ed25519 signature");
+    return;
+  }
+  const publicKey = trust[signature.issuer]?.[signature.keyId];
+  if (typeof publicKey !== "string") {
+    errors.push("DEPLOYMENT_RELEASE_MANIFEST 使用了未受信任的 issuer 或 keyId");
+    return;
+  }
+  const unsigned = { ...manifest };
+  delete unsigned.signature;
+  try {
+    if (!verify(null, Buffer.from(canonicalJson(unsigned)), publicKey, Buffer.from(signature.value, "base64"))) throw new Error("invalid");
+  } catch {
+    errors.push("DEPLOYMENT_RELEASE_MANIFEST Ed25519 签名无效");
+    return;
+  }
+  if (manifest.schemaVersion !== 1) errors.push("DEPLOYMENT_RELEASE_MANIFEST 必须使用 schemaVersion 1");
+  if (manifest.releaseRevision !== control.get("RELEASE_REVISION")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 的 releaseRevision 必须匹配 RELEASE_REVISION");
+  const issuedAt = Date.parse(manifest.issuedAt ?? "");
+  const expiresAt = Date.parse(manifest.expiresAt ?? "");
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt || expiresAt - issuedAt > 31 * 24 * 60 * 60 * 1000 || issuedAt > Date.now() + 5 * 60 * 1000 || expiresAt <= Date.now()) errors.push("DEPLOYMENT_RELEASE_MANIFEST 的 issuedAt/expiresAt 必须为当前有效且不超过 30 天的时间窗口");
+  if (!/^sha256:[a-f0-9]{64}$/.test(manifest.sbomSha256 ?? "")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少 SBOM SHA-256");
+  if (!/^sha256:[a-f0-9]{64}$/.test(manifest.provenanceSha256 ?? "")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少 provenance SHA-256");
+  const images = manifest.images;
+  if (!images || typeof images !== "object" || Array.isArray(images)) {
+    errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少服务镜像映射");
+    return;
+  }
+  for (const key of controlImageKeys) if (images[key] !== controlCompose.get(key)) errors.push(`DEPLOYMENT_RELEASE_MANIFEST 的 ${key} 必须匹配控制面 Compose`);
+  for (const key of runtimeImageKeys) if (images[key] !== runtime.get(key)) errors.push(`DEPLOYMENT_RELEASE_MANIFEST 的 ${key} 必须匹配运行时 Compose`);
 }
 
 function equal(values, fileName, key, expected) {
@@ -183,7 +250,7 @@ const gateway = parseEnv(gatewayText);
 const channelAdapter = parseEnv(channelAdapterText);
 const alertNotifier = parseEnv(alertNotifierText);
 
-required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_DEMO_MODE", "RELEASE_REVISION", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OUTBOX_MAX_ATTEMPTS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS", "RECORDING_EVIDENCE_VERIFIER_URL", "RECORDING_EVIDENCE_VERIFIER_TOKEN", "RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS", "CHANNEL_EVIDENCE_VERIFIER_URL", "CHANNEL_EVIDENCE_VERIFIER_TOKEN", "CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS", "RUNTIME_TELEMETRY_TENANT_TOKENS", "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "PROGRAM_OUTPUT_VERIFIER_TRUST", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]);
+required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_DEMO_MODE", "RELEASE_REVISION", "DEPLOYMENT_RELEASE_MANIFEST", "DEPLOYMENT_RELEASE_MANIFEST_TRUST", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OUTBOX_MAX_ATTEMPTS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS", "RECORDING_EVIDENCE_VERIFIER_URL", "RECORDING_EVIDENCE_VERIFIER_TOKEN", "RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS", "CHANNEL_EVIDENCE_VERIFIER_URL", "CHANNEL_EVIDENCE_VERIFIER_TOKEN", "CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS", "RUNTIME_TELEMETRY_TENANT_TOKENS", "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "PROGRAM_OUTPUT_VERIFIER_TRUST", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]);
 required(controlCompose, "控制面 Compose", ["CONTROL_PLANE_IMAGE", "CONTROL_PLANE_MIGRATOR_IMAGE"]);
 required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "RUNTIME_WORKER_DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "PREVIEW_GRANT_MAX_SECONDS", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
@@ -195,6 +262,7 @@ immutableImages(controlCompose, "控制面 Compose", controlImageKeys);
 immutableImages(runtime, "运行时", runtimeImageKeys);
 const concreteImages = [...controlImageKeys.map((key) => controlCompose.get(key)), ...runtimeImageKeys.map((key) => runtime.get(key))].filter((value) => !(allowPlaceholders && isPlaceholder(value)));
 if (concreteImages.length === 10 && new Set(concreteImages).size !== concreteImages.length) errors.push("控制面和运行时服务必须使用各自独立的不可变镜像摘要");
+await verifyDeploymentReleaseManifest(control, controlCompose, runtime, controlImageKeys, runtimeImageKeys);
 const databasePrincipals = [
   databasePrincipal(control, "控制面", "DATABASE_URL"),
   databasePrincipal(runtime, "运行时", "RUNTIME_WORKER_DATABASE_URL"),

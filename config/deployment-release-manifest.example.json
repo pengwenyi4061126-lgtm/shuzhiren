@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "releaseRevision": "replace-with-40-character-git-commit",
+  "issuedAt": "2026-11-04T00:00:00.000Z",
+  "expiresAt": "2026-11-05T00:00:00.000Z",
+  "images": {
+    "CONTROL_PLANE_IMAGE": "replace-with-registry.example.com/shuzhiren/control-plane@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "CONTROL_PLANE_MIGRATOR_IMAGE": "replace-with-registry.example.com/shuzhiren/control-plane-migrator@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "RUNTIME_GATEWAY_IMAGE": "replace-with-registry.example.com/shuzhiren/runtime-gateway@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "RUNTIME_WORKER_IMAGE": "replace-with-registry.example.com/shuzhiren/runtime-worker@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "RUNTIME_OBSERVER_IMAGE": "replace-with-registry.example.com/shuzhiren/runtime-observer@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "OUTPUT_PROBE_IMAGE": "replace-with-registry.example.com/shuzhiren/output-probe@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "CHANNEL_ADAPTER_IMAGE": "replace-with-registry.example.com/shuzhiren/channel-adapter@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "ALERT_NOTIFIER_IMAGE": "replace-with-registry.example.com/shuzhiren/alert-notifier@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "LIVETALKING_IMAGE": "replace-with-registry.example.com/shuzhiren/livetalking@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "COSYVOICE_IMAGE": "replace-with-registry.example.com/shuzhiren/cosyvoice@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "sbomSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "provenanceSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "signature": {
+    "issuer": "replace_with_release_issuer",
+    "keyId": "replace-with-key-id",
+    "value": "replace-with-base64-ed25519-signature"
+  }
+}

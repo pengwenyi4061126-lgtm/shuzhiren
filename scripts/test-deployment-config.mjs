@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
@@ -8,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(root, "scripts", "check-deployment-config.mjs");
 const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), "shuzhiren-deploy-config-"));
+const deploymentReleaseManifestPath = path.join(fixtureDirectory, "deployment-release-manifest.json");
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const channelConnectionId = "22222222-2222-4222-8222-222222222222";
 const runtimeToken = "runtime-shared-token-at-least-32-bytes";
@@ -30,6 +32,10 @@ const images = {
   livetalking: image("livetalking", "8"),
   cosyvoice: image("cosyvoice", "9")
 };
+const releaseSigner = generateKeyPairSync("ed25519");
+const releaseIssuer = "release_automation";
+const releaseKeyId = "fixture-2026";
+const releaseTrust = { [releaseIssuer]: { [releaseKeyId]: releaseSigner.publicKey.export({ type: "spki", format: "pem" }) } };
 const commits = {
   MuseTalk: "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
   CosyVoice: "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
@@ -40,12 +46,46 @@ function env(values) {
   return `${Object.entries(values).map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n")}\n`;
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+function deploymentReleaseManifest({ releaseRevision = "a1b2c3d4e5f6a7b8c9d0", manifestImages = undefined } = {}) {
+  const issuedAt = new Date();
+  const expiresAt = new Date(issuedAt.getTime() + 24 * 60 * 60 * 1000);
+  const unsigned = {
+    schemaVersion: 1,
+    releaseRevision,
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    images: manifestImages ?? {
+      CONTROL_PLANE_IMAGE: images.controlPlane,
+      CONTROL_PLANE_MIGRATOR_IMAGE: images.controlPlaneMigrator,
+      RUNTIME_GATEWAY_IMAGE: images.gateway,
+      RUNTIME_WORKER_IMAGE: images.worker,
+      RUNTIME_OBSERVER_IMAGE: images.observer,
+      OUTPUT_PROBE_IMAGE: images.probe,
+      CHANNEL_ADAPTER_IMAGE: images.adapter,
+      ALERT_NOTIFIER_IMAGE: images.notifier,
+      LIVETALKING_IMAGE: images.livetalking,
+      COSYVOICE_IMAGE: images.cosyvoice
+    },
+    sbomSha256: `sha256:${"a".repeat(64)}`,
+    provenanceSha256: `sha256:${"b".repeat(64)}`
+  };
+  return JSON.stringify({ ...unsigned, signature: { issuer: releaseIssuer, keyId: releaseKeyId, value: sign(null, Buffer.from(canonicalJson(unsigned)), releaseSigner.privateKey).toString("base64") } });
+}
+
 const control = env({
   NODE_ENV: "production",
   DATABASE_URL: "postgresql://app:fixture-password@postgres.internal:5432/shuzhiren",
   DATABASE_QUERY_TIMEOUT_MS: "5000",
   CONTROL_PLANE_DEMO_MODE: "false",
   RELEASE_REVISION: "a1b2c3d4e5f6a7b8c9d0",
+  DEPLOYMENT_RELEASE_MANIFEST: deploymentReleaseManifestPath,
+  DEPLOYMENT_RELEASE_MANIFEST_TRUST: releaseTrust,
   OIDC_ISSUER_URL: "https://issuer.internal",
   OIDC_AUDIENCE: "shuzhiren-console",
   OIDC_JWKS_URL: "https://issuer.internal/jwks.json",
@@ -188,6 +228,7 @@ const alert = env({
 
 const files = {
   control: path.join(fixtureDirectory, "control.env"),
+  releaseManifest: deploymentReleaseManifestPath,
   controlCompose: path.join(fixtureDirectory, "control-compose.env"),
   runtime: path.join(fixtureDirectory, "runtime.env"),
   gateway: path.join(fixtureDirectory, "gateway.env"),
@@ -201,9 +242,23 @@ function check(options = []) {
 
 try {
   const validProbeTarget = [{ id: "fixture", streamUrl: "rtmp://relay.internal/live/fixture", avSyncProbeUrl: "https://av-sync.internal/fixture", expectedFps: 25, expectedWidth: 1280, expectedHeight: 720 }];
-  await Promise.all([writeFile(files.control, control), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
+  await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+
+  const tamperedManifest = JSON.parse(deploymentReleaseManifest());
+  tamperedManifest.signature.value = "AA==";
+  await writeFile(files.releaseManifest, JSON.stringify(tamperedManifest));
+  const invalidManifestSignature = check(["--require-cosyvoice"]);
+  assert.notEqual(invalidManifestSignature.status, 0, "deployment manifests must reject tampered signatures");
+  assert.match(invalidManifestSignature.stderr, /Ed25519 签名无效/, "tampered signature rejection must identify the release-signature gate");
+  await writeFile(files.releaseManifest, deploymentReleaseManifest());
+
+  await writeFile(files.releaseManifest, deploymentReleaseManifest({ releaseRevision: "b1b2c3d4e5f6a7b8c9d0" }));
+  const manifestRevisionMismatch = check(["--require-cosyvoice"]);
+  assert.notEqual(manifestRevisionMismatch.status, 0, "signed manifests must bind the deployed source revision");
+  assert.match(manifestRevisionMismatch.stderr, /releaseRevision 必须匹配 RELEASE_REVISION/, "manifest revision mismatch must identify the release binding gate");
+  await writeFile(files.releaseManifest, deploymentReleaseManifest());
 
   await writeFile(files.runtime, runtime(validProbeTarget).replace(images.gateway, "registry.internal/shuzhiren/runtime-gateway:latest"));
   const floatingRuntimeImage = check(["--require-cosyvoice"]);
