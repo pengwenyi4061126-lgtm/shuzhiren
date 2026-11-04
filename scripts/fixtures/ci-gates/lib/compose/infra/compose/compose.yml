@@ -1,0 +1,18 @@
+# Fixture for resolveComposeEnvFiles. Relative env_file entries resolve
+# against this file's directory (infra/compose/), as in docker compose.
+services:
+  control-plane:
+    image: example.invalid/control-plane
+    env_file:
+      - ${CONTROL_PLANE_ENV_FILE:?set CONTROL_PLANE_ENV_FILE}
+  migrate:
+    image: example.invalid/control-plane
+    env_file: ${APP_ENV_FILE:-../../config/default-app.env}
+  worker:
+    image: example.invalid/worker
+    env_file:
+      - path: /srv/shuzhiren/worker.env
+        required: false
+      - ./relative.env
+  no-env:
+    image: example.invalid/plain

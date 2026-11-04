@@ -84,10 +84,12 @@
     "runtime:acceptance:verify": "node scripts/verify-4090-acceptance.mjs",
     "runtime:acceptance:test": "node scripts/test-4090-acceptance.mjs",
     "verify:local": "node scripts/verify-local.mjs",
+    "ci:gates:test": "node scripts/test-ci-gates.mjs",
     "control-plane:integration": "node scripts/test-control-plane-postgres.mjs"
   },
   "devDependencies": {
     "jose": "6.2.1",
+    "js-yaml": "4.3.2",
     "pg": "8.23.1"
   },
   "engines": {
