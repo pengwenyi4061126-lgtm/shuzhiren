@@ -114,13 +114,16 @@ function store() {
 
 export async function getRun(context: RequestContext, runId: string) {
   if (!databasePool()) return getDemoRun(context, runId);
-  return withTenantTransaction(context.tenantId, async (client) => loadPersistentRun(client, runId));
+  return withTenantTransaction(context.tenantId, async (client) => loadAuthorizedPersistentRun(client, context, runId));
 }
 
 export async function listRuns(context: RequestContext) {
   if (!databasePool()) return [...store().runs.values()].filter((run) => run.tenantId === context.tenantId).sort((left, right) => (left.scheduledAt ?? "").localeCompare(right.scheduledAt ?? ""));
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentRunRow>(`select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id, r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved, r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready, r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at from live_runs r join show_revisions sr on sr.id = r.show_revision_id join shows s on s.id = sr.show_id order by r.scheduled_at asc nulls last, r.created_at desc`);
+    const scopeClause = restrictedMembership(context)
+      ? "where exists (select 1 from membership_resource_scopes scope where scope.membership_id = $1::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))"
+      : "";
+    const result = await client.query<PersistentRunRow>(`select r.id, r.tenant_id, r.show_revision_id, s.name as show_name, r.state, r.trace_id, r.channel_connection_id, r.product_version_id, r.has_operator, r.rights_approved, r.has_approved_sku_version, r.has_fallback_program, r.channel_ready, r.output_ready, r.ai_disclosure_enabled, r.runtime_session_id, r.scheduled_at from live_runs r join show_revisions sr on sr.id = r.show_revision_id join shows s on s.id = sr.show_id ${scopeClause} order by r.scheduled_at asc nulls last, r.created_at desc`, restrictedMembership(context) ? [context.membershipId] : []);
     return result.rows.map((row) => persistentRun(row, []));
   });
 }
@@ -169,11 +172,11 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     if (action === "disarm") {
-      const disarmed = await disarmPersistentRun(client, runId);
+      const disarmed = await disarmPersistentRun(client, context, runId);
       await recordAuditEventInTransaction(client, context, { type: "live_run.disarm", resource: "live_run", resourceId: disarmed.id, detail: { state: disarmed.state } });
       return disarmed;
     }
-    const run = await loadPersistentRun(client, runId, true);
+    const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
     const next = lifecycleTarget(run.state, action);
     if (action === "submit_review") await validateShowProgramInTransaction(client, run.id, run.revisionId, run.productVersionId);
@@ -197,8 +200,8 @@ function lifecycleTarget(state: LiveRunState, action: RunLifecycleAction): LiveR
   return target;
 }
 
-async function disarmPersistentRun(client: PoolClient, runId: string) {
-  const run = await loadPersistentRun(client, runId);
+async function disarmPersistentRun(client: PoolClient, context: RequestContext, runId: string) {
+  const run = await loadAuthorizedPersistentRun(client, context, runId);
   if (!run) throw new Response("Live run not found", { status: 404 });
   const next = lifecycleTarget(run.state, "disarm");
   const pending = await client.query<{ scheduled_start_event_id: string | null }>("select scheduled_start_event_id from live_runs where id = $1", [run.id]);
@@ -281,7 +284,7 @@ export async function degradeRunFromRuntime(context: RequestContext, runId: stri
     return { changed: true as const, mediaType, mediaEvent };
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const run = await loadPersistentRun(client, runId, true);
+    const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run || run.state !== "LIVE") return { changed: false as const };
     await client.query("update live_runs set state = 'DEGRADED', updated_at = now() where id = $1", [run.id]);
     const mediaEvent = run.runtimeSessionId ? await enqueueMediaCommandInTransaction(client, context, createMediaCommand({ runId: run.id, traceId: run.traceId, type: mediaType, payload: { controlAction: "RUNTIME_GUARD", reasons: input.reasons.join(",") } }), run.runtimeSessionId) : undefined;
@@ -292,7 +295,7 @@ export async function degradeRunFromRuntime(context: RequestContext, runId: stri
 export async function issueCommand(context: RequestContext, runId: string, input: CommandInput) {
   if (!databasePool()) return issueDemoCommand(context, runId, input);
   return withTenantTransaction(context.tenantId, async (client) => {
-    const run = await loadPersistentRun(client, runId, true);
+    const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
 
     const duplicate = await findCommandByIdempotency(client, input.idempotencyKey);
@@ -360,7 +363,7 @@ export async function enqueueGroundedSpeech(context: RequestContext, runId: stri
     return enqueueDemoGroundedSpeech(context, run, product.version, question, await runtimeVoiceForRun(context, run.revisionId), idempotencyKey, policyRules);
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const run = await loadPersistentRun(client, runId, true);
+    const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
     if (!(await activeMediaAssetStatusInTransaction(client, run.revisionId)).active) throw new Response("Frozen media asset rights are not active for speech dispatch", { status: 409 });
     if (!(await activeModelReleaseStatusInTransaction(client, run.revisionId)).active) throw new Response("Frozen model releases are not active for speech dispatch", { status: 409 });
@@ -457,7 +460,7 @@ export async function bindRuntimeSession(context: RequestContext, runId: string,
     return run;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const run = await loadPersistentRun(client, runId, true);
+    const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
     if (!canBindRuntimeSession(run.state)) throw new Response("Runtime session is locked after arming", { status: 409 });
     await client.query("update live_runs set runtime_session_id = $2, updated_at = now() where id = $1", [runId, runtimeSessionId]);
@@ -491,6 +494,25 @@ async function loadPersistentRun(client: PoolClient, runId: string, lock = false
     [runId]
   );
   return persistentRun(row, commands.rows.map(persistentCommand));
+}
+
+async function loadAuthorizedPersistentRun(client: PoolClient, context: RequestContext, runId: string, lock = false) {
+  const run = await loadPersistentRun(client, runId, lock);
+  if (!run || !restrictedMembership(context)) return run;
+  const result = await client.query<{ allowed: boolean }>(
+    `select exists (
+       select 1 from membership_resource_scopes scope
+       where scope.membership_id = $1::uuid
+         and ((scope.resource_type = 'live_run' and scope.resource_id = $2::uuid)
+           or (scope.resource_type = 'channel_connection' and scope.resource_id = $3::uuid))
+     ) as allowed`,
+    [context.membershipId, run.id, run.channelConnectionId ?? null]
+  );
+  return result.rows[0]?.allowed ? run : null;
+}
+
+function restrictedMembership(context: RequestContext) {
+  return context.accessScope === "restricted" && Boolean(context.membershipId);
 }
 
 async function findCommandByIdempotency(client: PoolClient, idempotencyKey: string) {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type ProgramSegmentKind = "prepared_product" | "interactive" | "fallback" | "human_handoff";
@@ -56,6 +57,7 @@ function programStore(): ProgramStore {
 }
 
 export async function getShowProgram(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
     const program = programStore().programs.get(runId);
     return program?.tenantId === context.tenantId ? program : null;
@@ -81,6 +83,7 @@ export function registerDemoProgram(program: ShowProgram) {
 }
 
 export async function replaceShowProgram(context: RequestContext, runId: string, input: ProgramSegmentInput[]) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
     const program = programStore().programs.get(runId);
     if (!program || program.tenantId !== context.tenantId) return null;

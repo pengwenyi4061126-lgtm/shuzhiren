@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
@@ -75,6 +76,7 @@ export async function latestApprovedPolicyProfile(client: PoolClient) {
 }
 
 export async function policyRulesForRun(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return [];
   return withTenantTransaction(context.tenantId, async (client) => policyRulesForRunInTransaction(client, runId));
 }
@@ -87,6 +89,7 @@ export async function policyRulesForRunInTransaction(client: PoolClient, runId: 
 }
 
 export async function activePolicyProfileStatusForRun(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return { active: true, detail: "开发态策略包 fixture 已绑定" };
   return withTenantTransaction(context.tenantId, async (client) => {
     const profile = await boundPolicyProfile(client, runId);

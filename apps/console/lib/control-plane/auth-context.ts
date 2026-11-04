@@ -2,12 +2,15 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { withTenantTransaction } from "@/lib/database";
 
 export type ActorRole = "admin" | "operator" | "reviewer" | "analyst";
+export type MembershipAccessScope = "tenant" | "restricted";
 
 export type RequestContext = {
   tenantId: string;
   actorId: string;
   actorName: string;
   role: ActorRole;
+  membershipId?: string;
+  accessScope?: MembershipAccessScope;
 };
 
 const roles = new Set<ActorRole>(["admin", "operator", "reviewer", "analyst"]);
@@ -17,7 +20,8 @@ export const demoRequestContext: RequestContext = {
   tenantId: "tenant_demo",
   actorId: "user_lin",
   actorName: "林晓",
-  role: "operator"
+  role: "operator",
+  accessScope: "tenant"
 };
 
 export async function requestContextFrom(request: Request): Promise<RequestContext> {
@@ -57,8 +61,8 @@ async function contextFromBearerToken(request: Request): Promise<RequestContext>
 
 async function resolveActiveMembership(tenantId: string, actorId: string): Promise<RequestContext> {
   const membership = await withTenantTransaction(tenantId, async (client) => {
-    const result = await client.query<{ role: ActorRole; display_name: string }>(
-      `select m.role, u.display_name
+    const result = await client.query<{ id: string; role: ActorRole; display_name: string; access_scope: MembershipAccessScope }>(
+      `select m.id, m.role, m.access_scope, u.display_name
        from memberships m join users u on u.id = m.user_id
        where m.tenant_id = $1::uuid and u.external_subject = $2 and m.status = 'active'`,
       [tenantId, actorId]
@@ -66,7 +70,14 @@ async function resolveActiveMembership(tenantId: string, actorId: string): Promi
     return result.rows[0] ?? null;
   });
   if (!membership || !roles.has(membership.role)) throw new Response("No active tenant membership", { status: 403 });
-  return { tenantId, actorId, actorName: membership.display_name, role: membership.role };
+  return {
+    tenantId,
+    actorId,
+    actorName: membership.display_name,
+    role: membership.role,
+    membershipId: membership.id,
+    accessScope: membership.access_scope
+  };
 }
 
 function jwksFor(url: string) {

@@ -54,8 +54,12 @@ function channelStore(): ChannelStore {
 export async function listChannelConnections(context: RequestContext) {
   if (!databasePool()) return demoConnections(context);
   return withTenantTransaction(context.tenantId, async (client) => {
+    const scopeClause = restrictedMembership(context)
+      ? "where exists (select 1 from membership_resource_scopes scope where scope.membership_id = $1::uuid and scope.resource_type = 'channel_connection' and scope.resource_id = channel_connections.id)"
+      : "";
     const result = await client.query<PersistentConnectionRow>(
-      "select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref from channel_connections order by created_at desc"
+      `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref from channel_connections ${scopeClause} order by created_at desc`,
+      restrictedMembership(context) ? [context.membershipId] : []
     );
     return result.rows.map(persistentConnection);
   });
@@ -67,15 +71,19 @@ export async function getChannelConnection(context: RequestContext, id: string) 
     return connection?.tenantId === context.tenantId ? connection : null;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
+    const scopeClause = restrictedMembership(context)
+      ? "and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and scope.resource_type = 'channel_connection' and scope.resource_id = channel_connections.id)"
+      : "";
     const result = await client.query<PersistentConnectionRow>(
-      "select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref from channel_connections where id = $1",
-      [id]
+      `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref from channel_connections where id = $1 ${scopeClause}`,
+      restrictedMembership(context) ? [id, context.membershipId] : [id]
     );
     return result.rows[0] ? persistentConnection(result.rows[0]) : null;
   });
 }
 
 export async function createChannelConnection(context: RequestContext, input: CreateChannelConnectionInput) {
+  if (restrictedMembership(context)) throw new Response("Restricted members cannot create tenant-wide channel connections", { status: 403 });
   const adapter = getChannelAdapter(input.provider);
   if (!adapter.supportsOutput(input.outputProtocol)) throw new Response(`Adapter ${input.provider} does not support ${input.outputProtocol.toUpperCase()}`, { status: 409 });
   if (!isManagedSecretRef(input.secretRef)) throw new Response("Channel secret reference must use kms:// or secret://", { status: 400 });
@@ -109,6 +117,13 @@ export async function recordChannelVerification(context: RequestContext, id: str
     return connection;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
+    if (restrictedMembership(context)) {
+      const allowed = await client.query<{ allowed: boolean }>(
+        "select exists (select 1 from membership_resource_scopes where membership_id = $1::uuid and resource_type = 'channel_connection' and resource_id = $2::uuid) as allowed",
+        [context.membershipId, id]
+      );
+      if (!allowed.rows[0]?.allowed) throw new Response("Channel connection not found", { status: 404 });
+    }
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentConnectionRow>(
       "update channel_connections set status = $2, last_verified_at = now(), verification_evidence_ref = $3, verified_by = $4 where id = $1 returning id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref",
@@ -173,4 +188,8 @@ function persistentConnection(row: PersistentConnectionRow): ChannelConnection {
 
 function databaseErrorCode(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
+function restrictedMembership(context: RequestContext) {
+  return context.accessScope === "restricted" && Boolean(context.membershipId);
 }

@@ -1,5 +1,6 @@
 import type { LiveQuestion } from "@/lib/domain";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { evaluatePolicy, isControlledPolicyQuestion, type PolicyDecision } from "@/lib/policy-engine";
@@ -47,6 +48,7 @@ function interactionStore() {
 }
 
 export async function listInteractions(context: RequestContext, runId: string, status?: LiveInteraction["status"]) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return [...interactionStore().interactions.values()].filter((item) => item.tenantId === context.tenantId && item.runId === runId && (!status || item.status === status)).sort((left, right) => right.submittedAt.localeCompare(left.submittedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentInteractionRow>(
@@ -63,6 +65,7 @@ export async function listInteractions(context: RequestContext, runId: string, s
 }
 
 export async function createInteraction(context: RequestContext, input: CreateInteractionInput): Promise<LiveInteraction & { duplicate?: boolean }> {
+  await assertLiveRunAccess(context, input.runId);
   if (!isControlledPolicyQuestion(input.question)) throw new Response("Interaction question must be between 1 and 1000 characters", { status: 400 });
   const decision = evaluatePolicy(input.question, input.evidenceIds, await policyRulesForRun(context, input.runId));
   const detail = interactionDetail(decision);
@@ -129,6 +132,7 @@ async function recordChannelInteractionAudit(context: RequestContext, interactio
 }
 
 export async function handleInteraction(context: RequestContext, runId: string, interactionId: string, resolutionNote?: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
     const interaction = interactionStore().interactions.get(interactionId);
     if (!interaction || interaction.tenantId !== context.tenantId || interaction.runId !== runId) throw new Response("Interaction not found", { status: 404 });

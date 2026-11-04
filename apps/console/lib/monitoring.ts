@@ -1,4 +1,5 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; audioActive: boolean; fallbackReady: boolean };
@@ -24,6 +25,7 @@ function monitoringStore(): MonitoringStore {
 }
 
 export async function getTelemetry(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
     const telemetry = monitoringStore().telemetry.get(runId);
     return telemetry?.tenantId === context.tenantId ? telemetry : null;
@@ -35,6 +37,7 @@ export async function getTelemetry(context: RequestContext, runId: string) {
 }
 
 export async function getRuntimeSamplingSlo(context: RequestContext, runId: string): Promise<RuntimeSamplingSlo> {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
     const telemetry = await getTelemetry(context, runId);
     return summarizeRuntimeSamplingSlo(runId, telemetry ? [telemetry] : []);

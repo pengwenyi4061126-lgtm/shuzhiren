@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { getChannelConnection } from "@/lib/channels";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { listInteractions, type LiveInteraction } from "@/lib/interactions";
 
@@ -30,6 +31,7 @@ declare global { var shuzhirenChannelReplyStore: ReplyStore | undefined; }
 function replyStore() { globalThis.shuzhirenChannelReplyStore ??= { drafts: new Map() }; return globalThis.shuzhirenChannelReplyStore; }
 
 export async function listChannelReplyDrafts(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return [...replyStore().drafts.values()].filter((item) => item.tenantId === context.tenantId && item.runId === runId).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentReplyRow>(`${replySelect()} where draft.live_run_id = $1 order by draft.created_at desc`, [runId]);
@@ -48,6 +50,7 @@ function normalizedBody(value: string) { const body = value.trim(); if (!body ||
 function normalizedRejectionReason(value: string) { const reason = value.trim(); if (!reason || reason.length > 1000) throw new Response("Rejection reason must be between 1 and 1000 characters", { status: 400 }); return reason; }
 
 export async function createChannelReplyDraft(context: RequestContext, runId: string, interactionId: string, input: DraftInput) {
+  await assertLiveRunAccess(context, runId);
   const body = normalizedBody(input.body);
   if (!databasePool()) return createDemoDraft(context, runId, interactionId, { ...input, body });
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -70,6 +73,7 @@ export async function createChannelReplyDraft(context: RequestContext, runId: st
 }
 
 export async function updateChannelReplyDraft(context: RequestContext, runId: string, draftId: string, body: string) {
+  await assertLiveRunAccess(context, runId);
   const normalized = normalizedBody(body);
   if (!databasePool()) return updateDemoDraft(context, runId, draftId, normalized);
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -91,6 +95,7 @@ export async function submitChannelReplyDraft(context: RequestContext, runId: st
 export async function approveChannelReplyDraft(context: RequestContext, runId: string, draftId: string) { return transitionReply(context, runId, draftId, "approve"); }
 
 export async function rejectChannelReplyDraft(context: RequestContext, runId: string, draftId: string, reason: string) {
+  await assertLiveRunAccess(context, runId);
   const normalizedReason = normalizedRejectionReason(reason);
   if (!databasePool()) return rejectDemoDraft(context, runId, draftId, normalizedReason);
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -109,6 +114,7 @@ export async function rejectChannelReplyDraft(context: RequestContext, runId: st
 }
 
 export async function retryChannelReplyDraft(context: RequestContext, runId: string, draftId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return retryDemoDraft(context, runId, draftId);
   return withTenantTransaction(context.tenantId, async (client) => {
     const existing = await replyForUpdate(client, runId, draftId);
@@ -125,6 +131,7 @@ export async function retryChannelReplyDraft(context: RequestContext, runId: str
 }
 
 export async function enqueueChannelReplyDelivery(context: RequestContext, runId: string, draftId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return enqueueDemoDelivery(context, runId, draftId);
   return withTenantTransaction(context.tenantId, async (client) => {
     const draft = await replyForUpdate(client, runId, draftId);
@@ -147,6 +154,7 @@ export async function enqueueChannelReplyDelivery(context: RequestContext, runId
 }
 
 async function transitionReply(context: RequestContext, runId: string, draftId: string, action: "submit" | "approve") {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return transitionDemoReply(context, runId, draftId, action);
   return withTenantTransaction(context.tenantId, async (client) => {
     const existing = await replyForUpdate(client, runId, draftId);

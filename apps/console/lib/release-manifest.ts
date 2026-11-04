@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { listAssets, requiredLiveAssetKinds, type AssetApproval, type AssetKind } from "@/lib/assets";
 import { findApprovedProductVersion, type ProductFacts } from "@/lib/catalog";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { listModelReleases, requiredProductionReleaseComponents, type ReleaseApproval, type ReleaseComponent } from "@/lib/releases";
 import { listPolicyProfiles, type PolicyProfileApproval } from "@/lib/policy-profiles";
@@ -50,6 +51,7 @@ type ManifestModelRow = { id: string; component: ReleaseComponent; name: string;
 type ManifestAssetRow = { id: string; kind: AssetKind; name: string; approval_status: AssetApproval; expires_at: Date | string | null; object_key: string; checksum: string; runtime_voice_id: string | null; rights_scope: string; source_ref: string };
 
 export async function getRunReleaseManifest(context: RequestContext, runId: string): Promise<RunReleaseManifest | null> {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return demoManifest(context, runId);
   return withTenantTransaction(context.tenantId, async (client) => persistentManifest(client, runId));
 }

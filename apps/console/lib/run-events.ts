@@ -1,5 +1,6 @@
 import { listAuditEvents } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { getRun } from "@/lib/control-plane/store";
 import { listOutboxEvents } from "@/lib/control-plane/outbox";
 import { listInteractions } from "@/lib/interactions";
@@ -17,6 +18,7 @@ export type RunEvent = {
 };
 
 export async function listRunEvents(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   const run = await getRun(context, runId);
   if (!run) return null;
 

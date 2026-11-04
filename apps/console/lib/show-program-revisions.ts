@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { recordAuditEventInTransaction } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
+import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { createReleaseManifestSnapshotInTransaction } from "@/lib/release-manifest";
 import { normalizeProgramSegments, programHash, type ProgramSegment, type ProgramSegmentInput, type ShowProgram } from "@/lib/show-program";
@@ -17,6 +18,7 @@ type RunRow = { id: string; tenant_id: string; state: string; source_revision_id
 const requestColumns = `request.id, request.live_run_id, request.source_revision_id, request.candidate_revision_id, request.status, request.source_program_sha256, request.proposed_program_sha256, creator.external_subject as created_by_subject, approver.external_subject as approved_by_subject, request.rejection_reason, request.created_at, request.updated_at`;
 
 export async function listProgramRevisionRequests(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   if (!databasePool()) return [];
   return withTenantTransaction(context.tenantId, async (client) => {
     const rows = await client.query<RequestRow>(`select ${requestColumns} from show_program_change_requests request join users creator on creator.id = request.created_by left join users approver on approver.id = request.approved_by where request.live_run_id = $1 order by request.created_at desc`, [runId]);
@@ -25,6 +27,7 @@ export async function listProgramRevisionRequests(context: RequestContext, runId
 }
 
 export async function createProgramRevisionRequest(context: RequestContext, runId: string) {
+  await assertLiveRunAccess(context, runId);
   requirePostgres();
   return withTenantTransaction(context.tenantId, async (client) => {
     const run = await loadRun(client, runId, true);
@@ -47,6 +50,7 @@ export async function createProgramRevisionRequest(context: RequestContext, runI
 }
 
 export async function replaceProgramRevisionRequest(context: RequestContext, runId: string, requestId: string, input: ProgramSegmentInput[]) {
+  await assertLiveRunAccess(context, runId);
   requirePostgres();
   return withTenantTransaction(context.tenantId, async (client) => {
     const request = await loadRequest(client, requestId, true);
@@ -64,6 +68,7 @@ export async function replaceProgramRevisionRequest(context: RequestContext, run
 }
 
 export async function submitProgramRevisionRequest(context: RequestContext, runId: string, requestId: string) {
+  await assertLiveRunAccess(context, runId);
   requirePostgres();
   return withTenantTransaction(context.tenantId, async (client) => {
     const request = await loadRequest(client, requestId, true);
@@ -81,6 +86,7 @@ export async function submitProgramRevisionRequest(context: RequestContext, runI
 }
 
 export async function approveProgramRevisionRequest(context: RequestContext, runId: string, requestId: string) {
+  await assertLiveRunAccess(context, runId);
   requirePostgres();
   return withTenantTransaction(context.tenantId, async (client) => {
     const request = await loadRequest(client, requestId, true);
@@ -103,6 +109,7 @@ export async function approveProgramRevisionRequest(context: RequestContext, run
 }
 
 export async function rejectProgramRevisionRequest(context: RequestContext, runId: string, requestId: string, reason: string) {
+  await assertLiveRunAccess(context, runId);
   requirePostgres();
   return withTenantTransaction(context.tenantId, async (client) => {
     const request = await loadRequest(client, requestId, true);
