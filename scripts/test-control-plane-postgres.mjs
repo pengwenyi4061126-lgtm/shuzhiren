@@ -248,11 +248,41 @@ try {
   assert.equal(manifest.data.frozenSha256, manifest.data.sha256, "new runs must seal their creation manifest hash");
   assert.equal(manifest.data.frozenSnapshotVerified, true, "the stored release manifest snapshot must verify against its hash");
   await assert.rejects(client.query("update show_revision_release_manifest_snapshots set manifest = '{}'::jsonb where show_revision_id = (select show_revision_id from live_runs where id = $1)", [createdRun.data.id]), /append-only/, "release manifest snapshots must reject direct mutation");
-  for (const [action, expectedState] of [["approve", "APPROVED"], ["begin_preflight", "PREFLIGHT"], ["arm", "ARMED"]]) {
+  const approveInitialProgram = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "approve" }) });
+  assert.equal(approveInitialProgram.status, 200, "an approved program should advance its run to APPROVED");
+  const revisionAnalystCreate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions`, { method: "POST", headers: analystRequestHeaders });
+  assert.equal(revisionAnalystCreate.status, 403, "an analyst must not create a candidate program revision");
+  const revisionCreate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(revisionCreate.status, 201, "an operator should create a governed candidate program revision before arming");
+  const revisionRequest = await revisionCreate.json();
+  const sourceRevisionId = (await client.query("select show_revision_id from live_runs where id = $1", [createdRun.data.id])).rows[0].show_revision_id;
+  await assert.rejects(client.query("update live_runs set show_revision_id = $2 where id = $1", [createdRun.data.id, revisionRequest.data.candidateRevisionId]), /approved governed change request/i, "the database must reject an unapproved direct show revision rebind");
+  const revisedSegments = revisionRequest.data.program.segments.map((segment, index) => ({ kind: segment.kind, title: index === 0 ? "Approved revision opening" : segment.title, durationSeconds: segment.durationSeconds, purpose: segment.purpose }));
+  const revisionEdit = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions/${revisionRequest.data.id}`, { method: "PUT", headers: operatorRequestHeaders, body: JSON.stringify({ segments: revisedSegments }) });
+  assert.equal(revisionEdit.status, 200, "the requesting operator should edit its candidate program revision");
+  const revisionSubmit = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions/${revisionRequest.data.id}/submit`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(revisionSubmit.status, 200, "the candidate program revision should enter reviewer approval");
+  await assert.rejects(client.query("update show_revision_segments set title = 'illegal candidate mutation' where show_revision_id = $1", [revisionRequest.data.candidateRevisionId]), /editable only.*draft revision request/i, "submitted candidate program segments must be frozen by the database");
+  await assert.rejects(client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'illegal-candidate-binding')", [tenantId, revisionRequest.data.candidateRevisionId, staleVersion.data.id]), /Candidate show revision bindings are immutable/i, "candidate dependency bindings must be sealed after cloning");
+  await assert.rejects(client.query("update show_program_change_requests set status = 'approved', approved_by = (select id from users where external_subject = 'integration-second-operator'), approved_at = now() where id = $1", [revisionRequest.data.id]), /transition is not permitted/i, "the database must reject a candidate creator approving its own request");
+  const selfApproveRevision = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions/${revisionRequest.data.id}/approve`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(selfApproveRevision.status, 403, "an operator must not approve a candidate program revision");
+  const revisionApprove = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions/${revisionRequest.data.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(revisionApprove.status, 200, "an independent reviewer should approve and apply a candidate program revision");
+  assert.equal((await revisionApprove.json()).data.status, "applied", "approved candidate revision must be recorded as applied");
+  const reboundRun = await client.query("select show_revision_id, state from live_runs where id = $1", [createdRun.data.id]);
+  assert.equal(reboundRun.rows[0].show_revision_id, revisionRequest.data.candidateRevisionId, "approval must atomically rebind the live run to the candidate revision");
+  assert.equal(reboundRun.rows[0].state, "APPROVED", "applying a program revision must return the run to approval before preflight");
+  assert.notEqual(reboundRun.rows[0].show_revision_id, sourceRevisionId, "the original approved revision remains intact after rebind");
+  const reboundManifest = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/release-manifest`, { headers: requestHeaders });
+  assert.equal((await reboundManifest.json()).data.frozenSnapshotVerified, true, "the replacement revision must receive a sealed release manifest snapshot");
+  for (const [action, expectedState] of [["begin_preflight", "PREFLIGHT"], ["arm", "ARMED"]]) {
     const lifecycleResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action }) });
     assert.equal(lifecycleResponse.status, 200, `lifecycle action ${action} should advance a fully governed run`);
     assert.equal((await lifecycleResponse.json()).data.state, expectedState, `lifecycle action ${action} should reach ${expectedState}`);
   }
+  const revisionAfterArm = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions`, { method: "POST", headers: operatorRequestHeaders });
+  assert.equal(revisionAfterArm.status, 409, "armed runs must reject candidate program revision creation");
   const approvedProgram = await client.query("select approval_status, approved_by, approved_at from show_revisions where id = (select show_revision_id from live_runs where id = $1)", [createdRun.data.id]);
   assert.equal(approvedProgram.rows[0]?.approval_status, "approved", "approving a live run must approve its frozen program revision");
   assert.ok(approvedProgram.rows[0]?.approved_by && approvedProgram.rows[0]?.approved_at, "program approval must retain the approver identity and timestamp");

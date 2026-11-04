@@ -170,7 +170,7 @@ async function loadSegments(client: PoolClient, revisionId: string): Promise<Pro
   return result.rows.map((row) => ({ id: row.id, position: row.position, kind: row.kind, title: row.title, durationSeconds: row.duration_seconds, productVersionId: row.product_version_id ?? undefined, purpose: row.purpose, fallback: row.is_fallback }));
 }
 
-function normalizeProgramSegments(input: ProgramSegmentInput[], productVersionId?: string): ProgramSegment[] {
+export function normalizeProgramSegments(input: ProgramSegmentInput[], productVersionId?: string): ProgramSegment[] {
   if (!productVersionId) throw new Response("A frozen product version is required", { status: 409 });
   if (!Array.isArray(input) || input.length < 2 || input.length > 20) throw new Response("A show program must contain between 2 and 20 segments", { status: 409 });
   const segments = input.map((segment, index) => {
@@ -195,6 +195,6 @@ function isProgramSegmentKind(value: unknown): value is ProgramSegmentKind {
   return value === "prepared_product" || value === "interactive" || value === "fallback" || value === "human_handoff";
 }
 
-function programHash(segments: ProgramSegment[]) {
+export function programHash(segments: ProgramSegment[]) {
   return createHash("sha256").update(JSON.stringify(segments.map((segment) => ({ position: segment.position, kind: segment.kind, title: segment.title, durationSeconds: segment.durationSeconds, productVersionId: segment.productVersionId ?? null, purpose: segment.purpose, fallback: segment.fallback })))).digest("hex");
 }

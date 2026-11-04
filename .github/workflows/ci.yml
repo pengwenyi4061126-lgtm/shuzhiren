@@ -63,6 +63,7 @@ jobs:
       - run: docker build --file runtime/livetalking/Dockerfile --tag shuzhiren-livetalking-ci .
       - run: npm run policy:red-team
       - run: npm run governance:immutability:check
+      - run: npm run program:revisions:check
       - run: npm run preflight:check
       - run: npm run lifecycle:authz:check
       - run: npm run command:confirmation:check

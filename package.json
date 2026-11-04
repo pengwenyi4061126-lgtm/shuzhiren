@@ -40,6 +40,7 @@
     "membership:bootstrap-admin": "node apps/console/scripts/bootstrap-admin.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
     "governance:immutability:check": "node scripts/check-governed-evidence-immutability.mjs",
+    "program:revisions:check": "node scripts/check-program-revision-workflow.mjs",
     "preflight:check": "node scripts/check-preflight-runtime-readiness.mjs",
     "lifecycle:authz:check": "node scripts/check-lifecycle-authorization.mjs",
     "command:confirmation:check": "node scripts/check-command-confirmation.mjs",
