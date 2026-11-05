@@ -104,7 +104,8 @@ test("an unimportable registry module exits with 2", () => {
 });
 
 test("REG-WORKFLOW rejects unsafe regression-evidence workflows", () => {
-  const text = readFileSync(path.join(root, ".github", "workflows", "regression-evidence.yml"), "utf8");
+  // The variants below edit LF text; a Windows checkout with core.autocrlf=true has CRLF line endings.
+  const text = readFileSync(path.join(root, ".github", "workflows", "regression-evidence.yml"), "utf8").replace(/\r\n/g, "\n");
   const pins = JSON.parse(readFileSync(path.join(root, ".github", "action-pins.json"), "utf8"));
   const problems = (workflowText) => {
     const found = [];
