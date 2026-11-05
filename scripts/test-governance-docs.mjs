@@ -796,15 +796,22 @@ test("the repository docs/AUDIT_REGISTER.md has no errors and holds the first-ro
   const log = validateVerificationLog(readFileSync(path.join(repoRoot, "docs", "VERIFICATION_LOG.md"), "utf8"), options);
   const result = validateAuditRegister(text, { resolver, vlog: log.entries });
   assert.equal(describeAudit(result.errors), "");
-  assert.deepEqual(result.records.map((record) => record.id), [...REPORT_ISSUE_IDS, "N1", "N2", "N3", "N4", "N5"]);
-  assert.deepEqual(countByStatus(result.records), { 待复核: 36, 已确认: 21, 已否定: 0, 需环境验证: 2, 已修复: 0 });
+  // The first-round registration (task 2.2) is the 54 report issues plus N1-N5. New defects found later
+  // are appended as N6, N7, ... (Requirement 7.14; AR-SET checks the numbering), so the first-round
+  // assertions below apply to the first-round records only.
+  const firstRoundIds = [...REPORT_ISSUE_IDS, "N1", "N2", "N3", "N4", "N5"];
+  const ids = result.records.map((record) => record.id);
+  assert.deepEqual(ids.slice(0, firstRoundIds.length), firstRoundIds);
+  assert.ok(ids.slice(firstRoundIds.length).every((id) => /^N[1-9][0-9]*$/.test(id)), `only new defects follow the first round: ${ids.slice(firstRoundIds.length).join(", ")}`);
+  const firstRound = result.records.filter((record) => firstRoundIds.includes(record.id));
+  assert.deepEqual(countByStatus(firstRound), { 待复核: 36, 已确认: 21, 已否定: 0, 需环境验证: 2, 已修复: 0 });
   const byId = Object.fromEntries(result.records.map((record) => [record.id, record]));
   assert.equal(byId.M20.status, "已确认");
   assert.deepEqual(byId.M20.data.核实.map((item) => [item.提交.slice(0, 7), item.方法, item.结论]), [["dc2916e", "代码阅读", "已确认"]]);
   for (const id of ["N1", "N2", "N3", "N4", "N5"]) assert.equal(byId[id].status, "待复核", id);
   assert.deepEqual(["N2", "N3", "N4", "N5"].map((id) => byId[id].data.优先级), ["P1", "P2", "P2", "P1"]);
   assert.deepEqual(byId.N5.data.对应需求, ["无：不属于 Requirement 1 至 40 的验收标准"]);
-  assert.ok(result.records.every((record) => record.data.修复 === undefined), "no fix has been committed in phase 1");
+  assert.ok(firstRound.every((record) => record.data.修复 === undefined), "no first-round record carries a fix in phase 1");
   assert.ok(text.includes(AUDIT_REPORT.file) && text.includes("VERIFICATION_LOG.md#v-20261105-05"));
   assert.ok(log.entries.find((entry) => entry.id === "V-20261105-05")?.data.结论.includes(AUDIT_REPORT.sha256));
 });

@@ -1197,3 +1197,59 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
   recordAuditEvent 写 live_command.accepted 与 media_command.enqueued，各自是独立的事务。审计写入失败时命令已经入队，
   接口却返回 500，审计链中也缺少这两条记录。第 5 部分发现，第 6 部分未处理；本计划不包含 N5 的修复任务。
 ```
+
+### N6 CI checkout 中 LiveTalking 镜像构建因悬空的 /app/.git 文件在 git apply 处失败
+
+```yaml
+编号: N6
+标题: CI checkout 中 LiveTalking 镜像构建因悬空的 /app/.git 文件在 git apply 处失败
+来源: 本规格执行期间新发现（CI 第 492 次运行，run 41965741382，docker-build 第 14 步；设计文档“风险”一节“git apply 与 gitlink”）
+来源标记: 新发现
+优先级: P0
+位置:
+  - "runtime/livetalking/Dockerfile.dockerignore:1,23-25"
+  - "runtime/livetalking/Dockerfile:5,11,13"
+状态: 已确认
+对应需求: ["1", "2", "33"]
+证据:
+  - "CI #492（run 41965741382，提交 8226fa38502dbcfa068fa8940fb1850805962734）docker-build 第 14 步 Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci . 的结论为 failure，其后的 CosyVoice 构建为 skipped"
+  - "设计文档“风险”一节“git apply 与 gitlink”；设计文档第 7 部分 Requirement 33 §1.1"
+核实:
+  - 提交: 8226fa38502dbcfa068fa8940fb1850805962734
+    方法: CI_Pipeline 运行
+    结论: 已确认
+    证据:
+      run id: "41965741382"
+      步骤: ["Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci ."]
+  - 提交: 8226fa38502dbcfa068fa8940fb1850805962734
+    方法: 代码阅读
+    结论: 已确认
+    证据:
+      文件: runtime/livetalking/Dockerfile.dockerignore
+      行号范围: "1,23-25"
+      推理: >-
+        第 1 行的 .git 只匹配构建上下文根目录的 .git。第 23 至 25 行先排除 vendor/*，再用 !vendor/LiveTalking/**
+        把子模块目录的全部内容重新纳入，其中包括 vendor/LiveTalking/.git。actions/checkout 以 submodules: recursive
+        检出时，子模块的 .git 是一个内容为 gitdir: ../../.git/modules/vendor/LiveTalking 的文件；Dockerfile 第 11 行
+        COPY vendor/LiveTalking/ ./ 把它复制为 /app/.git，而镜像中没有它指向的目录。第 13 行在 WORKDIR /app（第 5 行）中
+        执行 git apply，git 在仓库发现阶段读到这个 .git 文件，以 fatal 错误退出，退出码 128。补丁不能应用时
+        git apply --check 的退出码是 1，chown 失败的退出码也是 1，所以 128 指向 git 的 fatal 错误。本机工作区中
+        vendor/LiveTalking/.git 是目录，本机的 deploy:check 又在子模块仓库中执行同一补丁的 git apply --check，因此本机看不到这个问题。
+修复:
+  回归测试: ["docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci ."]
+  修复前失败: { run id: "41965741382" }
+说明: >-
+  失败输出由用户 2026-11-05 登录 GitHub 后从 job 127042212017 的第 14 步日志抄录（公开 API 不提供 job 日志）：
+  ERROR: failed to build: failed to solve: process "/bin/sh -c git apply --check --recount /tmp/livetalking-observability.patch
+  && git apply --recount /tmp/livetalking-observability.patch && chown -R livetalking:livetalking /app" did not complete
+  successfully: exit code: 128。公开 API 的注解只有 Process completed with exit code 1.。2026-11-05 在本机（Windows，
+  git 2.56.0.windows.3）的临时目录中复现了机制：目录中放一个内容为 gitdir: ../../.git/modules/vendor/LiveTalking 的 .git 文件时，
+  git apply --check --recount 输出 fatal: gitfile does not point to a valid repository 并以 128 退出；删除该文件后同一命令以 0 退出。
+  CI 的 Ubuntu 24.04 镜像中 git 版本不同，错误文字可能不同。修复在 !vendor/LiveTalking/** 之后加入 vendor/LiveTalking/.git 与
+  vendor/LiveTalking/.git/**（dockerignore 中后出现的规则优先），构建上下文不再包含子模块的 .git，/app 中没有 .git 时
+  git apply 以非仓库模式对工作目录应用补丁。优先级定为 P0：它使 CI_Pipeline 的 docker-build 验证组失败，违反 Requirement 1.9
+  （LiveTalking 镜像构建以退出码 0 结束），并使 Requirement 2.5 的 CosyVoice 构建被跳过，属于需求文档优先级定义中的 CI 恢复。
+  这一修复同时使镜像 /app 下不再有子模块根目录的 .git（Requirement 33.1 的一部分）；M23 的其余内容、按设计第 7 部分 §1.1
+  改写整个 dockerignore 与镜像路径检查仍由 Requirement 33 的任务完成，M23 的状态不因本修复改变。修复提交的 SHA 与修复后通过的
+  run id 在新的 CI 运行结束后补入；补齐之前状态保持已确认（Requirement 7.13）。
+```

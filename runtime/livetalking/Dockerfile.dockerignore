@@ -23,6 +23,8 @@ scripts
 vendor/*
 !vendor/LiveTalking
 !vendor/LiveTalking/**
+vendor/LiveTalking/.git
+vendor/LiveTalking/.git/**
 runtime/*
 !runtime/patches
 !runtime/patches/livetalking-observability.patch
