@@ -2,21 +2,73 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS" | "RUNTIME_RECORDING_TENANT_TOKENS" | "PIM_INGEST_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS" | "CHANNEL_COMMERCE_TENANT_TOKENS" | "SETTLEMENT_INGEST_TENANT_TOKENS";
 
+export const TENANT_TOKEN_VARIABLES: readonly TenantServiceTokenVariable[] = ["RUNTIME_TELEMETRY_TENANT_TOKENS", "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"];
+
+export type TenantTokenMapReason = "invalid_json" | "not_object" | "empty_object" | "key_empty" | "key_too_long" | "value_not_string" | "value_too_short" | "value_whitespace";
+export type TenantTokenMapResult = { ok: true; map: Map<string, string> } | { ok: false; reason: TenantTokenMapReason; entryIndex?: number };
+
+// One malformed entry invalidates the whole map: silently dropping it would
+// leave a tenant's ingest path unauthorized without any configuration error.
+export function parseTenantTokenMap(raw: string): TenantTokenMapResult {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return { ok: false, reason: "invalid_json" }; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, reason: "not_object" };
+  const entries = Object.entries(parsed);
+  if (!entries.length) return { ok: false, reason: "empty_object" };
+  const tokens = new Map<string, string>();
+  for (const [index, entry] of entries.entries()) {
+    const entryIndex = index + 1;
+    if (entry[0].length === 0) return { ok: false, reason: "key_empty", entryIndex };
+    if (entry[0].length > 200) return { ok: false, reason: "key_too_long", entryIndex };
+    if (typeof entry[1] !== "string") return { ok: false, reason: "value_not_string", entryIndex };
+    if (entry[1].length < 32) return { ok: false, reason: "value_too_short", entryIndex };
+    if (/\s/.test(entry[1])) return { ok: false, reason: "value_whitespace", entryIndex };
+    tokens.set(entry[0], entry[1]);
+  }
+  return { ok: true, map: tokens };
+}
+
+const tokenMapReasonText: Record<TenantTokenMapReason, string> = {
+  invalid_json: "is not valid JSON",
+  not_object: "must be a JSON object mapping tenant ids to tokens",
+  empty_object: "must contain at least one tenant token",
+  key_empty: "tenant id is empty",
+  key_too_long: "tenant id is longer than 200 characters",
+  value_not_string: "value is not a string",
+  value_too_short: "value is shorter than 32 characters",
+  value_whitespace: "value contains whitespace"
+};
+
+// Messages name only the variable, the entry position and the reason; never a
+// tenant id, a token, or JSON.parse output (which quotes the input).
+export function validateTenantTokenEnvironment(env: NodeJS.ProcessEnv = process.env) {
+  return TENANT_TOKEN_VARIABLES.flatMap((variable) => {
+    const raw = env[variable];
+    if (!raw) return [];
+    const result = parseTenantTokenMap(raw);
+    if (result.ok) return [];
+    return [`${variable} is invalid: ${result.entryIndex ? `entry ${result.entryIndex} ` : ""}${tokenMapReasonText[result.reason]}`];
+  });
+}
+
+// Called from instrumentation register(): a misconfigured map stops the
+// process before it serves a request instead of failing tenants one by one.
+export function enforceTenantTokenEnvironment() {
+  const errors = validateTenantTokenEnvironment(process.env);
+  if (!errors.length) return;
+  for (const message of errors) process.stderr.write(`ERROR ${message}\n`);
+  process.exit(1);
+}
+
 function configuredTenantTokens(variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
   const value = process.env[variable];
   if (!value) {
     if (process.env.NODE_ENV === "production") throw new Response(`${label} tenant token map is not configured`, { status: 503 });
     return new Map([["tenant_demo", developmentToken]]);
   }
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-    const tokens = new Map(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[0] === "string" && entry[0].length > 0 && entry[0].length <= 200 && typeof entry[1] === "string" && entry[1].length >= 32 && !/\s/.test(entry[1])));
-    if (!tokens.size) throw new Error("no valid tenant token");
-    return tokens;
-  } catch {
-    throw new Response(`${label} tenant token map is invalid`, { status: 503 });
-  }
+  const parsed = parseTenantTokenMap(value);
+  if (!parsed.ok) throw new Response(`${label} tenant token map is invalid`, { status: 503 });
+  return parsed.map;
 }
 
 // Compares fixed-length SHA-256 digests with timingSafeEqual, so the time taken

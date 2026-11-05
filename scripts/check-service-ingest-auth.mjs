@@ -20,8 +20,6 @@ for (const [path, routePath, serviceGuard] of protectedServiceRoutes) {
   if (!route.includes(serviceGuard)) throw new Error(`${path} must enforce tenant-scoped service authentication inside the route`);
 }
 
-if (!serviceAuth.includes("entry[1].length >= 32") || !serviceAuth.includes("!/\\s/.test(entry[1])")) throw new Error("private tenant service tokens must require at least 32 non-whitespace characters");
-
 console.log("PASS  private ingest routes use dedicated tenant service-token boundaries");
 
 // Behavioral checks of the tenant service-token boundary, loaded from the TypeScript source.
@@ -50,3 +48,40 @@ assert.throws(() => serviceAuthModule.requireRuntimeService(serviceRequest(null)
 assert.throws(() => serviceAuthModule.requireRuntimeService(serviceRequest(`Bearer ${tenantToken}`), "00000000-0000-4000-8000-000000000009"), rejectedWith(401), "a token must not authorize a tenant it is not configured for");
 
 console.log("PASS  tenant service tokens are compared in constant time and reject missing, mismatched, and foreign-tenant tokens");
+
+// A tenant token map with any malformed entry is rejected as a whole, with a
+// message that names the variable and entry but never a tenant id or token.
+const sentinel = "sentinel-tenant-token-map-value";
+const validEntries = Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`10000000-0000-4000-8000-00000000000${index}`, `${sentinel}-${index}`.padEnd(40, "v")]));
+for (const [label, raw, reason, entryIndex] of [
+  ["syntax error", `{"${tenantId}": "${sentinel}`, "invalid_json"],
+  ["array", "[]", "not_object"],
+  ["null", "null", "not_object"],
+  ["number", "1", "not_object"],
+  ["string", '"x"', "not_object"],
+  ["empty object", "{}", "empty_object"],
+  ["empty tenant id", JSON.stringify({ "": tenantToken }), "key_empty", 1],
+  ["201-character tenant id", JSON.stringify({ ["k".repeat(201)]: tenantToken }), "key_too_long", 1],
+  ["numeric token", JSON.stringify({ [tenantId]: 12345678901234567890123456789012345 }), "value_not_string", 1],
+  ["31-character token", JSON.stringify({ [tenantId]: "s".repeat(31) }), "value_too_short", 1],
+  ["token with a space", JSON.stringify({ [tenantId]: `${"s".repeat(20)} ${"s".repeat(20)}` }), "value_whitespace", 1],
+  ["nine valid entries and one short token", JSON.stringify({ ...validEntries, [tenantId]: "s".repeat(31) }), "value_too_short", 10]
+]) {
+  const result = serviceAuthModule.parseTenantTokenMap(raw);
+  assert.equal(result.ok, false, `a ${label} tenant token map must be rejected`);
+  assert.equal(result.reason, reason, `a ${label} tenant token map must report ${reason}`);
+  assert.equal(result.entryIndex, entryIndex, `a ${label} tenant token map must report entry ${entryIndex}`);
+  const messages = serviceAuthModule.validateTenantTokenEnvironment({ CHANNEL_COMMERCE_TENANT_TOKENS: raw });
+  assert.equal(messages.length, 1, `a ${label} tenant token map must produce one startup error`);
+  assert.match(messages[0], /^CHANNEL_COMMERCE_TENANT_TOKENS is invalid: /);
+  for (const secret of [sentinel, tenantId, tenantToken, "s".repeat(20), "k".repeat(201)]) assert.ok(!messages[0].includes(secret), `the ${label} startup error must not quote configuration values`);
+}
+const exactMinimum = serviceAuthModule.parseTenantTokenMap(JSON.stringify({ [tenantId]: "s".repeat(32) }));
+assert.equal(exactMinimum.ok, true, "a 32-character token must be accepted");
+assert.deepEqual(serviceAuthModule.validateTenantTokenEnvironment({ RUNTIME_TELEMETRY_TENANT_TOKENS: "", PIM_INGEST_TENANT_TOKENS: JSON.stringify(validEntries) }), [], "unset or valid tenant token maps must pass startup validation");
+process.env.RUNTIME_TELEMETRY_TENANT_TOKENS = JSON.stringify({ [tenantId]: tenantToken, "00000000-0000-4000-8000-000000000009": "short" });
+assert.throws(() => serviceAuthModule.requireRuntimeService(serviceRequest(`Bearer ${tenantToken}`), tenantId), rejectedWith(503), "a tenant token map with a malformed entry must not authorize any tenant");
+const instrumentation = await readFile(new URL("../apps/console/instrumentation.ts", import.meta.url), "utf8");
+if (!instrumentation.includes("enforceTenantTokenEnvironment()")) throw new Error("the control plane must validate tenant token maps at startup");
+
+console.log("PASS  malformed tenant token maps are rejected as a whole at startup and per request without echoing configuration values");

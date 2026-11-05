@@ -1054,6 +1054,22 @@ try {
   assert.equal(next.exitCode, null, "an idle connection terminated by PostgreSQL must not crash the control plane");
   assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/health`)).status, 200, "the control plane must reconnect after an idle connection error");
   assert.ok(!consoleStderr.includes(new URL(appDatabaseUrl).password), "database error logs must not contain the connection password");
+  // L2: a malformed tenant token map stops the control plane at startup without echoing the tokens.
+  const invalidTokenMapSentinel = `sentinel${randomUUID().replaceAll("-", "")}`;
+  const invalidTokenMapConsole = spawn(process.execPath, [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(await availablePort())], {
+    cwd: consoleRoot,
+    env: { ...process.env, DATABASE_URL: appDatabaseUrl, CONTROL_PLANE_DEMO_MODE: "false", RELEASE_REVISION: "abc1234", RUNTIME_TELEMETRY_TENANT_TOKENS: JSON.stringify({ [tenantId]: invalidTokenMapSentinel, [isolatedTenantId]: `${invalidTokenMapSentinel} with whitespace` }) },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let invalidTokenMapOutput = "";
+  invalidTokenMapConsole.stdout.setEncoding("utf8").on("data", (chunk) => { invalidTokenMapOutput += chunk; });
+  invalidTokenMapConsole.stderr.setEncoding("utf8").on("data", (chunk) => { invalidTokenMapOutput += chunk; });
+  const invalidTokenMapExit = await Promise.race([new Promise((resolve) => invalidTokenMapConsole.once("exit", (code) => resolve(code))), new Promise((resolve) => setTimeout(() => resolve("timeout"), 30_000))]);
+  if (invalidTokenMapExit === "timeout") await stop(invalidTokenMapConsole);
+  assert.notEqual(invalidTokenMapExit, "timeout", "a malformed tenant token map must stop the control plane at startup");
+  assert.notEqual(invalidTokenMapExit, 0, "a malformed tenant token map must exit with a failure status");
+  assert.match(invalidTokenMapOutput, /RUNTIME_TELEMETRY_TENANT_TOKENS is invalid: entry 2 value contains whitespace/, "the startup error must name the variable, entry, and reason");
+  assert.ok(!invalidTokenMapOutput.includes(invalidTokenMapSentinel) && !invalidTokenMapOutput.includes(isolatedTenantId), "the startup error must not echo tenant ids or tokens");
   console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, revokes frozen model releases and media rights fail-closed, ingests idempotent reviewable PIM facts, enforces entitlements, meters LIVE and DEGRADED minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
