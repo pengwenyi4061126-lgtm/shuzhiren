@@ -2,9 +2,12 @@
 # the last matching rule, so the forbidden categories below the allow list also
 # apply inside vendor/CosyVoice (including its third_party submodule).
 *
+vendor/*
 !vendor/CosyVoice/**
 **/.git
 **/.git/**
+vendor/CosyVoice/.git
+vendor/CosyVoice/.git/**
 **/.env
 **/.env.*
 !**/.env.example
