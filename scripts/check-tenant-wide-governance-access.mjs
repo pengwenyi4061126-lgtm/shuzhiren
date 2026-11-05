@@ -11,7 +11,9 @@ const serviceRequirements = {
   "policy-profiles.ts": ["listPolicyProfiles", "createPolicyProfile", "approvePolicyProfile", "revokePolicyProfile"],
   "entitlements.ts": ["listEntitlements", "setEntitlement"],
   "audit.ts": ["listAuditEvents", "verifyAuditChain", "exportAuditEvidence"],
-  "control-plane/store.ts": ["createLiveRun"]
+  "control-plane/store.ts": ["createLiveRun"],
+  "interaction-rules.ts": ["listInteractionRules", "getInteractionRule", "createInteractionRule", "updateInteractionRule", "disableInteractionRule", "approveInteractionRule", "createDefaultInteractionRules"],
+  "presets.ts": ["adoptPreset"]
 };
 
 const auth = await read("apps", "console", "lib", "control-plane", "auth-context.ts");
@@ -28,7 +30,7 @@ for (const [service, functions] of Object.entries(serviceRequirements)) {
   }
 }
 
-for (const page of ["assets", "products", "releases", "policy", "usage", "audit"]) {
+for (const page of ["assets", "products", "releases", "policy", "usage", "audit", "interaction-rules"]) {
   const source = await read("apps", "console", "app", page, "page.tsx");
   if (!source.includes("tenantWide: true")) throw new Error(`tenant-wide governance page lacks access denial: ${page}`);
 }
