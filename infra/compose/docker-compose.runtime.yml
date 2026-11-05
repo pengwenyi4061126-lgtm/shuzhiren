@@ -215,6 +215,7 @@ networks:
 
 secrets:
   stream_key:
-    # Host file holding only the stream key, readable by UID 10002 (for example
-    # chown 10002:10002 and chmod 0400); deploy:check validates it.
+    # Host file holding only the stream key, readable by the LiveTalking UID/GID
+    # 10002 and by the account that runs deploy:check (owner that account, group
+    # 10002, mode 0440; see config/runtime.example.env); deploy:check validates it.
     file: ${STREAM_KEY_FILE:?set-in-runtime-env}
