@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { assertKnownMigrationLedger, enforceMigrationLedgerIntegrity, ensureMigrationLedger, findOutOfOrderMigrations, loadMigrations, migrationFailure, migrationLockName, migrationTimeouts } from "./migration-integrity.mjs";
+import { assertGuardedDataFixes, assertKnownMigrationLedger, enforceMigrationLedgerIntegrity, ensureMigrationLedger, findOutOfOrderMigrations, loadMigrations, migrationFailure, migrationLockName, migrationTimeouts } from "./migration-integrity.mjs";
 
 const { Client } = pg;
 const databaseUrl = process.env.DATABASE_URL;
@@ -30,6 +30,9 @@ try {
   const applied = new Set(appliedRows.map((row) => row.name));
   const outOfOrder = findOutOfOrderMigrations(applied, migrations);
   if (outOfOrder.length) throw new Error(`out-of-order migrations not recorded in schema_migrations: ${outOfOrder.map((migration) => migration.name).join(", ")}`);
+  // M12: a pending migration numbered 079 or higher changes existing rows only through migration_fix_*, which
+  // fails when RLS hides target rows; checked for every pending file before the first one is applied.
+  assertGuardedDataFixes(migrations.filter((migration) => !applied.has(migration.name)));
 
   for (const migration of migrations) {
     if (applied.has(migration.name)) continue;
