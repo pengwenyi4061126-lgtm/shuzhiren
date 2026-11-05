@@ -54,18 +54,13 @@ export async function listMemberships(context: RequestContext): Promise<TenantMe
 export async function createMembership(context: RequestContext, input: CreateMembershipInput): Promise<TenantMembership> {
   return withTenantTransaction(context.tenantId, async (client) => {
     const actorId = await actorDatabaseId(client, context);
-    const user = await client.query<{ id: string }>(
-      `insert into users (external_subject, display_name) values ($1, $2)
-       on conflict (external_subject) do update set display_name = excluded.display_name
-       returning id`,
-      [input.externalSubject, input.displayName]
-    );
+    const user = await provisionedUser(client, input);
     const created = await client.query<MembershipRow>(
       `insert into memberships (tenant_id, user_id, role) values ($1::uuid, $2::uuid, $3::membership_role)
        on conflict (tenant_id, user_id) do nothing
        returning id, tenant_id, user_id, $4::text as external_subject, $5::text as display_name, role, status,
          access_scope, created_at, updated_at, suspended_at, revoked_at`,
-      [context.tenantId, user.rows[0].id, input.role, input.externalSubject, input.displayName]
+      [context.tenantId, user.id, input.role, input.externalSubject, user.display_name]
     );
     const membership = created.rows[0];
     if (!membership) throw new Response("Membership already exists", { status: 409 });
@@ -125,6 +120,22 @@ export async function updateMembership(context: RequestContext, membershipId: st
     });
     return persistentMembership(membership, resourceScopes);
   });
+}
+
+// users is shared by every tenant: an existing subject keeps the display name it
+// already has, so one tenant's administrator cannot rename that person in the
+// other tenants they belong to. The response reports the stored name.
+async function provisionedUser(client: PoolClient, input: CreateMembershipInput) {
+  const inserted = await client.query<{ id: string; display_name: string }>(
+    `insert into users (external_subject, display_name) values ($1, $2)
+     on conflict (external_subject) do nothing
+     returning id, display_name`,
+    [input.externalSubject, input.displayName]
+  );
+  if (inserted.rows[0]) return inserted.rows[0];
+  const existing = await client.query<{ id: string; display_name: string }>("select id, display_name from users where external_subject = $1", [input.externalSubject]);
+  if (!existing.rows[0]) throw new Error("Provisioned user could not be resolved");
+  return existing.rows[0];
 }
 
 async function actorDatabaseId(client: PoolClient, context: RequestContext) {

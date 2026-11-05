@@ -1044,6 +1044,14 @@ try {
     await client.query("drop function integration_reject_channel_created_audit()");
   }
   assert.equal((await client.query("select count(*)::int as count from channel_connections where tenant_id = $1 and name = $2", [tenantId, rolledBackChannelName])).rows[0].count, 0, "a failed audit write must roll back the channel connection");
+  // L8: provisioning a subject that already exists in another tenant must not rename it there.
+  const sharedSubject = `integration-shared-subject-${randomUUID()}`;
+  const otherTenantMembership = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { method: "POST", headers: { ...isolatedRequestHeaders, "content-type": "application/json" }, body: JSON.stringify({ externalSubject: sharedSubject, displayName: "Isolated tenant name", role: "analyst" }) });
+  assert.equal(otherTenantMembership.status, 201, "the isolated tenant admin should provision the shared subject first");
+  const crossTenantMembership = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ externalSubject: sharedSubject, displayName: "Renamed by another tenant", role: "analyst" }) });
+  assert.equal(crossTenantMembership.status, 201, "a second tenant should provision its own membership for an existing subject");
+  assert.equal((await crossTenantMembership.json()).data.displayName, "Isolated tenant name", "the provisioning response must report the stored display name");
+  assert.deepEqual((await client.query("select display_name from users where external_subject = $1", [sharedSubject])).rows, [{ display_name: "Isolated tenant name" }], "one tenant's administrator must not rename a user shared with another tenant");
   // M3: PostgreSQL terminating an idle control-plane connection must be logged, not crash the process.
   let consoleStderr = "";
   next.stderr.setEncoding("utf8");
