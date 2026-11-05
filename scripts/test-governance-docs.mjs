@@ -8,6 +8,7 @@
 // secret-like strings are assembled at run time so that no fixture contains one.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -791,29 +792,57 @@ test("the register is scanned for the secret patterns of design part 1 §6.1 (Re
   assert.deepEqual(recordErrors(auditRecord("M5", { 说明: `样例 -----BEGIN ${"OPENSSH PRIVATE"} KEY-----` })).map((error) => error.code), ["SECRET"]);
 });
 
-test("the repository docs/AUDIT_REGISTER.md has no errors and holds the first-round registration", () => {
-  const text = readFileSync(path.join(repoRoot, "docs", "AUDIT_REGISTER.md"), "utf8");
-  const log = validateVerificationLog(readFileSync(path.join(repoRoot, "docs", "VERIFICATION_LOG.md"), "utf8"), options);
+// The first-round registration (task 2.2) is the 54 report issues plus N1-N5. New defects found later
+// are appended as N6, N7, ... (Requirement 7.14; AR-SET checks the numbering).
+const FIRST_ROUND_IDS = [...REPORT_ISSUE_IDS, "N1", "N2", "N3", "N4", "N5"];
+// docs/AUDIT_REGISTER.md as committed by task 2.2 (8226fa3), frozen as a fixture so that the phase 1
+// assertions keep a fixed input while the live register gains verifications and fixes. The pinned value
+// is the git blob id of 8226fa3:docs/AUDIT_REGISTER.md, so the fixture cannot drift from that commit.
+const PHASE1_REGISTER_COMMIT = "8226fa3";
+const PHASE1_REGISTER_BLOB = "0f7eb8a0c5ec910452af64d610df9c19ae589a28";
+const gitBlobId = (text) => {
+  const bytes = Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
+  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+};
+const repositoryLog = () => validateVerificationLog(readFileSync(path.join(repoRoot, "docs", "VERIFICATION_LOG.md"), "utf8"), options);
+
+test(`the phase 1 register snapshot (${PHASE1_REGISTER_COMMIT}:docs/AUDIT_REGISTER.md) has no errors and holds the first-round registration`, () => {
+  const text = readFileSync(auditFixture("phase1-register.md"), "utf8");
+  assert.equal(gitBlobId(text), PHASE1_REGISTER_BLOB, `phase1-register.md must stay byte-identical to ${PHASE1_REGISTER_COMMIT}:docs/AUDIT_REGISTER.md`);
+  const log = repositoryLog();
   const result = validateAuditRegister(text, { resolver, vlog: log.entries });
   assert.equal(describeAudit(result.errors), "");
-  // The first-round registration (task 2.2) is the 54 report issues plus N1-N5. New defects found later
-  // are appended as N6, N7, ... (Requirement 7.14; AR-SET checks the numbering), so the first-round
-  // assertions below apply to the first-round records only.
-  const firstRoundIds = [...REPORT_ISSUE_IDS, "N1", "N2", "N3", "N4", "N5"];
-  const ids = result.records.map((record) => record.id);
-  assert.deepEqual(ids.slice(0, firstRoundIds.length), firstRoundIds);
-  assert.ok(ids.slice(firstRoundIds.length).every((id) => /^N[1-9][0-9]*$/.test(id)), `only new defects follow the first round: ${ids.slice(firstRoundIds.length).join(", ")}`);
-  const firstRound = result.records.filter((record) => firstRoundIds.includes(record.id));
-  assert.deepEqual(countByStatus(firstRound), { 待复核: 36, 已确认: 21, 已否定: 0, 需环境验证: 2, 已修复: 0 });
+  assert.deepEqual(result.records.map((record) => record.id), FIRST_ROUND_IDS);
+  assert.deepEqual(countByStatus(result.records), { 待复核: 36, 已确认: 21, 已否定: 0, 需环境验证: 2, 已修复: 0 });
   const byId = Object.fromEntries(result.records.map((record) => [record.id, record]));
   assert.equal(byId.M20.status, "已确认");
   assert.deepEqual(byId.M20.data.核实.map((item) => [item.提交.slice(0, 7), item.方法, item.结论]), [["dc2916e", "代码阅读", "已确认"]]);
   for (const id of ["N1", "N2", "N3", "N4", "N5"]) assert.equal(byId[id].status, "待复核", id);
   assert.deepEqual(["N2", "N3", "N4", "N5"].map((id) => byId[id].data.优先级), ["P1", "P2", "P2", "P1"]);
   assert.deepEqual(byId.N5.data.对应需求, ["无：不属于 Requirement 1 至 40 的验收标准"]);
-  assert.ok(firstRound.every((record) => record.data.修复 === undefined), "no first-round record carries a fix in phase 1");
+  assert.ok(result.records.every((record) => record.data.修复 === undefined), "no first-round record carries a fix in phase 1");
+  for (const record of result.records) assert.equal(record.data.状态, record.status, record.id);
   assert.ok(text.includes(AUDIT_REPORT.file) && text.includes("VERIFICATION_LOG.md#v-20261105-05"));
   assert.ok(log.entries.find((entry) => entry.id === "V-20261105-05")?.data.结论.includes(AUDIT_REPORT.sha256));
+});
+
+test("the repository docs/AUDIT_REGISTER.md has no errors, keeps every report issue and numbers new defects without gaps", () => {
+  const text = readFileSync(path.join(repoRoot, "docs", "AUDIT_REGISTER.md"), "utf8");
+  const log = repositoryLog();
+  const result = validateAuditRegister(text, { resolver, vlog: log.entries });
+  assert.equal(describeAudit(result.errors), "");
+  const ids = result.records.map((record) => record.id);
+  assert.deepEqual(ids.slice(0, FIRST_ROUND_IDS.length), FIRST_ROUND_IDS);
+  const newDefects = ids.slice(FIRST_ROUND_IDS.length);
+  assert.deepEqual(newDefects, newDefects.map((_, index) => `N${FIRST_ROUND_IDS.length - REPORT_ISSUE_IDS.length + index + 1}`), `new defects follow N5 without gaps: ${newDefects.join(", ")}`);
+  const byId = Object.fromEntries(result.records.map((record) => [record.id, record]));
+  REPORT_LOW_ITEMS.forEach((description, index) => assert.equal(byId[`L${index + 1}`].data.原始描述, description, `L${index + 1}`));
+  for (const record of result.records) {
+    assert.equal(record.valid, true, record.id);
+    assert.equal(record.data.状态, record.status, record.id);
+    assert.equal(record.status, deriveStatus(record.data), record.id);
+  }
+  assert.ok(text.includes(AUDIT_REPORT.file) && text.includes("VERIFICATION_LOG.md#v-20261105-05"));
 });
 
 test("CLI: --register validates a register fixture; errors exit 1, a missing register exits 2", () => {
