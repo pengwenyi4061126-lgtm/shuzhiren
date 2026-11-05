@@ -118,6 +118,7 @@ jobs:
       - run: npm run alert-notifier:test
       - run: npm run ci:gates:test
       - run: npm run ci:db-fail-closed:test
+      - run: npm run release:workflow:gate:test
 
   python-gateway:
     runs-on: ubuntu-24.04

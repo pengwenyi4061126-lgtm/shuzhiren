@@ -40,6 +40,7 @@
     "deploy:images:test": "node scripts/test-deployment-image-verification.mjs",
     "release:evidence:test": "node scripts/test-release-evidence-assembly.mjs",
     "release:workflow:check": "node scripts/check-release-workflow.mjs",
+    "release:workflow:gate:test": "node scripts/test-release-workflow-gate.mjs",
     "backup:automation:check": "node scripts/check-backup-automation.mjs",
     "backup:restore:drill:test": "bash scripts/test-postgres-restore-drill.sh",
     "runtime:gateway:restore:drill:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-state-restore-drill.py",

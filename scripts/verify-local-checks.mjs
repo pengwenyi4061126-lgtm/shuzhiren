@@ -31,6 +31,7 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "deploy:images:test", kind: "npm", script: "deploy:images:test", label: "behavioral" },
   { id: "release:evidence:test", kind: "npm", script: "release:evidence:test", label: "behavioral" },
   { id: "release:workflow:check", kind: "npm", script: "release:workflow:check", label: "static" },
+  { id: "release:workflow:gate:test", kind: "npm", script: "release:workflow:gate:test", label: "behavioral" },
   { id: "backup:automation:check", kind: "npm", script: "backup:automation:check", label: "static" },
   { id: "backup:restore:drill:test", kind: "npm", script: "backup:restore:drill:test", label: "behavioral" },
   { id: "control-plane:compose:check", kind: "npm", script: "control-plane:compose:check", label: "static" },

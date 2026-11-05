@@ -1,0 +1,67 @@
+# Release_Workflow_Gate fixture for scripts/test-release-workflow-gate.mjs.
+# A trimmed release workflow that satisfies every text check of
+# scripts/check-release-workflow.mjs. The action SHAs are syntactically valid
+# placeholders, not upstream commits: the gate checks the reference format only
+# (ci:workflow:check W5 compares real workflows with .github/action-pins.json).
+# Each required action is referenced exactly once so a test can remove it;
+# every `uses:` is the first key of its step.
+name: Release Images (gate fixture)
+
+on:
+  workflow_dispatch:
+    inputs:
+      registry:
+        description: OCI registry host
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    if: github.ref_protected
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - key: CONTROL_PLANE_IMAGE
+          - key: CONTROL_PLANE_MIGRATOR_IMAGE
+          - key: RUNTIME_GATEWAY_IMAGE
+          - key: RUNTIME_WORKER_IMAGE
+          - key: RUNTIME_OBSERVER_IMAGE
+          - key: OUTPUT_PROBE_IMAGE
+          - key: CHANNEL_ADAPTER_IMAGE
+          - key: ALERT_NOTIFIER_IMAGE
+          - key: LIVETALKING_IMAGE
+          - key: COSYVOICE_IMAGE
+    steps:
+      - uses: actions/checkout@a0a1a2a3a4a5a6a7a8a9b0b1b2b3b4b5b6b7b8b9
+      - uses: docker/setup-buildx-action@c0c1c2c3c4c5c6c7c8c9d0d1d2d3d4d5d6d7d8d9
+      - uses: docker/login-action@e0e1e2e3e4e5e6e7e8e9f0f1f2f3f4f5f6f7f8f9
+        with:
+          registry: registry.example.invalid
+      - uses: docker/build-push-action@0102030405060708091011121314151617181920
+        id: build
+        with:
+          platforms: linux/amd64
+          push: true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+      - uses: actions/upload-artifact@2122232425262728293031323334353637383940
+        with:
+          name: release-image-${{ matrix.key }}
+          path: ${{ runner.temp }}/${{ matrix.key }}.json
+
+  assemble-and-sign:
+    if: github.ref_protected
+    needs: build-and-push
+    runs-on: [self-hosted, linux, x64, shuzhiren-release]
+    steps:
+      - uses: actions/checkout@a0a1a2a3a4a5a6a7a8a9b0b1b2b3b4b5b6b7b8b9
+      - uses: actions/download-artifact@4142434445464748495051525354555657585960
+        with:
+          pattern: release-image-*
+      - run: node scripts/create-deployment-release-manifest.mjs
