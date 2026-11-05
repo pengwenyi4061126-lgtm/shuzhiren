@@ -61,11 +61,13 @@ async function enqueueNewAlerts(target) {
   const client = await pool.connect();
   try {
     await client.query("begin");
-    await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]);
+    await client.query("select set_config('app.tenant_id', $1::text, true)", [target.tenantId]);
+    // Every parameter is referenced and explicitly typed: an unreferenced bind value makes PostgreSQL fail with 42P18.
+    // The tenant filter repeats what row-level security already enforces.
     await client.query(`insert into alert_notification_deliveries (tenant_id, runtime_alert_id, target_id)
-      select a.tenant_id, a.id, $2
+      select a.tenant_id, a.id, $2::text
       from runtime_alerts a
-      where a.status = 'open' and a.severity = any($3::alert_severity[])
+      where a.tenant_id = $1::uuid and a.status = 'open' and a.severity = any($3::alert_severity[])
       on conflict (tenant_id, runtime_alert_id, target_id) do nothing`, [target.tenantId, target.id, matchingSeverities(target.minimumSeverity)]);
     await client.query("commit");
   } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
@@ -75,12 +77,12 @@ async function claimDelivery(target) {
   const client = await pool.connect();
   try {
     await client.query("begin");
-    await client.query("select set_config('app.tenant_id', $1, true)", [target.tenantId]);
+    await client.query("select set_config('app.tenant_id', $1::text, true)", [target.tenantId]);
     const selected = await client.query(`select d.id, d.runtime_alert_id as alert_id, a.live_run_id, a.severity, a.code, a.message, a.opened_at, d.attempts
       from alert_notification_deliveries d
       join runtime_alerts a on a.id = d.runtime_alert_id
-      where d.target_id = $1
-        and d.attempts < $2
+      where d.target_id = $1::text
+        and d.attempts < $2::integer
         and (d.state = 'pending' or (d.state = 'delivering' and d.lease_expires_at <= now()))
         and d.available_at <= now()
       order by d.created_at
@@ -88,7 +90,7 @@ async function claimDelivery(target) {
       limit 1`, [target.id, maxAttempts]);
     const delivery = selected.rows[0];
     if (!delivery) { await client.query("commit"); return null; }
-    await client.query("update alert_notification_deliveries set state = 'delivering', attempts = attempts + 1, lease_expires_at = now() + ($2 * interval '1 second'), updated_at = now(), last_error = null where id = $1", [delivery.id, leaseSeconds]);
+    await client.query("update alert_notification_deliveries set state = 'delivering', attempts = attempts + 1, lease_expires_at = now() + ($2::double precision * interval '1 second'), updated_at = now(), last_error = null where id = $1::uuid", [delivery.id, leaseSeconds]);
     await client.query("commit");
     return { ...delivery, attempts: Number(delivery.attempts) + 1 };
   } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
@@ -109,15 +111,15 @@ async function deliver(target, delivery) {
   }
 }
 
-async function complete(tenantId, deliveryId) { await withTenant(tenantId, async (client) => { await client.query("update alert_notification_deliveries set state = 'delivered', delivered_at = now(), lease_expires_at = null, last_error = null, updated_at = now() where id = $1", [deliveryId]); }); }
+async function complete(tenantId, deliveryId) { await withTenant(tenantId, async (client) => { await client.query("update alert_notification_deliveries set state = 'delivered', delivered_at = now(), lease_expires_at = null, last_error = null, updated_at = now() where id = $1::uuid", [deliveryId]); }); }
 async function retry(tenantId, delivery, message) {
   const exhausted = delivery.attempts >= maxAttempts;
   const delay = retryDelayMs(delivery.attempts, retryBaseMs, retryMaxMs);
-  await withTenant(tenantId, async (client) => { await client.query("update alert_notification_deliveries set state = $2, lease_expires_at = null, available_at = now() + ($3 * interval '1 millisecond'), last_error = $4, updated_at = now() where id = $1", [delivery.id, exhausted ? "failed" : "pending", delay, message]); });
+  await withTenant(tenantId, async (client) => { await client.query("update alert_notification_deliveries set state = $2::alert_notification_state, lease_expires_at = null, available_at = now() + ($3::double precision * interval '1 millisecond'), last_error = $4::text, updated_at = now() where id = $1::uuid", [delivery.id, exhausted ? "failed" : "pending", delay, message]); });
 }
 async function withTenant(tenantId, operation) {
   const client = await pool.connect();
-  try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]); await operation(client); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
+  try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1::text, true)", [tenantId]); await operation(client); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
 }
 function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
 function boundedPositiveInt(value, fallback, name, minimum, maximum) { const parsed = positiveInt(value, fallback, name); if (parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
