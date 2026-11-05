@@ -43,6 +43,9 @@ requiredTriggers.push("product_versions_approved_insert_evidence", "show_revisio
 const requiredSecurityDefinerFunctions = ["seal_audit_event", "protect_last_active_tenant_admin"];
 requiredTables.push("membership_admin_guards");
 requiredPolicies.push("tenant_isolation_membership_admin_guards");
+// 082: platform-wide preset catalogue (no tenant_id, so no tenant RLS); read-only for the control plane.
+requiredTables.push("runtime_presets");
+requiredColumns.runtime_presets = ["kind", "preset_code", "display_name", "compatible_model_kind", "runtime_ref", "license_name", "license_source_url", "commercial_use_status", "enabled", "created_at"];
 const requiredConstraints = new Map([["schema_migrations_checksum_format", true], ["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true], ["show_revision_segments_runtime_script_length", true]]);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
@@ -382,13 +385,13 @@ async function verifyControlPlanePrincipal(currentRole) {
         has_table_privilege($1, c.oid, 'truncate') as can_truncate
       from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') order by c.relname`, [role]);
     const byTable = new Map(privileges.rows.map((row) => [row.table_name, row]));
-    for (const table of ["schema_migrations", "audit_chain_heads"]) {
+    for (const table of ["schema_migrations", "audit_chain_heads", "runtime_presets"]) {
       const row = byTable.get(table);
       if (row && (row.can_insert || row.can_update || row.can_delete || row.can_truncate)) errors.push(`控制面数据库账号 ${label} 不得写入 ${table}`);
       if (row && !row.can_select) errors.push(`控制面数据库账号 ${label} 缺少 ${table} 的 SELECT 权限`);
     }
     for (const row of privileges.rows) {
-      if (["schema_migrations", "audit_chain_heads", "membership_admin_guards"].includes(row.table_name)) continue;
+      if (["schema_migrations", "audit_chain_heads", "membership_admin_guards", "runtime_presets"].includes(row.table_name)) continue;
       const missing = ["select", "insert", "update", "delete"].filter((privilege) => !row[`can_${privilege}`]);
       if (missing.length) errors.push(`控制面数据库账号 ${label} 缺少 ${row.table_name} 的 ${missing.join("/").toUpperCase()} 权限（执行 control-plane-principal.sql）`);
       if (row.can_truncate) errors.push(`控制面数据库账号 ${label} 不得 TRUNCATE ${row.table_name}`);

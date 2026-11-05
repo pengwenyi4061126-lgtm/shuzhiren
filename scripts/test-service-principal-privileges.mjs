@@ -226,7 +226,7 @@ async function assertControlPlanePrincipal() {
     const attributes = (await client.query("select rolsuper, rolbypassrls from pg_roles where rolname = $1", [controlPlane])).rows[0];
     assert.deepEqual(attributes, { rolsuper: false, rolbypassrls: false }, "the control-plane account must not bypass RLS");
     const tables = (await client.query("select c.relname from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') order by c.relname")).rows.map((row) => row.relname);
-    const readOnly = new Set(["schema_migrations", "audit_chain_heads"]);
+    const readOnly = new Set(["schema_migrations", "audit_chain_heads", "runtime_presets"]);
     for (const table of tables) {
       for (const privilege of ["select", "insert", "update", "delete"]) {
         const expected = table === "membership_admin_guards" ? false : readOnly.has(table) ? privilege === "select" : true;
@@ -263,6 +263,9 @@ async function assertControlPlanePrincipal() {
     assert.equal((await asControlPlane("delete from schema_migrations")).code, "42501", "the control plane must not delete migration records");
     assert.equal((await asControlPlane("update audit_chain_heads set last_sequence = 0")).code, "42501", "the control plane must not write chain heads");
     assert.equal((await asControlPlane("select * from membership_admin_guards")).code, "42501", "the control plane needs no access to the admin guard table");
+    // 082: the platform preset catalogue is read-only for the control plane.
+    assert.ok(Number((await asControlPlane("select count(*)::int as count from runtime_presets where enabled")).rows?.[0]?.count) > 0, "the control plane must read the preset catalogue");
+    assert.equal((await asControlPlane("update runtime_presets set enabled = false")).code, "42501", "the control plane must not change the preset catalogue");
 
     // alter default privileges: a table the migration owner creates later is writable by the control plane at once.
     await client.query(`set local role ${owner}`);

@@ -31,3 +31,6 @@ grant usage, select on all sequences in schema public to :"control_plane_role";
 -- adds a table the control plane must not write revokes that privilege here as well.
 alter default privileges in schema public grant select, insert, update, delete on tables to :"control_plane_role";
 alter default privileges in schema public grant usage, select on sequences to :"control_plane_role";
+-- Since 082, runtime_presets is a platform-wide preset catalogue that only migrations change; the control plane
+-- reads it (GET /api/v1/presets) and adopts a preset by writing the tenant's own media_assets.
+revoke insert, update, delete on runtime_presets from :"control_plane_role";

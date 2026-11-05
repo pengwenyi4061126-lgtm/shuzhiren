@@ -108,7 +108,9 @@
     "docs:governance:test": "node scripts/test-governance-docs.mjs",
     "control-plane:integration": "node scripts/test-control-plane-postgres.mjs",
     "postgres:integration": "node scripts/run-postgres-integration.mjs",
-    "integration:lib:test": "node scripts/test-integration-lib.mjs"
+    "integration:lib:test": "node scripts/test-integration-lib.mjs",
+    "presets:test": "node scripts/test-runtime-presets.mjs",
+    "runtime:gateway:sft-speakers:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-sft-speakers.py"
   },
   "devDependencies": {
     "fast-check": "4.10.2",

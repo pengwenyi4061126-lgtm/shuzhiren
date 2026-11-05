@@ -56,7 +56,8 @@ for (const forbidden of ["grant all", "grant delete", " on memberships to shuzhi
     `revoke all privileges on membership_admin_guards from ${role}`,
     `grant usage, select on all sequences in schema public to ${role}`,
     `alter default privileges in schema public grant select, insert, update, delete on tables to ${role}`,
-    `alter default privileges in schema public grant usage, select on sequences to ${role}`
+    `alter default privileges in schema public grant usage, select on sequences to ${role}`,
+    `revoke insert, update, delete on runtime_presets from ${role}`
   ];
   if (JSON.stringify(statements) !== JSON.stringify(expected)) throw new Error(`control-plane-principal.sql must contain exactly these statements in order:\n${expected.join(";\n")};\nfound:\n${statements.join(";\n")};`);
 }

@@ -14,8 +14,10 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, Mapping
 from urllib.parse import urlparse
 
 import httpx
@@ -51,6 +53,14 @@ COSYVOICE_REQUIRED = os.environ.get("COSYVOICE_REQUIRED", "false").lower() == "t
 # approved reference audio and transcript from the read-only voice library. No default (D2).
 COSYVOICE_MODEL_KIND = os.environ.get("COSYVOICE_MODEL_KIND", "")
 COSYVOICE_VOICE_LIBRARY_DIR = os.environ.get("COSYVOICE_VOICE_LIBRARY_DIR", "")
+# sft only: JSON object mapping an ASCII runtime_voice_id to the model's built-in speaker name (spk_id). The
+# platform default presets (migration 082) use ASCII ids for CosyVoice-300M-SFT's Chinese speaker names. Unset or
+# empty uses the default below; a set value replaces it ({} disables the mapping). An id without an entry is sent
+# as spk_id unchanged. An invalid value stops startup.
+COSYVOICE_SFT_SPEAKER_MAP = os.environ.get("COSYVOICE_SFT_SPEAKER_MAP", "")
+DEFAULT_COSYVOICE_SFT_SPEAKER_MAP = {"preset-zh-female": "中文女", "preset-zh-male": "中文男"}
+COSYVOICE_SFT_SPEAKER_MAP_MAX_ENTRIES = 256
+COSYVOICE_SFT_SPEAKER_MAX_CHARS = 64
 COSYVOICE_CHUNK_MAX_CHARS = int(os.environ.get("COSYVOICE_CHUNK_MAX_CHARS", "120"))
 # Total upstream budget of one command, counted from its journal reservation.
 RUNTIME_COMMAND_DEADLINE_SECONDS = int(os.environ.get("RUNTIME_COMMAND_DEADLINE_SECONDS", "15"))
@@ -208,6 +218,8 @@ class VoiceSpec:
     runtime_voice_id: str
     prompt_wav: bytes | None = None
     prompt_text: str | None = None
+    # sft only: the spk_id sent to /inference_sft (COSYVOICE_SFT_SPEAKER_MAP applied by load_voice_spec).
+    sft_speaker_id: str | None = None
 
 @dataclass(frozen=True)
 class SynthesisResult:
@@ -554,6 +566,8 @@ def validate_runtime_configuration() -> None:
     # The voice library may be missing or broken at startup: commands without speech must still run.
     if COSYVOICE_MODEL_KIND == "zero_shot" and not os.path.isabs(COSYVOICE_VOICE_LIBRARY_DIR):
         raise RuntimeError("COSYVOICE_VOICE_LIBRARY_DIR must be an absolute path when COSYVOICE_MODEL_KIND is zero_shot")
+    # Checked in both model kinds, so a broken value cannot wait for a later switch to sft.
+    parse_sft_speaker_map(COSYVOICE_SFT_SPEAKER_MAP)
     validate_integer_range("COSYVOICE_CHUNK_MAX_CHARS", COSYVOICE_CHUNK_MAX_CHARS, 20, 800)
     validate_integer_range("RUNTIME_COMMAND_DEADLINE_SECONDS", RUNTIME_COMMAND_DEADLINE_SECONDS, 1, 59)
     validate_number_range("RUNTIME_REQUEST_TIMEOUT_SECONDS", REQUEST_TIMEOUT_SECONDS, 0.1, 120)
@@ -1025,10 +1039,57 @@ def read_voice_file(path: Path, limit: int) -> bytes:
         raise voice_material_failure("voice_material_invalid")
     return content
 
+def reject_duplicate_sft_speakers(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError("COSYVOICE_SFT_SPEAKER_MAP must not repeat a runtime voice id")
+        result[key] = value
+    return result
+
+def valid_sft_speaker_name(value: object) -> bool:
+    # A built-in speaker name such as 中文女: no surrounding whitespace and no control, format, private-use,
+    # surrogate or unassigned characters, so it is sent to CosyVoice exactly as configured.
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= COSYVOICE_SFT_SPEAKER_MAX_CHARS
+        and value == value.strip()
+        and not any(unicodedata.category(character).startswith("C") for character in value)
+    )
+
+@lru_cache(maxsize=8)
+def parse_sft_speaker_map(raw: str) -> Mapping[str, str]:
+    """COSYVOICE_SFT_SPEAKER_MAP as a read-only mapping; raises RuntimeError for any invalid value."""
+    if raw == "":
+        return MappingProxyType(dict(DEFAULT_COSYVOICE_SFT_SPEAKER_MAP))
+    try:
+        parsed = json.loads(raw, object_pairs_hook=reject_duplicate_sft_speakers)
+    except ValueError as error:
+        raise RuntimeError("COSYVOICE_SFT_SPEAKER_MAP must be a JSON object") from error
+    if not isinstance(parsed, dict):
+        raise RuntimeError("COSYVOICE_SFT_SPEAKER_MAP must be a JSON object")
+    if len(parsed) > COSYVOICE_SFT_SPEAKER_MAP_MAX_ENTRIES:
+        raise RuntimeError(f"COSYVOICE_SFT_SPEAKER_MAP must have at most {COSYVOICE_SFT_SPEAKER_MAP_MAX_ENTRIES} entries")
+    for key, value in parsed.items():
+        if not VOICE_ID_PATTERN.fullmatch(key):
+            raise RuntimeError("COSYVOICE_SFT_SPEAKER_MAP keys must be runtime voice ids ([A-Za-z0-9][A-Za-z0-9_-]{0,127})")
+        if not valid_sft_speaker_name(value):
+            raise RuntimeError(f"COSYVOICE_SFT_SPEAKER_MAP values must be speaker names of 1-{COSYVOICE_SFT_SPEAKER_MAX_CHARS} printable characters without surrounding whitespace")
+    return MappingProxyType(parsed)
+
+def sft_speaker_id(runtime_voice_id: str) -> str:
+    """The spk_id for an approved runtime voice id in sft mode; an id without a map entry is used as is."""
+    try:
+        speakers = parse_sft_speaker_map(COSYVOICE_SFT_SPEAKER_MAP)
+    except RuntimeError as error:
+        # Startup rejects an invalid map; this only fails closed if the value changed after startup.
+        raise voice_material_failure("sft_speaker_map_invalid") from error
+    return speakers.get(runtime_voice_id, runtime_voice_id)
+
 def load_voice_spec(runtime_voice_id: str, voice_checksum: str | None) -> VoiceSpec:
     """Read the approved zero-shot reference audio and transcript; synchronous, run in a thread."""
     if COSYVOICE_MODEL_KIND == "sft":
-        return VoiceSpec(runtime_voice_id)
+        return VoiceSpec(runtime_voice_id, sft_speaker_id=sft_speaker_id(runtime_voice_id))
     if not COSYVOICE_VOICE_LIBRARY_DIR or not voice_checksum:
         raise voice_material_failure("voice_material_missing")
     library = Path(os.path.realpath(COSYVOICE_VOICE_LIBRARY_DIR))
@@ -1058,7 +1119,7 @@ def cosyvoice_failure(status_code: int, detail: str, reason: str, chunk_index: i
 
 async def cosyvoice_chunk(text: str, voice: VoiceSpec, chunk_index: int, remaining_seconds: float, max_bytes: int) -> bytes:
     if COSYVOICE_MODEL_KIND == "sft":
-        path, data, files = "/inference_sft", {"tts_text": text, "spk_id": voice.runtime_voice_id}, None
+        path, data, files = "/inference_sft", {"tts_text": text, "spk_id": voice.sft_speaker_id or sft_speaker_id(voice.runtime_voice_id)}, None
     else:
         path = "/inference_zero_shot"
         data = {"tts_text": text, "prompt_text": voice.prompt_text or ""}
