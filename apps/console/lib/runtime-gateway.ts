@@ -26,7 +26,10 @@ export async function runtimeGatewayHealth() {
   if (config.demoMode) return { status: "demo" as const };
   const response = await fetch(`${config.url}/healthz`, { cache: "no-store", signal: AbortSignal.timeout(config.requestTimeoutMs) });
   if (!response.ok) throw new Error(`Runtime gateway health check failed: ${response.status}`);
-  return { status: "ok" as const, ...(await response.json() as Record<string, unknown>) };
+  let body: unknown;
+  try { body = await response.json(); } catch { throw new Error("runtime_gateway_health_invalid_json"); }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("runtime_gateway_health_not_object");
+  return { status: "ok" as const, ...(body as Record<string, unknown>) };
 }
 
 export async function observeRuntimeSession(sessionId: string): Promise<RuntimeSessionObservation> {
