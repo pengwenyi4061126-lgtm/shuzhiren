@@ -67,7 +67,17 @@ function previewUrl(value: string) {
   }
 }
 
-export async function dispatchMediaCommand(command: MediaCommand, sessionId: string) {
+// Options for an outbox delivery: `timeoutMs` caps the request below the delivery lease so a request never
+// outlives the claim that authorised it, and `notBefore` (the outbox event's created_at) lets a retry accept
+// the Gateway's receipt of the first acceptance however old it is, as long as it is not older than the event.
+export type DispatchOptions = { timeoutMs?: number; notBefore?: string };
+const RECEIPT_CLOCK_SKEW_MS = 30_000;
+function requestSignal(config: RuntimeGatewayConfig, options?: DispatchOptions) {
+  const budget = options?.timeoutMs;
+  return AbortSignal.timeout(budget === undefined ? config.requestTimeoutMs : Math.max(1, Math.min(config.requestTimeoutMs, Math.floor(budget))));
+}
+
+export async function dispatchMediaCommand(command: MediaCommand, sessionId: string, options?: DispatchOptions) {
   const config = runtimeGatewayConfig();
   if (config.demoMode) return { delivery: "demo" as const, provider: { accepted: true, command_id: command.id, session_id: sessionId, action: command.type, receipt: { command_id: command.id, session_id: sessionId, action: command.type, accepted_at: new Date().toISOString(), evidence: "demo_gateway" } } };
   const programSegmentId = command.payload.programSegmentId;
@@ -82,21 +92,28 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
     body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}) }),
-    signal: AbortSignal.timeout(config.requestTimeoutMs)
+    signal: requestSignal(config, options)
   });
   if (!response.ok) throw new Error(`Runtime gateway rejected media command: ${response.status}`);
   const provider = await response.json() as unknown;
-  assertMediaGatewayReceipt(provider, command, sessionId);
+  assertMediaGatewayReceipt(provider, command, sessionId, options?.notBefore);
   return { delivery: "accepted" as const, provider };
 }
 
-function assertMediaGatewayReceipt(value: unknown, command: MediaCommand, sessionId: string) {
+function receiptTimeAcceptable(acceptedAt: Date, notBefore?: string) {
+  const accepted = acceptedAt.getTime();
+  if (notBefore === undefined) return Math.abs(Date.now() - accepted) <= 5 * 60_000;
+  const floor = new Date(notBefore).getTime() - RECEIPT_CLOCK_SKEW_MS;
+  return !Number.isNaN(floor) && accepted >= floor && accepted <= Date.now() + RECEIPT_CLOCK_SKEW_MS;
+}
+
+function assertMediaGatewayReceipt(value: unknown, command: MediaCommand, sessionId: string, notBefore?: string) {
   if (!value || typeof value !== "object") throw new Error("Runtime gateway returned an invalid media receipt");
   const receipt = (value as { receipt?: unknown }).receipt;
   if (!receipt || typeof receipt !== "object") throw new Error("Runtime gateway returned an invalid media receipt");
   const fields = receipt as Record<string, unknown>;
   const acceptedAt = typeof fields.accepted_at === "string" ? new Date(fields.accepted_at) : undefined;
-  if ((value as { accepted?: unknown }).accepted !== true || fields.command_id !== command.id || fields.session_id !== sessionId || fields.action !== command.type || !acceptedAt || Number.isNaN(acceptedAt.getTime()) || Math.abs(Date.now() - acceptedAt.getTime()) > 5 * 60_000) throw new Error("Runtime gateway receipt does not bind the media command");
+  if ((value as { accepted?: unknown }).accepted !== true || fields.command_id !== command.id || fields.session_id !== sessionId || fields.action !== command.type || !acceptedAt || Number.isNaN(acceptedAt.getTime()) || !receiptTimeAcceptable(acceptedAt, notBefore)) throw new Error("Runtime gateway receipt does not bind the media command");
   if (command.payload.programSegmentId && fields.program_segment_id !== command.payload.programSegmentId) throw new Error("Runtime gateway receipt does not bind the program segment");
 }
 
@@ -104,14 +121,14 @@ function programSegmentIdValid(value: unknown) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-export async function dispatchSpeechCommand(command: SpeechCommand, sessionId: string) {
+export async function dispatchSpeechCommand(command: SpeechCommand, sessionId: string, options?: DispatchOptions) {
   const config = runtimeGatewayConfig();
   if (config.demoMode) return { delivery: "demo" as const };
   const response = await fetch(`${config.url}/v1/speak`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
     body: JSON.stringify({ command_id: command.id, session_id: sessionId, text: command.text, voice: command.voice, interrupt: command.interrupt }),
-    signal: AbortSignal.timeout(config.requestTimeoutMs)
+    signal: requestSignal(config, options)
   });
   if (!response.ok) throw new Error(`Runtime gateway rejected speech command: ${response.status}`);
   return { delivery: "accepted" as const, provider: await response.json() as unknown };

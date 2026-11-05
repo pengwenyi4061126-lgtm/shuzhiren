@@ -122,19 +122,43 @@ export async function deliverOutboxEvent(context: RequestContext, eventId: strin
     return claimed;
   }
   if (claimed.event.type === "channel.reply.dispatch") throw new Response("Channel replies are delivered only by the runtime worker", { status: 409 });
+  // The claim set state = 'delivering', attempts + 1 and available_at = now() + lease. (id, attempts) identifies
+  // this claim: the request is cut off before the lease ends, so the worker can only reclaim the event after this
+  // request is over, and both writes below only apply while the event is still held by this claim.
+  const timeoutMs = Math.floor(claimed.claimStartedAt + manualDeliveryLeaseMs - manualDeliveryLeaseMarginMs - performance.now());
+  let result;
   try {
-    const result = claimed.event.type === "media.dispatch"
-      ? await dispatchMediaCommand(claimed.event.command, claimed.event.sessionId)
-      : await dispatchSpeechCommand(claimed.event.command, claimed.event.sessionId);
-    const event = await markDelivered(context, claimed.event, result);
-    return { event, duplicate: false as const, result };
+    if (timeoutMs < 100) throw new Error("outbox delivery lease budget exhausted before dispatch");
+    const options = { timeoutMs, notBefore: claimed.event.createdAt };
+    result = claimed.event.type === "media.dispatch"
+      ? await dispatchMediaCommand(claimed.event.command, claimed.event.sessionId, options)
+      : await dispatchSpeechCommand(claimed.event.command, claimed.event.sessionId, options);
   } catch (error) {
     await markFailed(context, claimed.event, error instanceof Error ? error.message : "runtime_dispatch_failed");
     throw error;
   }
+  // The Gateway accepted the command. If recording that fails, the event must not become 'failed': that would
+  // let the next manual or worker attempt send the accepted command again before the lease ends. It stays
+  // 'delivering' with the claim's available_at; after the lease the worker resends the same command id and
+  // records the Gateway's receipt of the first acceptance.
+  try {
+    const event = await markDelivered(context, claimed.event, result);
+    return { event, duplicate: false as const, result };
+  } catch (error) {
+    throw new OutboxDeliveryStateUnconfirmedError(claimed.event.id, error);
+  }
 }
+export class OutboxDeliveryStateUnconfirmedError extends Error {
+  readonly code = "delivery_accepted_state_unconfirmed";
+  constructor(readonly eventId: string, cause: unknown) { super("Runtime gateway accepted the command but the delivery state was not recorded", { cause }); }
+}
+class OutboxLeaseLostError extends Error {}
+const manualDeliveryLeaseMs = manualDeliveryLeaseSeconds * 1000;
+const manualDeliveryLeaseMarginMs = Math.min(2000, Math.floor(manualDeliveryLeaseMs / 10));
 
-async function claimOutboxEvent(context: RequestContext, eventId: string): Promise<{ event: RuntimeOutboxEvent; duplicate: true } | { event: RuntimeOutboxEvent; duplicate: false }> {
+async function claimOutboxEvent(context: RequestContext, eventId: string): Promise<{ event: RuntimeOutboxEvent; duplicate: true } | { event: RuntimeOutboxEvent; duplicate: false; claimStartedAt: number }> {
+  // The database's now() that sets the lease is not earlier than this monotonic reading.
+  const claimStartedAt = performance.now();
   if (!databasePool()) {
     const event = outboxStore().events.get(eventId);
     if (!event || event.tenantId !== context.tenantId) throw new Response("Outbox event not found", { status: 404 });
@@ -143,7 +167,7 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
     if (event.state === "delivering") throw new Response("Outbox event is already delivering", { status: 409 });
     event.state = "delivering";
     event.attempts += 1;
-    return { event, duplicate: false };
+    return { event, duplicate: false, claimStartedAt };
   }
   if (!isUuid(eventId)) throw new Response("Outbox event not found", { status: 404 });
 
@@ -155,7 +179,7 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
     if (current.state === "cancelled") throw new Response("Outbox event was cancelled", { status: 409 });
     if (current.state === "delivering") throw new Response("Outbox event is already delivering", { status: 409 });
     const updated = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivering', attempts = attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second') where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [eventId, manualDeliveryLeaseSeconds]);
-    return { event: persistentEvent(updated.rows[0]), duplicate: false as const };
+    return { event: persistentEvent(updated.rows[0]), duplicate: false as const, claimStartedAt };
   });
 }
 
@@ -173,8 +197,8 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent,
     return event;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [input.id]);
-    if (!result.rows[0]) throw new Error("Outbox event disappeared during delivery");
+    const result = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 and state = 'delivering' and attempts = $2 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [input.id, input.attempts]);
+    if (!result.rows[0]) throw new OutboxLeaseLostError("outbox lease lost before the delivery was recorded");
     const event = persistentEvent(result.rows[0]);
     if (event.type === "media.dispatch" && ["SCHEDULED_START", "START", "RECOVER"].includes(event.command.payload.controlAction)) {
       const promoted = await client.query(
@@ -235,7 +259,9 @@ async function markFailed(context: RequestContext, input: RuntimeOutboxEvent, la
     return;
   }
   await withTenantTransaction(context.tenantId, async (client) => {
-    await client.query("update outbox_events set state = 'failed', last_error = $2 where id = $1", [input.id, lastError]);
+    // Fenced like markDelivered: once the lease was taken over, the new holder owns the event's state.
+    const fenced = await client.query("update outbox_events set state = 'failed', last_error = $2 where id = $1 and state = 'delivering' and attempts = $3", [input.id, lastError, input.attempts]);
+    if (fenced.rowCount !== 1) return;
     if (input.attempts >= outboxMaxAttempts) await openDeliveryExhaustedAlert(client, context, input, lastError);
   });
 }

@@ -42,6 +42,7 @@ let next;
 let workerProcess;
 let adapterProcess;
 let notifierProcess;
+const mockGates = { heldFailure: Promise.resolve() };
 
 try {
   await client.connect();
@@ -570,6 +571,7 @@ try {
   });
   assert.equal(healthyManualFailureTelemetry.status, 202, "healthy telemetry should be accepted after a manual delivery failure");
   assert.equal((await client.query("select status from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted'", [manualFailureRun.runId])).rows[0].status, "open", "healthy telemetry must not auto-resolve a command delivery failure");
+  await assertManualDeliveryDoesNotResend(manualFailureRun.runId, consolePort, requestHeaders);
 
   const recordingInput = {
     tenantId,
@@ -1221,6 +1223,57 @@ async function seedMembership(targetTenantId, subject, displayName, role) {
   return user.rows[0].id;
 }
 
+// M11: manual delivery wrote 'failed' when the Gateway had accepted the command but recording the delivery failed,
+// so the next manual (or worker) attempt sent the accepted command again; and its markDelivered / markFailed wrote by
+// id only, so a late write from an expired claim overwrote the state of the claim that took the event over.
+async function assertManualDeliveryDoesNotResend(runId, consolePort, requestHeaders) {
+  const insertEvent = async (commandId) => (await client.query(`insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
+    values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id`, [tenantId, runId, JSON.stringify({
+      sessionId: "session_manual_delivery_failure",
+      command: { id: commandId, runId, type: "switch_to_human", issuedAt: new Date().toISOString(), traceId: `trace_${runId}`, payload: { controlAction: "MANUAL_OUTBOX_UNCONFIRMED_TEST" } }
+    })])).rows[0].id;
+  const sent = (commandId) => mock.mediaCommands.filter((command) => command.command_id === commandId).length;
+  const deliver = (eventId) => fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${eventId}/deliver`, { method: "POST", headers: requestHeaders });
+
+  // The Gateway accepts, then recording the delivery fails (injected by a test-only trigger).
+  await client.query(`create function it_fail_manual_delivery_record() returns trigger language plpgsql as $$
+    begin
+      if new.state = 'delivered' and new.payload #>> '{command,id}' like 'unconfirmed_media_%' then raise exception 'injected delivery record failure'; end if;
+      return new;
+    end $$`);
+  await client.query("create trigger it_fail_manual_delivery_record before update on outbox_events for each row execute function it_fail_manual_delivery_record()");
+  const unconfirmedCommandId = `unconfirmed_media_${randomUUID()}`;
+  const unconfirmedEventId = await insertEvent(unconfirmedCommandId);
+  try {
+    const first = await deliver(unconfirmedEventId);
+    assert.equal(first.status, 503, "an accepted command whose delivery was not recorded must not be reported as delivered");
+    assert.deepEqual(await first.json(), { error: "delivery_accepted_state_unconfirmed", code: "delivery_accepted_state_unconfirmed", eventId: unconfirmedEventId }, "the response must tell an accepted-but-unrecorded delivery apart from a Gateway failure");
+    const held = (await client.query("select state, attempts, available_at > now() as leased from outbox_events where id = $1", [unconfirmedEventId])).rows[0];
+    assert.deepEqual(held, { state: "delivering", attempts: 1, leased: true }, "an accepted-but-unrecorded delivery must keep its lease instead of becoming failed");
+    const repeated = await deliver(unconfirmedEventId);
+    assert.equal(repeated.status, 409, "a repeated manual delivery must not claim an event whose accepted command is still leased");
+    assert.equal(sent(unconfirmedCommandId), 1, "a repeated manual delivery must not send an accepted command again");
+  } finally {
+    await client.query("drop trigger it_fail_manual_delivery_record on outbox_events");
+    await client.query("drop function it_fail_manual_delivery_record()");
+  }
+
+  // While the Gateway call is in flight, the lease passes to another claim (as the worker does after expiry).
+  let releaseHeldFailure;
+  mockGates.heldFailure = new Promise((resolve) => { releaseHeldFailure = resolve; });
+  const heldCommandId = `held_fail_media_${randomUUID()}`;
+  const heldEventId = await insertEvent(heldCommandId);
+  const pendingDelivery = deliver(heldEventId);
+  await waitFor(() => sent(heldCommandId) === 1, 10_000, "held manual delivery reaches the Gateway");
+  await client.query("update outbox_events set attempts = attempts + 1, available_at = now() + interval '60 seconds' where id = $1 and state = 'delivering'", [heldEventId]);
+  releaseHeldFailure();
+  assert.equal((await pendingDelivery).status, 503, "the Gateway failure is still reported");
+  assert.deepEqual((await client.query("select state, attempts, last_error from outbox_events where id = $1", [heldEventId])).rows[0], { state: "delivering", attempts: 2, last_error: null }, "a failure from an expired claim must not overwrite the state of the claim that took over");
+
+  // Keep the worker started later in this run away from these synthetic events.
+  await client.query("update outbox_events set state = 'cancelled' where id = any($1::uuid[])", [[unconfirmedEventId, heldEventId]]);
+}
+
 async function startMockServer() {
   const mediaCommands = [];
   const alertNotifications = [];
@@ -1261,6 +1314,7 @@ async function startMockServer() {
       const command = await requestBody(request);
       mediaCommands.push(command);
       if (command.command_id.startsWith("fail_media_")) return json(response, 503, { error: "injected_delivery_failure" });
+      if (command.command_id.startsWith("held_fail_media_")) { await mockGates.heldFailure; return json(response, 503, { error: "injected_delivery_failure" }); }
       return json(response, 200, { accepted: true, command_id: command.command_id, session_id: command.session_id, action: command.action, receipt: { command_id: command.command_id, session_id: command.session_id, action: command.action, program_segment_id: command.program_segment_id ?? null, accepted_at: new Date().toISOString(), evidence: "integration_gateway_accepted" } });
     }
     if (url.pathname === "/provider-reply-fixture" && request.method === "POST") {
