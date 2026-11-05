@@ -34,6 +34,8 @@ const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain",
 requiredTriggers.push("audit_chain_heads_guard", "audit_chain_heads_no_truncate");
 requiredTriggers.push("outbox_events_media_dispatch_sequence");
 requiredIndexes.push("outbox_events_media_aggregate_order_idx");
+// H7 (080): the runtime worker flags events the Gateway answered with command_outcome_uncertain.
+requiredColumns.outbox_events = ["outcome_uncertain_at"];
 requiredTriggers.push("product_versions_approved_insert_evidence", "show_revisions_approved_insert_evidence", "media_assets_approved_insert_evidence", "model_releases_approved_insert_evidence", "policy_profiles_approved_insert_evidence");
 // Functions that must run as their owner so callers need no write privilege on the tables they maintain.
 const requiredSecurityDefinerFunctions = ["seal_audit_event", "protect_last_active_tenant_admin"];
