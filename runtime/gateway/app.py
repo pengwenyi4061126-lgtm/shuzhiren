@@ -357,9 +357,9 @@ def canonical_json(value: object) -> str:
 #   (none) -> reserved
 #   reserved -> completed | failed_definite | uncertain
 #   uncertain -> completed | failed_definite                 (operator resolution only)
-#   failed_definite -> reserved                              (same-payload retry of a Gateway-classified
-#                                                             definite failure; never after an operator resolution)
 #   completed, failed_definite -> deleted                    (pruning only)
+# completed and failed_definite are terminal: a same-id, same-payload retry replays the recorded
+# response without calling upstream (Requirement 19.6); a new attempt needs a new command id.
 # The triggers refuse every other change, and refuse deleting reserved and uncertain rows.
 JOURNAL_SCHEMA_VERSION = 1
 JOURNAL_TABLE_DDL = """create table runtime_command_journal (
@@ -389,8 +389,7 @@ JOURNAL_SCHEMA_STATEMENTS = (
     "create index runtime_command_journal_uncertain_idx on runtime_command_journal (created_at, command_id) where state = 'uncertain'",
     """create trigger runtime_command_journal_transition before update of state on runtime_command_journal
     when not ((old.state = 'reserved' and new.state in ('completed', 'failed_definite', 'uncertain'))
-           or (old.state = 'uncertain' and new.state in ('completed', 'failed_definite'))
-           or (old.state = 'failed_definite' and new.state = 'reserved' and old.resolved_from is null))
+           or (old.state = 'uncertain' and new.state in ('completed', 'failed_definite')))
     begin select raise(abort, 'runtime command journal transition is not permitted'); end""",
     """create trigger runtime_command_journal_retain_open before delete on runtime_command_journal
     when old.state in ('reserved', 'uncertain')
@@ -714,15 +713,7 @@ def reserve_journal_entry(command_id: str, kind: str, identity_sha256: str, iden
             return None
         if entry.state == "reserved":
             return mark_stale_reservation(connection, command_id, "execution_interrupted", now)
-        if entry.state == "failed_definite" and entry.resolved_from is None and entry.kind == kind and entry.identity_sha256 == identity_sha256:
-            # The Gateway recorded that nothing took effect, so the same command may run again under its id.
-            require_one_row(connection.execute(
-                """update runtime_command_journal set state = 'reserved', identity_json = ?, response_json = null, http_status = null,
-                error_code = null, failure_reason = null, progress_json = null, created_at = ?, completed_at = null
-                where command_id = ? and state = 'failed_definite' and resolved_from is null and identity_sha256 = ?""",
-                (identity_json, now, command_id, identity_sha256),
-            ))
-            return None
+        # completed, failed_definite, and uncertain entries answer the request; none runs again (19.6).
         return entry
 
     with runtime_command_journal() as connection:
@@ -825,15 +816,16 @@ def iso_timestamp(seconds: float | None) -> str | None:
 def log_uncertain_command(command_id: str, kind: str, reason: str, failed_step: str | None) -> None:
     audit_logger.info(canonical_json({"event": "runtime_command.uncertain", "command_id": command_id, "kind": kind, "reason": reason, "failed_step": failed_step, "at": iso_timestamp(time.time())}))
 
-def replay_journal_entry(entry: JournalEntry, kind: str, identity_sha256: str) -> dict | None:
-    """Answer a request for an id the journal already holds. None means the command may run (again)."""
+def replay_journal_entry(entry: JournalEntry, kind: str, identity_sha256: str) -> dict:
+    """Answer a request for an id the journal already holds: the completed response, or an error.
+
+    A definite failure replays its recorded failure response without calling upstream (19.6),
+    whether the Gateway classified it or an operator resolved an uncertain command."""
     if entry.kind != kind or entry.identity_sha256 != identity_sha256:
         raise CommandError(409, COMMAND_ID_CONFLICT_DETAIL, "command_id_conflict")
     if entry.state == "completed" and entry.response is not None:
         return entry.response
     if entry.state == "failed_definite":
-        if entry.resolved_from is None:
-            return None
         body = dict(entry.response or {})
         detail = body.pop("detail", "Runtime command failed")
         code = body.pop("code", "command_failed_definite")
@@ -849,8 +841,6 @@ def answer_from_journal(entry: JournalEntry | None, command_id: str, kind: str, 
     if entry is None:
         return None
     response = replay_journal_entry(entry, kind, identity_sha256)
-    if response is None:
-        return None
     remember_completed_command(command_id, kind, identity_sha256, response)
     return {**response, "duplicate": True}
 

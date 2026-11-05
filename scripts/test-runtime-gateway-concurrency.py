@@ -292,8 +292,12 @@ async def check_cosyvoice_audio_path() -> None:
                 assert len(upstreams.paths("livetalking")) == livetalking_before, f"{reason}: a CosyVoice failure must not reach LiveTalking"
                 upstreams.cosyvoice = None
                 gateway.RUNTIME_COMMAND_DEADLINE_SECONDS, gateway.COSYVOICE_MAX_AUDIO_SECONDS = original_deadline, original_audio_seconds
-                retried = await gateway.media(program(command_id), authorization)
-                assert retried["duplicate"] is False, f"{reason}: a command that never reached LiveTalking must be retryable under its id"
+                # Requirement 19.6: a same-id, same-payload retry replays the recorded failure and calls nothing.
+                cosy_before_retry = upstreams.inference_count()
+                replayed = await expect_command_error(gateway.media(program(command_id), authorization), status, "command_failed_definite", "cosyvoice_failed")
+                assert replayed.fields["failure_reason"] == reason and replayed.fields["duplicate"] is True, (reason, replayed.fields)
+                assert upstreams.inference_count() == cosy_before_retry and len(upstreams.paths("livetalking")) == livetalking_before, f"{reason}: a replayed definite failure must not call CosyVoice or LiveTalking"
+                assert journal_state(command_id) == ("failed_definite", status, "command_failed_definite", "cosyvoice_failed")
 
         upstreams.humanaudio_code = 1
         rejected_audio = await expect_failure(gateway.media(program("cv_humanaudio_rejected"), authorization), 502)
@@ -430,18 +434,32 @@ async def check_command_journal_states() -> None:
         await expect_command_error(gateway.media(media_request("legacy_poisoned"), authorization), 409, "command_outcome_uncertain")
         assert upstream.calls == [], "an uncertain command must not be replayed"
 
-        # Definite failures: nothing took effect, so the id is not left reserved and the same command runs again.
+        # Definite failures: nothing took effect, so the id is not left reserved. A same-payload retry
+        # replays the recorded failure without calling LiveTalking (Requirement 19.6).
         for index, (first_answer, reason) in enumerate([(answer(404, {"detail": "session not found"}), "livetalking_client_error"), (answer(200, {"code": 1}), "livetalking_business_rejected"), (fail_with(httpx.ConnectError), "livetalking_unreachable")]):
             command_id = f"definite_{index}"
             upstream.calls.clear()
             upstream.answers["/interrupt_talk"] = [first_answer]
-            await expect_command_error(gateway.media(media_request(command_id), authorization), 502, "command_failed_definite", reason)
+            first = await expect_command_error(gateway.media(media_request(command_id), authorization), 502, "command_failed_definite", reason)
             assert upstream.calls == ["/interrupt_talk"], "a definite failure stops the command at the failing call"
             assert journal_state(command_id) == ("failed_definite", 502, "command_failed_definite", reason)
-            retried = await gateway.media(media_request(command_id), authorization)
-            assert retried["duplicate"] is False and upstream.calls == ["/interrupt_talk", "/interrupt_talk", "/set_audiotype"], f"{reason}: the same command id must run again after a definite failure"
-            assert journal_state(command_id)[0] == "completed"
-            assert (await gateway.media(media_request(command_id), authorization))["duplicate"] is True
+            for _ in range(2):
+                replayed = await expect_command_error(gateway.media(media_request(command_id), authorization), 502, "command_failed_definite", reason)
+                assert replayed.detail == first.detail and replayed.fields["failed_step"] == first.fields["failed_step"] and replayed.fields["duplicate"] is True, (reason, replayed.fields)
+            assert upstream.calls == ["/interrupt_talk"], f"{reason}: a replayed definite failure must not call LiveTalking again"
+            assert journal_state(command_id) == ("failed_definite", 502, "command_failed_definite", reason)
+        replay_over_http = await ops.post("/v1/media", headers={"authorization": authorization}, json={"command_id": "definite_0", "session_id": "session_1", "action": "switch_to_fallback"})
+        assert replay_over_http.status_code == 502 and replay_over_http.json()["code"] == "command_failed_definite" and replay_over_http.json()["duplicate"] is True, replay_over_http.text
+        assert upstream.calls == ["/interrupt_talk"]
+        connection = sqlite3.connect(journal_path)
+        try:
+            connection.execute("update runtime_command_journal set state = 'reserved' where command_id = 'definite_0'")
+        except sqlite3.DatabaseError:
+            pass
+        else:
+            raise AssertionError("a definite failure must never become runnable again")
+        finally:
+            connection.close()
         upstream.answers["/interrupt_talk"] = [answer(404, {})]
         await expect_command_error(gateway.media(media_request("definite_conflict"), authorization), 502, "command_failed_definite")
         await expect_command_error(gateway.media(media_request("definite_conflict", "switch_to_human"), authorization), 409, "command_id_conflict")
@@ -579,7 +597,7 @@ async def check_command_journal_states() -> None:
             if code:
                 assert response.json()["code"] == code, response.text
             if code == "command_not_uncertain":
-                assert response.json()["current_state"] == "completed"
+                assert response.json()["current_state"] == "failed_definite", response.text
             assert journal_snapshot() == snapshot, f"a rejected resolution must not change the journal ({command_id}, {reason})"
             rejections = audit.named("runtime_command.resolution_rejected")
             assert len(rejections) == rejected_before + 1 and rejections[-1]["reason"] == reason, rejections[-1:]
