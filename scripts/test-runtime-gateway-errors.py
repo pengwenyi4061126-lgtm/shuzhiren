@@ -29,6 +29,8 @@ class FailingClient:
 
 
 class RejectedResponse:
+    status_code = 200
+
     def raise_for_status(self):
         return None
 
@@ -120,10 +122,58 @@ async def main() -> None:
         gateway.httpx.AsyncClient = upstream_answering(200, b'{"code": 0}')
         missing_metrics = await gateway.observation("session", f"Bearer {gateway.RUNTIME_TOKEN}")
         assert missing_metrics["session"]["active"] is False, "LiveTalking metrics without a data object still mean no active session"
+
+        await check_livetalking_failure_classification()
     finally:
         gateway.httpx.AsyncClient = original_client
         gateway.PREVIEW_BROKER_URL = original_preview_url
         gateway.PREVIEW_BROKER_TOKEN = original_preview_token
+
+
+def raising(error_type):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error_type("private-stream-key", request=request)
+
+    return lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(handler), **kwargs)
+
+
+async def check_livetalking_failure_classification() -> None:
+    """Requirement 19.5/19.7: each LiveTalking failure is either definitely not executed or uncertain."""
+    cases = [
+        (upstream_answering(404, b'{"detail": "session not found private-stream-key"}'), 502, "livetalking_client_error", True),
+        (upstream_answering(400, b"{}"), 502, "livetalking_client_error", True),
+        (upstream_answering(408, b"{}"), 502, "livetalking_retryable_status", False),
+        (upstream_answering(429, b"{}"), 502, "livetalking_retryable_status", False),
+        (upstream_answering(500, b"private-stream-key traceback"), 502, "livetalking_server_error", False),
+        (upstream_answering(503, b"{}"), 502, "livetalking_server_error", False),
+        (upstream_answering(302, b"{}"), 502, "livetalking_unexpected_status", False),
+        (upstream_answering(200, b'{"code": 1}'), 502, "livetalking_business_rejected", True),
+        (upstream_answering(200, b'{"code": -1}'), 502, "livetalking_business_rejected", True),
+        (upstream_answering(200, b'{"code": "0"}'), 502, "livetalking_invalid_response", False),
+        (upstream_answering(200, b'{"code": false}'), 502, "livetalking_invalid_response", False),
+        (upstream_answering(200, b'{"msg": "ok"}'), 502, "livetalking_invalid_response", False),
+        (upstream_answering(200, b"not-json-private-stream-key"), 502, "livetalking_invalid_response", False),
+        (raising(httpx.ConnectError), 502, "livetalking_unreachable", True),
+        (raising(httpx.ConnectTimeout), 502, "livetalking_unreachable", True),
+        (raising(httpx.PoolTimeout), 502, "livetalking_unreachable", True),
+        (raising(httpx.UnsupportedProtocol), 502, "livetalking_unreachable", True),
+        (raising(httpx.ReadTimeout), 504, "livetalking_timeout", False),
+        (raising(httpx.WriteTimeout), 504, "livetalking_timeout", False),
+        (raising(httpx.ReadError), 502, "livetalking_connection_lost", False),
+        (raising(httpx.RemoteProtocolError), 502, "livetalking_connection_lost", False),
+    ]
+    for client, status, reason, definite in cases:
+        gateway.httpx.AsyncClient = client
+        for operation in (lambda: gateway.livetalking_post("/set_audiotype", {}), lambda: gateway.livetalking_audio("session", b"audio")):
+            try:
+                await operation()
+            except gateway.LiveTalkingFailure as error:
+                assert (error.status_code, error.reason, error.definite) == (status, reason, definite), (reason, error.status_code, error.reason, error.definite)
+                assert "private-stream-key" not in error.detail, error.detail
+            else:
+                raise AssertionError(f"{reason}: the LiveTalking failure must be classified")
+    gateway.httpx.AsyncClient = upstream_answering(200, b'{"code": 0, "data": {}}')
+    assert (await gateway.livetalking_post("/set_audiotype", {}))["code"] == 0
 
 
 asyncio.run(main())

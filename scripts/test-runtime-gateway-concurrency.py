@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import pathlib
 import random
 import re
@@ -87,6 +88,22 @@ def journal_ids() -> set[str]:
         connection.close()
 
 
+def journal_state(command_id: str) -> tuple | None:
+    connection = sqlite3.connect(gateway.RUNTIME_COMMAND_JOURNAL_PATH)
+    try:
+        return connection.execute("select state, http_status, error_code, failure_reason from runtime_command_journal where command_id = ?", (command_id,)).fetchone()
+    finally:
+        connection.close()
+
+
+def journal_snapshot() -> list[tuple]:
+    connection = sqlite3.connect(gateway.RUNTIME_COMMAND_JOURNAL_PATH)
+    try:
+        return connection.execute("select * from runtime_command_journal order by command_id").fetchall()
+    finally:
+        connection.close()
+
+
 def check_split_script() -> None:
     generator = random.Random(15)
     alphabet = list("直播间欢迎大家今天介绍这款产品价格优惠abcXYZ0123456789 ，,、：:。！？!?；;…\n”’」』）)】》\"'-")
@@ -117,7 +134,9 @@ async def expect_failure(operation, status: int, source: str | None = None, reas
         if source is not None:
             assert isinstance(error, gateway.CommandFailure), error.detail
             body = error.body()
-            assert body["failure_source"] == source and body["failure_reason"] == reason and body["code"] == "command_failed_definite", body
+            # Voice material is checked before reservation and fixed by the deployer, so it is not a recorded definite failure.
+            expected_code = "voice_material_unavailable" if source == "voice_library" else "command_failed_definite"
+            assert body["failure_source"] == source and body["failure_reason"] == reason and body["code"] == expected_code, body
             assert "private" not in error.detail
         return error
     raise AssertionError(f"expected HTTP {status}")
@@ -267,6 +286,7 @@ async def check_cosyvoice_audio_path() -> None:
                 livetalking_before = len(upstreams.paths("livetalking"))
                 error = await expect_failure(gateway.media(program(command_id), authorization), status, "cosyvoice", reason)
                 assert error.chunk_index == (2 if later else 0), (reason, error.chunk_index)
+                assert journal_state(command_id) == ("failed_definite", status, "command_failed_definite", "cosyvoice_failed"), f"{reason}: a CosyVoice failure must be recorded as a definite failure, not left reserved"
                 if failure is server_error:
                     assert error.upstream_status == 500
                 assert len(upstreams.paths("livetalking")) == livetalking_before, f"{reason}: a CosyVoice failure must not reach LiveTalking"
@@ -276,7 +296,9 @@ async def check_cosyvoice_audio_path() -> None:
                 assert retried["duplicate"] is False, f"{reason}: a command that never reached LiveTalking must be retryable under its id"
 
         upstreams.humanaudio_code = 1
-        await expect_failure(gateway.media(program("cv_humanaudio_rejected"), authorization), 502)
+        rejected_audio = await expect_failure(gateway.media(program("cv_humanaudio_rejected"), authorization), 502)
+        assert rejected_audio.code == "command_outcome_uncertain" and rejected_audio.fields["reason"] == "partial_execution", rejected_audio.body()
+        assert journal_state("cv_humanaudio_rejected") == ("uncertain", None, "command_outcome_uncertain", "partial_execution"), "a rejection after /interrupt_talk and /set_audiotype succeeded leaves the session partly changed"
         upstreams.humanaudio_code = 0
 
         gateway.COSYVOICE_REQUIRED = True
@@ -295,8 +317,332 @@ async def check_cosyvoice_audio_path() -> None:
         voice_dir.cleanup()
 
 
+LEGACY_JOURNAL_DDL = """create table runtime_command_journal (
+    command_id text primary key,
+    kind text not null,
+    identity_sha256 text not null,
+    state text not null check (state in ('reserved', 'completed')),
+    response_json text,
+    created_at real not null,
+    completed_at real
+)"""
+
+
+class ScriptedLiveTalking:
+    """LiveTalking behind an httpx MockTransport. answers[path] is a list of handlers used once each."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.answers: dict[str, list] = {}
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        self.calls.append(path)
+        plan = self.answers.get(path)
+        if plan:
+            return await plan.pop(0)(request)
+        return httpx.Response(200, json={"code": 0})
+
+
+def answer(status: int, body: object):
+    async def respond(_request):
+        return httpx.Response(status, json=body)
+    return respond
+
+
+def fail_with(error_type):
+    async def respond(request):
+        raise error_type("upstream failure", request=request)
+    return respond
+
+
+class AuditRecords(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[dict] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.events.append(json.loads(record.getMessage()))
+
+    def named(self, event: str) -> list[dict]:
+        return [item for item in self.events if item["event"] == event]
+
+
+async def expect_command_error(operation, status: int, code: str, reason: str | None = None):
+    try:
+        await operation
+    except gateway.HTTPException as error:
+        assert error.status_code == status, (error.status_code, getattr(error, "code", None), error.detail)
+        assert getattr(error, "code", None) == code, (code, getattr(error, "code", None), error.detail)
+        if reason is not None:
+            assert error.fields.get("reason") == reason, (reason, error.fields)
+        return error
+    raise AssertionError(f"expected HTTP {status} {code}")
+
+
+async def check_command_journal_states() -> None:
+    """Requirement 19.2-19.11: Command_Journal states, definite failures, uncertain commands, and their resolution."""
+    upstream = ScriptedLiveTalking()
+    original_client = gateway.httpx.AsyncClient
+    original_deadline = gateway.RUNTIME_COMMAND_DEADLINE_SECONDS
+    original_max_entries = gateway.MEDIA_COMMAND_CACHE_MAX_ENTRIES
+    original_ttl = gateway.MEDIA_COMMAND_CACHE_TTL_SECONDS
+    gateway.httpx.AsyncClient = lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(upstream.handler), **kwargs)
+    journal_dir = tempfile.TemporaryDirectory()
+    journal_path = pathlib.Path(journal_dir.name) / "commands.sqlite3"
+    gateway.RUNTIME_TOKEN = "test-runtime-token"
+    gateway.RUNTIME_COMMAND_JOURNAL_PATH = str(journal_path)
+    gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = True
+    gateway.COSYVOICE_MODEL_KIND = "sft"
+    gateway.runtime_command_cache.clear()
+    authorization = "Bearer test-runtime-token"
+    audit = AuditRecords()
+    logging.getLogger("runtime_gateway.audit").addHandler(audit)
+    ops = RealAsyncClient(transport=httpx.ASGITransport(app=gateway.app), base_url="http://gateway")
+
+    def media_request(command_id: str, action: str = "switch_to_fallback", session_id: str = "session_1"):
+        return gateway.MediaRequest(command_id=command_id, session_id=session_id, action=action)
+
+    def media_identity(action: str = "switch_to_fallback", session_id: str = "session_1") -> dict:
+        return {"session_id": session_id, "action": action, "program_segment_id": None, "script_sha256": None}
+
+    try:
+        # A journal written by the two-state Gateway: one completed command and one reservation that
+        # poisoned its id. Opening it converts the reservation into an uncertain command (legacy_reserved).
+        legacy = sqlite3.connect(journal_path)
+        legacy.execute(LEGACY_JOURNAL_DDL)
+        completed_response = {"accepted": True, "provider": "livetalking", "command_id": "legacy_completed", "receipt": {"command_id": "legacy_completed"}}
+        legacy.execute("insert into runtime_command_journal values ('legacy_completed', 'media', ?, 'completed', ?, 100.0, 101.0)", (gateway.command_identity_hash(media_identity()), json.dumps(completed_response)))
+        legacy.execute("insert into runtime_command_journal values ('legacy_poisoned', 'media', ?, 'reserved', null, 50.0, null)", (gateway.command_identity_hash(media_identity()),))
+        legacy.commit()
+        legacy.close()
+        assert gateway.command_journal_status()["available"] is True
+        connection = sqlite3.connect(journal_path)
+        assert connection.execute("pragma user_version").fetchone()[0] == 1
+        assert connection.execute("select state, response_json from runtime_command_journal where command_id = 'legacy_completed'").fetchone() == ("completed", json.dumps(completed_response))
+        assert connection.execute("select state, error_code, failure_reason, identity_json from runtime_command_journal where command_id = 'legacy_poisoned'").fetchone() == ("uncertain", "command_outcome_uncertain", "legacy_reserved", None)
+        assert connection.execute("select count(*) from sqlite_master where name = 'runtime_command_journal_legacy'").fetchone()[0] == 0
+        connection.close()
+        assert gateway.command_journal_status()["available"] is True and journal_state("legacy_poisoned")[0] == "uncertain", "a second open must not migrate again"
+        replayed = await gateway.media(media_request("legacy_completed"), authorization)
+        assert replayed["duplicate"] is True and replayed["receipt"] == completed_response["receipt"]
+        assert upstream.calls == []
+        await expect_command_error(gateway.media(media_request("legacy_poisoned"), authorization), 409, "command_outcome_uncertain")
+        assert upstream.calls == [], "an uncertain command must not be replayed"
+
+        # Definite failures: nothing took effect, so the id is not left reserved and the same command runs again.
+        for index, (first_answer, reason) in enumerate([(answer(404, {"detail": "session not found"}), "livetalking_client_error"), (answer(200, {"code": 1}), "livetalking_business_rejected"), (fail_with(httpx.ConnectError), "livetalking_unreachable")]):
+            command_id = f"definite_{index}"
+            upstream.calls.clear()
+            upstream.answers["/interrupt_talk"] = [first_answer]
+            await expect_command_error(gateway.media(media_request(command_id), authorization), 502, "command_failed_definite", reason)
+            assert upstream.calls == ["/interrupt_talk"], "a definite failure stops the command at the failing call"
+            assert journal_state(command_id) == ("failed_definite", 502, "command_failed_definite", reason)
+            retried = await gateway.media(media_request(command_id), authorization)
+            assert retried["duplicate"] is False and upstream.calls == ["/interrupt_talk", "/interrupt_talk", "/set_audiotype"], f"{reason}: the same command id must run again after a definite failure"
+            assert journal_state(command_id)[0] == "completed"
+            assert (await gateway.media(media_request(command_id), authorization))["duplicate"] is True
+        upstream.answers["/interrupt_talk"] = [answer(404, {})]
+        await expect_command_error(gateway.media(media_request("definite_conflict"), authorization), 502, "command_failed_definite")
+        await expect_command_error(gateway.media(media_request("definite_conflict", "switch_to_human"), authorization), 409, "command_id_conflict")
+
+        # Uncertain: LiveTalking timed out after the request was sent.
+        upstream.calls.clear()
+        upstream.answers["/interrupt_talk"] = [fail_with(httpx.ReadTimeout)]
+        await expect_command_error(gateway.media(media_request("uncertain_timeout"), authorization), 504, "command_outcome_uncertain", "livetalking_timeout")
+        retry = await expect_command_error(gateway.media(media_request("uncertain_timeout"), authorization), 409, "command_outcome_uncertain")
+        assert retry.detail == gateway.UNCERTAIN_COMMAND_DETAIL
+        conflict = await expect_command_error(gateway.media(media_request("uncertain_timeout", "switch_to_human"), authorization), 409, "command_id_conflict")
+        assert conflict.code != retry.code
+        assert upstream.calls == ["/interrupt_talk"], "retries of an uncertain command must not call LiveTalking"
+
+        # Partial execution: the first call succeeded, so a later failure of any kind is uncertain.
+        upstream.calls.clear()
+        upstream.answers["/record"] = [answer(500, {})]
+        await expect_command_error(gateway.media(media_request("uncertain_partial", "start_program"), authorization), 502, "command_outcome_uncertain", "partial_execution")
+        upstream.answers["/record"] = [answer(404, {})]
+        await expect_command_error(gateway.media(media_request("uncertain_partial_definite", "start_program"), authorization), 502, "command_outcome_uncertain", "partial_execution")
+        assert upstream.calls == ["/set_audiotype", "/record", "/set_audiotype", "/record"]
+
+        # The total deadline expires while a LiveTalking request is in flight.
+        async def slow(_request):
+            await asyncio.sleep(2)
+            return httpx.Response(200, json={"code": 0})
+
+        upstream.calls.clear()
+        upstream.answers["/set_audiotype"] = [slow]
+        gateway.RUNTIME_COMMAND_DEADLINE_SECONDS = 0.3
+        started = time.monotonic()
+        await expect_command_error(gateway.media(media_request("uncertain_deadline", "start_program"), authorization), 504, "command_outcome_uncertain", "deadline_exhausted_in_flight")
+        assert time.monotonic() - started < 1.0 and upstream.calls == ["/set_audiotype"], "no call may be sent after the command deadline"
+        gateway.RUNTIME_COMMAND_DEADLINE_SECONDS = original_deadline
+
+        # A response to the worker carries the machine-readable code at the top level.
+        upstream.answers["/interrupt_talk"] = [fail_with(httpx.ReadTimeout)]
+        over_http = await ops.post("/v1/media", headers={"authorization": authorization}, json={"command_id": "uncertain_http", "session_id": "session_1", "action": "switch_to_human"})
+        assert over_http.status_code == 504 and over_http.json()["code"] == "command_outcome_uncertain" and over_http.json()["reason"] == "livetalking_timeout", over_http.text
+        upstream.answers["/interrupt_talk"] = [answer(404, {})]
+        over_http = await ops.post("/v1/media", headers={"authorization": authorization}, json={"command_id": "definite_http", "session_id": "session_1", "action": "switch_to_human"})
+        assert over_http.status_code == 502 and over_http.json()["code"] == "command_failed_definite", over_http.text
+        over_http = await ops.post("/v1/media", headers={"authorization": authorization}, json={"command_id": "uncertain_http", "session_id": "session_1", "action": "switch_to_human"})
+        assert over_http.status_code == 409 and over_http.json()["code"] == "command_outcome_uncertain", over_http.text
+
+        # The terminal write fails after LiveTalking ran: 503 uncertain, the row stays reserved, and the next
+        # request for the id finds it without an execution and marks it uncertain.
+        original_finish = gateway.finish_journal_entry
+
+        def broken_finish(*_args):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        gateway.finish_journal_entry = broken_finish
+        try:
+            await expect_command_error(gateway.media(media_request("finalize_failed"), authorization), 503, "command_outcome_uncertain", "journal_finalize_failed")
+        finally:
+            gateway.finish_journal_entry = original_finish
+        assert journal_state("finalize_failed")[0] == "reserved"
+        upstream.calls.clear()
+        await expect_command_error(gateway.media(media_request("finalize_failed"), authorization), 409, "command_outcome_uncertain", "execution_interrupted")
+        assert upstream.calls == []
+
+        # Restart: a reservation left by a stopped process becomes uncertain; recorded states are unchanged.
+        connection = sqlite3.connect(journal_path)
+        connection.execute("insert into runtime_command_journal (command_id, kind, identity_sha256, identity_json, state, created_at) values ('interrupted', 'media', ?, ?, 'reserved', 60.0)", (gateway.command_identity_hash(media_identity()), json.dumps(media_identity())))
+        connection.commit()
+        connection.close()
+        before_restart = {command_id: journal_state(command_id) for command_id in ("definite_conflict", "uncertain_timeout", "uncertain_partial")}
+        gateway.runtime_command_cache.clear()
+        assert gateway.recover_interrupted_commands() == ["interrupted"]
+        assert journal_state("interrupted") == ("uncertain", None, "command_outcome_uncertain", "gateway_restarted_during_execution")
+        assert {command_id: journal_state(command_id) for command_id in before_restart} == before_restart
+        upstream.answers["/interrupt_talk"] = []
+        upstream.calls.clear()
+        await expect_command_error(gateway.media(media_request("definite_conflict", "switch_to_human"), authorization), 409, "command_id_conflict")
+        await expect_command_error(gateway.media(media_request("uncertain_timeout"), authorization), 409, "command_outcome_uncertain")
+        assert upstream.calls == []
+
+        # The database refuses transitions outside the state machine and never prunes open commands.
+        connection = sqlite3.connect(journal_path)
+        for statement in (
+            "delete from runtime_command_journal where command_id = 'uncertain_timeout'",
+            "delete from runtime_command_journal where state = 'uncertain'",
+            "update runtime_command_journal set state = 'reserved' where command_id = 'definite_0'",
+            "update runtime_command_journal set state = 'uncertain' where command_id = 'definite_0'",
+            "update runtime_command_journal set state = 'reserved' where command_id = 'interrupted'",
+            "update runtime_command_journal set state = 'uncertain' where command_id = 'interrupted'",
+        ):
+            try:
+                connection.execute(statement)
+            except sqlite3.DatabaseError:
+                continue
+            raise AssertionError(f"the journal must refuse: {statement}")
+        connection.close()
+
+        # Operator interface (19.9-19.11).
+        unauthorized_listing = await ops.get("/v1/ops/uncertain-commands")
+        assert unauthorized_listing.status_code == 401
+        assert (await ops.get("/v1/ops/uncertain-commands", headers={"authorization": "Bearer wrong-token"})).status_code == 401
+        listing = await ops.get("/v1/ops/uncertain-commands", headers={"authorization": authorization})
+        assert listing.status_code == 200, listing.text
+        commands = listing.json()["commands"]
+        assert listing.json()["count"] == len(commands)
+        assert [item["command_id"] for item in commands][:2] == ["legacy_poisoned", "interrupted"], "the list is ordered by reservation time"
+        assert [item["reserved_at"] for item in commands] == sorted(item["reserved_at"] for item in commands)
+        listed = {item["command_id"]: item for item in commands}
+        assert set(listed) >= {"legacy_poisoned", "uncertain_timeout", "uncertain_partial", "uncertain_deadline", "uncertain_http", "finalize_failed", "interrupted"}
+        assert not set(listed) & {"definite_0", "definite_conflict", "legacy_completed"}
+        assert listed["uncertain_partial"]["succeeded_steps"] == ["set_program_audiotype"] and listed["uncertain_partial"]["failed_step"] == "start_record"
+        assert listed["uncertain_partial"]["reason"] == "partial_execution" and listed["uncertain_partial"]["action"] == "start_program" and listed["uncertain_partial"]["session_id"] == "session_1"
+        assert listed["legacy_poisoned"]["reason"] == "legacy_reserved" and listed["legacy_poisoned"]["identity_available"] is False
+        assert listed["uncertain_timeout"]["kind"] == "media" and listed["uncertain_timeout"]["reserved_at"].endswith("Z") and listed["uncertain_timeout"]["uncertain_at"].endswith("Z")
+
+        def resolution(command_id: str, body: object, token: str | None = authorization):
+            headers = {"authorization": token} if token else {}
+            return ops.post(f"/v1/ops/uncertain-commands/{command_id}/resolution", headers=headers, json=body)
+
+        valid = {"resolution": "completed", "note": "fallback picture is on air"}
+        for command_id, body, token, status, code, reason in [
+            ("uncertain_timeout", valid, None, 401, None, "unauthorized"),
+            ("uncertain_timeout", valid, "Bearer wrong-token", 401, None, "unauthorized"),
+            ("missing_command", valid, authorization, 404, "command_not_found", "not_found"),
+            ("bad.id", valid, authorization, 404, "command_not_found", "not_found"),
+            ("definite_0", valid, authorization, 409, "command_not_uncertain", "not_uncertain"),
+            ("uncertain_timeout", {"resolution": "reserved", "note": "x"}, authorization, 422, "request_invalid", "invalid_request"),
+            ("uncertain_timeout", {"resolution": "completed", "note": ""}, authorization, 422, "request_invalid", "invalid_request"),
+            ("uncertain_timeout", {"resolution": "completed", "note": "x" * 501}, authorization, 422, "request_invalid", "invalid_request"),
+            ("uncertain_timeout", ["completed"], authorization, 422, "request_invalid", "invalid_request"),
+            ("legacy_poisoned", valid, authorization, 409, "command_identity_unavailable", "identity_unavailable"),
+        ]:
+            snapshot = journal_snapshot()
+            rejected_before = len(audit.named("runtime_command.resolution_rejected"))
+            response = await resolution(command_id, body, token)
+            assert response.status_code == status, (command_id, body, response.status_code, response.text)
+            if code:
+                assert response.json()["code"] == code, response.text
+            if code == "command_not_uncertain":
+                assert response.json()["current_state"] == "completed"
+            assert journal_snapshot() == snapshot, f"a rejected resolution must not change the journal ({command_id}, {reason})"
+            rejections = audit.named("runtime_command.resolution_rejected")
+            assert len(rejections) == rejected_before + 1 and rejections[-1]["reason"] == reason, rejections[-1:]
+            assert "test-runtime-token" not in json.dumps(rejections[-1])
+
+        upstream.calls.clear()
+        resolved = await resolution("uncertain_timeout", valid)
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["previous_state"] == "uncertain" and resolved.json()["state"] == "completed" and resolved.json()["resolved_at"].endswith("Z")
+        record = audit.named("runtime_command.resolved")[-1]
+        assert (record["command_id"], record["from_state"], record["to_state"], record["note"]) == ("uncertain_timeout", "uncertain", "completed", valid["note"]) and record["resolved_at"]
+        after_completed = await gateway.media(media_request("uncertain_timeout"), authorization)
+        assert after_completed["duplicate"] is True and after_completed["receipt"]["evidence"] == "operator_verified" and after_completed["receipt"]["command_id"] == "uncertain_timeout"
+        assert (await resolution("uncertain_timeout", valid)).json()["code"] == "command_not_uncertain"
+
+        resolved = await resolution("uncertain_partial", {"resolution": "failed_definite", "note": "record did not start"})
+        assert resolved.status_code == 200 and resolved.json()["state"] == "failed_definite", resolved.text
+        await expect_command_error(gateway.media(media_request("uncertain_partial", "start_program"), authorization), 502, "command_failed_definite", "operator_resolved_failed")
+        resolved = await resolution("legacy_poisoned", {"resolution": "failed_definite", "note": "legacy reservation checked"})
+        assert resolved.status_code == 200, resolved.text
+        replay = await ops.post("/v1/media", headers={"authorization": authorization}, json={"command_id": "legacy_poisoned", "session_id": "session_1", "action": "switch_to_fallback"})
+        assert replay.status_code == 502 and replay.json()["code"] == "command_failed_definite" and replay.json()["duplicate"] is True, replay.text
+        assert upstream.calls == [], "resolved commands must not call LiveTalking again"
+        assert journal_state("uncertain_partial") == ("failed_definite", 502, "command_failed_definite", "operator_resolved_failed")
+        connection = sqlite3.connect(journal_path)
+        try:
+            connection.execute("update runtime_command_journal set state = 'reserved' where command_id = 'uncertain_partial'")
+        except sqlite3.DatabaseError:
+            pass
+        else:
+            raise AssertionError("an operator-resolved failure must never become runnable again")
+        finally:
+            connection.close()
+
+        # Pruning: completed and definite failures each keep MEDIA_COMMAND_CACHE_MAX_ENTRIES rows; open commands stay.
+        uncertain_before = {item["command_id"] for item in (await ops.get("/v1/ops/uncertain-commands", headers={"authorization": authorization})).json()["commands"]}
+        gateway.MEDIA_COMMAND_CACHE_MAX_ENTRIES = 1
+        upstream.answers["/interrupt_talk"] = [answer(404, {}), answer(404, {})]
+        await expect_command_error(gateway.media(media_request("prune_failed_1"), authorization), 502, "command_failed_definite")
+        await expect_command_error(gateway.media(media_request("prune_failed_2"), authorization), 502, "command_failed_definite")
+        await gateway.media(media_request("prune_completed_1"), authorization)
+        await gateway.media(media_request("prune_completed_2"), authorization)
+        connection = sqlite3.connect(journal_path)
+        counts = dict(connection.execute("select state, count(*) from runtime_command_journal group by state").fetchall())
+        remaining_uncertain = {row[0] for row in connection.execute("select command_id from runtime_command_journal where state = 'uncertain'")}
+        connection.close()
+        assert counts["completed"] == 1 and counts["failed_definite"] == 1, counts
+        assert journal_state("prune_completed_2")[0] == "completed" and journal_state("prune_failed_2")[0] == "failed_definite"
+        assert remaining_uncertain == uncertain_before, "uncertain commands are never pruned"
+    finally:
+        gateway.httpx.AsyncClient = original_client
+        gateway.RUNTIME_COMMAND_DEADLINE_SECONDS = original_deadline
+        gateway.MEDIA_COMMAND_CACHE_MAX_ENTRIES = original_max_entries
+        gateway.MEDIA_COMMAND_CACHE_TTL_SECONDS = original_ttl
+        logging.getLogger("runtime_gateway.audit").removeHandler(audit)
+        gateway.runtime_command_cache.clear()
+        await ops.aclose()
+        journal_dir.cleanup()
+
+
 async def main() -> None:
     await check_cosyvoice_audio_path()
+    await check_command_journal_states()
     gateway.RUNTIME_TOKEN = "test-runtime-token"
     gateway.runtime_command_cache.clear()
     gateway.runtime_command_locks.clear()

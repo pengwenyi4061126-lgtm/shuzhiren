@@ -8,7 +8,9 @@ const [gateway, gatewayDockerfile, compose, gatewayEnv, hostPreflight] = await P
   readFile(new URL("../scripts/check-runtime-host.sh", import.meta.url), "utf8")
 ]);
 
-for (const source of ["RUNTIME_COMMAND_JOURNAL_PATH", "reserve_runtime_command", "Runtime command outcome is uncertain", "validate_runtime_configuration", "RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters", "os.umask(0o027)"]) {
+for (const source of ["RUNTIME_COMMAND_JOURNAL_PATH", "reserve_runtime_command", "Runtime command outcome is uncertain", "validate_runtime_configuration", "RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters", "os.umask(0o027)",
+  // Requirement 19: four-state journal enforced by SQLite, startup recovery, and the operator routes.
+  "state in ('reserved', 'completed', 'failed_definite', 'uncertain')", "runtime_command_journal_transition", "runtime_command_journal_retain_open", "recover_interrupted_commands", "command_outcome_uncertain", "command_failed_definite", '"/v1/ops/uncertain-commands"', '"/v1/ops/uncertain-commands/{command_id}/resolution"']) {
   if (!gateway.includes(source)) throw new Error(`Runtime Gateway must retain durable command journal behavior: ${source}`);
 }
 for (const source of ["USER gateway", "COPY --chown=gateway:shuzhiren app.py audio.py ."]) {

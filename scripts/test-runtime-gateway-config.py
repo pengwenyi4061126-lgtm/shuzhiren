@@ -38,6 +38,16 @@ async def reject_configuration(name: str, value: object, expected: str) -> None:
 
 
 async def check_unauthenticated_surfaces() -> None:
+    routes = {(method, route.path) for route in gateway.app.routes for method in getattr(route, "methods", None) or ()}
+    assert routes == {
+        ("GET", "/healthz"),
+        ("GET", "/v1/observations/{session_id}"),
+        ("GET", "/v1/previews/{session_id}"),
+        ("POST", "/v1/speak"),
+        ("POST", "/v1/media"),
+        ("GET", "/v1/ops/uncertain-commands"),
+        ("POST", "/v1/ops/uncertain-commands/{command_id}/resolution"),
+    }, routes
     gateway.RUNTIME_TOKEN = "g" * 32
     valid = {"authorization": f"Bearer {'g' * 32}"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway.app), base_url="http://gateway") as client:
@@ -49,7 +59,8 @@ async def check_unauthenticated_surfaces() -> None:
         wrong = {"authorization": f"Bearer {'h' * 32}"}
         speak_body = {"command_id": "c1", "session_id": "s1", "text": "hello", "voice": "v", "provider": "cosyvoice"}
         media_body = {"command_id": "c1", "session_id": "s1", "action": "stop_program"}
-        for method, path, body in (("GET", "/v1/observations/s1", None), ("GET", "/v1/previews/s1", None), ("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body)):
+        resolution_body = {"resolution": "failed_definite", "note": "checked"}
+        for method, path, body in (("GET", "/v1/observations/s1", None), ("GET", "/v1/previews/s1", None), ("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body), ("GET", "/v1/ops/uncertain-commands", None), ("POST", "/v1/ops/uncertain-commands/c1/resolution", resolution_body)):
             rejected = await client.request(method, path, headers=non_ascii, json=body)
             mismatched = await client.request(method, path, headers=wrong, json=body)
             assert rejected.status_code == 401, f"a non-ASCII bearer token on {path} must be rejected as unauthorized (got {rejected.status_code})"
