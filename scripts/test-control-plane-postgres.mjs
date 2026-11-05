@@ -115,6 +115,8 @@ try {
   await seedMembership(isolatedTenantId, "isolated-operator", "Isolated Tenant Admin", "admin");
   const programTransitionRun = await seedProgramTransitionRun();
   const scheduledProgramRun = await seedProgramTransitionRun({ state: "ARMED", scheduledAt: new Date(Date.now() - 60_000) });
+  const voicelessProgramRun = await seedProgramTransitionRun({ voice: false });
+  const voicelessScheduledRun = await seedProgramTransitionRun({ state: "ARMED", scheduledAt: new Date(Date.now() - 120_000), voice: false });
   const recoverRunId = recoverRun.runId;
   const staleRunId = staleRun.runId;
   next = spawn(process.execPath, [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(consolePort)], {
@@ -178,6 +180,11 @@ try {
   assert.equal(programInsert.status, 202, "a frozen approved program segment should enter the media outbox");
   const programInsertBody = await programInsert.json();
   assert.equal(programInsertBody.data.command.programSegmentId, programTransitionRun.insertSegmentId, "the accepted command must retain its frozen insertion segment");
+  assert.deepEqual({ runtimeVoiceId: programInsertBody.data.mediaEvent.command.payload.runtimeVoiceId, voiceChecksum: programInsertBody.data.mediaEvent.command.payload.voiceChecksum }, programTransitionRun.voice, "a program insertion must carry the revision's frozen voice binding for CosyVoice synthesis");
+  const voicelessInsert = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${voicelessProgramRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "INSERT_PROGRAM", expectedState: "LIVE", programSegmentId: voicelessProgramRun.insertSegmentId, idempotencyKey: randomUUID() }) });
+  assert.equal(voicelessInsert.status, 409, "a program command for a run without a frozen voice binding must be refused by the control plane");
+  assert.equal((await voicelessInsert.json()).error, "runtime_voice_binding_unavailable", "the refusal must name the missing voice binding");
+  assert.equal(Number((await client.query("select count(*) from outbox_events where aggregate_id = $1", [voicelessProgramRun.runId])).rows[0].count), 0, "a refused program command must not enter the outbox");
   const pendingProgramInsert = await client.query("select active_program_segment_id, active_insert_source_segment_id, active_insert_program_segment_id, pending_program_transition_event_id from live_runs where id = $1", [programTransitionRun.runId]);
   assert.deepEqual(pendingProgramInsert.rows[0], { active_program_segment_id: programTransitionRun.primarySegmentId, active_insert_source_segment_id: null, active_insert_program_segment_id: null, pending_program_transition_event_id: programInsertBody.data.mediaEvent.id }, "program cursor must not move before a bound gateway receipt");
   const concurrentProgramInsert = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${programTransitionRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "INSERT_PROGRAM", expectedState: "LIVE", programSegmentId: programTransitionRun.insertSegmentId, idempotencyKey: randomUUID() }) });
@@ -498,6 +505,29 @@ try {
   const speechBody = await speechDispatch.json();
   assert.equal(speechBody.data.status, "queued");
   assert.equal(speechBody.data.event.command.voice, "integration_approved_voice", "speech must use the runtime voice frozen with the run's approved voice asset");
+  const recoverVoice = await frozenVoiceBinding(recoverRunId);
+  assert.equal(recoverVoice.voiceChecksum, seededAssetChecksum("voice"));
+  const speechOutboxPayload = await client.query("select payload #> '{command}' as command from outbox_events where id = $1", [speechBody.data.event.id]);
+  assert.deepEqual({ voice: speechOutboxPayload.rows[0].command.voice, voiceChecksum: speechOutboxPayload.rows[0].command.voiceChecksum }, { voice: recoverVoice.runtimeVoiceId, voiceChecksum: recoverVoice.voiceChecksum }, "the speech outbox payload must carry the frozen voice id and checksum the Gateway verifies");
+  const speechDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${speechBody.data.event.id}/deliver`, { method: "POST", headers: requestHeaders });
+  assert.equal(speechDelivery.status, 202, "manual speech delivery must pass the Gateway's zero-shot voice checks");
+  const deliveredSpeech = mock.speechCommands.find((command) => command.command_id === speechBody.data.event.command.id);
+  assert.deepEqual({ voice: deliveredSpeech?.voice, voice_checksum: deliveredSpeech?.voice_checksum, provider: deliveredSpeech?.provider }, { voice: recoverVoice.runtimeVoiceId, voice_checksum: recoverVoice.voiceChecksum, provider: "cosyvoice" }, "manual speech delivery must forward the frozen voice binding");
+
+  // START of the governed run armed above: the activation baseline script travels with the frozen voice.
+  await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, createdRun.data.id]);
+  const startResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "START", expectedState: "ARMED", idempotencyKey: randomUUID() }) });
+  assert.equal(startResponse.status, 202, "a preflight-ready armed run should accept START");
+  const startBody = await startResponse.json();
+  const startVoice = await frozenVoiceBinding(createdRun.data.id);
+  const startBaseline = (await client.query("select segment.id, segment.runtime_script from live_runs run join show_revision_segments segment on segment.show_revision_id = run.show_revision_id where run.id = $1 and segment.kind in ('prepared_product', 'interactive') and segment.runtime_script is not null order by segment.position limit 1", [createdRun.data.id])).rows[0];
+  const startOutboxPayload = (await client.query("select payload #> '{command,payload}' as payload from outbox_events where id = $1", [startBody.data.mediaEvent.id])).rows[0].payload;
+  assert.deepEqual(startOutboxPayload, { controlAction: "START", programSegmentId: startBaseline.id, runtimeScript: startBaseline.runtime_script, scriptSha256: createHash("sha256").update(startBaseline.runtime_script).digest("hex"), runtimeVoiceId: startVoice.runtimeVoiceId, voiceChecksum: startVoice.voiceChecksum }, "START must carry the frozen baseline script and the frozen voice binding");
+  const startDelivery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/outbox/${startBody.data.mediaEvent.id}/deliver`, { method: "POST", headers: requestHeaders });
+  assert.equal(startDelivery.status, 202, "manual START delivery must pass the Gateway's voice checks");
+  const deliveredStart = mock.mediaCommands.find((command) => command.command_id === startBody.data.mediaEvent.command.id);
+  assert.deepEqual({ action: deliveredStart?.action, program_segment_id: deliveredStart?.program_segment_id, runtime_voice_id: deliveredStart?.runtime_voice_id, voice_checksum: deliveredStart?.voice_checksum }, { action: "start_program", program_segment_id: startBaseline.id, runtime_voice_id: startVoice.runtimeVoiceId, voice_checksum: startVoice.voiceChecksum }, "manual START delivery must forward the frozen voice binding");
+  assert.deepEqual((await client.query("select state, active_program_segment_id, scheduled_start_event_id from live_runs where id = $1", [createdRun.data.id])).rows[0], { state: "LIVE", active_program_segment_id: startBaseline.id, scheduled_start_event_id: null }, "an acknowledged START must establish the frozen program baseline");
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '30 seconds'), ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '15 seconds')", [tenantId, recoverRunId]);
   const samplingSloResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/slo`, { headers: requestHeaders });
   assert.equal(samplingSloResponse.status, 200, "operators should read a run's sampling quality SLO");
@@ -835,7 +865,13 @@ try {
     return run?.state === "LIVE" && run?.active_program_segment_id === scheduledProgramRun.primarySegmentId && run?.scheduled_start_event_id === null;
   }, 10_000, "scheduled start program baseline acknowledgement");
   const scheduledStartCommand = mock.mediaCommands.find((command) => command.action === "start_program" && command.program_segment_id === scheduledProgramRun.primarySegmentId);
-  assert.deepEqual({ program_segment_id: scheduledStartCommand?.program_segment_id, program_script: scheduledStartCommand?.program_script, script_sha256: scheduledStartCommand?.script_sha256 }, { program_segment_id: scheduledProgramRun.primarySegmentId, program_script: scheduledProgramRun.primaryScript, script_sha256: scheduledProgramRun.primaryScriptSha256 }, "scheduled start must dispatch and acknowledge the frozen baseline script");
+  assert.deepEqual({ program_segment_id: scheduledStartCommand?.program_segment_id, program_script: scheduledStartCommand?.program_script, script_sha256: scheduledStartCommand?.script_sha256, runtime_voice_id: scheduledStartCommand?.runtime_voice_id, voice_checksum: scheduledStartCommand?.voice_checksum }, { program_segment_id: scheduledProgramRun.primarySegmentId, program_script: scheduledProgramRun.primaryScript, script_sha256: scheduledProgramRun.primaryScriptSha256, runtime_voice_id: scheduledProgramRun.voice.runtimeVoiceId, voice_checksum: scheduledProgramRun.voice.voiceChecksum }, "scheduled start must dispatch and acknowledge the frozen baseline script with the frozen voice binding");
+  const scheduledStartPayload = await client.query("select payload #> '{command,payload}' as payload from outbox_events where aggregate_id = $1 and event_type = 'media.dispatch'", [scheduledProgramRun.runId]);
+  assert.deepEqual({ runtimeVoiceId: scheduledStartPayload.rows[0]?.payload.runtimeVoiceId, voiceChecksum: scheduledStartPayload.rows[0]?.payload.voiceChecksum }, scheduledProgramRun.voice, "scheduleDueRun must write the frozen voice binding into the outbox payload");
+  await waitFor(async () => (await client.query("select status from runtime_alerts where live_run_id = $1 and code = 'runtime_voice_missing'", [voicelessScheduledRun.runId])).rows[0]?.status === "open", 10_000, "voiceless scheduled start refusal");
+  assert.deepEqual((await client.query("select state, scheduled_at, scheduled_start_event_id from live_runs where id = $1", [voicelessScheduledRun.runId])).rows[0], { state: "ARMED", scheduled_at: null, scheduled_start_event_id: null }, "a scheduled run without a frozen voice binding must not start and must leave the schedule");
+  assert.equal(Number((await client.query("select count(*) from outbox_events where aggregate_id = $1", [voicelessScheduledRun.runId])).rows[0].count), 0, "scheduleDueRun must not enqueue a start the Gateway would reject");
+  assert.equal((await client.query("select count(*)::int as count from audit_events where resource_key = $1 and event_type = 'live_run.start_blocked_by_voice_binding'", [voicelessScheduledRun.runId])).rows[0].count, 1, "a voice-blocked scheduled start must enter the audit chain");
   const scheduledActivationAudit = await client.query("select count(*)::int as count from audit_events where resource_key = $1 and event_type = 'live_program.activation_accepted'", [scheduledProgramRun.runId]);
   assert.equal(scheduledActivationAudit.rows[0].count, 1, "a scheduled baseline activation must enter the immutable audit chain");
   await waitFor(async () => {
@@ -847,7 +883,7 @@ try {
       && cursor?.pending_program_transition_event_id === null;
   }, 10_000, "program insertion gateway acknowledgement");
   const insertionMediaCommand = mock.mediaCommands.find((command) => command.command_id === programInsertBody.data.mediaEvent.command.id);
-  assert.deepEqual({ action: insertionMediaCommand?.action, program_segment_id: insertionMediaCommand?.program_segment_id, program_script: insertionMediaCommand?.program_script, script_sha256: insertionMediaCommand?.script_sha256 }, { action: "insert_program", program_segment_id: programTransitionRun.insertSegmentId, program_script: programTransitionRun.insertScript, script_sha256: programTransitionRun.insertScriptSha256 }, "worker must dispatch the approved frozen script and its hash to the gateway");
+  assert.deepEqual({ action: insertionMediaCommand?.action, program_segment_id: insertionMediaCommand?.program_segment_id, program_script: insertionMediaCommand?.program_script, script_sha256: insertionMediaCommand?.script_sha256, runtime_voice_id: insertionMediaCommand?.runtime_voice_id, voice_checksum: insertionMediaCommand?.voice_checksum }, { action: "insert_program", program_segment_id: programTransitionRun.insertSegmentId, program_script: programTransitionRun.insertScript, script_sha256: programTransitionRun.insertScriptSha256, runtime_voice_id: programTransitionRun.voice.runtimeVoiceId, voice_checksum: programTransitionRun.voice.voiceChecksum }, "worker must dispatch the approved frozen script and its hash to the gateway");
   const programOutputObservation = {
     tenantId,
     runId: programTransitionRun.runId,
@@ -891,7 +927,7 @@ try {
       && cursor?.pending_program_transition_event_id === null;
   }, 10_000, "program rollback gateway acknowledgement");
   const rollbackMediaCommand = mock.mediaCommands.find((command) => command.command_id === programRollbackBody.data.mediaEvent.command.id);
-  assert.deepEqual({ action: rollbackMediaCommand?.action, program_segment_id: rollbackMediaCommand?.program_segment_id, program_script: rollbackMediaCommand?.program_script, script_sha256: rollbackMediaCommand?.script_sha256 }, { action: "resume_program", program_segment_id: programTransitionRun.primarySegmentId, program_script: programTransitionRun.primaryScript, script_sha256: programTransitionRun.primaryScriptSha256 }, "rollback must restore the saved frozen source script rather than an operator-supplied value");
+  assert.deepEqual({ action: rollbackMediaCommand?.action, program_segment_id: rollbackMediaCommand?.program_segment_id, program_script: rollbackMediaCommand?.program_script, script_sha256: rollbackMediaCommand?.script_sha256, runtime_voice_id: rollbackMediaCommand?.runtime_voice_id, voice_checksum: rollbackMediaCommand?.voice_checksum }, { action: "resume_program", program_segment_id: programTransitionRun.primarySegmentId, program_script: programTransitionRun.primaryScript, script_sha256: programTransitionRun.primaryScriptSha256, runtime_voice_id: programTransitionRun.voice.runtimeVoiceId, voice_checksum: programTransitionRun.voice.voiceChecksum }, "rollback must restore the saved frozen source script rather than an operator-supplied value");
   const programTransitionAudit = await client.query("select detail ->> 'action' as action from audit_events where resource_key = $1 and event_type = 'live_program.transition_accepted' order by chain_sequence", [programTransitionRun.runId]);
   assert.deepEqual(programTransitionAudit.rows.map((row) => row.action), ["INSERT_PROGRAM", "ROLLBACK_PROGRAM"], "receipt-bound insertion and rollback must both enter the immutable audit chain");
   await waitFor(async () => (await client.query("select status, provider_message_id from channel_reply_drafts where id = $1", [replyDraft.id])).rows[0]?.status === "sent", 10_000, "channel reply worker delivery");
@@ -925,6 +961,8 @@ try {
   assert.equal(typeof notifierHealthBody.lastSuccessfulTickAt, "string", "alert notifier health must expose the last successful polling cycle");
   await waitFor(() => mock.alertNotifications.some((notification) => notification.payload.alert.id === alertId), 10_000, "runtime alert webhook delivery");
   assert.equal(mock.alertNotifications.find((notification) => notification.payload.alert.id === alertId)?.payload.alert.code, "runtime_telemetry_stale");
+  // The notifier records the delivery after the webhook has answered, so the row may still be "delivering" here.
+  await waitFor(async () => (await client.query("select state from alert_notification_deliveries where runtime_alert_id = $1", [alertId])).rows[0]?.state === "delivered", 10_000, "runtime alert delivery record");
   const notificationDelivery = await client.query("select state, attempts from alert_notification_deliveries where runtime_alert_id = $1", [alertId]);
   assert.deepEqual(notificationDelivery.rows[0], { state: "delivered", attempts: 1 });
 
@@ -1139,7 +1177,7 @@ async function seedRun(state, sessionId, sampledAt) {
     await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4::model_release_component)", [tenantId, revisionId, releaseId, component]);
   }
   for (const [kind, assetId] of Object.entries(mediaAssetIds)) {
-    await client.query("insert into media_assets (id, tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_by, approved_at, runtime_voice_id, verified_object_version, verified_bytes, verified_content_type, verification_evidence_ref, verified_at) values ($1, $2, $3::media_asset_kind, $4, $5, $6, 'Integration approved rights', 'evidence://integration/media-asset', 'approved', $9, now(), $7, 'integration-seed-v1', 1024, $8, 'evidence://integration/media-content', now())", [assetId, tenantId, kind, `Integration ${kind}`, `assets/${tenantId}/${kind}`, `sha256:${kind}`, kind === "voice" ? "integration_approved_voice" : null, kind === "portrait" || kind === "product_clip" ? "video/mp4" : "audio/wav", channelVerifierId]);
+    await client.query("insert into media_assets (id, tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_by, approved_at, runtime_voice_id, verified_object_version, verified_bytes, verified_content_type, verification_evidence_ref, verified_at) values ($1, $2, $3::media_asset_kind, $4, $5, $6, 'Integration approved rights', 'evidence://integration/media-asset', 'approved', $9, now(), $7, 'integration-seed-v1', 1024, $8, 'evidence://integration/media-content', now())", [assetId, tenantId, kind, `Integration ${kind}`, `assets/${tenantId}/${kind}`, seededAssetChecksum(kind), kind === "voice" ? "integration_approved_voice" : null, kind === "portrait" || kind === "product_clip" ? "video/mp4" : "audio/wav", channelVerifierId]);
     await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, $4::media_asset_kind)", [tenantId, revisionId, assetId, kind]);
   }
   const profileRules = [{ id: "integration_block_term", terms: ["集成策略禁播词"], reason: "集成策略包禁止该类提问", action: "refuse", riskLevel: "high", requiredEvidence: [] }];
@@ -1152,7 +1190,16 @@ async function seedRun(state, sessionId, sampledAt) {
   return { runId, channelId, policyProfileId, productVersionId, modelReleaseIds, mediaAssetIds };
 }
 
-async function seedProgramTransitionRun({ state = "LIVE", scheduledAt } = {}) {
+function seededAssetChecksum(kind) { return `sha256:${createHash("sha256").update(`integration-${kind}`).digest("hex")}`; }
+
+// The frozen voice binding of a run's revision, read the way the control plane and worker resolve it.
+async function frozenVoiceBinding(runId) {
+  const result = await client.query("select asset.runtime_voice_id, asset.checksum from live_runs run join show_revision_media_assets binding on binding.show_revision_id = run.show_revision_id and binding.kind = 'voice' join media_assets asset on asset.id = binding.media_asset_id where run.id = $1", [runId]);
+  assert.equal(result.rows.length, 1, "the run must have exactly one frozen voice binding");
+  return { runtimeVoiceId: result.rows[0].runtime_voice_id, voiceChecksum: result.rows[0].checksum };
+}
+
+async function seedProgramTransitionRun({ state = "LIVE", scheduledAt, voice = true } = {}) {
   const showId = randomUUID();
   const revisionId = randomUUID();
   const runId = randomUUID();
@@ -1165,13 +1212,21 @@ async function seedProgramTransitionRun({ state = "LIVE", scheduledAt } = {}) {
   if (!approver.rows[0]) throw new Error("integration admin must exist before seeding a program transition run");
   await client.query("insert into shows (id, tenant_id, name) values ($1, $2, $3)", [showId, tenantId, `Program transition show ${runId}`]);
   await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft')", [revisionId, tenantId, showId]);
+  // The Gateway synthesizes program scripts only with the revision's frozen voice; bindings are sealed once a
+  // live run references the revision, so the voice is bound first.
+  const voiceBinding = voice ? { runtimeVoiceId: `program_voice_${runId.slice(0, 8)}`, voiceChecksum: `sha256:${createHash("sha256").update(`program-voice-${runId}`).digest("hex")}` } : null;
+  if (voiceBinding) {
+    const voiceAssetId = randomUUID();
+    await client.query("insert into media_assets (id, tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_by, approved_at, runtime_voice_id, verified_object_version, verified_bytes, verified_content_type, verification_evidence_ref, verified_at) values ($1, $2, 'voice', $3, $4, $5, 'Integration approved rights', 'evidence://integration/media-asset', 'approved', $6, now(), $7, 'integration-seed-v1', 1024, 'audio/wav', 'evidence://integration/media-content', now())", [voiceAssetId, tenantId, `Program voice ${runId}`, `assets/${tenantId}/program-voice-${runId}`, voiceBinding.voiceChecksum, approver.rows[0].id, voiceBinding.runtimeVoiceId]);
+    await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, 'voice')", [tenantId, revisionId, voiceAssetId]);
+  }
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id) values ($1, $2, $3, 'DRAFT', $4, $5)", [runId, tenantId, revisionId, `trace_${runId}`, `session_program_${runId}`]);
   await client.query("insert into show_revision_segments (id, tenant_id, show_revision_id, position, kind, title, purpose, duration_seconds, runtime_script) values ($1, $2, $3, 1, 'prepared_product', '主节目', '受审核主节目内容', 120, $4), ($5, $2, $3, 2, 'interactive', '限时插播', '受审核插播内容', 60, $6)", [primarySegmentId, tenantId, revisionId, primaryScript, insertSegmentId, insertScript]);
   await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, approver.rows[0].id]);
   await client.query("update live_runs set state = $2::live_run_state, scheduled_at = $3::timestamptz, active_program_segment_id = case when $2::live_run_state = 'LIVE' then $4::uuid else null end where id = $1", [runId, state, scheduledAt ?? null, primarySegmentId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, runId]);
   const digest = (value) => createHash("sha256").update(value).digest("hex");
-  return { runId, primarySegmentId, insertSegmentId, primaryScript, insertScript, primaryScriptSha256: digest(primaryScript), insertScriptSha256: digest(insertScript) };
+  return { runId, primarySegmentId, insertSegmentId, primaryScript, insertScript, primaryScriptSha256: digest(primaryScript), insertScriptSha256: digest(insertScript), voice: voiceBinding };
 }
 
 async function seedRunScopeArtifacts(recoverRunId, staleRunId) {
@@ -1276,6 +1331,7 @@ async function assertManualDeliveryDoesNotResend(runId, consolePort, requestHead
 
 async function startMockServer() {
   const mediaCommands = [];
+  const speechCommands = [];
   const alertNotifications = [];
   const channelReplies = [];
   const server = http.createServer(async (request, response) => {
@@ -1313,9 +1369,20 @@ async function startMockServer() {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
       const command = await requestBody(request);
       mediaCommands.push(command);
+      // As the Runtime Gateway (validate_media_request, COSYVOICE_MODEL_KIND=zero_shot): a script needs the
+      // approved runtime voice id and its checksum; a command without a script may not carry a voice.
+      if (command.program_script ? !gatewayVoiceIdValid(command.runtime_voice_id) || !gatewayVoiceChecksumValid(command.voice_checksum) : command.runtime_voice_id !== undefined || command.voice_checksum !== undefined) return json(response, 400, { detail: "Approved runtime voice id and checksum must accompany exactly the commands with a program script" });
       if (command.command_id.startsWith("fail_media_")) return json(response, 503, { error: "injected_delivery_failure" });
       if (command.command_id.startsWith("held_fail_media_")) { await mockGates.heldFailure; return json(response, 503, { error: "injected_delivery_failure" }); }
       return json(response, 200, { accepted: true, command_id: command.command_id, session_id: command.session_id, action: command.action, receipt: { command_id: command.command_id, session_id: command.session_id, action: command.action, program_segment_id: command.program_segment_id ?? null, accepted_at: new Date().toISOString(), evidence: "integration_gateway_accepted" } });
+    }
+    if (url.pathname === "/v1/speak" && request.method === "POST") {
+      assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
+      const command = await requestBody(request);
+      speechCommands.push(command);
+      // As validate_speak_request under COSYVOICE_MODEL_KIND=zero_shot.
+      if (!gatewayVoiceIdValid(command.voice) || !gatewayVoiceChecksumValid(command.voice_checksum)) return json(response, 400, { detail: "Approved runtime voice id and checksum are required" });
+      return json(response, 200, { accepted: true, command_id: command.command_id, session_id: command.session_id, provider: "cosyvoice" });
     }
     if (url.pathname === "/provider-reply-fixture" && request.method === "POST") {
       assert.equal(request.headers.authorization, "Bearer provider-reply-token-at-least-32-bytes");
@@ -1337,8 +1404,10 @@ async function startMockServer() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("mock server did not bind a TCP port");
-  return { server, mediaCommands, alertNotifications, channelReplies, baseUrl: `http://127.0.0.1:${address.port}` };
+  return { server, mediaCommands, speechCommands, alertNotifications, channelReplies, baseUrl: `http://127.0.0.1:${address.port}` };
 }
+function gatewayVoiceIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+function gatewayVoiceChecksumValid(value) { return typeof value === "string" && /^sha256:[0-9a-fA-F]{64}$/.test(value); }
 
 function json(response, status, value) { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); }
 function canonicalJson(value) { if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return JSON.stringify(value); if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`; return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`; }

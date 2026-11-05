@@ -38,6 +38,11 @@ grant select, update on live_runs to shuzhiren_runtime_worker;
 -- The live_runs program-cursor trigger verifies referenced frozen segments.
 -- The worker needs this read-only access for receipt-bound cursor updates.
 grant select on show_revision_segments to shuzhiren_runtime_worker;
+-- scheduleDueRun puts the revision's frozen approved voice (runtime voice id and checksum) on the scheduled
+-- start_program, because the Gateway synthesizes its script only with that voice. Only the columns that
+-- query reads are granted; asset names, object keys, rights and evidence stay unreadable.
+grant select (tenant_id, show_revision_id, media_asset_id, kind) on show_revision_media_assets to shuzhiren_runtime_worker;
+grant select (id, runtime_voice_id, checksum, approval_status, expires_at) on media_assets to shuzhiren_runtime_worker;
 grant select on tenant_entitlements, runtime_health_samples to shuzhiren_runtime_worker;
 grant select (id) on tenants to shuzhiren_runtime_worker;
 grant select, insert on usage_records to shuzhiren_runtime_worker;

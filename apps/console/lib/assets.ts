@@ -56,7 +56,7 @@ declare global { var shuzhirenAssetStore: AssetStore | undefined; }
 function assetStore(): AssetStore {
   globalThis.shuzhirenAssetStore ??= { assets: new Map([
     ["asset_portrait_demo", { id: "asset_portrait_demo", tenantId: "tenant_demo", kind: "portrait", name: "主播肖像授权素材", approval: "approved", expiresAt: "2027-10-31", rightsScope: "直播与录播数字人驱动", source: "授权书 #POR-2026-001", objectKey: "demo/portrait.mp4", checksum: "demo-portrait", approvedAt: "2026-11-01T08:30:00.000Z" }],
-    ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004", objectKey: "demo/voice.wav", checksum: "demo-voice", runtimeVoiceId: "approved_voice_demo", approvedAt: "2026-11-01T08:30:00.000Z" }],
+    ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004", objectKey: "demo/voice.wav", checksum: "sha256:9b1f0c6c3d2a4e5f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f", runtimeVoiceId: "approved_voice_demo", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_clip_a102", { id: "asset_clip_a102", tenantId: "tenant_demo", kind: "product_clip", name: "洁面慕斯预制讲品", approval: "approved", rightsScope: "A-102 商品讲解", source: "内容审核 #CLP-2026-019", objectKey: "demo/a102.mp4", checksum: "demo-clip", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_bgm_demo", { id: "asset_bgm_demo", tenantId: "tenant_demo", kind: "music", name: "直播间背景音乐", approval: "approved", expiresAt: "2027-03-31", rightsScope: "店播背景音乐", source: "音乐授权 #MUS-2026-011", objectKey: "demo/bgm.mp3", checksum: "demo-music", approvedAt: "2026-11-01T08:30:00.000Z" }]
   ]) };
@@ -160,7 +160,7 @@ export async function activeMediaAssetStatusInTransaction(client: PoolClient, re
     const missing = requiredLiveAssetKinds.filter((kind) => !assets.has(kind));
     return missing.length === 0 ? { active: true, detail: "肖像、声线、商品视频和音乐授权均有效" } : { active: false, detail: `缺少有效授权：${missing.join("、")}` };
   }
-  const result = await client.query<BoundAssetRow>("select binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.runtime_voice_id, asset.verified_object_version, asset.verified_bytes, asset.verified_content_type, asset.verification_evidence_ref, asset.verified_at from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = any($2::media_asset_kind[])", [revisionId, requiredLiveAssetKinds]);
+  const result = await client.query<BoundAssetRow & { checksum: string }>("select binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.runtime_voice_id, asset.checksum, asset.verified_object_version, asset.verified_bytes, asset.verified_content_type, asset.verification_evidence_ref, asset.verified_at from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = any($2::media_asset_kind[])", [revisionId, requiredLiveAssetKinds]);
   const failures = requiredLiveAssetKinds.flatMap((kind) => {
     const matches = result.rows.filter((asset) => asset.kind === kind);
     if (matches.length !== 1) return [`${kind} 缺少唯一冻结授权素材`];
@@ -169,6 +169,7 @@ export async function activeMediaAssetStatusInTransaction(client: PoolClient, re
     const expired = Boolean(expiresAt && expiresAt < new Date().toISOString().slice(0, 10));
     if (!contentVerificationPresent(asset)) return [`${kind} ${asset.name} 缺少受控对象内容验证`];
     if (kind === "voice" && !isRuntimeVoiceId(asset.runtime_voice_id)) return [`voice ${asset.name} 缺少有效运行时声线标识`];
+    if (kind === "voice" && !isVoiceChecksum(asset.checksum)) return [`voice ${asset.name} 缺少有效声线校验和`];
     return asset.approval_status === "approved" && !expired ? [] : [`${kind} ${asset.name} 已撤销、未批准或授权已到期`];
   });
   return failures.length === 0 ? { active: true, detail: "已冻结肖像、声线、商品视频和音乐授权均有效" } : { active: false, detail: failures.join("；") };
@@ -206,24 +207,31 @@ function persistentAsset(row: PersistentAssetRow): MediaAsset {
   };
 }
 
-export async function runtimeVoiceForRun(context: RequestContext, revisionId: string) {
+// The approved voice frozen with a run's revision. The Runtime Gateway synthesizes program scripts and speech
+// with CosyVoice only for this voice: runtime_voice_id selects it and voice_checksum (the asset checksum,
+// sha256:<64 hex>) must match the reference audio in the Gateway's voice library.
+export type RuntimeVoiceBinding = { runtimeVoiceId: string; voiceChecksum: string };
+export const runtimeVoiceBindingUnavailable = "runtime_voice_binding_unavailable";
+
+export async function runtimeVoiceForRun(context: RequestContext, revisionId: string): Promise<RuntimeVoiceBinding> {
   if (!databasePool()) {
-    const voice = demoAssets(context).find((asset) => asset.kind === "voice" && asset.approval === "approved" && isRuntimeVoiceId(asset.runtimeVoiceId));
-    if (!voice?.runtimeVoiceId) throw new Response("Frozen voice asset has no approved runtime voice", { status: 409 });
-    return voice.runtimeVoiceId;
+    const voice = demoAssets(context).find((asset) => asset.kind === "voice" && asset.approval === "approved" && isRuntimeVoiceId(asset.runtimeVoiceId) && isVoiceChecksum(asset.checksum));
+    if (!voice?.runtimeVoiceId) throw new Response("Frozen voice asset has no approved runtime voice", { status: 409, statusText: runtimeVoiceBindingUnavailable });
+    return { runtimeVoiceId: voice.runtimeVoiceId, voiceChecksum: voice.checksum };
   }
   return withTenantTransaction(context.tenantId, async (client) => runtimeVoiceForRunInTransaction(client, revisionId));
 }
 
-export async function runtimeVoiceForRunInTransaction(client: PoolClient, revisionId: string) {
-  const result = await client.query<BoundAssetRow>("select binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.runtime_voice_id, asset.verified_object_version, asset.verified_bytes, asset.verified_content_type, asset.verification_evidence_ref, asset.verified_at from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = 'voice'", [revisionId]);
+export async function runtimeVoiceForRunInTransaction(client: PoolClient, revisionId: string): Promise<RuntimeVoiceBinding> {
+  const result = await client.query<BoundAssetRow & { checksum: string }>("select binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.runtime_voice_id, asset.checksum, asset.verified_object_version, asset.verified_bytes, asset.verified_content_type, asset.verification_evidence_ref, asset.verified_at from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = 'voice'", [revisionId]);
   const asset = result.rows[0];
   const expired = asset?.expires_at && new Date(asset.expires_at).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10);
-  if (!asset || asset.approval_status !== "approved" || expired || !contentVerificationPresent(asset) || !isRuntimeVoiceId(asset.runtime_voice_id)) throw new Response("Frozen voice asset is not approved for runtime speech", { status: 409 });
-  return asset.runtime_voice_id;
+  if (!asset || asset.approval_status !== "approved" || expired || !contentVerificationPresent(asset) || !isRuntimeVoiceId(asset.runtime_voice_id) || !isVoiceChecksum(asset.checksum)) throw new Response("Frozen voice asset is not approved for runtime speech", { status: 409, statusText: runtimeVoiceBindingUnavailable });
+  return { runtimeVoiceId: asset.runtime_voice_id, voiceChecksum: asset.checksum };
 }
 
 export function isRuntimeVoiceId(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+export function isVoiceChecksum(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/i.test(value); }
 
 function contentVerificationPresent(value: Pick<PersistentAssetRow, "verified_object_version" | "verified_bytes" | "verified_content_type" | "verification_evidence_ref" | "verified_at">): value is Pick<PersistentAssetRow, "verified_object_version" | "verified_content_type" | "verification_evidence_ref" | "verified_at"> & { verified_bytes: string | number } {
   return Boolean(value.verified_object_version && value.verified_content_type && value.verification_evidence_ref && value.verified_at && value.verified_bytes !== null && Number(value.verified_bytes) > 0);

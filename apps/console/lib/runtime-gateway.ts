@@ -88,10 +88,15 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
   if (command.type === "resume_program" && ((runtimeScript && (!programSegmentIdValid(programSegmentId) || !/^[a-f0-9]{64}$/i.test(scriptSha256 ?? ""))) || (!runtimeScript && (programSegmentId || scriptSha256)))) throw new Error("Program resume command contains incomplete frozen script evidence");
   if (runtimeScript && createHash("sha256").update(runtimeScript).digest("hex") !== scriptSha256) throw new Error("Program script hash does not match frozen script");
   if (command.type !== "start_program" && command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Non-program media command cannot include a runtime script");
+  // The Gateway synthesizes a script only with the frozen approved voice (CosyVoice) and rejects one without it.
+  const runtimeVoiceId = command.payload.runtimeVoiceId;
+  const voiceChecksum = command.payload.voiceChecksum;
+  if (runtimeScript && (!runtimeVoiceIdValid(runtimeVoiceId) || !voiceChecksumValid(voiceChecksum))) throw new Error("Program command is missing its frozen voice binding");
+  if (!runtimeScript && (runtimeVoiceId !== undefined || voiceChecksum !== undefined)) throw new Error("Only a program command with a script may carry a voice");
   const response = await fetch(`${config.url}/v1/media`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}) }),
+    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeScript ? { runtime_voice_id: runtimeVoiceId, voice_checksum: voiceChecksum } : {}) }),
     signal: requestSignal(config, options)
   });
   if (!response.ok) throw new Error(`Runtime gateway rejected media command: ${response.status}`);
@@ -120,14 +125,17 @@ function assertMediaGatewayReceipt(value: unknown, command: MediaCommand, sessio
 function programSegmentIdValid(value: unknown) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
+function runtimeVoiceIdValid(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+function voiceChecksumValid(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/i.test(value); }
 
 export async function dispatchSpeechCommand(command: SpeechCommand, sessionId: string, options?: DispatchOptions) {
   const config = runtimeGatewayConfig();
   if (config.demoMode) return { delivery: "demo" as const };
+  if (!runtimeVoiceIdValid(command.voice) || !voiceChecksumValid(command.voiceChecksum)) throw new Error("Speech command is missing its frozen voice binding");
   const response = await fetch(`${config.url}/v1/speak`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ command_id: command.id, session_id: sessionId, text: command.text, voice: command.voice, interrupt: command.interrupt }),
+    body: JSON.stringify({ command_id: command.id, session_id: sessionId, text: command.text, voice: command.voice, voice_checksum: command.voiceChecksum, interrupt: command.interrupt, provider: "cosyvoice" }),
     signal: requestSignal(config, options)
   });
   if (!response.ok) throw new Error(`Runtime gateway rejected speech command: ${response.status}`);

@@ -306,6 +306,7 @@ function sameSpeechCommand(existing: SpeechCommand, existingSessionId: string, r
     && existing.traceId === requested.traceId
     && existing.text === requested.text
     && existing.voice === requested.voice
+    && existing.voiceChecksum === requested.voiceChecksum
     && existing.interrupt === requested.interrupt
     && existing.productVersionId === requested.productVersionId
     && existing.productRevision === requested.productRevision

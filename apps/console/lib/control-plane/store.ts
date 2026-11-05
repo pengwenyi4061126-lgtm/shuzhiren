@@ -6,7 +6,7 @@ import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plan
 import { findApprovedProductVersion, frozenProductVersionStatusForRun, frozenProductVersionStatusForRunInTransaction, type ProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { approveShowProgramInTransaction, getShowProgram, hasApprovedFallbackProgram, hasApprovedFallbackProgramInTransaction, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
-import { activeMediaAssetStatus, activeMediaAssetStatusInTransaction, currentApprovedMediaAssetsInTransaction, hasApprovedLiveRights, requiredLiveAssetKinds, runtimeVoiceForRun, runtimeVoiceForRunInTransaction } from "@/lib/assets";
+import { activeMediaAssetStatus, activeMediaAssetStatusInTransaction, currentApprovedMediaAssetsInTransaction, hasApprovedLiveRights, requiredLiveAssetKinds, runtimeVoiceForRun, runtimeVoiceForRunInTransaction, isVoiceChecksum, type RuntimeVoiceBinding } from "@/lib/assets";
 import { activeModelReleaseStatus, activeModelReleaseStatusInTransaction, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
 import { validateChannelConnection, validateChannelConnectionInTransaction } from "@/lib/channels";
 import { evaluateRuntimeReadiness, evaluateRuntimeReadinessInTransaction } from "@/lib/monitoring";
@@ -150,6 +150,7 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     const mediaAssets = await currentApprovedMediaAssetsInTransaction(client);
     if (!requiredLiveAssetKinds.every((kind) => mediaAssets.has(kind))) throw new Response("Approved portrait, voice, product clip, and music assets are required", { status: 409 });
     if (!mediaAssets.get("voice")?.runtimeVoiceId) throw new Response("Approved voice asset requires a runtime voice identifier", { status: 409 });
+    if (!isVoiceChecksum(mediaAssets.get("voice")?.checksum)) throw new Response("Approved voice asset requires a sha256 voice checksum", { status: 409, statusText: "runtime_voice_binding_unavailable" });
     const show = await client.query<{ id: string }>("insert into shows (tenant_id, name) values ($1, $2) returning id", [context.tenantId, input.showName]);
     const revision = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, $3::jsonb, 'draft') returning id", [context.tenantId, show.rows[0].id, JSON.stringify({ generatedBy: "run-planner", productVersionId: input.productVersionId, modelReleaseIds: Object.fromEntries(frozenReleases), mediaAssetIds: Object.fromEntries(mediaAssets), policyProfileId: policyProfile.id })]);
     await client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [context.tenantId, revision.rows[0].id, input.productVersionId]);
@@ -368,6 +369,9 @@ export async function issueCommand(context: RequestContext, runId: string, input
     }
     const activationProgram = requiresActivationConfirmation ? await resolveActivationProgram(client, run) : undefined;
     const programTransition = isProgramTransition ? await resolveProgramTransition(client, run, input) : undefined;
+    // A command that carries a script must carry the frozen voice the Gateway synthesizes it with; without
+    // one the command is refused here instead of being queued for a certain Gateway rejection.
+    const programVoice = (programTransition?.target ?? activationProgram) ? await runtimeVoiceForRunInTransaction(client, run.revisionId) : undefined;
 
     const nextState = nextStateFor(run.state, input.action);
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
@@ -376,7 +380,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
       [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted", programSegmentId: programTransition?.target?.id ?? activationProgram?.id ?? null, sourceProgramSegmentId: programTransition?.source?.id ?? null }), context.actorName]
     );
     const command = persistentCommand(inserted.rows[0]);
-    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram)), run.runtimeSessionId);
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice)), run.runtimeSessionId);
     if (requiresActivationConfirmation) {
       await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = $3 and scheduled_start_event_id is null", [run.id, mediaEvent.id, run.state]);
       return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
@@ -451,26 +455,26 @@ export async function enqueueGroundedSpeech(context: RequestContext, runId: stri
   });
 }
 
-async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun, version: ProductVersion, question: string, voice: string, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
+async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun, version: ProductVersion, question: string, voice: RuntimeVoiceBinding, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
   assertSpeechReadyRun(run);
   const draft = createGroundedResponseDraft(question, version, policyRules);
   if (draft.status !== "ready" || !draft.text) {
     await recordAuditEvent(context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
   }
-  const queued = await enqueueSpeechCommand(context, { runId: run.id, traceId: run.traceId, text: draft.text, voice, productVersionId: version.id, productRevision: version.revision, sessionId: run.runtimeSessionId!, idempotencyKey });
+  const queued = await enqueueSpeechCommand(context, { runId: run.id, traceId: run.traceId, text: draft.text, voice: voice.runtimeVoiceId, voiceChecksum: voice.voiceChecksum, productVersionId: version.id, productRevision: version.revision, sessionId: run.runtimeSessionId!, idempotencyKey });
   if (!queued.duplicate) await recordAuditEvent(context, { type: "speech_dispatch.queued", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, speechCommandId: queued.event.command.id, outboxEventId: queued.event.id, questionSha256: questionHash(question) } });
   return { status: "queued", draft, event: queued.event, duplicate: queued.duplicate };
 }
 
-async function enqueueGroundedSpeechInTransaction(client: PoolClient, context: RequestContext, run: StoredRun, version: ProductVersion, question: string, voice: string, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
+async function enqueueGroundedSpeechInTransaction(client: PoolClient, context: RequestContext, run: StoredRun, version: ProductVersion, question: string, voice: RuntimeVoiceBinding, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
   assertSpeechReadyRun(run);
   const draft = createGroundedResponseDraft(question, version, policyRules);
   if (draft.status !== "ready" || !draft.text) {
     await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
   }
-  const command = createSpeechCommand({ runId: run.id, traceId: run.traceId, text: draft.text, voice, productVersionId: version.id, productRevision: version.revision, idempotencyKey });
+  const command = createSpeechCommand({ runId: run.id, traceId: run.traceId, text: draft.text, voice: voice.runtimeVoiceId, voiceChecksum: voice.voiceChecksum, productVersionId: version.id, productRevision: version.revision, idempotencyKey });
   const queued = await enqueueSpeechCommandInTransaction(client, context, command, run.runtimeSessionId!);
   if (!queued.duplicate) await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.queued", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, speechCommandId: command.id, outboxEventId: queued.event.id, questionSha256: questionHash(question) } });
   return { status: "queued", draft, event: queued.event, duplicate: queued.duplicate };
@@ -510,6 +514,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   }
   const activationProgram = input.action === "START" || input.action === "RECOVER" ? await resolveDemoActivationProgram(context, run) : undefined;
   const programTransition = input.action === "INSERT_PROGRAM" || input.action === "ROLLBACK_PROGRAM" ? await resolveDemoProgramTransition(context, run, input) : undefined;
+  const programVoice = (programTransition?.target ?? activationProgram) ? await runtimeVoiceForRun(context, run.revisionId) : undefined;
 
   const command: LiveCommand = {
     id: `cmd_${crypto.randomUUID()}`,
@@ -520,7 +525,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
     result: "accepted",
     programSegmentId: programTransition?.target?.id ?? activationProgram?.id
   };
-  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram), sessionId: run.runtimeSessionId });
+  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice), sessionId: run.runtimeSessionId });
   if (programTransition) {
     run.activeProgramSegmentId = programTransition.target?.id;
     run.activeInsertSourceSegmentId = programTransition.kind === "insert" ? programTransition.source?.id : undefined;
@@ -559,10 +564,15 @@ async function resolveDemoActivationProgram(context: RequestContext, run: Stored
   return target?.runtimeScript ? { id: target.id, runtimeScript: target.runtimeScript } : undefined;
 }
 
-function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment): Omit<MediaCommand, "id" | "issuedAt"> {
+function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment, voice?: RuntimeVoiceBinding): Omit<MediaCommand, "id" | "issuedAt"> {
   const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program", INSERT_PROGRAM: "insert_program", ROLLBACK_PROGRAM: "resume_program" } as const;
+  // START/RECOVER carry the activation baseline segment and INSERT/ROLLBACK their target, each with the
+  // frozen voice that the Gateway synthesizes the script with.
   const segment = transition?.target ?? activationProgram;
-  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...(transition ? { programTransition: transition.kind, ...(transition.source ? { sourceProgramSegmentId: transition.source.id } : {}), ...(run.activeInsertProgramSegmentId ? { insertedProgramSegmentId: run.activeInsertProgramSegmentId } : {}), ...(segment ? { programSegmentId: segment.id, runtimeScript: segment.runtimeScript, scriptSha256: createHash("sha256").update(segment.runtimeScript).digest("hex") } : {}) } : {}) } };
+  if (segment && !voice) throw new Response("Frozen voice asset is not approved for runtime speech", { status: 409, statusText: "runtime_voice_binding_unavailable" });
+  const transitionPayload: Record<string, string> = transition ? { programTransition: transition.kind, ...(transition.source ? { sourceProgramSegmentId: transition.source.id } : {}), ...(run.activeInsertProgramSegmentId ? { insertedProgramSegmentId: run.activeInsertProgramSegmentId } : {}) } : {};
+  const segmentPayload: Record<string, string> = segment && voice ? { programSegmentId: segment.id, runtimeScript: segment.runtimeScript, scriptSha256: createHash("sha256").update(segment.runtimeScript).digest("hex"), runtimeVoiceId: voice.runtimeVoiceId, voiceChecksum: voice.voiceChecksum } : {};
+  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...transitionPayload, ...segmentPayload } };
 }
 
 export async function bindRuntimeSession(context: RequestContext, runId: string, runtimeSessionId: string) {

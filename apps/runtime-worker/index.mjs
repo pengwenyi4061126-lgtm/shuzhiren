@@ -165,6 +165,23 @@ async function scheduleDueRun() {
         }
         return null;
       }
+      // The Gateway synthesizes the start script only with the revision's frozen approved voice (CosyVoice).
+      // Reads only the columns granted in infra/postgres/service-principals.sql.
+      const voiceBinding = await client.query(`select asset.runtime_voice_id, asset.checksum
+        from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id
+        where binding.tenant_id = $1 and binding.show_revision_id = $2 and binding.kind = 'voice'
+          and asset.approval_status = 'approved' and (asset.expires_at is null or asset.expires_at >= current_date)`, [run.tenant_id, run.show_revision_id]);
+      const voice = voiceBinding.rows.length === 1 ? voiceBinding.rows[0] : null;
+      if (!voice || !runtimeVoiceIdValid(voice.runtime_voice_id) || !voiceChecksumValid(voice.checksum)) {
+        await client.query("update live_runs set scheduled_at = null, updated_at = now() where id = $1 and scheduled_at is not null", [run.id]);
+        const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'runtime_voice_missing', '场次缺少已批准的冻结声线绑定，已拒绝定时开播', 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id]);
+        if (opened.rows[0]) {
+          const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-scheduler') as id", [run.tenant_id]);
+          await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+            values ($1, $2, 'live_run.start_blocked_by_voice_binding', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ showRevisionId: run.show_revision_id })]);
+        }
+        return null;
+      }
       const entitlements = await client.query("select code, limit_value from tenant_entitlements where effective_from <= current_date and (effective_until is null or effective_until >= current_date) for update");
       let blockedCode = null;
       for (const entitlement of entitlements.rows) {
@@ -197,7 +214,7 @@ async function scheduleDueRun() {
       }
       const segment = initialProgram.rows[0];
       const scriptSha256 = createHash("sha256").update(segment.runtime_script).digest("hex");
-      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: segment.runtime_script, scriptSha256 } };
+      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: segment.runtime_script, scriptSha256, runtimeVoiceId: voice.runtime_voice_id, voiceChecksum: voice.checksum } };
       const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
       values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)

@@ -40,6 +40,7 @@ try {
   const adapterFunctionPrivilege = await client.query("select has_function_privilege($1, 'runtime_worker_actor(uuid,text)', 'execute') as allowed", ["shuzhiren_channel_adapter"]);
   assert.equal(adapterFunctionPrivilege.rows[0].allowed, false, "channel adapter must not execute the runtime worker actor function");
   await assertSealedAuditChain();
+  await assertWorkerVoiceBindingRead();
 
   await expectTable("shuzhiren_backup", "audit_events", "select", true);
   await expectTable("shuzhiren_backup", "audit_events", "update", false);
@@ -119,6 +120,58 @@ async function assertSealedAuditChain() {
   assert.deepEqual(await verify(), { verified: true, sealed: 3 });
 }
 
+// H3: scheduleDueRun puts the frozen voice binding on the scheduled start_program. The worker reads it through
+// column grants only: the voice id, checksum and approval state, never the asset's name, object key or evidence.
+async function assertWorkerVoiceBindingRead() {
+  const worker = "shuzhiren_runtime_worker";
+  await expectTable(worker, "media_assets", "select", false);
+  await expectTable(worker, "show_revision_media_assets", "select", false);
+  for (const column of ["id", "runtime_voice_id", "checksum", "approval_status", "expires_at"]) await expectColumn(worker, "media_assets", column, true);
+  for (const column of ["name", "object_key", "rights_scope", "source_ref", "verification_evidence_ref", "approved_by"]) await expectColumn(worker, "media_assets", column, false);
+  for (const column of ["tenant_id", "show_revision_id", "media_asset_id", "kind"]) await expectColumn(worker, "show_revision_media_assets", column, true);
+  for (const privilege of ["insert", "update", "delete"]) {
+    await expectTable(worker, "media_assets", privilege, false);
+    await expectTable(worker, "show_revision_media_assets", privilege, false);
+  }
+  const tenantId = randomUUID();
+  const otherTenantId = randomUUID();
+  await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Voice binding read'), ($3, $4, 'Voice binding bystander')", [tenantId, `voice-binding-${tenantId}`, otherTenantId, `voice-binding-${otherTenantId}`]);
+  const seedBinding = async (tenant, runtimeVoiceId, checksum) => {
+    await client.query("select set_config('app.tenant_id', $1, true)", [tenant]);
+    const approver = (await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [tenant])).rows[0].id;
+    const show = (await client.query("insert into shows (tenant_id, name) values ($1, 'Voice binding show') returning id", [tenant])).rows[0].id;
+    const revision = (await client.query("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, '{}'::jsonb, 'draft') returning id", [tenant, show])).rows[0].id;
+    const asset = (await client.query("insert into media_assets (tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_by, approved_at, runtime_voice_id, verified_object_version, verified_bytes, verified_content_type, verification_evidence_ref, verified_at) values ($1, 'voice', 'Voice binding asset', 'assets/voice.wav', $2, 'Probe rights', 'evidence://probe/rights', 'approved', $3, now(), $4, 'probe-v1', 1024, 'audio/wav', 'evidence://probe/content', now()) returning id", [tenant, checksum, approver, runtimeVoiceId])).rows[0].id;
+    await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, 'voice')", [tenant, revision, asset]);
+    return revision;
+  };
+  const checksum = `sha256:${"c".repeat(64)}`;
+  const revisionId = await seedBinding(tenantId, "probe_voice", checksum);
+  const foreignRevisionId = await seedBinding(otherTenantId, "foreign_voice", `sha256:${"d".repeat(64)}`);
+  // The exact query of scheduleDueRun in apps/runtime-worker/index.mjs.
+  const bindingQuery = `select asset.runtime_voice_id, asset.checksum
+        from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id
+        where binding.tenant_id = $1 and binding.show_revision_id = $2 and binding.kind = 'voice'
+          and asset.approval_status = 'approved' and (asset.expires_at is null or asset.expires_at >= current_date)`;
+  const workerSource = await readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8");
+  assert.ok(workerSource.includes(bindingQuery), "the probe must run the runtime worker's voice binding query verbatim");
+  await client.query("savepoint voice_binding_read");
+  try {
+    await client.query(`set local role ${worker}`);
+    await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+    assert.deepEqual((await client.query(bindingQuery, [tenantId, revisionId])).rows, [{ runtime_voice_id: "probe_voice", checksum }], "the runtime worker must read its tenant's frozen voice binding");
+    assert.deepEqual((await client.query(bindingQuery, [otherTenantId, foreignRevisionId])).rows, [], "row security must hide another tenant's voice binding from the runtime worker");
+    await client.query("savepoint voice_binding_column");
+    await assert.rejects(client.query("select object_key from media_assets"), (error) => error.code === "42501", "the runtime worker must not read media asset object keys");
+    await client.query("rollback to savepoint voice_binding_column");
+  } finally {
+    await client.query("rollback to savepoint voice_binding_read");
+  }
+}
+async function expectColumn(principal, table, column, expected) {
+  const result = await client.query("select has_column_privilege($1, $2, $3, 'select') as allowed", [principal, table, column]);
+  assert.equal(result.rows[0].allowed, expected, `${principal} ${expected ? "must retain" : "must not receive"} select on ${table}.${column}`);
+}
 async function expectTable(principal, table, privilege, expected) {
   const result = await client.query("select has_table_privilege($1, $2, $3) as allowed", [principal, table, privilege]);
   assert.equal(result.rows[0].allowed, expected, `${principal} ${expected ? "must retain" : "must not receive"} ${privilege} on ${table}`);
