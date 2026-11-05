@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createProbeHandler, guardedHandler } from "./handler.mjs";
 import { probeTarget, validateTarget } from "./lib.mjs";
 
 const port = positiveInt(process.env.OUTPUT_PROBE_PORT, 8081);
@@ -28,13 +29,6 @@ function configuredTargets() {
   return result;
 }
 
-function json(response, status, value) {
-  response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
-  response.end(JSON.stringify(value));
-}
-
-function authorized(request) { return request.headers.authorization === `Bearer ${token}`; }
-
 async function measuredTarget(target) {
   const existing = cache.get(target.id);
   if (existing && existing.expiresAt > Date.now()) return existing.value;
@@ -43,21 +37,6 @@ async function measuredTarget(target) {
   try { return await value; } catch (error) { cache.delete(target.id); throw error; }
 }
 
-const server = http.createServer(async (request, response) => {
-  const url = new URL(request.url ?? "/", "http://localhost");
-  if (request.method === "GET" && url.pathname === "/healthz") return json(response, 200, { status: "ok", targetCount: targets.size });
-  if (request.method !== "GET" || !url.pathname.startsWith("/v1/probes/")) return json(response, 404, { error: "not_found" });
-  if (!authorized(request)) return json(response, 401, { error: "unauthorized" });
-  const id = decodeURIComponent(url.pathname.slice("/v1/probes/".length));
-  const target = targets.get(id);
-  if (!target) return json(response, 404, { error: "probe_not_found" });
-  try {
-    return json(response, 200, await measuredTarget(target));
-  } catch (error) {
-    const diagnostic = error instanceof Error ? error.message : "probe_failed";
-    process.stderr.write(`${JSON.stringify({ service: "output-probe", event: "measurement_failed", targetId: target.id, diagnostic })}\n`);
-    return json(response, 503, { error: "measurement_unavailable" });
-  }
-});
+const server = http.createServer(guardedHandler(createProbeHandler({ token, targets, measure: measuredTarget })));
 
-server.listen(port, "0.0.0.0", () => process.stdout.write(`${JSON.stringify({ service: "output-probe", event: "started", port, targetCount: targets.size, timeoutMs, cacheMs, audioSampleSeconds, silenceDurationSeconds, silenceThresholdDb })}\n`));
+server.listen(port, "0.0.0.0", () => process.stdout.write(`${JSON.stringify({ service: "output-probe", event: "started", pid: process.pid, port, targetCount: targets.size, timeoutMs, cacheMs, audioSampleSeconds, silenceDurationSeconds, silenceThresholdDb })}\n`));

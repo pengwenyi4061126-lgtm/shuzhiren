@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import http from "node:http";
+import { authorizationDigest, authorizationMatches, createProbeHandler, decodeTargetId, guardedHandler, json, parseRequestTarget } from "../apps/output-probe/handler.mjs";
 import { probeTarget, validateTarget } from "../apps/output-probe/lib.mjs";
 
 const target = validateTarget({ id: "probe_demo", streamUrl: "rtmp://relay.internal/live/primary", fallbackStreamUrl: "https://relay.internal/fallback.m3u8", avSyncProbeUrl: "http://analyzer.internal/av-sync", expectedFps: 25, expectedWidth: 1280, expectedHeight: 720 }, 0);
@@ -45,3 +47,70 @@ const evidenceUnavailable = await probeTarget(validateTarget({ ...primaryTarget,
 });
 assert.equal("programObservation" in evidenceUnavailable, false, "a missing verifier proof must not be fabricated from output health");
 console.log("PASS  output probe measures streams without fabricating missing audio/video metrics");
+
+// H5: request parsing helpers, constant-time credential comparison and the guarded request handler.
+assert.equal(parseRequestTarget("//"), null, "an unparsable request target must be reported as null");
+assert.equal(parseRequestTarget("/v1/probes/a").pathname, "/v1/probes/a");
+assert.equal(decodeTargetId("%E0%A4%A"), null, "malformed percent-encoding must be reported as null");
+assert.equal(decodeTargetId("probe%5Fdemo"), "probe_demo");
+const probeToken = "output-probe-shared-token-0123456789abcd";
+const expectedDigest = authorizationDigest(`Bearer ${probeToken}`);
+assert.equal(expectedDigest.length, 32);
+assert.equal(authorizationMatches(`Bearer ${probeToken}`, expectedDigest), true);
+for (const [label, header] of [["missing", undefined], ["non-string", ["Bearer", probeToken]], ["shorter", "Bearer short"], ["longer", `Bearer ${probeToken}x`], ["same length but different", `Bearer ${"x".repeat(probeToken.length)}`], ["containing 0xC3 0xA9 bytes", `Bearer ${Buffer.from([0xc3, 0xa9]).toString("latin1")}${probeToken.slice(2)}`]]) {
+  assert.equal(authorizationMatches(header, expectedDigest), false, `${label} authorization must not match`);
+}
+assert.equal(authorizationMatches(Buffer.from("Bearer é-token", "utf8").toString("latin1"), authorizationDigest("Bearer é-token")), true, "raw UTF-8 header bytes must compare against the UTF-8 encoded expected value");
+
+const guardLog = [];
+const guardCases = {
+  "/sync-throw": () => { throw new Error("secret-detail"); },
+  "/async-throw": async () => { throw new Error("secret-detail"); },
+  "/rejected": () => Promise.reject(new Error("secret-detail")),
+  "/partial": (_request, response) => { response.writeHead(200, { "content-type": "text/plain" }); response.write("partial"); throw new Error("secret-detail"); },
+  "/healthz": (_request, response) => json(response, 200, { status: "ok" })
+};
+const throwingTargets = new Proxy(new Map(), { get(map, property) { if (property === "get") throw new TypeError("targets lookup exploded secret-detail"); const value = Reflect.get(map, property, map); return typeof value === "function" ? value.bind(map) : value; } });
+const probeHandler = guardedHandler(createProbeHandler({ token: probeToken, targets: throwingTargets, measure: async () => ({}), log: (entry) => guardLog.push(entry) }), { log: (entry) => guardLog.push(entry) });
+const guardServer = http.createServer((request, response) => {
+  if (request.url.startsWith("/v1/probes/")) return probeHandler(request, response);
+  return guardedHandler((guardCases[request.url] ?? guardCases["/healthz"]), { log: (entry) => guardLog.push(entry) })(request, response);
+});
+await new Promise((resolve) => guardServer.listen(0, "127.0.0.1", resolve));
+try {
+  const { port } = guardServer.address();
+  for (const casePath of ["/sync-throw", "/async-throw", "/rejected"]) {
+    const result = await getLocal(port, casePath);
+    assert.equal(result.complete, true, `${casePath} must receive a complete response`);
+    assert.equal(result.status, 500, `${casePath} must be answered with 500`);
+    assert.equal(result.body, JSON.stringify({ error: "internal_error" }), `${casePath} must not expose the exception`);
+    assert.doesNotMatch(result.body, /secret-detail|    at /);
+  }
+  const partial = await getLocal(port, "/partial");
+  assert.equal(partial.complete, false, "a failure after the headers were sent must abort the response instead of completing it");
+  const lookupFailure = await getLocal(port, "/v1/probes/probe_demo", { authorization: `Bearer ${probeToken}` });
+  assert.equal(lookupFailure.status, 500, "an unexpected probe handler exception must be answered with 500");
+  assert.equal(lookupFailure.body, JSON.stringify({ error: "internal_error" }));
+  const healthy = await getLocal(port, "/healthz");
+  assert.equal(healthy.status, 200, "the same server must keep serving after handler failures");
+  assert.ok(guardLog.length >= 5 && guardLog.every((entry) => entry.event === "request_failed" && typeof entry.errorName === "string" && entry.message.length <= 200), "handler failures must be logged with a bounded message");
+} finally {
+  await new Promise((resolve) => guardServer.close(resolve));
+}
+console.log("PASS  output probe guards request handlers and compares credentials in constant time");
+
+function getLocal(port, requestPath, headers = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } };
+    const request = http.get({ host: "127.0.0.1", port, path: requestPath, headers: { connection: "close", ...headers }, agent: false }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => finish({ complete: true, status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("error", () => finish({ complete: false }));
+      response.on("aborted", () => finish({ complete: false }));
+    });
+    const timer = setTimeout(() => { request.destroy(); finish({ complete: false }); }, 2_000);
+    request.on("error", () => finish({ complete: false }));
+  });
+}
