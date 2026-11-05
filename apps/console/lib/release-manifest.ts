@@ -49,7 +49,7 @@ type ManifestRunRow = {
   frozen_manifest: unknown;
 };
 type ManifestModelRow = { id: string; component: ReleaseComponent; name: string; version: string; approval_status: ReleaseApproval; source_commit: string; artifact_hash: string; evidence_ref: string };
-type ManifestAssetRow = { id: string; kind: AssetKind; name: string; approval_status: AssetApproval; expires_at: Date | string | null; object_key: string; checksum: string; runtime_voice_id: string | null; rights_scope: string; source_ref: string };
+type ManifestAssetRow = { id: string; kind: AssetKind; name: string; approval_status: AssetApproval; expires_at: string | null; object_key: string; checksum: string; runtime_voice_id: string | null; rights_scope: string; source_ref: string };
 
 export async function getRunReleaseManifest(context: RequestContext, runId: string): Promise<RunReleaseManifest | null> {
   await assertLiveRunAccess(context, runId);
@@ -99,7 +99,7 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
     product: row.product_id && row.product_revision && row.product_approval && row.external_sku && row.product_name && isProductFacts(row.product_facts) ? { id: row.product_id, revision: row.product_revision, approval: row.product_approval, externalSku: row.external_sku, name: row.product_name, facts: row.product_facts } : null,
     policy: row.policy_id && row.policy_name && row.policy_version && row.policy_approval && row.policy_evidence_ref !== null && row.policy_validation_summary !== null ? { id: row.policy_id, name: row.policy_name, version: row.policy_version, approval: row.policy_approval, evidenceRef: row.policy_evidence_ref, validationSummary: row.policy_validation_summary } : null,
     models: models.rows.map((model) => ({ id: model.id, component: model.component, name: model.name, version: model.version, approval: model.approval_status, sourceCommit: model.source_commit, artifactHash: model.artifact_hash, evidenceRef: model.evidence_ref })),
-    assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined, objectKey: asset.object_key, checksum: asset.checksum, runtimeVoiceId: asset.runtime_voice_id ?? undefined, rightsScope: asset.rights_scope, source: asset.source_ref }))
+    assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ?? undefined, objectKey: asset.object_key, checksum: asset.checksum, runtimeVoiceId: asset.runtime_voice_id ?? undefined, rightsScope: asset.rights_scope, source: asset.source_ref }))
   });
   const frozenSnapshotVerified = row.frozen_manifest_sha256 && isRecord(row.frozen_manifest) ? releaseManifestSnapshotMatches(row.frozen_manifest, row.frozen_manifest_sha256) : undefined;
   return { ...manifest, frozenSha256: row.frozen_manifest_sha256 ?? undefined, frozenSnapshotVerified };

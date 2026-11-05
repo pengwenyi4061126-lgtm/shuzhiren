@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = await readFile(path.join(root, "apps", "console", "lib", "control-plane", "store.ts"), "utf8");
@@ -83,6 +84,33 @@ async function withFakePool(client, action) {
 }
 
 console.log("PASS  console database pool logs idle connection errors, keeps the original transaction error, and destroys broken connections");
+
+// The node-postgres default parser turns a PostgreSQL `date` into local midnight, which toISOString() moves to the
+// previous day east of UTC. A child process per time zone builds the console pool and parses a `date` value with
+// the parser the pool hands its clients; the result must be the stored day in every zone.
+{
+  const probe = `
+    import { register } from "node:module";
+    register(${JSON.stringify(pathToFileURL(path.join(root, "scripts", "lib", "console-ts-loader.mjs")).href)});
+    const pg = (await import("pg")).default;
+    const database = await import(${JSON.stringify(pathToFileURL(path.join(root, "apps", "console", "lib", "database.ts")).href)});
+    const pool = database.createDatabasePool({ connectionString: process.env.DATABASE_URL, timeoutMs: 200 });
+    const parse = (types) => types.getTypeParser(1082, "text")("2027-03-31");
+    const day = (value) => value instanceof Date ? value.toISOString().slice(0, 10) : value;
+    const observed = { defaultDay: day(parse(pg.types)), poolValue: day(parse(pool.options.types ?? pg.types)), poolValueType: typeof parse(pool.options.types ?? pg.types) };
+    await pool.end();
+    process.stdout.write(JSON.stringify(observed));
+  `;
+  for (const [timeZone, defaultDay] of [["Asia/Shanghai", "2027-03-30"], ["UTC", "2027-03-31"]]) {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { cwd: root, encoding: "utf8", env: { ...process.env, TZ: timeZone, DATABASE_URL: databaseUrl, CONTROL_PLANE_DEMO_MODE: "false" } });
+    assert.equal(result.status, 0, `the ${timeZone} date probe failed: ${result.stderr}`);
+    const observed = JSON.parse(result.stdout);
+    assert.equal(observed.defaultDay, defaultDay, `the ${timeZone} probe must see the node-postgres default date parser in that zone`);
+    assert.deepEqual({ poolValue: observed.poolValue, poolValueType: observed.poolValueType }, { poolValue: "2027-03-31", poolValueType: "string" }, `the console pool must return a PostgreSQL date as its YYYY-MM-DD text under TZ=${timeZone}`);
+  }
+}
+
+console.log("PASS  console database pool returns PostgreSQL dates as YYYY-MM-DD text under TZ=Asia/Shanghai and TZ=UTC");
 
 // Lifecycle arm and START read their preflight inputs on the transaction that
 // already holds the locked run. A fake pool counts checkouts; a fake client

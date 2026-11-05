@@ -35,7 +35,7 @@ type PersistentAssetRow = {
   kind: AssetKind;
   name: string;
   approval_status: AssetApproval;
-  expires_at: Date | string | null;
+  expires_at: string | null;
   rights_scope: string;
   source_ref: string;
   object_key: string;
@@ -189,7 +189,7 @@ export async function activeMediaAssetStatusInTransaction(client: PoolClient, re
     const matches = result.rows.filter((asset) => asset.kind === kind);
     if (matches.length !== 1) return [`${kind} 缺少唯一冻结授权素材`];
     const asset = matches[0];
-    const expiresAt = asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined;
+    const expiresAt = asset.expires_at ?? undefined;
     const expired = Boolean(expiresAt && expiresAt < new Date().toISOString().slice(0, 10));
     if (!contentVerificationPresent(asset)) return [`${kind} ${asset.name} 缺少受控对象内容验证`];
     if (kind === "voice" && !isRuntimeVoiceId(asset.runtime_voice_id)) return [`voice ${asset.name} 缺少有效运行时声线标识`];
@@ -218,7 +218,7 @@ function persistentAsset(row: PersistentAssetRow): MediaAsset {
     kind: row.kind,
     name: row.name,
     approval: row.approval_status,
-    expiresAt: row.expires_at ? new Date(row.expires_at).toISOString().slice(0, 10) : undefined,
+    expiresAt: row.expires_at ?? undefined,
     rightsScope: row.rights_scope,
     source: row.source_ref,
     objectKey: row.object_key,
@@ -249,7 +249,7 @@ export async function runtimeVoiceForRun(context: RequestContext, revisionId: st
 export async function runtimeVoiceForRunInTransaction(client: PoolClient, revisionId: string): Promise<RuntimeVoiceBinding> {
   const result = await client.query<BoundAssetRow & { checksum: string }>("select binding.kind, asset.name, asset.approval_status, asset.expires_at, asset.runtime_voice_id, asset.checksum, asset.verified_object_version, asset.verified_bytes, asset.verified_content_type, asset.verification_evidence_ref, asset.verified_at from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id where binding.show_revision_id = $1 and binding.kind = 'voice'", [revisionId]);
   const asset = result.rows[0];
-  const expired = asset?.expires_at && new Date(asset.expires_at).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10);
+  const expired = asset?.expires_at && asset.expires_at < new Date().toISOString().slice(0, 10);
   if (!asset || asset.approval_status !== "approved" || expired || !contentVerificationPresent(asset) || !isRuntimeVoiceId(asset.runtime_voice_id) || !isVoiceChecksum(asset.checksum)) throw new Response("Frozen voice asset is not approved for runtime speech", { status: 409, statusText: runtimeVoiceBindingUnavailable });
   return { runtimeVoiceId: asset.runtime_voice_id, voiceChecksum: asset.checksum };
 }

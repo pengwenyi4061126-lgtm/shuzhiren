@@ -1112,6 +1112,15 @@ try {
   assert.equal((await client.query("select count(*)::int as count from outbox_events where aggregate_type = 'live_run' and aggregate_id = $1", [rolledBackCommandRun.runId])).rows[0].count, 0, "a failed audit write must leave no command in the outbox");
   assert.equal((await client.query("select count(*)::int as count from audit_events where event_type = 'live_command.accepted' and resource_key = $1", [rolledBackCommandRun.runId])).rows[0].count, 0, "a failed audit write must roll back the command's other audit event");
   assert.equal((await client.query("select state from live_runs where id = $1", [rolledBackCommandRun.runId])).rows[0].state, "LIVE", "a failed audit write must leave the run state unchanged");
+  // PostgreSQL date columns keep their calendar day whatever the console's process time zone. Run this file with
+  // TZ=Asia/Shanghai to exercise a zone east of UTC, where a date parsed as local midnight moves to the previous day.
+  assert.equal(recordingRegisteredBody.data.retentionUntil, recordingInput.retentionUntil, "a recording's retention date must be returned as stored");
+  const datedAssetCreate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ kind: "music", name: "Integration dated music", rightsScope: "Integration test only", source: "evidence://integration/dated-media", objectKey: `assets/${tenantId}/dated-music.mp3`, checksum: `sha256:${"d".repeat(64)}`, expiresAt: "2099-12-31" }) });
+  assert.equal(datedAssetCreate.status, 201, "a media asset with an expiry date should be registered");
+  const datedAsset = (await datedAssetCreate.json()).data;
+  assert.equal(datedAsset.expiresAt, "2099-12-31", "a media asset's expiry date must be returned as stored");
+  const listedDatedAsset = (await (await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { headers: operatorRequestHeaders })).json()).data.find((asset) => asset.id === datedAsset.id);
+  assert.equal(listedDatedAsset?.expiresAt, "2099-12-31", "listed media assets must keep the stored expiry date");
   // L8: provisioning a subject that already exists in another tenant must not rename it there.
   const sharedSubject = `integration-shared-subject-${randomUUID()}`;
   const otherTenantMembership = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { method: "POST", headers: { ...isolatedRequestHeaders, "content-type": "application/json" }, body: JSON.stringify({ externalSubject: sharedSubject, displayName: "Isolated tenant name", role: "analyst" }) });

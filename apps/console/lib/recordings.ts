@@ -34,7 +34,7 @@ type PersistentRecordingRow = {
   started_at: Date | string | null;
   ended_at: Date | string | null;
   recorded_at: Date | string;
-  retention_until: Date | string | null;
+  retention_until: string | null;
   verified_object_version: string;
   verification_evidence_ref: string;
   verified_at: Date | string;
@@ -130,7 +130,7 @@ function persistentRecording(row: PersistentRecordingRow): RecordingEvidence {
     startedAt: timestamp(row.started_at),
     endedAt: timestamp(row.ended_at),
     recordedAt: new Date(row.recorded_at).toISOString(),
-    retentionUntil: row.retention_until ? new Date(row.retention_until).toISOString().slice(0, 10) : undefined,
+    retentionUntil: row.retention_until ?? undefined,
     contentVerification: { objectVersion: row.verified_object_version, evidenceRef: row.verification_evidence_ref, verifiedAt: new Date(row.verified_at).toISOString() },
   };
 }

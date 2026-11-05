@@ -1,4 +1,4 @@
-import { Pool, type PoolClient } from "pg";
+import { Pool, TypeOverrides, type PoolClient } from "pg";
 import { controlPlaneConfig } from "@/lib/control-plane/config";
 
 declare global {
@@ -12,13 +12,25 @@ export function databasePool() {
   return globalThis.shuzhirenDatabasePool;
 }
 
+// node-postgres parses a PostgreSQL `date` as local midnight of the process time zone, so toISOString() moves
+// it to the previous day east of UTC. The pool returns `date` values as their `YYYY-MM-DD` text instead; other
+// types keep the node-postgres parsers.
+const postgresDateOid = 1082;
+
+function controlPlaneTypeParsers() {
+  const types = new TypeOverrides();
+  types.setTypeParser(postgresDateOid, (value: string) => value);
+  return types;
+}
+
 export function createDatabasePool(input: { connectionString: string; timeoutMs: number; max?: number }) {
   const pool = new Pool({
     connectionString: input.connectionString,
     max: input.max ?? 10,
     connectionTimeoutMillis: input.timeoutMs,
     query_timeout: input.timeoutMs,
-    application_name: process.env.PGAPPNAME?.trim() || "shuzhiren-control-plane"
+    application_name: process.env.PGAPPNAME?.trim() || "shuzhiren-control-plane",
+    types: controlPlaneTypeParsers()
   });
   // pg-pool emits "error" when an idle client fails (server restart, terminated
   // or reaped connection). It has already removed that client and opens a new

@@ -5,7 +5,7 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type EntitlementCode = "max_concurrent_live_runs" | "monthly_live_minutes";
 export type Entitlement = { code: EntitlementCode; limitValue: number; used: number; remaining: number; effectiveFrom: string; effectiveUntil?: string; updatedAt: string };
-type PersistentEntitlementRow = { code: EntitlementCode; limit_value: number; used: string | number; effective_from: Date | string; effective_until: Date | string | null; updated_at: Date | string };
+type PersistentEntitlementRow = { code: EntitlementCode; limit_value: number; used: string | number; effective_from: string; effective_until: string | null; updated_at: Date | string };
 type EntitlementStore = { values: Map<string, Map<EntitlementCode, Entitlement>> };
 
 declare global { var shuzhirenEntitlementStore: EntitlementStore | undefined; }
@@ -63,5 +63,5 @@ export async function assertLiveActivationAllowed(client: PoolClient, context: R
   }
 }
 
-function persistentEntitlement(row: PersistentEntitlementRow): Entitlement { const used = Number(row.used); return { code: row.code, limitValue: row.limit_value, used, remaining: Math.max(0, row.limit_value - used), effectiveFrom: new Date(row.effective_from).toISOString().slice(0, 10), effectiveUntil: row.effective_until ? new Date(row.effective_until).toISOString().slice(0, 10) : undefined, updatedAt: new Date(row.updated_at).toISOString() }; }
+function persistentEntitlement(row: PersistentEntitlementRow): Entitlement { const used = Number(row.used); return { code: row.code, limitValue: row.limit_value, used, remaining: Math.max(0, row.limit_value - used), effectiveFrom: row.effective_from, effectiveUntil: row.effective_until ?? undefined, updatedAt: new Date(row.updated_at).toISOString() }; }
 async function syncActor(client: PoolClient, context: RequestContext) { const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]); return actor.rows[0].id; }
