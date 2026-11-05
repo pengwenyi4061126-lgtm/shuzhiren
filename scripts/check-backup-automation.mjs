@@ -19,8 +19,17 @@ const files = {
 };
 const contents = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([name, file]) => [name, await readFile(new URL(file, import.meta.url), "utf8")])));
 
-for (const source of ["DATABASE_URL", 'pg_dump --dbname="$database_url" --format=custom', 'pg_restore --list "$temporary"', 'backup_source="database_url"', "flock -n 9", "refusing to overwrite an existing backup"]) {
+for (const source of ["DATABASE_URL", 'run_pg pg_dump --dbname="$PG_SAFE_URL" --format=custom', 'pg_restore --list "$temporary"', 'backup_source="database_url"', "flock -n 9", "refusing to overwrite an existing backup"]) {
   if (!contents.postgresBackup.includes(source)) throw new Error(`PostgreSQL backup must support the private production database path: ${source}`);
+}
+// L14: connection passwords reach libpq through PGPASSWORD, never through argv.
+for (const [name, source, forbidden] of [["postgresBackup", contents.postgresBackup, ["--dbname=\"$database_url\"", "pg_dump \"$database_url\""]], ["postgresRestoreDrill", contents.postgresRestoreDrill, ["psql \"$drill_database_url\"", "--dbname=\"$drill_database_url\""]]]) {
+  for (const expected of ["pg_url_split() {", 'PGPASSWORD="$PG_URL_PASSWORD" "$@"']) if (!source.includes(expected)) throw new Error(`${name} must move the database password out of client argv: ${expected}`);
+  for (const text of forbidden) if (source.includes(text)) throw new Error(`${name} must not pass the password-bearing database URL in argv: ${text}`);
+  // Every connecting client call; `--list` reads a local archive and the Compose fallback runs inside the dev container.
+  const clientCalls = source.split("\n").filter((line) => /(^|[\s($])(psql|pg_dump|pg_restore)\s/.test(line) && !/^\s*(#|command -v|\[\[)/.test(line) && !line.includes("--list") && !line.includes("docker compose"));
+  if (clientCalls.length === 0) throw new Error(`${name} must connect through run_pg`);
+  for (const line of clientCalls) if (!line.includes("run_pg ") || !line.includes('"$PG_SAFE_URL"')) throw new Error(`${name} connects without the password-free URL: ${line.trim()}`);
 }
 for (const source of ["LOGIN NOINHERIT BYPASSRLS", "grant select on all tables in schema public to shuzhiren_backup", "grant usage, select on all sequences in schema public to shuzhiren_backup", "alter default privileges in schema public grant select on tables to shuzhiren_backup", "must not inherit memberships"]) {
   if (!contents.backupPrincipal.includes(source)) throw new Error(`Backup database principal must retain its isolated read-only grant model: ${source}`);
@@ -28,13 +37,13 @@ for (const source of ["LOGIN NOINHERIT BYPASSRLS", "grant select on all tables i
 for (const source of ['pg_restore --list "$backup_file"', "pg_restore or docker is required", 'manifest_file="${backup_file%.dump}.manifest"', "Backup manifest archive does not match BACKUP_FILE", "Backup bytes do not match backup manifest"]) {
   if (!contents.postgresVerify.includes(source)) throw new Error(`PostgreSQL backup verifier must work without a Compose database: ${source}`);
 }
-for (const source of ["DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren'", "source=database_url", "verify-postgres-backup.sh", "another PostgreSQL backup is already running"]) {
+for (const source of ["DATABASE_URL='postgresql://backup-user:backup-p%40ss%3Aw%2Frd%25@private-postgres:5432/shuzhiren?sslmode=require'", '[[ "${PGPASSWORD-}" == "backup-p@ss:w/rd%" ]]', "source=database_url", "verify-postgres-backup.sh", "another PostgreSQL backup is already running"]) {
   if (!contents.postgresDirectTest.includes(source)) throw new Error(`PostgreSQL direct backup test must cover ${source}`);
 }
 for (const source of ["DRILL_DATABASE_URL", "DRILL_EVIDENCE_FILE", "RESTORE_DRILL_CONFIRM", "shuzhiren_restore_[a-z0-9_]+", "restore drill target database must be empty", "pg_restore --exit-on-error --no-owner --no-privileges", "migration_count"]) {
   if (!contents.postgresRestoreDrill.includes(source)) throw new Error(`PostgreSQL restore drill must remain isolated and evidenced: ${source}`);
 }
-for (const source of ["shuzhiren_restore_fixture", "must target an isolation database", "RESTORE_DRILL_CONFIRM"]) {
+for (const source of ["shuzhiren_restore_fixture", "must target an isolation database", "RESTORE_DRILL_CONFIRM", "pgpassword:${decoded_password}", "restore drill passed the database password in a client argv"]) {
   if (!contents.postgresRestoreDrillTest.includes(source)) throw new Error(`PostgreSQL restore drill test must cover ${source}`);
 }
 if (!contents.gatewayBackup.includes("GATEWAY_BACKUP_DIR")) throw new Error("Gateway backup must support its dedicated scheduled backup directory");

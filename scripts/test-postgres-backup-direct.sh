@@ -17,10 +17,14 @@ bin_dir="$test_root/bin"
 backup_dir="$test_root/backups"
 mkdir -p "$bin_dir" "$backup_dir"
 
+# The stand-in accepts the connection target only without its password in argv
+# (L14) and requires the decoded password in PGPASSWORD instead.
 cat > "$bin_dir/pg_dump" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$*" == *"--dbname=postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren"* ]]
+[[ "$*" == *"--dbname=postgresql://backup-user@private-postgres:5432/shuzhiren?sslmode=require"* ]]
+[[ "$*" != *"backup-p"* && "$*" != *"%40"* && "$*" != *"password"* ]]
+[[ "${PGPASSWORD-}" == "backup-p@ss:w/rd%" ]]
 [[ "$*" == *"--format=custom"* ]]
 if [[ "${BACKUP_TEST_HOLD:-}" == "true" ]]; then
   : "${BACKUP_TEST_READY:?BACKUP_TEST_READY is required when holding}"
@@ -39,9 +43,23 @@ EOF
 chmod 0700 "$bin_dir/pg_dump" "$bin_dir/pg_restore"
 
 PATH="$bin_dir:$PATH" \
-DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren' \
+DATABASE_URL='postgresql://backup-user:backup-p%40ss%3Aw%2Frd%25@private-postgres:5432/shuzhiren?sslmode=require' \
 POSTGRES_BACKUP_DIR="$backup_dir" \
 bash "$root/scripts/backup-postgres.sh"
+
+set +e
+PATH="$bin_dir:$PATH" \
+DATABASE_URL='postgresql://backup-user:backup-p%G1ss@private-postgres:5432/shuzhiren' \
+POSTGRES_BACKUP_DIR="$test_root/rejected-backups" \
+bash "$root/scripts/backup-postgres.sh" >"$test_root/rejected.log" 2>&1
+rejected_status=$?
+set -e
+[[ "$rejected_status" -ne 0 ]]
+grep -q 'DATABASE_URL must be a postgresql:// URI' "$test_root/rejected.log"
+if grep -qF 'backup-p%G1ss' "$test_root/rejected.log"; then
+  printf 'FAIL  backup echoed a rejected DATABASE_URL\n' >&2
+  exit 1
+fi
 
 archive="$(find "$backup_dir" -maxdepth 1 -name '*.dump' -type f -print -quit)"
 manifest="${archive%.dump}.manifest"
@@ -73,7 +91,7 @@ first_log="$test_root/first-backup.log"
 second_log="$test_root/second-backup.log"
 
 PATH="$bin_dir:$PATH" \
-DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren' \
+DATABASE_URL='postgresql://backup-user:backup-p%40ss%3Aw%2Frd%25@private-postgres:5432/shuzhiren?sslmode=require' \
 POSTGRES_BACKUP_DIR="$contended_backup_dir" \
 BACKUP_TEST_HOLD=true \
 BACKUP_TEST_READY="$ready_file" \
@@ -88,7 +106,7 @@ done
 
 set +e
 PATH="$bin_dir:$PATH" \
-DATABASE_URL='postgresql://backup-user:backup-password@private-postgres:5432/shuzhiren' \
+DATABASE_URL='postgresql://backup-user:backup-p%40ss%3Aw%2Frd%25@private-postgres:5432/shuzhiren?sslmode=require' \
 POSTGRES_BACKUP_DIR="$contended_backup_dir" \
 bash "$root/scripts/backup-postgres.sh" >"$second_log" 2>&1
 second_status=$?
@@ -99,5 +117,6 @@ touch "$release_file"
 wait "$first_pid"
 
 printf 'PASS  PostgreSQL backup uses the private DATABASE_URL client path without Compose\n'
+printf 'PASS  PostgreSQL backup passes the database password through PGPASSWORD, never argv\n'
 printf 'PASS  PostgreSQL backup rejects a manifest with incorrect archive bytes\n'
 printf 'PASS  PostgreSQL backup rejects concurrent writers for one backup directory\n'
