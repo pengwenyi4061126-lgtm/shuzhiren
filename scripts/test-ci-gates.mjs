@@ -462,6 +462,17 @@ test("workflow gate rejects skipped, tolerated, ignored and deleted verification
   }
 });
 
+test("W7 requires postgres:integration in postgres-integration, before db:verify", () => {
+  const step = "      - run: npm run postgres:integration\n";
+  const removed = runWorkflowVariant((text) => replaceOnce(text, step, ""));
+  assert.equal(removed.status, 1, removed.output);
+  assert.ok(removed.rules.some(({ rule, message }) => rule === "W7" && message === "no verification step runs npm run postgres:integration"), removed.output);
+  const late = runWorkflowVariant((text) => replaceOnce(replaceOnce(text, step, ""), "      - run: npm run control-plane:integration\n", `${step}      - run: npm run control-plane:integration\n`));
+  assert.equal(late.status, 1, late.output);
+  assert.deepEqual(late.ruleIds, ["W7"], late.output);
+  assert.ok(late.rules.some(({ message }) => message.startsWith("npm run postgres:integration must run before npm run db:verify")), late.output);
+});
+
 test("W1 and W5 reject missing permissions and tag references", () => {
   const missingPermissions = runWorkflowVariant((text) => replaceOnce(text, "permissions:\n  contents: read\n", ""));
   assert.equal(missingPermissions.status, 1, missingPermissions.output);

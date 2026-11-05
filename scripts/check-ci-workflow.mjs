@@ -14,8 +14,10 @@
 //       scripts/verify-local-checks.mjs) or is registered in CI_ONLY_STEPS, and
 //       every CI_ONLY_STEPS entry has a verification step in the job it names.
 //   W7  postgres-integration declares services.postgres and a job-level
-//       DATABASE_URL, runs the six Requirement 1.3 steps with db:migrate first,
-//       and the control-plane:integration step sets RUN_CONTROL_PLANE_INTEGRATION_TESTS: "true".
+//       DATABASE_URL, runs the six Requirement 1.3 steps and postgres:integration
+//       (design part 8, section 1.1) with db:migrate first and postgres:integration
+//       before db:verify, and the control-plane:integration step sets
+//       RUN_CONTROL_PLANE_INTEGRATION_TESTS: "true".
 //   W8  python-gateway runs pip install --require-hashes -r runtime/gateway/requirements.lock before
 //       its first Python test and runs every scripts/test-runtime-gateway-*.py
 //       directly or through an npm script.
@@ -65,7 +67,10 @@ import { findCiOnlyStep, validateCiOnlySteps } from "./ci-required-steps.mjs";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const GROUP_JOBS = Object.freeze(["static-gates", "node-unit", "python-gateway", "postgres-integration", "compose-render", "docker-build"]);
-const POSTGRES_STEPS = Object.freeze(["db:migrate", "db:migrate:integrity:test", "service-principals:integration", "db:migrate:lock:test", "db:verify", "control-plane:integration"]);
+const POSTGRES_STEPS = Object.freeze(["db:migrate", "db:migrate:integrity:test", "service-principals:integration", "db:migrate:lock:test", "postgres:integration", "db:verify", "control-plane:integration"]);
+// postgres:integration runs before db:verify: db:verify fails until the C1 and C2 fixes land, and a later step
+// would then be skipped (decision of 2026-11-05).
+const POSTGRES_ORDER = Object.freeze([["postgres:integration", "db:verify"]]);
 const STATIC_GATE_COMMANDS = Object.freeze(["npm run membership:scopes:check", "npm run governance:tenant-scope:check", "npm run ci:coverage:check"]);
 const GATEWAY_REQUIREMENTS = "runtime/gateway/requirements.lock";
 const CONTROL_PLANE_COMPOSE = "infra/compose/docker-compose.control-plane.yml";
@@ -349,6 +354,10 @@ function checkPostgres() {
   for (const script of POSTGRES_STEPS.slice(1)) {
     const step = position.get(script);
     if (migrate && step && step.index < migrate.index) report("W7", where(job, step), `npm run ${script} runs before npm run db:migrate (step ${migrate.index})`);
+  }
+  for (const [first, later] of POSTGRES_ORDER) {
+    const [a, b] = [position.get(first), position.get(later)];
+    if (a && b && a.index > b.index) report("W7", where(job, a), `npm run ${first} must run before npm run ${later} (step ${b.index})`);
   }
   const integration = position.get("control-plane:integration");
   if (integration) {

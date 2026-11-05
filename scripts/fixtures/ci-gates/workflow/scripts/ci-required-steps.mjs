@@ -10,6 +10,7 @@ export const CI_ONLY_STEPS = Object.freeze([
   { job: "postgres-integration", command: "npm run db:migrate:integrity:test", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run service-principals:integration", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run db:migrate:lock:test", localReason: NO_POSTGRES, label: "behavioral" },
+  { job: "postgres-integration", command: "npm run postgres:integration", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run db:verify -- --allow-privileged", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run control-plane:integration", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "compose-render", command: "docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config", localReason: NO_DOCKER, label: "static" },
