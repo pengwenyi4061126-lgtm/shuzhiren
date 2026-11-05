@@ -315,7 +315,7 @@ try {
   assert.equal(invalidProgram.status, 409, "a program without fallback and human handoff must be rejected");
   const analystProgramWrite = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { method: "PUT", headers: analystRequestHeaders, body: JSON.stringify({ segments: [] }) });
   assert.equal(analystProgramWrite.status, 403, "an analyst must not edit a draft program");
-  const editedSegments = initialProgram.data.segments.map(({ kind, title, durationSeconds, purpose }, index) => ({ kind, title: index === 0 ? "Integration edited opening" : title, durationSeconds, purpose }));
+  const editedSegments = initialProgram.data.segments.map(({ kind, title, durationSeconds, purpose, runtimeScript }, index) => ({ kind, title: index === 0 ? "Integration edited opening" : title, durationSeconds, purpose, runtimeScript }));
   const savedProgram = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ segments: editedSegments }) });
   assert.equal(savedProgram.status, 200, "an operator should edit a draft program through the controlled API");
   assert.equal((await savedProgram.json()).data.segments[0].title, "Integration edited opening");
@@ -354,7 +354,7 @@ try {
   const revisionRequest = await revisionCreate.json();
   const sourceRevisionId = (await client.query("select show_revision_id from live_runs where id = $1", [createdRun.data.id])).rows[0].show_revision_id;
   await assert.rejects(client.query("update live_runs set show_revision_id = $2 where id = $1", [createdRun.data.id, revisionRequest.data.candidateRevisionId]), /approved governed change request/i, "the database must reject an unapproved direct show revision rebind");
-  const revisedSegments = revisionRequest.data.program.segments.map((segment, index) => ({ kind: segment.kind, title: index === 0 ? "Approved revision opening" : segment.title, durationSeconds: segment.durationSeconds, purpose: segment.purpose }));
+  const revisedSegments = revisionRequest.data.program.segments.map((segment, index) => ({ kind: segment.kind, title: index === 0 ? "Approved revision opening" : segment.title, durationSeconds: segment.durationSeconds, purpose: segment.purpose, runtimeScript: segment.runtimeScript }));
   const revisionEdit = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions/${revisionRequest.data.id}`, { method: "PUT", headers: operatorRequestHeaders, body: JSON.stringify({ segments: revisedSegments }) });
   assert.equal(revisionEdit.status, 200, "the requesting operator should edit its candidate program revision");
   const revisionSubmit = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions/${revisionRequest.data.id}/submit`, { method: "POST", headers: operatorRequestHeaders });
