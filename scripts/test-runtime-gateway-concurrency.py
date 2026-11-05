@@ -889,6 +889,11 @@ async def check_event_loop_stays_responsive(authorization: str, calls: list, jou
 
     gateway.service_health = available
 
+    async def aigc_label() -> dict:
+        return {"enabled": True, "reported": True, "text": None, "position": None, "frames_labelled": None, "last_error": None}
+
+    gateway.livetalking_aigc_label = aigc_label
+
     ready = threading.Event()
     holder = threading.Thread(target=hold_journal_write_lock, args=(gateway.RUNTIME_COMMAND_JOURNAL_PATH, 1.5, ready))
     holder.start()

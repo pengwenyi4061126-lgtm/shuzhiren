@@ -33,7 +33,8 @@ Apache License 2.0 第 4 条要求再分发修改后的作品时附带许可证�
 | 2 | `runtime/patches/livetalking-stream-secret.patch` | `app.py`、`config.py`、`server/routes.py`、`streamout/rtmp.py` | 增加 `--stream_key_file`，推流密钥从只读文件读取后在内存中拼接到 `--push_url`；选项日志、RTMP 日志、错误信息和 HTTP 响应中的推流地址与密钥被脱敏 |
 | 3 | `runtime/patches/livetalking-local-tts.patch` | `avatars/base_avatar.py`、`config.yaml`；新增 `tts/none_tts.py` | 注册不做任何合成的 `--tts none` 插件（发到 `/human` 的文本被丢弃，不会到达在线语音服务）；`--tts` 取未知值时启动失败；`config.yaml` 的 `tts` 改为 `none`。语音只以 CosyVoice 合成的音频经 `/humanaudio` 注入 |
 
-镜像另外复制仓库自有的 `runtime/livetalking/launcher.py` 和 `runtime/livetalking/shuzhiren_secrets.py` 到 `/opt/shuzhiren/`。它们是新文件，不是对 LiveTalking 文件的修改。
+| 4 | `runtime/patches/livetalking-aigc-label.patch` | `avatars/base_avatar.py`、`server/routes.py` | 在每一帧推流和录制画面上叠加 AIGC 显式标识（不可关闭，文字与位置由 `AIGC_LABEL_TEXT`、`AIGC_LABEL_POSITION` 配置），无法标识的帧被丢弃；新增只读接口 `GET /api/admin/aigc-label`，`/api/admin/runtime-metrics` 另返回 `aigc_label` |
+镜像另外复制仓库自有的 `runtime/livetalking/launcher.py`、`runtime/livetalking/shuzhiren_secrets.py` 和 `runtime/livetalking/shuzhiren_aigc_label.py` 到 `/opt/shuzhiren/`。它们是新文件，不是对 LiveTalking 文件的修改。
 
 锁定提交的 `vendor/LiveTalking` 根目录没有 NOTICE 文件，因此没有需要随镜像保留的 NOTICE 内容。
 
@@ -74,6 +75,12 @@ Apache License 2.0 第 4 条要求再分发修改后的作品时附带许可证�
 2. 第 4 节数字人形象的本人书面授权；`zero_shot` 声线库中每段参考音频的声音本人书面授权；以及授权范围（平台、期限、用途）。
 3. 确认实际部署的 LiveTalking 以 `--tts none` 运行（第 5 节）；若改用在线语音服务，需另行取得其使用许可。
 4. 直播中使用的商品图片、音乐和脚本的授权（见 `docs/DEPLOYMENT_RUNBOOK.md` 开头的部署前提）。
-5. 第 1 节源码组件与 SBOM 所列依赖的许可证审查结论。
+5. 第 1 节源码组件与 SBOM 所列依赖的许可证审查结论；第 7 节系统软件包（AIGC 标识所用字体）的许可证审查结论。
 
 这些授权和审查结论由部署方在仓库之外取得，不写入本仓库。
+## 7. 镜像安装的系统软件包（按内容使用）
+下表列出运行时镜像以 `apt-get install` 安装、并以其内容（而不是作为构建或运行工具）进入直播画面的发行版软件包。其余系统软件包（`python3`、`ffmpeg`、`git` 等）按 SBOM 审查。`npm run runtime:images:licenses:check` 核对下表中的软件包确实由对应 Dockerfile 安装、本节写明其许可证，并拒绝未登记的 `fonts-*` 字体包；CI 的 `docker-build` job 运行 `scripts/check-runtime-image-licenses.mjs --livetalking-image` 时检查镜像中保留了该软件包的 Debian 版权文件且其中写明该许可证。
+| 软件包 | 镜像 | 许可证 | 用途 | 镜像内许可证文本 |
+| --- | --- | --- | --- | --- |
+| `fonts-noto-cjk`（Ubuntu 24.04 发行版软件包，Noto Sans CJK） | livetalking | SIL Open Font License 1.1 | AIGC 显式标识的中文字形：`runtime/livetalking/shuzhiren_aigc_label.py` 读取 `/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc`（缺失时 `NotoSansCJK-Regular.ttc`），用 Pillow 把标识文字绘制到每一帧 | `/usr/share/doc/fonts-noto-cjk/copyright` |
+说明：OFL 1.1 允许字体随软件捆绑分发和用于商业用途，不允许单独出售字体文件；用该字体渲染进视频画面的文字不受该许可证约束。镜像不修改字体文件。上述理解不是许可证审查结论，需部署方确认。Pillow 不是直接安装的依赖：它随 `torchvision` 安装进镜像，按 SBOM 审查。

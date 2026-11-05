@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import path from "node:path";
@@ -164,3 +165,67 @@ const rejectedPreflight = (error) => error instanceof Response && error.status =
 }
 
 console.log("PASS  lifecycle arm and START evaluate preflight on their transaction connection without nested pool checkouts");
+
+// AIGC explicit label (人工智能生成合成内容标识办法): preflight blocks arm and START unless the Runtime Gateway health
+// reports LiveTalking's label enabled with the run's text; every other answer is fail closed.
+if (!preflightSection.includes("aigcLabelReady: aigcLabel.passed") || !preflightSection.includes("evaluateAigcLabelReadiness(await frozenAigcLabelTextInTransaction(client, run.id) ?? aigcLabelText())")) throw new Error("Preflight must evaluate the AIGC label against the run's sealed label text");
+{
+  const { evaluatePreflight } = await import("../apps/console/lib/control-plane/preflight.ts");
+  const aigc = await import("../apps/console/lib/aigc-label.ts");
+  const expected = { text: "本直播由AI数字人生成", contentProducer: "Fixture Operator" };
+  const health = (label) => ({ status: "ok", dependencies: { livetalking: { available: true, ...(label === undefined ? {} : { aigc_label: label }) } } });
+  const enabled = { enabled: true, reported: true, text: expected.text, position: "top-right", frames_labelled: 250, last_error: null };
+  assert.deepEqual(aigc.evaluateAigcLabelReport(health(enabled), expected), { passed: true, detail: "画面标识「本直播由AI数字人生成」已启用 · top-right · 已标识 250 帧" });
+  for (const [name, report, detail] of [
+    ["disabled", health({ ...enabled, enabled: false, last_error: "font_missing" }), /未启用 AIGC 画面标识（font_missing）/],
+    ["enabled as a string", health({ ...enabled, enabled: "true" }), /未启用 AIGC 画面标识/],
+    ["no label report (image without the patch)", health(undefined), /运行时未报告 AIGC 标识状态/],
+    ["different text", health({ ...enabled, text: "AI生成" }), /文字与场次登记的 AIGC 标识文字不一致/],
+    ["no health body", null, /运行时未报告 AIGC 标识状态/],
+    ["status demo from a Gateway", { status: "demo" }, /运行时未报告 AIGC 标识状态/]
+  ]) {
+    const result = aigc.evaluateAigcLabelReport(report, expected);
+    assert.equal(result.passed, false, `${name} must block preflight`);
+    assert.match(result.detail, detail, name);
+  }
+  assert.match(aigc.evaluateAigcLabelReport(health(enabled), { ...expected, contentProducer: null }).detail, /未配置 AIGC_CONTENT_PRODUCER/);
+  assert.equal(aigc.evaluateAigcLabelReport(health({ ...enabled, text: "欢迎" }), { ...expected, text: "欢迎" }).passed, false, "a label text that does not say AI blocks");
+  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true };
+  assert.equal(evaluatePreflight({ ...base, aigcLabelReady: true, aigcLabelDetail: "ok" }).passed, true);
+  const blocked = evaluatePreflight({ ...base, aigcLabelReady: false, aigcLabelDetail: "LiveTalking 未启用 AIGC 画面标识" });
+  assert.equal(blocked.passed, false, "a disabled AIGC label must block arm and START");
+  assert.deepEqual(blocked.checks.find((check) => check.id === "aigc_label"), { id: "aigc_label", label: "AIGC 标识已启用", status: "blocked", detail: "LiveTalking 未启用 AIGC 画面标识" });
+  assert.equal(aigc.aigcLabelMetadata("00000000-0000-4000-8000-000000000002").contentId, "live-run:00000000-0000-4000-8000-000000000002");
+
+  // Through a Gateway: 200 and 503 (degraded) bodies are evaluated, anything else or no answer blocks.
+  const answers = [];
+  const gateway = http.createServer((request, response) => {
+    const [status, body] = answers.shift() ?? [500, {}];
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  const saved = { url: process.env.RUNTIME_GATEWAY_URL, demo: process.env.RUNTIME_GATEWAY_DEMO_MODE, producer: process.env.AIGC_CONTENT_PRODUCER };
+  process.env.RUNTIME_GATEWAY_URL = `http://127.0.0.1:${gateway.address().port}`;
+  process.env.RUNTIME_GATEWAY_DEMO_MODE = "false";
+  process.env.AIGC_CONTENT_PRODUCER = expected.contentProducer;
+  try {
+    answers.push([200, health(enabled)]);
+    assert.equal((await aigc.evaluateAigcLabelReadiness(expected.text)).passed, true, "an enabled label with the run's text passes");
+    answers.push([503, { ...health(enabled), status: "degraded" }]);
+    assert.equal((await aigc.evaluateAigcLabelReadiness(expected.text)).passed, true, "a degraded Gateway still reports the label");
+    answers.push([503, { ...health({ ...enabled, enabled: false }), status: "degraded" }]);
+    assert.equal((await aigc.evaluateAigcLabelReadiness(expected.text)).passed, false);
+    answers.push([500, health(enabled)]);
+    assert.match((await aigc.evaluateAigcLabelReadiness(expected.text)).detail, /无法读取 Runtime Gateway 健康状态/, "a failing Gateway blocks");
+    await new Promise((resolve) => gateway.close(resolve));
+    assert.equal((await aigc.evaluateAigcLabelReadiness(expected.text)).passed, false, "an unreachable Gateway blocks");
+  } finally {
+    if (gateway.listening) await new Promise((resolve) => gateway.close(resolve));
+    for (const [key, value] of [["RUNTIME_GATEWAY_URL", saved.url], ["RUNTIME_GATEWAY_DEMO_MODE", saved.demo], ["AIGC_CONTENT_PRODUCER", saved.producer]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+}
+
+console.log("PASS  preflight blocks arm and START unless the Gateway reports the AIGC label enabled with the run's sealed text (fail closed)");

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+import { aigcLabelBuildProblems, aigcLabelComposeProblems, aigcLabelTextProblem } from "./lib/aigc-label.mjs";
 import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
@@ -135,7 +136,9 @@ const control = env({
   PIM_INGEST_TENANT_TOKENS: { [tenantId]: "pim-ingest-token-at-least-32-bytes" },
   CHANNEL_INGEST_TENANT_TOKENS: { [tenantId]: "channel-ingest-token-at-least-32-bytes" },
   CHANNEL_COMMERCE_TENANT_TOKENS: { [tenantId]: "commerce-ingest-token-at-least-32-bytes" },
-  SETTLEMENT_INGEST_TENANT_TOKENS: { [tenantId]: "settlement-ingest-token-at-least-32" }
+  SETTLEMENT_INGEST_TENANT_TOKENS: { [tenantId]: "settlement-ingest-token-at-least-32" },
+  AIGC_LABEL_TEXT: "本直播由AI数字人生成",
+  AIGC_CONTENT_PRODUCER: "Shuzhiren Fixture Operator"
 });
 
 const controlCompose = env({
@@ -207,7 +210,10 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     LIVE_ALLOW_LLM_FREEFORM: "false",
     LIVE_REQUIRE_HUMAN_HANDOFF_FOR_HIGH_RISK: "true",
     LIVE_REQUIRE_AI_DISCLOSURE: "true",
-    LLM_MODE: "external"
+    LLM_MODE: "external",
+    AIGC_LABEL_ENABLED: "true",
+    AIGC_LABEL_TEXT: "本直播由AI数字人生成",
+    AIGC_LABEL_POSITION: "top-right"
   });
 }
 
@@ -295,6 +301,58 @@ try {
   assert.equal(deprecatedRef.status, 0, `a deprecated LIVETALKING_REF must not fail the check:\n${deprecatedRef.stderr}`);
   assert.match(deprecatedRef.stderr, /WARN  LIVETALKING_REF 已废弃，镜像源码以 runtime\/open-source\.lock\.json 与子模块提交为准/, "a deprecated LIVETALKING_REF must be reported as a warning");
   await writeFile(files.runtime, runtime(validProbeTarget));
+
+  // AIGC explicit label: a production config that lacks or turns off the label, or whose console text differs
+  // from the runtime text, fails, with and without --allow-placeholders.
+  {
+    const withoutKey = (text, key) => text.split("\n").filter((line) => !line.startsWith(`${key}=`)).join("\n");
+    const replaceKey = (text, key, value) => text.split("\n").map((line) => (line.startsWith(`${key}=`) ? `${key}=${value}` : line)).join("\n");
+    const runtimeEnv = runtime(validProbeTarget);
+    const cases = [
+      ["runtime", withoutKey(runtimeEnv, "AIGC_LABEL_ENABLED"), /运行时 缺少 AIGC_LABEL_ENABLED/],
+      ["runtime", replaceKey(runtimeEnv, "AIGC_LABEL_ENABLED", "false"), /AIGC_LABEL_ENABLED 必须为 true；AIGC 显式标识不能关闭/],
+      ["runtime", replaceKey(runtimeEnv, "AIGC_LABEL_ENABLED", ""), /运行时 缺少 AIGC_LABEL_ENABLED/],
+      ["runtime", withoutKey(runtimeEnv, "AIGC_LABEL_TEXT"), /运行时 缺少 AIGC_LABEL_TEXT/],
+      ["runtime", replaceKey(runtimeEnv, "AIGC_LABEL_TEXT", ""), /运行时 的 AIGC_LABEL_TEXT 为空/],
+      ["runtime", replaceKey(runtimeEnv, "AIGC_LABEL_TEXT", "欢迎来到直播间"), /AIGC_LABEL_TEXT 没有写明内容由 AI 生成/],
+      ["runtime", replaceKey(runtimeEnv, "AIGC_LABEL_TEXT", `AI${"长".repeat(40)}`), /AIGC_LABEL_TEXT 超过 32 个字符/],
+      ["runtime", replaceKey(runtimeEnv, "AIGC_LABEL_POSITION", "center"), /AIGC_LABEL_POSITION 必须是 top-left、top-right、bottom-left、bottom-right 之一/],
+      ["runtime", withoutKey(runtimeEnv, "AIGC_LABEL_POSITION"), /运行时 缺少 AIGC_LABEL_POSITION/],
+      ["runtime", `${runtimeEnv}AIGC_LABEL_FONT_FILE=/tmp/font.ttf\n`, /不得定义 AIGC_LABEL_FONT_FILE/],
+      ["control", replaceKey(control, "AIGC_LABEL_TEXT", "AI生成"), /控制面与运行时的 AIGC_LABEL_TEXT 必须一致/],
+      ["control", withoutKey(control, "AIGC_LABEL_TEXT"), /控制面 缺少 AIGC_LABEL_TEXT/],
+      ["control", withoutKey(control, "AIGC_CONTENT_PRODUCER"), /控制面 缺少 AIGC_CONTENT_PRODUCER/],
+      ["control", replaceKey(control, "AIGC_CONTENT_PRODUCER", "replace-with-service-provider-name"), /AIGC_CONTENT_PRODUCER 仍是占位符/]
+    ];
+    for (const [file, text, pattern] of cases) {
+      await writeFile(files[file], text);
+      const rejected = check(["--require-cosyvoice"]);
+      assert.notEqual(rejected.status, 0, `AIGC label config must be rejected: ${pattern}`);
+      assert.match(rejected.stderr, pattern);
+      if (!/占位符/.test(pattern.source)) {
+        const template = check(["--require-cosyvoice", "--allow-placeholders"]);
+        assert.match(template.stderr, new RegExp(`ERROR .*${pattern.source}`), `AIGC label problems stay errors with --allow-placeholders: ${pattern}`);
+      }
+    }
+    await writeFile(files.runtime, runtimeEnv);
+    await writeFile(files.control, control);
+    assert.equal(aigcLabelTextProblem("AI生成"), null);
+    assert.equal(aigcLabelTextProblem("人工智能生成内容"), null);
+    assert.match(aigcLabelTextProblem("AI\u200b生成"), /控制字符/, "invisible format characters are refused like in shuzhiren_aigc_label.py");
+    const composeDoc = yaml.load(await readFile(path.join(root, "infra", "compose", "docker-compose.runtime.yml"), "utf8"));
+    assert.deepEqual(aigcLabelComposeProblems(composeDoc), [], "the runtime Compose must pass the AIGC label variables to LiveTalking");
+    const withoutLabel = structuredClone(composeDoc);
+    delete withoutLabel.services.livetalking.environment.AIGC_LABEL_TEXT;
+    withoutLabel.services.livetalking.environment.AIGC_LABEL_ENABLED = "true";
+    assert.deepEqual(aigcLabelComposeProblems(withoutLabel).map((message) => message.split(" ")[3]), ["livetalking.environment.AIGC_LABEL_ENABLED", "livetalking.environment.AIGC_LABEL_TEXT"], "a hard-coded or missing label variable must be reported");
+    const dockerfileText = await readFile(path.join(root, "runtime", "livetalking", "Dockerfile"), "utf8");
+    const patchText = await readFile(path.join(root, "runtime", "patches", "livetalking-aigc-label.patch"), "utf8");
+    const seriesPatches = ["livetalking-observability.patch", "livetalking-stream-secret.patch", "livetalking-local-tts.patch", "livetalking-aigc-label.patch"];
+    assert.deepEqual(aigcLabelBuildProblems({ seriesPatches, patchText, dockerfileText }), []);
+    const buildProblems = aigcLabelBuildProblems({ seriesPatches: seriesPatches.slice(0, 3), patchText: patchText.replace("combine_frame = self.aigc_label.apply(combine_frame)", "pass"), dockerfileText: dockerfileText.replace("git fonts-noto-cjk", "git").replace("COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/", "") }).join("\n");
+    for (const pattern of [/补丁序列缺少 livetalking-aigc-label\.patch/, /AIGC 标识补丁缺少挂接：combine_frame = self\.aigc_label\.apply/, /没有复制 AIGC 标识模块/, /没有安装中文字体包 fonts-noto-cjk/]) assert.match(buildProblems, pattern);
+    console.log("PASS  deployment configuration fails without an enabled AIGC label, a valid label text and position, a matching console text and a content producer");
+  }
   // L17 (39.1-39.5, 39.7): lock entries against Git fixtures, nested submodules and *_REF template rules.
   const openSourceLock = spawnSync(process.execPath, [path.join(root, "scripts", "test-open-source-lock.mjs")], { cwd: root, encoding: "utf8" });
   assert.equal(openSourceLock.status, 0, `open-source lock tests failed:\n${openSourceLock.stdout}\n${openSourceLock.stderr}`);
@@ -806,11 +864,17 @@ try {
     console.warn("SKIP  Python 3 not found; LiveTalking stream-key behavior tests not run (set PYTHON to enable)");
   } else {
     const patchedSource = path.join(fixtureDirectory, "livetalking-patched");
-    const series = checkPatchSeries({ sourceDir: path.join(root, "vendor", "LiveTalking"), seriesFile: path.join(root, "runtime", "patches", "livetalking.series"), checkoutTo: patchedSource, paths: ["app.py", "config.py", "registry.py", "utils/logger.py", "server/__init__.py", "server/routes.py", "streamout/__init__.py", "streamout/rtmp.py"] });
+    const series = checkPatchSeries({ sourceDir: path.join(root, "vendor", "LiveTalking"), seriesFile: path.join(root, "runtime", "patches", "livetalking.series"), checkoutTo: patchedSource, paths: ["app.py", "config.py", "registry.py", "utils/logger.py", "server/__init__.py", "server/routes.py", "streamout/__init__.py", "streamout/rtmp.py", "avatars/base_avatar.py"] });
     assert.deepEqual(series.failures, [], "the LiveTalking patch series must apply to the locked commit");
     const pythonTest = spawnSync(python, [path.join(root, "runtime", "livetalking", "tests", "test_stream_secret.py"), "--livetalking-source", patchedSource], { cwd: root, encoding: "utf8", timeout: 240_000 });
     assert.equal(pythonTest.status, 0, `LiveTalking stream-key behavior tests failed:\n${pythonTest.stdout}\n${pythonTest.stderr}`);
     process.stdout.write(pythonTest.stdout);
+    // AIGC explicit label: configuration and launcher tests always run; the drawing tests need numpy, Pillow and a
+    // CJK font and print SKIP without them (AIGC_LABEL_REQUIRE_IMAGING=true turns a SKIP into a failure).
+    const labelArgs = [path.join(root, "runtime", "livetalking", "tests", "test_aigc_label.py"), "--livetalking-source", patchedSource, ...(process.env.AIGC_LABEL_REQUIRE_IMAGING === "true" ? ["--require-imaging"] : [])];
+    const labelTest = spawnSync(python, labelArgs, { cwd: root, encoding: "utf8", timeout: 240_000, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
+    assert.equal(labelTest.status, 0, `LiveTalking AIGC label tests failed:\n${labelTest.stdout}\n${labelTest.stderr}`);
+    process.stdout.write(labelTest.stdout);
   }
 
   // L11: required Compose variables must name the template that defines them.

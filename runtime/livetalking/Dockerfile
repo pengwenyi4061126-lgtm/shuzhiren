@@ -4,7 +4,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/tmp
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg libgl1 libglib2.0-0 git && rm -rf /var/lib/apt/lists/*
+# fonts-noto-cjk (SIL Open Font License 1.1, THIRD_PARTY_NOTICES.md section 7) supplies the CJK glyphs of the
+# AIGC explicit label; shuzhiren_aigc_label.py reads /usr/share/fonts/opentype/noto/NotoSansCJK-*.ttc.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg libgl1 libglib2.0-0 git fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10002 livetalking && useradd --system --uid 10002 --gid 10002 --home-dir /tmp --no-create-home livetalking
 COPY vendor/LiveTalking/requirements.txt ./requirements.txt
 RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128 && python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
@@ -22,9 +24,11 @@ RUN set -eu; cr="$(printf '\r')"; \
 # Apache-2.0 4(b): ship the modification notice next to /app/LICENSE (Requirement 39.12).
 COPY runtime/patches/LIVETALKING_MODIFICATIONS.md /app/LIVETALKING_MODIFICATIONS.md
 RUN chown -R livetalking:livetalking /app
-# The launcher (PID 1) validates the stream key file and redacts LiveTalking's
-# stdout/stderr; the patched sources import shuzhiren_secrets from here.
+# The launcher (PID 1) validates the stream key file and the AIGC label and redacts
+# LiveTalking's stdout/stderr; the patched sources import shuzhiren_secrets and
+# shuzhiren_aigc_label from here.
 COPY runtime/livetalking/launcher.py runtime/livetalking/shuzhiren_secrets.py /opt/shuzhiren/
+COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/
 ENV PYTHONPATH=/opt/shuzhiren
 
 EXPOSE 8010

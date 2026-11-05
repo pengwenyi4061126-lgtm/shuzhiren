@@ -266,6 +266,74 @@ export function dockerignoreLicenseProblems({ sourceRoot, lock, hasLockedFile = 
   return errors;
 }
 
+/**
+ * Distribution packages a runtime image installs for their content (not as build tooling), with their license.
+ * fonts-noto-cjk supplies the CJK glyphs of the AIGC explicit label (runtime/livetalking/shuzhiren_aigc_label.py).
+ * Each one is declared in THIRD_PARTY_NOTICES.md; the image keeps the package's Debian copyright file.
+ */
+export const THIRD_PARTY_NOTICES_FILE = "THIRD_PARTY_NOTICES.md";
+export const IMAGE_SYSTEM_PACKAGES = Object.freeze({
+  livetalking: Object.freeze([Object.freeze({ package: "fonts-noto-cjk", license: "SIL Open Font License 1.1", copyrightFile: "/usr/share/doc/fonts-noto-cjk/copyright", licenseMarker: /SIL OPEN FONT LICENSE|OFL-1\.1/i })])
+});
+
+/** Packages of every `apt-get install` command of a Dockerfile (options and shell operators dropped). */
+export function aptInstalledPackages(dockerfileText) {
+  const packages = [];
+  for (const line of String(dockerfileText).replace(/\\\r?\n/g, " ").split(/\r?\n/)) {
+    if (/^\s*#/.test(line)) continue;
+    for (const match of line.matchAll(/apt-get\s+install\s+([^&|;]*)/g)) packages.push(...match[1].split(/\s+/).filter((word) => word && !word.startsWith("-")));
+  }
+  return packages;
+}
+
+/**
+ * Every registered package is installed by its image's Dockerfile and declared (name and license) in
+ * THIRD_PARTY_NOTICES.md, and every installed font package is registered.
+ * @param {{ sourceRoot: string, registry?: typeof IMAGE_SYSTEM_PACKAGES }} options
+ */
+export function systemPackageNoticeProblems({ sourceRoot, registry = IMAGE_SYSTEM_PACKAGES }) {
+  const errors = [];
+  let notices = "";
+  try { notices = readFileSync(path.join(sourceRoot, THIRD_PARTY_NOTICES_FILE), "utf8"); } catch { errors.push(`${THIRD_PARTY_NOTICES_FILE} 无法读取`); }
+  for (const [image, packages] of Object.entries(registry)) {
+    const dockerfile = `runtime/${image}/Dockerfile`;
+    let installed = [];
+    try { installed = aptInstalledPackages(readFileSync(path.join(sourceRoot, "runtime", image, "Dockerfile"), "utf8")); } catch { errors.push(`${dockerfile} 无法读取`); continue; }
+    for (const entry of packages) {
+      if (!installed.includes(entry.package)) errors.push(`${dockerfile} 没有安装已登记的系统软件包 ${entry.package}`);
+      const row = notices.split(/\r?\n/).find((line) => line.includes(`\`${entry.package}\``));
+      if (!row) errors.push(`${THIRD_PARTY_NOTICES_FILE} 没有声明 ${image} 镜像安装的 ${entry.package}`);
+      else if (!row.includes(entry.license)) errors.push(`${THIRD_PARTY_NOTICES_FILE} 中 ${entry.package} 的许可证必须写明“${entry.license}”`);
+    }
+    for (const name of installed.filter((candidate) => /^fonts-/.test(candidate))) {
+      if (!packages.some((entry) => entry.package === name)) errors.push(`${dockerfile} 安装的字体包 ${name} 没有登记许可证（IMAGE_SYSTEM_PACKAGES 与 ${THIRD_PARTY_NOTICES_FILE}）`);
+    }
+  }
+  return errors;
+}
+
+/**
+ * Each registered package's Debian copyright file is in the built image and names the declared license.
+ * @param {{ images: Record<string, string|undefined>, readImageFile: Function, registry?: typeof IMAGE_SYSTEM_PACKAGES }} options
+ * @returns {string[]} `IMAGE-FILE <image> <path> <reason>` lines.
+ */
+export function checkImageSystemPackages({ images, readImageFile, registry = IMAGE_SYSTEM_PACKAGES }) {
+  const errors = [];
+  for (const [name, packages] of Object.entries(registry)) {
+    const image = images[name];
+    if (!image) continue;
+    for (const entry of packages) {
+      let text;
+      try { text = Buffer.from(readImageFile(image, entry.copyrightFile)).toString("utf8"); } catch (error) {
+        errors.push(`IMAGE-FILE ${image} ${entry.copyrightFile} 镜像中缺少 ${entry.package} 的版权文件（${error instanceof Error ? error.message.split("\n")[0] : String(error)}）`);
+        continue;
+      }
+      if (!entry.licenseMarker.test(text)) errors.push(`IMAGE-FILE ${image} ${entry.copyrightFile} 没有写明 ${entry.license}`);
+    }
+  }
+  return errors;
+}
+
 /** The LiveTalking Dockerfile copies the modification notice to IMAGE_NOTICE_FILE. */
 export function dockerfileNoticeProblems(sourceRoot) {
   const dockerfile = readFileSync(path.join(sourceRoot, "runtime", "livetalking", "Dockerfile"), "utf8");

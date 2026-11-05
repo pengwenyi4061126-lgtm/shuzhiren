@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { listAssets, requiredLiveAssetKinds, type AssetApproval, type AssetKind } from "@/lib/assets";
 import { CANONICAL_JSON_RULE_VERSION, CANONICAL_JSON_RULE_VERSIONS, CanonicalJsonError, canonicalJson, type CanonicalJsonRuleVersion } from "@/lib/canonical-json.mjs";
+import { aigcLabelMetadata, isAigcLabelMetadata, type AigcLabelMetadata } from "@/lib/aigc-label";
 import { findApprovedProductVersion, type ProductFacts } from "@/lib/catalog";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
@@ -23,6 +24,9 @@ export type RunReleaseManifest = {
   policy: FrozenPolicy | null;
   models: FrozenModel[];
   assets: FrozenAsset[];
+  // AIGC implicit label (explicit label text and state, content producer, content id). Sealed into the snapshot
+  // when the run is created and read back from it; absent for snapshots sealed before the label existed.
+  aigc?: AigcLabelMetadata;
   sha256: string;
   frozenSha256?: string;
   frozenSnapshotVerified?: boolean;
@@ -99,7 +103,8 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
     product: row.product_id && row.product_revision && row.product_approval && row.external_sku && row.product_name && isProductFacts(row.product_facts) ? { id: row.product_id, revision: row.product_revision, approval: row.product_approval, externalSku: row.external_sku, name: row.product_name, facts: row.product_facts } : null,
     policy: row.policy_id && row.policy_name && row.policy_version && row.policy_approval && row.policy_evidence_ref !== null && row.policy_validation_summary !== null ? { id: row.policy_id, name: row.policy_name, version: row.policy_version, approval: row.policy_approval, evidenceRef: row.policy_evidence_ref, validationSummary: row.policy_validation_summary } : null,
     models: models.rows.map((model) => ({ id: model.id, component: model.component, name: model.name, version: model.version, approval: model.approval_status, sourceCommit: model.source_commit, artifactHash: model.artifact_hash, evidenceRef: model.evidence_ref })),
-    assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ?? undefined, objectKey: asset.object_key, checksum: asset.checksum, runtimeVoiceId: asset.runtime_voice_id ?? undefined, rightsScope: asset.rights_scope, source: asset.source_ref }))
+    assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ?? undefined, objectKey: asset.object_key, checksum: asset.checksum, runtimeVoiceId: asset.runtime_voice_id ?? undefined, rightsScope: asset.rights_scope, source: asset.source_ref })),
+    aigc: frozenAigc(row.frozen_manifest, row.run_id)
   });
   const frozenSnapshotVerified = row.frozen_manifest_sha256 && isRecord(row.frozen_manifest) ? releaseManifestSnapshotMatches(row.frozen_manifest, row.frozen_manifest_sha256) : undefined;
   return { ...manifest, frozenSha256: row.frozen_manifest_sha256 ?? undefined, frozenSnapshotVerified };
@@ -117,8 +122,29 @@ async function demoManifest(context: RequestContext, runId: string): Promise<Run
     product: product ? { id: product.id, revision: product.revision, approval: product.status, externalSku: "A-102", name: "氨基酸洁面慕斯", facts: product.facts } : null,
     policy: policy ? { id: policy.id, name: policy.name, version: policy.version, approval: policy.approval, evidenceRef: policy.evidenceRef, validationSummary: policy.validationSummary } : null,
     models: models.filter((item) => requiredProductionReleaseComponents.includes(item.component)).map((item) => ({ id: item.id, component: item.component, name: item.name, version: item.version, approval: item.approval, sourceCommit: item.sourceCommit, artifactHash: item.artifactHash, evidenceRef: item.evidenceRef })),
-    assets: assets.filter((item) => requiredLiveAssetKinds.includes(item.kind)).map((item) => ({ id: item.id, kind: item.kind, name: item.name, approval: item.approval, expiresAt: item.expiresAt, objectKey: item.objectKey, checksum: item.checksum, runtimeVoiceId: item.runtimeVoiceId, rightsScope: item.rightsScope, source: item.source }))
+    assets: assets.filter((item) => requiredLiveAssetKinds.includes(item.kind)).map((item) => ({ id: item.id, kind: item.kind, name: item.name, approval: item.approval, expiresAt: item.expiresAt, objectKey: item.objectKey, checksum: item.checksum, runtimeVoiceId: item.runtimeVoiceId, rightsScope: item.rightsScope, source: item.source })),
+    aigc: aigcLabelMetadata(runId)
   });
+}
+
+// Before the snapshot exists (sealing a new run) the label comes from the current configuration; afterwards from
+// the sealed snapshot, so the run keeps the label it was created with. A snapshot sealed before the label existed
+// has no aigc member and the manifest keeps none (its hash is unchanged).
+function frozenAigc(frozenManifest: unknown, runId: string): AigcLabelMetadata | undefined {
+  if (!isRecord(frozenManifest)) return aigcLabelMetadata(runId);
+  return isAigcLabelMetadata(frozenManifest.aigc) ? frozenManifest.aigc : undefined;
+}
+
+/** The AIGC label text sealed in the run's current release manifest snapshot, or undefined (legacy snapshot or none). */
+export async function frozenAigcLabelTextInTransaction(client: PoolClient, runId: string): Promise<string | undefined> {
+  return (await frozenAigcLabelMetadataInTransaction(client, runId))?.explicitLabel.text;
+}
+
+/** The AIGC label metadata sealed for a run, for recording evidence; null for a legacy snapshot without it. */
+export async function frozenAigcLabelMetadataInTransaction(client: PoolClient, runId: string): Promise<AigcLabelMetadata | null> {
+  const result = await client.query<{ aigc: unknown }>("select snapshot.manifest->'aigc' as aigc from live_runs r join show_revision_release_manifest_snapshots snapshot on snapshot.show_revision_id = r.show_revision_id where r.id = $1", [runId]);
+  const aigc = result.rows[0]?.aigc;
+  return isAigcLabelMetadata(aigc) ? aigc : null;
 }
 
 function hashedManifest(manifest: Omit<RunReleaseManifest, "sha256" | "frozenSha256" | "frozenSnapshotVerified">): RunReleaseManifest {

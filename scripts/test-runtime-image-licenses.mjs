@@ -8,8 +8,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ADDED_COMMENT, checkImageLicenseFiles, diffFileSets, dockerfileNoticeProblems, dockerignoreLicenseProblems, HEADER_COMMENT, IMAGE_NOTICE_FILE, NOTICE_FILE,
-  parseNoticeFileSet, parsePatchFileSet, patchedHeaderProblems, patchSeriesFileSet, renderNoticeTables, verifyLiveTalkingNotice
+  ADDED_COMMENT, aptInstalledPackages, checkImageLicenseFiles, checkImageSystemPackages, diffFileSets, dockerfileNoticeProblems, dockerignoreLicenseProblems, HEADER_COMMENT, IMAGE_NOTICE_FILE, NOTICE_FILE,
+  parseNoticeFileSet, parsePatchFileSet, patchedHeaderProblems, patchSeriesFileSet, renderNoticeTables, systemPackageNoticeProblems, verifyLiveTalkingNotice
 } from "./lib/runtime-image-licenses.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -209,6 +209,29 @@ try {
   shippedNotice.set("cv:/opt/CosyVoice/CosyVoice/NOTICE", "CosyVoice NOTICE\n");
   assert.deepEqual(imageCheck(shippedNotice, withNotice), [], "a shipped NOTICE passes");
   assert.deepEqual(checkImageLicenseFiles({ lock: { components: [{ name: "Other", path: "vendor/Other", commit: "5".repeat(40), images: ["x"] }] }, notice: [], images: { livetalking: "lt" }, readImageFile: () => Buffer.alloc(0), readLockedFile: () => null, readRepoFile: () => Buffer.alloc(0) }), ["IMAGE-FILE - vendor/Other 锁条目 Other 没有登记镜像内源码路径（IMAGE_SOURCE_ROOTS）"], "an image component without a known image path is reported");
+
+  // Distribution packages installed for their content (the AIGC label font) are declared with their license.
+  assert.deepEqual(aptInstalledPackages("# apt-get install commented\nRUN apt-get update && apt-get install -y --no-install-recommends python3 \\\n  fonts-noto-cjk git && rm -rf /x\n"), ["python3", "fonts-noto-cjk", "git"]);
+  const packageSource = path.join(fixture, "packages");
+  await mkdir(path.join(packageSource, "runtime", "livetalking"), { recursive: true });
+  const writePackageFixture = async (dockerfile, notices) => {
+    await writeFile(path.join(packageSource, "runtime", "livetalking", "Dockerfile"), dockerfile);
+    await writeFile(path.join(packageSource, "THIRD_PARTY_NOTICES.md"), notices);
+  };
+  const fontRow = "| `fonts-noto-cjk` | livetalking | SIL Open Font License 1.1 |\n";
+  await writePackageFixture("RUN apt-get install -y fonts-noto-cjk\n", fontRow);
+  assert.deepEqual(systemPackageNoticeProblems({ sourceRoot: packageSource }), [], "an installed and declared font package passes");
+  await writePackageFixture("RUN apt-get install -y git\n", "");
+  assert.deepEqual(systemPackageNoticeProblems({ sourceRoot: packageSource }), ["runtime/livetalking/Dockerfile 没有安装已登记的系统软件包 fonts-noto-cjk", "THIRD_PARTY_NOTICES.md 没有声明 livetalking 镜像安装的 fonts-noto-cjk"], "a missing font package and a missing declaration are reported");
+  await writePackageFixture("RUN apt-get install -y fonts-noto-cjk fonts-wqy-zenhei\n", "| `fonts-noto-cjk` | livetalking | OFL |\n");
+  assert.deepEqual(systemPackageNoticeProblems({ sourceRoot: packageSource }), ["THIRD_PARTY_NOTICES.md 中 fonts-noto-cjk 的许可证必须写明“SIL Open Font License 1.1”", "runtime/livetalking/Dockerfile 安装的字体包 fonts-wqy-zenhei 没有登记许可证（IMAGE_SYSTEM_PACKAGES 与 THIRD_PARTY_NOTICES.md）"], "a wrong license and an unregistered font package are reported");
+  const copyright = "/usr/share/doc/fonts-noto-cjk/copyright";
+  const packageImage = (text) => checkImageSystemPackages({ images: { livetalking: "lt" }, readImageFile: (image, file) => { if (text === null || file !== copyright) throw new Error(`cat: ${file}: No such file or directory`); return Buffer.from(text); } });
+  assert.deepEqual(packageImage("Files: *\nLicense: OFL-1.1\n SIL OPEN FONT LICENSE Version 1.1\n"), [], "an image with the font's copyright file passes");
+  assert.deepEqual(packageImage(null), [`IMAGE-FILE lt ${copyright} 镜像中缺少 fonts-noto-cjk 的版权文件（cat: ${copyright}: No such file or directory）`]);
+  assert.deepEqual(packageImage("License: GPL\n"), [`IMAGE-FILE lt ${copyright} 没有写明 SIL Open Font License 1.1`]);
+  assert.deepEqual(checkImageSystemPackages({ images: { cosyvoice: "cv" }, readImageFile: () => { throw new Error("not read"); } }), [], "only the given image is checked");
+  assert.deepEqual(systemPackageNoticeProblems({ sourceRoot: root }), [], "the repository declares every registered image package");
 
   // CLI: no mode is a usage error.
   const cli = path.join(root, "scripts", "check-runtime-image-licenses.mjs");

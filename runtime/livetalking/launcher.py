@@ -13,6 +13,11 @@ Usage: python3 /opt/shuzhiren/launcher.py <command> [args...]
    by native code (FFmpeg/python_rtmpstream) outside Python logging.
 4. SIGTERM, SIGINT and SIGHUP are forwarded; the launcher exits with the child's
    status (128 + N when the child is killed by signal N).
+5. When the command runs LiveTalking's app.py, the AIGC label configuration
+   (AIGC_LABEL_* environment, CJK font, numpy and Pillow) is validated and a
+   test frame is labelled first; a disabled, invalid or undrawable label exits
+   with 78 before LiveTalking starts (shuzhiren_aigc_label.py). The patched
+   LiveTalking checks the same configuration again in-process.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import subprocess
 import sys
 import threading
 
+from shuzhiren_aigc_label import AIGC_LABEL_EXIT_CODE, AigcLabelError, AigcLabelRenderer, config_from_env
 from shuzhiren_secrets import STREAM_KEY_FILE_EXIT_CODE, StreamKeyFileError, StreamRedactor, join_push_url, load_stream_key, secret_variants
 
 DEFAULT_COMMAND = ["python3", "app.py"]
@@ -62,8 +68,22 @@ def pump(source, sink, redactor: StreamRedactor) -> None:
         source.close()
 
 
+def runs_livetalking_app(args: list[str]) -> bool:
+    """True when the command starts LiveTalking's server (an app.py argument), the only command that streams."""
+    return any(os.path.basename(arg) == "app.py" for arg in args)
+
+
 def main(argv: list[str]) -> int:
     command = argv or DEFAULT_COMMAND
+    if runs_livetalking_app(command):
+        try:
+            label = AigcLabelRenderer(config_from_env()).config
+        except AigcLabelError as error:
+            sys.stderr.buffer.write(f"ERROR {error}\n".encode("utf-8"))
+            sys.stderr.flush()
+            return AIGC_LABEL_EXIT_CODE
+        sys.stdout.buffer.write(f"INFO AIGC label enabled: text={label.text!r} position={label.position} font={os.path.basename(label.font_file or '')}\n".encode("utf-8"))
+        sys.stdout.flush()
     secrets: list[str] = []
     key_file = option_value(command, "--stream_key_file")
     if key_file is not None:

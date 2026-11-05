@@ -18,7 +18,8 @@ import { createGroundedResponseDraft, type ResponseDraft } from "@/lib/response-
 import { createSpeechCommand } from "@/lib/speech-protocol";
 import { assertLiveActivationAllowed } from "@/lib/entitlements";
 import { activePolicyProfileStatusForRun, activePolicyProfileStatusForRunInTransaction, latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
-import { createReleaseManifestSnapshotInTransaction } from "@/lib/release-manifest";
+import { createReleaseManifestSnapshotInTransaction, frozenAigcLabelTextInTransaction } from "@/lib/release-manifest";
+import { aigcLabelText, evaluateAigcLabelReadiness } from "@/lib/aigc-label";
 import type { PolicyRule } from "@/lib/policy-engine";
 
 export type StoredRun = LiveRun & {
@@ -262,15 +263,16 @@ function getDemoRun(context: RequestContext, runId: string) {
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
   if (databasePool()) return withTenantTransaction(context.tenantId, async (client) => evaluateRunPreflightInTransaction(client, context, run), { readOnly: true });
-  const [channel, runtime, policyProfile, modelRelease, mediaAssets, product] = await Promise.all([
+  const [channel, runtime, policyProfile, modelRelease, mediaAssets, product, aigcLabel] = await Promise.all([
     validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled }),
     evaluateRuntimeReadiness(context, run.id),
     activePolicyProfileStatusForRun(context, run.id),
     activeModelReleaseStatus(context, run.revisionId),
     activeMediaAssetStatus(context, run.revisionId),
-    frozenProductVersionStatusForRun(context, run.id, run.productVersionId)
+    frozenProductVersionStatusForRun(context, run.id, run.productVersionId),
+    evaluateAigcLabelReadiness()
   ]);
-  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id) });
+  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aigcLabel, hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id) });
 }
 
 // Reads every preflight input on the caller's client, one query at a time, so
@@ -285,7 +287,9 @@ export async function evaluateRunPreflightInTransaction(client: PoolClient, cont
   const mediaAssets = await activeMediaAssetStatusInTransaction(client, run.revisionId);
   const product = await frozenProductVersionStatusForRunInTransaction(client, run.id);
   const hasFallbackProgram = await hasApprovedFallbackProgramInTransaction(client, context, run.id);
-  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, hasFallbackProgram });
+  // The run's sealed label text (release manifest snapshot), then the Gateway health with a bounded timeout.
+  const aigcLabel = await evaluateAigcLabelReadiness(await frozenAigcLabelTextInTransaction(client, run.id) ?? aigcLabelText());
+  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aigcLabel, hasFallbackProgram });
 }
 
 type RunPreflightInputs = {
@@ -295,10 +299,11 @@ type RunPreflightInputs = {
   modelRelease: { active: boolean; detail: string };
   mediaAssets: { active: boolean; detail: string };
   product: { active: boolean; detail: string };
+  aigcLabel: { passed: boolean; detail: string };
   hasFallbackProgram: boolean;
 };
 
-function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, hasFallbackProgram }: RunPreflightInputs) {
+function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aigcLabel, hasFallbackProgram }: RunPreflightInputs) {
   return evaluatePreflight({
     ...run,
     hasApprovedRights: mediaAssets.active,
@@ -317,7 +322,9 @@ function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, 
     outputReady: runtime.passed,
     outputDetail: runtime.passed ? runtime.detail : `运行时探针未通过：${runtime.detail}`,
     runtimeSessionReady: Boolean(run.runtimeSessionId),
-    runtimeSessionDetail: run.runtimeSessionId ? `已绑定运行时会话 ${run.runtimeSessionId}` : "尚未绑定 LiveTalking 运行时会话"
+    runtimeSessionDetail: run.runtimeSessionId ? `已绑定运行时会话 ${run.runtimeSessionId}` : "尚未绑定 LiveTalking 运行时会话",
+    aigcLabelReady: aigcLabel.passed,
+    aigcLabelDetail: aigcLabel.detail
   });
 }
 

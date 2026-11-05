@@ -35,3 +35,11 @@ LiveTalking 以 Apache License 2.0 发布，许可证全文随镜像位于 `/app
 | avatars/base_avatar.py | 修改 |
 | config.yaml | 修改 |
 | tts/none_tts.py | 新增 |
+
+## runtime/patches/livetalking-aigc-label.patch
+摘要：按《人工智能生成合成内容标识办法》在每一帧推流和录制画面上叠加 AIGC 显式标识（默认文字「本直播由AI数字人生成」，文字与角落位置由 `AIGC_LABEL_TEXT`、`AIGC_LABEL_POSITION` 配置，没有关闭开关）。绘制函数来自镜像中的 `/opt/shuzhiren/shuzhiren_aigc_label.py`；会话初始化时标识配置、中文字体或绘制依赖不可用则会话无法创建，单帧绘制失败时该帧被丢弃而不是无标识推出。新增只读接口 `GET /api/admin/aigc-label`，`GET /api/admin/runtime-metrics` 另返回 `aigc_label`（启用状态、文字、位置、已标识帧数、丢弃帧数、最后错误类别）。
+
+| 文件 | 操作 |
+| --- | --- |
+| avatars/base_avatar.py | 修改 |
+| server/routes.py | 修改 |

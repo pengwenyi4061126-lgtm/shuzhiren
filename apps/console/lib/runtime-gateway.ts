@@ -21,11 +21,19 @@ function runtimeGatewayRequestTimeoutMs() {
   return value;
 }
 
-export async function runtimeGatewayHealth() {
+/** True when the console runs without a Runtime Gateway (development only; production configuration throws). */
+export function runtimeGatewayDemoMode() {
+  return runtimeGatewayConfig().demoMode;
+}
+
+// options.timeoutMs caps the request below RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS; options.acceptDegraded also returns
+// the body of a 503 degraded answer (the AIGC label preflight reads dependencies.livetalking.aigc_label from it).
+export async function runtimeGatewayHealth(options: { timeoutMs?: number; acceptDegraded?: boolean } = {}) {
   const config = runtimeGatewayConfig();
   if (config.demoMode) return { status: "demo" as const };
-  const response = await fetch(`${config.url}/healthz`, { cache: "no-store", signal: AbortSignal.timeout(config.requestTimeoutMs) });
-  if (!response.ok) throw new Error(`Runtime gateway health check failed: ${response.status}`);
+  const timeoutMs = options.timeoutMs === undefined ? config.requestTimeoutMs : Math.max(1, Math.min(config.requestTimeoutMs, Math.floor(options.timeoutMs)));
+  const response = await fetch(`${config.url}/healthz`, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok && !(options.acceptDegraded && response.status === 503)) throw new Error(`Runtime gateway health check failed: ${response.status}`);
   let body: unknown;
   try { body = await response.json(); } catch { throw new Error("runtime_gateway_health_invalid_json"); }
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("runtime_gateway_health_not_object");

@@ -5,8 +5,11 @@
 //                        the lock and the patch series, every modified or added LiveTalking file carries the header
 //                        comment after the series is applied to the locked commit (throw-away index), the
 //                        LiveTalking Dockerfile copies the notice into the image, and no Dockerfile.dockerignore
-//                        drops a copied component's LICENSE or NOTICE.
-//   --livetalking-image  reads /app/LICENSE, /app/LIVETALKING_MODIFICATIONS.md and the patched files from the image.
+//                        drops a copied component's LICENSE or NOTICE. Registered distribution packages
+//                        (IMAGE_SYSTEM_PACKAGES: fonts-noto-cjk) are installed and declared with their license in
+//                        THIRD_PARTY_NOTICES.md, and every installed fonts-* package is registered.
+//   --livetalking-image  reads /app/LICENSE, /app/LIVETALKING_MODIFICATIONS.md and the patched files from the image,
+//                        and /usr/share/doc/fonts-noto-cjk/copyright (it must name the SIL Open Font License 1.1).
 //   --cosyvoice-image    reads the CosyVoice and Matcha-TTS LICENSE files from the image.
 // Image files are read with `docker run --rm --entrypoint cat <image> <path>` and compared byte for byte with
 // `git cat-file blob <commit>:LICENSE` of each locked component and with the repository's notice file. CI runs the
@@ -18,7 +21,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  checkImageLicenseFiles, dockerfileNoticeProblems, dockerignoreLicenseProblems, lockedFile, NOTICE_FILE, parseNoticeFileSet, patchedHeaderProblems, verifyLiveTalkingNotice
+  checkImageLicenseFiles, checkImageSystemPackages, dockerfileNoticeProblems, dockerignoreLicenseProblems, lockedFile, NOTICE_FILE, parseNoticeFileSet, patchedHeaderProblems, systemPackageNoticeProblems, verifyLiveTalkingNotice
 } from "./lib/runtime-image-licenses.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -64,7 +67,8 @@ if (lock && options.static) {
     ...verifyLiveTalkingNotice({ sourceRoot, lock }),
     ...patchedHeaderProblems({ sourceRoot, entries: notice }),
     ...dockerfileNoticeProblems(sourceRoot),
-    ...dockerignoreLicenseProblems({ sourceRoot, lock })
+    ...dockerignoreLicenseProblems({ sourceRoot, lock }),
+    ...systemPackageNoticeProblems({ sourceRoot })
   ];
   problems.push(...messages.map((message) => `ERROR ${message}`));
 }
@@ -79,6 +83,7 @@ if (lock && (options.livetalking || options.cosyvoice)) {
     readLockedFile: (component, file) => lockedFile(sourceRoot, component, file),
     readRepoFile: (file) => readFileSync(path.join(sourceRoot, ...file.split("/")))
   }));
+  problems.push(...checkImageSystemPackages({ images: { livetalking: options.livetalking, cosyvoice: options.cosyvoice }, readImageFile }));
 }
 
 if (problems.length) {

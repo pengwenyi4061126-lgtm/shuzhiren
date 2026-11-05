@@ -131,6 +131,8 @@ try {
       RUNTIME_SHARED_TOKEN: gatewayToken,
       RUNTIME_GATEWAY_DEMO_MODE: "false",
       RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
+      AIGC_LABEL_TEXT: "本直播由AI数字人生成",
+      AIGC_CONTENT_PRODUCER: "Integration Operator",
       MEDIA_EVIDENCE_VERIFIER_URL: mock.baseUrl,
       MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
       MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
@@ -355,6 +357,7 @@ try {
   assert.match(manifest.data.sha256, /^[a-f0-9]{64}$/, "release manifest must include a reproducible SHA-256 evidence hash");
   assert.equal(manifest.data.frozenSha256, manifest.data.sha256, "new runs must seal their creation manifest hash");
   assert.equal(manifest.data.frozenSnapshotVerified, true, "the stored release manifest snapshot must verify against its hash");
+  assert.deepEqual(manifest.data.aigc, { standard: "GB 45438-2025", explicitLabel: { enabled: true, text: "本直播由AI数字人生成" }, contentProducer: "Integration Operator", contentId: `live-run:${createdRun.data.id}` }, "the sealed release manifest must carry the AIGC implicit label");
   await assert.rejects(client.query("update show_revision_release_manifest_snapshots set manifest = '{}'::jsonb where show_revision_id = (select show_revision_id from live_runs where id = $1)", [createdRun.data.id]), /append-only/, "release manifest snapshots must reject direct mutation");
   const approveInitialProgram = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "approve" }) });
   assert.equal(approveInitialProgram.status, 200, "an approved program should advance its run to APPROVED");
@@ -623,6 +626,7 @@ try {
   const recordingRegisteredBody = await recordingRegistered.json();
   assert.equal(recordingRegisteredBody.data.contentVerification.objectVersion, "integration-recording-version-1", "recording registration must preserve the verifier-bound object version");
   assert.match(recordingRegisteredBody.data.contentVerification.evidenceRef, /^evidence:\/\/integration\/recording\//, "recording registration must preserve verifier-issued evidence");
+  assert.equal(recordingRegisteredBody.data.aigcLabel, null, "a recording of a run sealed without AIGC label metadata keeps its label columns null instead of inventing them");
   const recordingRetry = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify(recordingInput) });
   assert.equal(recordingRetry.status, 200, "recording evidence retries must be idempotent");
   const recordingConflict = await fetch(`http://127.0.0.1:${consolePort}/api/v1/runtime/recordings`, { method: "POST", headers: recordingHeaders, body: JSON.stringify({ ...recordingInput, checksumSha256: "b".repeat(64) }) });
@@ -1544,6 +1548,8 @@ async function startMockServer() {
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/jwks") return json(response, 200, { keys: [jwk] });
+    // As the Runtime Gateway /healthz with LiveTalking drawing the AIGC label (preflight check aigc_label).
+    if (url.pathname === "/healthz" && request.method === "GET") return json(response, 200, { status: "ok", dependencies: { livetalking: { available: true, aigc_label: { enabled: true, reported: true, text: "本直播由AI数字人生成", position: "top-right", frames_labelled: 25, last_error: null } } } });
     if ((url.pathname === "/v1/observations/0" || url.pathname === "/v1/observations/session_frozen_rights") && request.method === "GET") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
       return json(response, 200, { session: { id: url.pathname.split("/").at(-1), active: true } });

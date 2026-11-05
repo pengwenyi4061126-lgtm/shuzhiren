@@ -1,0 +1,77 @@
+diff --git a/avatars/base_avatar.py b/avatars/base_avatar.py
+index 547f2e0..2753870 100644
+--- a/avatars/base_avatar.py
++++ b/avatars/base_avatar.py
+@@ -48,6 +48,8 @@ from fractions import Fraction
+ 
+ from utils.logger import logger
+ from utils.image import read_imgs,mirror_index
++# Shuzhiren: AIGC explicit label, /opt/shuzhiren/shuzhiren_aigc_label.py in the image.
++import shuzhiren_aigc_label
+ 
+ # class State(Enum):
+ #     INIT=0
+@@ -81,6 +83,8 @@ class BaseAvatar:
+             "last_output_error": None,
+         }
+         self.width = self.height = 0
++        # Every pushed and recorded frame carries the AIGC label; a session cannot start without it.
++        self.aigc_label = shuzhiren_aigc_label.process_renderer()
+ 
+         self.custom_audiotype = 0 # 0: normal, 1: sinlence, >1: custom audio
+         self.custom_img_cycle = {}
+@@ -461,6 +465,13 @@ class BaseAvatar:
+                     combine_frame = current_frame
+ 
+             cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
++            # Shuzhiren: draw the AIGC label on a copy (combine_frame may be a cached avatar frame).
++            # A frame that cannot be labelled is dropped, never pushed or recorded without the label.
++            try:
++                combine_frame = self.aigc_label.apply(combine_frame)
++            except Exception as e:
++                logger.error(f"AIGC label failed, frame dropped: {type(e).__name__}")
++                continue
+             
+             # 使用统一输出接口推送视频帧
+             self.output.push_video_frame(combine_frame)
+diff --git a/server/routes.py b/server/routes.py
+index 1848e4a..17b0aa6 100644
+--- a/server/routes.py
++++ b/server/routes.py
+@@ -9,6 +9,7 @@ from aiohttp import web
+ 
+ from utils.logger import logger
+ from shuzhiren_secrets import redact_text, redacted_options_dict
++import shuzhiren_aigc_label
+ 
+ 
+ # ─── 路由工具函数 ──────────────────────────────────────────────────────────
+@@ -241,11 +242,19 @@ async def admin_runtime_metrics(request):
+                     "recording": getattr(avatar_session, 'recording', False),
+                     "metrics": getattr(avatar_session, 'runtime_metrics', {}),
+                 })
+-        return json_ok(data={"sessions": sessions_info})
++        return json_ok(data={"sessions": sessions_info, "aigc_label": shuzhiren_aigc_label.status()})
+     except Exception as e:
+         logger.exception('admin_runtime_metrics exception:')
+         return json_error(str(e))
+ 
++async def admin_aigc_label(request):
++    """Admin: AIGC explicit label state of this process (enabled, text, position, frame counters)."""
++    try:
++        return json_ok(data=shuzhiren_aigc_label.status())
++    except Exception as e:
++        logger.exception('admin_aigc_label exception:')
++        return json_error(str(e))
++
+ 
+ # ─── 路由注册 ──────────────────────────────────────────────────────────────
+ 
+@@ -272,6 +281,7 @@ def setup_routes(app):
+     app.router.add_get("/api/admin/config", admin_config)
+     app.router.add_get("/api/admin/sessions", admin_sessions)
+     app.router.add_get("/api/admin/runtime-metrics", admin_runtime_metrics)
++    app.router.add_get("/api/admin/aigc-label", admin_aigc_label)
+     app.router.add_get('/sse', sse_handler)
+ 
+     # ── Local ASR endpoint (SenseVoice/FunASR) ── Issue #604 ──

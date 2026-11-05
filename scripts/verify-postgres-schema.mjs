@@ -47,6 +47,9 @@ requiredPolicies.push("tenant_isolation_membership_admin_guards");
 requiredTables.push("runtime_presets");
 requiredColumns.runtime_presets = ["kind", "preset_code", "display_name", "compatible_model_kind", "runtime_ref", "license_name", "license_source_url", "commercial_use_status", "enabled", "created_at"];
 const requiredConstraints = new Map([["schema_migrations_checksum_format", true], ["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true], ["show_revision_segments_runtime_script_length", true]]);
+// 083: recording evidence keeps the AIGC label metadata (explicit label state and text, content producer, content id).
+requiredColumns.recording_evidence = [...(requiredColumns.recording_evidence ?? []), "aigc_label_enabled", "aigc_label_text", "aigc_content_producer", "aigc_content_id"];
+requiredConstraints.set("recording_evidence_aigc_label_check", true);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.

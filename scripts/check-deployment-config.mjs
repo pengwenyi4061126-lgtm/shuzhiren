@@ -7,6 +7,7 @@ import { parseObserverTargets } from "../apps/runtime-observer/targets.mjs";
 import yaml from "js-yaml";
 // Release manifests are signed over Canonical_JSON rule 2 (keys in code-point order, no locale dependence).
 import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
+import { aigcLabelBuildProblems, aigcLabelComposeProblems, aigcLabelEnvProblems } from "./lib/aigc-label.mjs";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
 import { checkTemplateRefVariables, deprecatedRefVariables, verifyOpenSourceLock } from "./lib/open-source-lock.mjs";
@@ -26,7 +27,8 @@ const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "vendor/LiveTalking/app.py", "vendor/LiveTalking/config.py", "vendor/LiveTalking/requirements.txt", "vendor/LiveTalking/server/routes.py", "vendor/LiveTalking/streamout/rtmp.py",
   "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch",
   "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking-local-tts.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py",
-  "vendor/LiveTalking/LICENSE", "runtime/patches/LIVETALKING_MODIFICATIONS.md"
+  "vendor/LiveTalking/LICENSE", "runtime/patches/LIVETALKING_MODIFICATIONS.md",
+  "runtime/patches/livetalking-aigc-label.patch", "runtime/livetalking/shuzhiren_aigc_label.py"
 ]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -505,6 +507,9 @@ equal(runtime, "运行时", "LIVE_MAX_CONCURRENT_AVATARS", "1");
 equal(runtime, "运行时", "LIVE_ALLOW_LLM_FREEFORM", "false");
 equal(runtime, "运行时", "LIVE_REQUIRE_HUMAN_HANDOFF_FOR_HIGH_RISK", "true");
 equal(runtime, "运行时", "LIVE_REQUIRE_AI_DISCLOSURE", "true");
+// AIGC explicit label (人工智能生成合成内容标识办法): it cannot be turned off, so these are errors with or without
+// --allow-placeholders, and the console's expected text must equal the text LiveTalking draws.
+errors.push(...aigcLabelEnvProblems({ runtime, control, allowPlaceholders }));
 equal(runtime, "运行时", "LLM_MODE", "external");
 equal(runtime, "运行时", "RUNTIME_GATEWAY_DEMO_MODE", "false");
 equal(runtime, "运行时", "STREAM_OUTPUT_MODE", "rtmp");
@@ -657,6 +662,8 @@ try {
   const series = checkPatchSeries({ sourceDir: liveTalkingSource, seriesFile: patchSeries });
   for (const required of ["livetalking-observability.patch", "livetalking-stream-secret.patch", "livetalking-local-tts.patch"]) if (!series.patches.includes(required)) errors.push(`LiveTalking 补丁序列缺少 ${required}`);
   for (const { patch, message } of series.failures) errors.push(`LiveTalking 补丁 ${patch} 无法应用到锁定提交 ${series.commit}：${message}`);
+  const aigcPatchText = await readFile(path.join(files.sourceRoot, "runtime", "patches", "livetalking-aigc-label.patch"), "utf8").catch(() => undefined);
+  errors.push(...aigcLabelBuildProblems({ seriesPatches: series.patches, patchText: aigcPatchText, dockerfileText }));
 } catch (error) {
   errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);
 }
@@ -668,6 +675,7 @@ try {
   for (const { code, message } of checkRuntimeComposeConsistency({ composeDoc: runtimeComposeDoc, envFiles }).errors) errors.push(`[${code}] ${message}`);
   for (const message of streamKeyComposeProblems(runtimeComposeDoc)) errors.push(message);
   for (const message of liveTalkingTtsComposeProblems(runtimeComposeDoc)) errors.push(message);
+  for (const message of aigcLabelComposeProblems(runtimeComposeDoc)) errors.push(message);
 } catch (error) {
   errors.push(`[RC-PARSE] 运行时 Compose 无法解析：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
 }

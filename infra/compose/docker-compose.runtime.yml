@@ -179,6 +179,11 @@ services:
     networks: [runtime-media, livetalking-egress]
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
+      # AIGC explicit label drawn on every frame; it cannot be turned off (the launcher exits 78
+      # unless AIGC_LABEL_ENABLED is true). deploy:check validates the three values.
+      AIGC_LABEL_ENABLED: ${AIGC_LABEL_ENABLED:?set-in-runtime-env}
+      AIGC_LABEL_TEXT: ${AIGC_LABEL_TEXT:?set-in-runtime-env}
+      AIGC_LABEL_POSITION: ${AIGC_LABEL_POSITION:?set-in-runtime-env}
     command: >-
       python3 app.py --transport rtmp --model musetalk --avatar_id ${LIVETALKING_AVATAR_ID:?set-in-runtime-gateway-env}
       --listenport 8010 --max_session 1 --fps ${STREAM_FPS:-25}

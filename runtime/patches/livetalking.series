@@ -4,3 +4,4 @@
 livetalking-observability.patch
 livetalking-stream-secret.patch
 livetalking-local-tts.patch
+livetalking-aigc-label.patch

@@ -8,6 +8,7 @@
 !runtime/patches/LIVETALKING_MODIFICATIONS.md
 !runtime/livetalking/launcher.py
 !runtime/livetalking/shuzhiren_secrets.py
+!runtime/livetalking/shuzhiren_aigc_label.py
 **/.git
 **/.git/**
 **/.env

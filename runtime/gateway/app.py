@@ -1192,11 +1192,22 @@ async def livetalking_step(execution: CommandExecution, step: str, call) -> None
     execution.succeeded_steps.append(step)
     execution.livetalking_succeeded = True
 
+async def livetalking_aigc_label() -> dict:
+    """Health passthrough of LiveTalking's AIGC explicit label; anything but an explicit enabled true reads as disabled."""
+    try:
+        data = await livetalking_get("/api/admin/aigc-label")
+    except HTTPException:
+        return {"enabled": False, "reported": False, "text": None, "position": None, "frames_labelled": None, "last_error": "livetalking_unavailable"}
+    label = data.get("data") if isinstance(data.get("data"), dict) else {}
+    text, position, frames, error = label.get("text"), label.get("position"), label.get("frames_labelled"), label.get("last_error")
+    return {"enabled": label.get("enabled") is True, "reported": True, "text": text if isinstance(text, str) else None, "position": position if isinstance(position, str) else None, "frames_labelled": frames if type(frames) is int else None, "last_error": error if isinstance(error, str) else None}
+
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
-    livetalking, cosyvoice = await asyncio.gather(
+    livetalking, cosyvoice, aigc_label = await asyncio.gather(
         service_health(LIVE_TALKING_URL, "/api/admin/sessions", expected_code=0),
         service_health(COSYVOICE_URL, "/openapi.json"),
+        livetalking_aigc_label(),
     )
     command_journal = await asyncio.to_thread(command_journal_status)
     status = "ok" if livetalking["available"] and (not COSYVOICE_REQUIRED or cosyvoice["available"]) and (not RUNTIME_COMMAND_JOURNAL_REQUIRED or command_journal["available"]) else "degraded"
@@ -1205,7 +1216,7 @@ async def healthz() -> JSONResponse:
         content={
             "status": status,
             "dependencies": {
-                "livetalking": livetalking,
+                "livetalking": {**livetalking, "aigc_label": aigc_label},
                 "cosyvoice": {**cosyvoice, "required": COSYVOICE_REQUIRED, "model_kind": COSYVOICE_MODEL_KIND},
                 "command_journal": command_journal,
             },
