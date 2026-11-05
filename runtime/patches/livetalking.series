@@ -3,3 +3,4 @@
 # order. Each patch is generated on top of the ones listed before it.
 livetalking-observability.patch
 livetalking-stream-secret.patch
+livetalking-local-tts.patch

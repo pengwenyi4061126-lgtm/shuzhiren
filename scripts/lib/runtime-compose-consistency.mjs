@@ -256,3 +256,65 @@ export function streamKeyComposeProblems(doc) {
   if (references.length !== 1 || references[0].name !== "STREAM_KEY_FILE" || references[0].raw !== file) problems.push("运行时 Compose 的 secrets.stream_key.file 必须是 ${STREAM_KEY_FILE…} 插值");
   return problems;
 }
+
+// POSIX-style word splitting (single quotes, double quotes, backslashes), the way Compose splits a string command.
+export function shellWords(text) {
+  const words = [];
+  let current = "";
+  let started = false;
+  let quote = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote === "'") {
+      if (character === "'") quote = null; else current += character;
+      continue;
+    }
+    if (quote === "\"") {
+      if (character === "\"") quote = null;
+      else if (character === "\\" && index + 1 < text.length && "\"\\$`".includes(text[index + 1])) current += text[++index];
+      else current += character;
+      continue;
+    }
+    if (character === "'" || character === "\"") { quote = character; started = true; continue; }
+    if (character === "\\" && index + 1 < text.length) { current += text[++index]; started = true; continue; }
+    if (/\s/.test(character)) {
+      if (started) words.push(current);
+      current = "";
+      started = false;
+      continue;
+    }
+    current += character;
+    started = true;
+  }
+  if (quote) return null;
+  if (started) words.push(current);
+  return words;
+}
+
+const LIVETALKING_TTS_OPTIONS = Object.freeze({ "--tts": "none", "--TTS_SERVER": "http://cosyvoice:50000" });
+
+// H3/D2 (15.12): LiveTalking must load no TTS plugin. Speech reaches it only as CosyVoice audio
+// through /humanaudio, so --tts is exactly "none" and --TTS_SERVER names the internal CosyVoice.
+export function liveTalkingTtsComposeProblems(doc) {
+  const command = doc?.services?.livetalking?.command;
+  const words = Array.isArray(command) ? command.map(String) : typeof command === "string" ? shellWords(command) : null;
+  if (!words) return ["LiveTalking_Runtime TTS 配置不合规：livetalking.command 缺失或引号不成对"];
+  const problems = [];
+  const seen = Object.fromEntries(Object.keys(LIVETALKING_TTS_OPTIONS).map((name) => [name, []]));
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    if (!word.startsWith("--")) continue;
+    const separator = word.indexOf("=");
+    const flag = separator < 0 ? word : word.slice(0, separator);
+    for (const name of Object.keys(LIVETALKING_TTS_OPTIONS)) {
+      if (flag === name) seen[name].push(separator < 0 ? words[index + 1] ?? "" : word.slice(separator + 1));
+      // argparse accepts any unique prefix, so --tt or --TTS_SERV would silently set the option.
+      else if (flag.length > 2 && name.startsWith(flag)) problems.push(`LiveTalking_Runtime TTS 配置不合规：${flag} 是 ${name} 的前缀缩写，argparse 会把它当作 ${name}`);
+    }
+  }
+  for (const [name, expected] of Object.entries(LIVETALKING_TTS_OPTIONS)) {
+    if (seen[name].length !== 1) problems.push(`LiveTalking_Runtime TTS 配置不合规：${name} 必须恰好出现一次，实际 ${seen[name].length} 次`);
+    else if (seen[name][0] !== expected) problems.push(`LiveTalking_Runtime TTS 配置不合规：${name} 必须为 ${expected}，实际为 ${seen[name][0] || "(空)"}`);
+  }
+  return problems;
+}

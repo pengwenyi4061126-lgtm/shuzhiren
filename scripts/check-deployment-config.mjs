@@ -10,7 +10,7 @@ import yaml from "js-yaml";
 import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
-import { checkRuntimeComposeConsistency, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
+import { checkRuntimeComposeConsistency, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 // Context-relative paths the LiveTalking image build must leave out (M23) or keep.
 const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
@@ -24,7 +24,7 @@ const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
 const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "vendor/LiveTalking/app.py", "vendor/LiveTalking/config.py", "vendor/LiveTalking/requirements.txt", "vendor/LiveTalking/server/routes.py", "vendor/LiveTalking/streamout/rtmp.py",
   "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch",
-  "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py"
+  "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking-local-tts.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py"
 ]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -348,6 +348,16 @@ if (!gateway.get("RUNTIME_GATEWAY_STATE_PATH")?.startsWith("/")) errors.push("Ga
 if (["0.0.0.0", "::", "[::]"].includes(gateway.get("RUNTIME_GATEWAY_HOST_BIND") ?? "")) errors.push("Gateway 的 RUNTIME_GATEWAY_HOST_BIND 不得使用全网卡通配监听地址");
 previewBroker(gateway);
 if (requireCosyVoice) equal(gateway, "Gateway", "COSYVOICE_REQUIRED", "true");
+// H3/D2 (15.13): the Gateway synthesizes every program script and speech command with CosyVoice.
+if (!["sft", "zero_shot"].includes(gateway.get("COSYVOICE_MODEL_KIND") ?? "")) errors.push("CosyVoice 模型类型缺失或无效：Gateway 的 COSYVOICE_MODEL_KIND 必须为 sft 或 zero_shot");
+if (!gateway.get("COSYVOICE_VOICE_LIBRARY_PATH")?.startsWith("/")) errors.push("Gateway 的 COSYVOICE_VOICE_LIBRARY_PATH 必须是已批准声线库的主机绝对路径");
+if (gateway.has("COSYVOICE_CHUNK_MAX_CHARS")) boundedPositiveInteger(gateway, "Gateway", "COSYVOICE_CHUNK_MAX_CHARS", 20, 800);
+if (gateway.has("RUNTIME_COMMAND_DEADLINE_SECONDS")) {
+  boundedPositiveInteger(gateway, "Gateway", "RUNTIME_COMMAND_DEADLINE_SECONDS", 1, 59);
+  const deadlineMs = Number(gateway.get("RUNTIME_COMMAND_DEADLINE_SECONDS")) * 1000;
+  const workerTimeoutMs = Number(runtime.get("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS"));
+  if (Number.isFinite(deadlineMs) && Number.isFinite(workerTimeoutMs) && deadlineMs >= workerTimeoutMs) errors.push("Gateway 的 RUNTIME_COMMAND_DEADLINE_SECONDS 必须小于运行时 RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS，否则 worker 会在 Gateway 仍在合成时重试");
+}
 privateSecret(runtime, "运行时", "RUNTIME_SHARED_TOKEN");
 privateSecret(gateway, "Gateway", "RUNTIME_SHARED_TOKEN");
 privateSecret(control, "控制面", "RUNTIME_SHARED_TOKEN");
@@ -598,7 +608,10 @@ try {
   const liveTalkingDockerignore = path.join(files.sourceRoot, "runtime", "livetalking", "Dockerfile.dockerignore");
   const streamSecretPatch = path.join(files.sourceRoot, "runtime", "patches", "livetalking-stream-secret.patch");
   const patchSeries = path.join(files.sourceRoot, "runtime", "patches", "livetalking.series");
-  const [patchText, streamSecretText, dockerfileText, dockerignoreText] = await Promise.all([readFile(observabilityPatch, "utf8"), readFile(streamSecretPatch, "utf8"), readFile(liveTalkingDockerfile, "utf8"), readFile(liveTalkingDockerignore, "utf8")]);
+  const localTtsPatch = path.join(files.sourceRoot, "runtime", "patches", "livetalking-local-tts.patch");
+  const [patchText, streamSecretText, localTtsText, dockerfileText, dockerignoreText] = await Promise.all([readFile(observabilityPatch, "utf8"), readFile(streamSecretPatch, "utf8"), readFile(localTtsPatch, "utf8"), readFile(liveTalkingDockerfile, "utf8"), readFile(liveTalkingDockerignore, "utf8")]);
+  // H3: --tts none loads a plugin that never synthesizes, and an unknown --tts value stops startup.
+  for (const expected of ["@register(\"tts\", \"none\")", "'none': 'tts.none_tts'", "raise ValueError(f\"unsupported --tts value: {opt.tts}\")", "+tts: none"]) if (!localTtsText.includes(expected)) errors.push(`LiveTalking 本地 TTS 补丁缺少禁用合成的挂接：${expected}`);
   if (!patchText.includes("/api/admin/runtime-metrics")) errors.push("LiveTalking 观测补丁缺少运行时指标接口");
   if (!patchText.includes("last_output_error=type(error).__name__")) errors.push("LiveTalking 观测指标不得暴露原始推流异常内容");
   // H2: the stream key is read from --stream_key_file and redacted from option logs, RTMP logs, errors and HTTP responses.
@@ -614,7 +627,7 @@ try {
   for (const file of context.missing) errors.push(`LiveTalking 镜像构建上下文缺少构建所需文件：${file}`);
   if (!dockerfileText.includes("mkdir -p /app/models /app/data/avatars /app/data/record")) errors.push("LiveTalking 镜像必须保留 /app/models、/app/data/avatars、/app/data/record 挂载点目录");
   const series = checkPatchSeries({ sourceDir: liveTalkingSource, seriesFile: patchSeries });
-  for (const required of ["livetalking-observability.patch", "livetalking-stream-secret.patch"]) if (!series.patches.includes(required)) errors.push(`LiveTalking 补丁序列缺少 ${required}`);
+  for (const required of ["livetalking-observability.patch", "livetalking-stream-secret.patch", "livetalking-local-tts.patch"]) if (!series.patches.includes(required)) errors.push(`LiveTalking 补丁序列缺少 ${required}`);
   for (const { patch, message } of series.failures) errors.push(`LiveTalking 补丁 ${patch} 无法应用到锁定提交 ${series.commit}：${message}`);
 } catch (error) {
   errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);
@@ -626,6 +639,7 @@ try {
   const envFiles = [["runtime", files.runtime, runtime], ["gateway", files.gateway, gateway], ["channelAdapter", files.channelAdapter, channelAdapter], ["alertNotifier", files.alertNotifier, alertNotifier]].map(([id, file, values]) => ({ id, path: file, values }));
   for (const { code, message } of checkRuntimeComposeConsistency({ composeDoc: runtimeComposeDoc, envFiles }).errors) errors.push(`[${code}] ${message}`);
   for (const message of streamKeyComposeProblems(runtimeComposeDoc)) errors.push(message);
+  for (const message of liveTalkingTtsComposeProblems(runtimeComposeDoc)) errors.push(message);
 } catch (error) {
   errors.push(`[RC-PARSE] 运行时 Compose 无法解析：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
 }

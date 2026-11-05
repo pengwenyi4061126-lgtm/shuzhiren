@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
 import { parseEnvFile } from "./lib/compose-interpolation.mjs";
-import { checkComposePorts, checkRuntimeComposeIsolation, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingTtsComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 const files = {
   compose: "../infra/compose/docker-compose.runtime.yml",
@@ -34,6 +34,14 @@ const portErrors = checkComposePorts(composeDoc).errors;
 if (portErrors.length) throw new Error(`Runtime Compose ports must agree between environment, expose, health checks and service URLs:\n${portErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
 const isolationErrors = checkRuntimeComposeIsolation(composeDoc).errors;
 if (isolationErrors.length) throw new Error(`Runtime Compose must keep LiveTalking and CosyVoice reachable only from runtime-gateway:\n${isolationErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
+const ttsProblems = liveTalkingTtsComposeProblems(composeDoc);
+if (ttsProblems.length) throw new Error(`Runtime Compose must start LiveTalking without a TTS plugin (speech is CosyVoice audio from runtime-gateway):\n${ttsProblems.join("\n")}`);
+const gatewayEnvironment = composeDoc.services["runtime-gateway"]?.environment ?? {};
+for (const [key, expected] of [["COSYVOICE_MODEL_KIND", "${COSYVOICE_MODEL_KIND:?set-in-runtime-gateway-env}"], ["COSYVOICE_VOICE_LIBRARY_DIR", "/run/shuzhiren/voices"], ["COSYVOICE_REQUIRED", "${COSYVOICE_REQUIRED:-true}"]]) {
+  if (gatewayEnvironment[key] !== expected) throw new Error(`Runtime Compose must pass ${key}: ${expected} to runtime-gateway`);
+}
+if (![].concat(composeDoc.services["runtime-gateway"]?.volumes ?? []).includes("${COSYVOICE_VOICE_LIBRARY_PATH:?set-in-runtime-gateway-env}:/run/shuzhiren/voices:ro")) throw new Error("Runtime Compose must mount the approved voice library read-only into runtime-gateway");
+if (!String([].concat(composeDoc.services.cosyvoice?.healthcheck?.test ?? []).join(" ")).includes("/openapi.json")) throw new Error("Runtime Compose must health-check CosyVoice through /openapi.json");
 const templates = {
   runtime: parseEnvFile(contents.runtime, "config/runtime.example.env"),
   "runtime-gateway": parseEnvFile(contents.gateway, "config/runtime-gateway.example.env"),

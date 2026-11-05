@@ -9,7 +9,7 @@ import yaml from "js-yaml";
 import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
-import { checkComposePorts, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 function findPython() {
   const requested = process.env.PYTHON?.trim();
@@ -219,6 +219,10 @@ const gateway = env({
   COSYVOICE_SAMPLE_RATE: "24000",
   COSYVOICE_MODEL_DIR: "/opt/CosyVoice/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B-2512",
   COSYVOICE_MODEL_PATH: "/srv/cosyvoice-models",
+  COSYVOICE_MODEL_KIND: "zero_shot",
+  COSYVOICE_VOICE_LIBRARY_PATH: "/srv/shuzhiren/voices",
+  COSYVOICE_CHUNK_MAX_CHARS: "120",
+  RUNTIME_COMMAND_DEADLINE_SECONDS: "15",
   MEDIA_COMMAND_CACHE_TTL_SECONDS: "3600",
   MEDIA_COMMAND_CACHE_MAX_ENTRIES: "2048",
   RUNTIME_REQUEST_TIMEOUT_SECONDS: "15",
@@ -502,6 +506,29 @@ try {
   assert.match(missingCosyVoice.stderr, /COSYVOICE_REQUIRED/, "missing CosyVoice requirement must identify the gateway gate");
   await writeFile(files.gateway, gateway);
 
+  // H3/D2 (15.13): the Gateway needs an explicit CosyVoice model kind and the approved voice library.
+  for (const kind of [null, "SFT", "zeroshot", ""]) {
+    const variant = kind === null ? gateway.replace("COSYVOICE_MODEL_KIND=zero_shot\n", "") : gateway.replace("COSYVOICE_MODEL_KIND=zero_shot", `COSYVOICE_MODEL_KIND=${kind}`);
+    assert.notEqual(variant, gateway);
+    await writeFile(files.gateway, variant);
+    for (const options of [["--require-cosyvoice"], ["--require-cosyvoice", "--allow-placeholders"]]) {
+      const invalidModelKind = check(options);
+      assert.notEqual(invalidModelKind.status, 0, `COSYVOICE_MODEL_KIND=${kind ?? "(missing)"} must be rejected`);
+      assert.match(invalidModelKind.stderr, /CosyVoice 模型类型缺失或无效/, `COSYVOICE_MODEL_KIND=${kind ?? "(missing)"} must name the model kind`);
+    }
+  }
+  for (const [from, to, pattern] of [
+    ["COSYVOICE_VOICE_LIBRARY_PATH=/srv/shuzhiren/voices", "COSYVOICE_VOICE_LIBRARY_PATH=voices", /COSYVOICE_VOICE_LIBRARY_PATH/],
+    ["COSYVOICE_CHUNK_MAX_CHARS=120", "COSYVOICE_CHUNK_MAX_CHARS=801", /COSYVOICE_CHUNK_MAX_CHARS/],
+    ["RUNTIME_COMMAND_DEADLINE_SECONDS=15", "RUNTIME_COMMAND_DEADLINE_SECONDS=20", /RUNTIME_COMMAND_DEADLINE_SECONDS 必须小于/]
+  ]) {
+    await writeFile(files.gateway, gateway.replace(from, to));
+    const invalidSynthesisSetting = check(["--require-cosyvoice"]);
+    assert.notEqual(invalidSynthesisSetting.status, 0, `${to} must be rejected`);
+    assert.match(invalidSynthesisSetting.stderr, pattern, `${to} must be reported`);
+  }
+  await writeFile(files.gateway, gateway);
+
   await writeFile(files.gateway, gateway.replace("RUNTIME_COMMAND_JOURNAL_REQUIRED=true", "RUNTIME_COMMAND_JOURNAL_REQUIRED=false"));
   const optionalCommandJournal = check(["--require-cosyvoice"]);
   assert.notEqual(optionalCommandJournal.status, 0, "production Gateway must require durable command journal storage");
@@ -649,6 +676,17 @@ try {
   const legacyProblems = streamKeyComposeProblems(legacyStreamCompose).join("\n");
   for (const pattern of [/不得插值 STREAM_KEY/, /--stream_key_file \/run\/secrets\/stream-key/, /--push_url 只能是不含推流密钥/, /stream_key, target: stream-key/, /secrets\.stream_key\.file/]) assert.match(legacyProblems, pattern, "the legacy stream key wiring must be reported");
   assert.deepEqual(streamKeyComposeProblems(runtimeComposeDoc), [], "the runtime Compose must pass the stream key only as a secret file");
+
+  // H3/D2 (15.12): LiveTalking runs without a TTS plugin; speech is CosyVoice audio from runtime-gateway.
+  assert.deepEqual(liveTalkingTtsComposeProblems(runtimeComposeDoc), [], "the runtime Compose must start LiveTalking with --tts none");
+  const baseCommand = "python3 app.py --transport rtmp --stream_key_file /run/secrets/stream-key";
+  const ttsCommand = (extra) => ({ services: { livetalking: { command: `${baseCommand} ${extra}` } } });
+  assert.deepEqual(liveTalkingTtsComposeProblems(ttsCommand("--tts none --TTS_SERVER http://cosyvoice:50000")), []);
+  assert.deepEqual(liveTalkingTtsComposeProblems(ttsCommand("--tts=none '--TTS_SERVER' \"http://cosyvoice:50000\"")), [], "quoted and --flag=value forms are the same arguments");
+  assert.deepEqual(liveTalkingTtsComposeProblems({ services: { livetalking: { command: [...baseCommand.split(" "), "--tts", "none", "--TTS_SERVER", "http://cosyvoice:50000"] } } }), [], "an array command is checked as is");
+  for (const extra of ["--TTS_SERVER http://cosyvoice:50000", "--tts edgetts --TTS_SERVER http://cosyvoice:50000", "--tts=cosyvoice --TTS_SERVER http://cosyvoice:50000", "--tts none --tts none --TTS_SERVER http://cosyvoice:50000", "--tts none --TTS_SERVER http://127.0.0.1:9880", "--tts none --TTS_SERVER ${X}", "--tts none", "--tt none --tts none --TTS_SERVER http://cosyvoice:50000", "--tts none --TTS_SERV http://cosyvoice:50000 --TTS_SERVER http://cosyvoice:50000", "--tts 'none"]) {
+    assert.match(liveTalkingTtsComposeProblems(ttsCommand(extra)).join("\n"), /LiveTalking_Runtime TTS 配置不合规/, `livetalking ${extra} must be rejected`);
+  }
   const renderedCommand = interpolate(String(runtimeComposeDoc.services.livetalking.command), new Map([["LIVETALKING_AVATAR_ID", "approved"], ["STREAM_RTMP_URL", "rtmp://ingest.internal/live"], ["STREAM_KEY", streamKey]]));
   assert.ok(!renderedCommand.includes(streamKey) && renderedCommand.includes("--stream_key_file /run/secrets/stream-key"), "a STREAM_KEY left in an env file must not reach the LiveTalking argv");
 

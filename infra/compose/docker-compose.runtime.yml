@@ -8,7 +8,12 @@ services:
       COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}
       RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
       RUNTIME_REQUEST_TIMEOUT_SECONDS: ${RUNTIME_REQUEST_TIMEOUT_SECONDS:-15}
-      COSYVOICE_REQUIRED: ${COSYVOICE_REQUIRED:-false}
+      # Every program script and speech command is synthesized by CosyVoice (D2).
+      COSYVOICE_REQUIRED: ${COSYVOICE_REQUIRED:-true}
+      COSYVOICE_MODEL_KIND: ${COSYVOICE_MODEL_KIND:?set-in-runtime-gateway-env}
+      COSYVOICE_VOICE_LIBRARY_DIR: /run/shuzhiren/voices
+      COSYVOICE_CHUNK_MAX_CHARS: ${COSYVOICE_CHUNK_MAX_CHARS:-120}
+      RUNTIME_COMMAND_DEADLINE_SECONDS: ${RUNTIME_COMMAND_DEADLINE_SECONDS:-15}
       MEDIA_COMMAND_CACHE_TTL_SECONDS: ${MEDIA_COMMAND_CACHE_TTL_SECONDS:-3600}
       MEDIA_COMMAND_CACHE_MAX_ENTRIES: ${MEDIA_COMMAND_CACHE_MAX_ENTRIES:-2048}
       RUNTIME_COMMAND_JOURNAL_PATH: /var/lib/shuzhiren-runtime/commands.sqlite3
@@ -27,6 +32,8 @@ services:
       - "${RUNTIME_GATEWAY_HOST_BIND:-127.0.0.1}:8090:8090"
     volumes:
       - ${RUNTIME_GATEWAY_STATE_PATH:?set-in-runtime-gateway-env}:/var/lib/shuzhiren-runtime
+      # Approved zero-shot reference material: <runtime_voice_id>/prompt.wav and prompt.txt.
+      - ${COSYVOICE_VOICE_LIBRARY_PATH:?set-in-runtime-gateway-env}:/run/shuzhiren/voices:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz', timeout=3).read()"]
       interval: 10s
@@ -172,6 +179,9 @@ services:
       python3 app.py --transport rtmp --model musetalk --avatar_id ${LIVETALKING_AVATAR_ID:?set-in-runtime-gateway-env}
       --listenport 8010 --max_session 1 --fps ${STREAM_FPS:-25}
       --push_url ${STREAM_RTMP_URL:?set-in-runtime-env} --stream_key_file /run/secrets/stream-key
+      --tts none --TTS_SERVER http://cosyvoice:50000
+    # --tts none: LiveTalking loads no speech synthesizer (no edge-tts). runtime-gateway
+    # synthesizes with CosyVoice and injects the audio through /humanaudio.
     # The stream key never enters argv, the environment or rendered Compose: it is a
     # read-only file that the image launcher validates and LiveTalking appends to
     # --push_url in memory (logs and HTTP responses are redacted).
@@ -206,6 +216,13 @@ services:
       - ${COSYVOICE_MODEL_PATH:?set-in-runtime-gateway-env}:/opt/CosyVoice/CosyVoice/pretrained_models:ro
     expose:
       - "50000"
+    # The FastAPI server has no health route; /openapi.json answers 200 once the model is
+    # loaded and uvicorn listens. http.client does not follow redirects.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import http.client, sys; c = http.client.HTTPConnection('127.0.0.1', 50000, timeout=5); c.request('GET', '/openapi.json'); sys.exit(0 if c.getresponse().status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
 networks:
   # No default gateway: LiveTalking and CosyVoice cannot be reached from, or reach, anything but runtime-gateway here.

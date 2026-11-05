@@ -1,0 +1,60 @@
+diff --git a/avatars/base_avatar.py b/avatars/base_avatar.py
+index 263ed05..ee4601d 100644
+--- a/avatars/base_avatar.py
++++ b/avatars/base_avatar.py
+@@ -95,6 +95,8 @@ class BaseAvatar:
+         self.render_event = Event()
+ 
+         _tts_modules = {
++            # Shuzhiren: speech arrives as CosyVoice audio through /humanaudio.
++            'none': 'tts.none_tts',
+             'edgetts': 'tts.edge',
+             'gpt-sovits': 'tts.sovits',
+             'xtts': 'tts.xtts',
+@@ -112,7 +114,8 @@ class BaseAvatar:
+             importlib.import_module(_tts_modules[opt.tts])
+             self.tts = registry.create("tts", opt.tts, opt=opt, parent=self)
+         else:
+-            logger.error(f"TTS module {opt.tts} not found.")
++            # Without self.tts the render thread dies in render(); refuse to start instead.
++            raise ValueError(f"unsupported --tts value: {opt.tts}")
+ 
+         _output_modules = {
+             'webrtc': 'streamout.webrtc',
+diff --git a/config.yaml b/config.yaml
+index 5c3e139..ab6b28b 100644
+--- a/config.yaml
++++ b/config.yaml
+@@ -17,7 +17,7 @@ batch_size: 16
+ customvideo_config: ''
+ 
+ # -------- TTS ----------------------------------------------------------
+-tts: edgetts                   # edgetts / gpt-sovits / cosyvoice / fishtts / tencent / doubao / indextts2 / azuretts / qwentts
++tts: none                      # none (Shuzhiren: audio only via /humanaudio) / edgetts / gpt-sovits / cosyvoice / fishtts / tencent / doubao / indextts2 / azuretts / qwentts
+ REF_FILE: ''                   # voice name or reference audio file path (wav, 16kHz, mono)
+ REF_TEXT: ''                   # reference text for voice cloning (English or Chinese)
+ TTS_SERVER: ''                 # TTS server URL, no trailing slash
+diff --git a/tts/none_tts.py b/tts/none_tts.py
+new file mode 100644
+index 0000000..9b429e0
+--- /dev/null
++++ b/tts/none_tts.py
+@@ -0,0 +1,18 @@
++from utils.logger import logger
++from registry import register
++from .base_tts import BaseTTS
++
++
++@register("tts", "none")
++class DisabledTTS(BaseTTS):
++    """No speech synthesis. Shuzhiren sends CosyVoice audio through /humanaudio.
++
++    The object exists only because BaseAvatar.render() starts self.tts; text sent
++    to /human is dropped here and never reaches an online TTS service.
++    """
++
++    def put_msg_txt(self, msg: str, datainfo: dict = {}):
++        logger.warning("tts disabled; dropped %d characters", len(msg))
++
++    def txt_to_audio(self, msg: tuple[str, dict]):
++        pass
