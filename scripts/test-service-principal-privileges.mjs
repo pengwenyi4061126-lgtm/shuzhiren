@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import pg from "pg";
 
@@ -38,6 +39,7 @@ try {
   assert.equal(functionPrivilege.rows[0].allowed, true, "runtime worker must record its stable service actor only through runtime_worker_actor");
   const adapterFunctionPrivilege = await client.query("select has_function_privilege($1, 'runtime_worker_actor(uuid,text)', 'execute') as allowed", ["shuzhiren_channel_adapter"]);
   assert.equal(adapterFunctionPrivilege.rows[0].allowed, false, "channel adapter must not execute the runtime worker actor function");
+  await assertSealedAuditChain();
 
   await expectTable("shuzhiren_backup", "audit_events", "select", true);
   await expectTable("shuzhiren_backup", "audit_events", "update", false);
@@ -53,6 +55,68 @@ try {
 } finally {
   await client.query("rollback").catch(() => undefined);
   await client.end().catch(() => undefined);
+}
+
+// L16: seal_audit_event ran as the inserting role, so the worker held INSERT and UPDATE on audit_chain_heads and
+// could move a chain head directly, and verify_audit_chain accepted an event whose hash was set to null.
+async function assertSealedAuditChain() {
+  for (const principal of principals) for (const privilege of ["insert", "update", "delete", "truncate"]) await expectTable(principal, "audit_chain_heads", privilege, false);
+
+  const tenantId = randomUUID();
+  const otherTenantId = randomUUID();
+  await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Audit chain sealing'), ($3, $4, 'Audit chain bystander')", [tenantId, `audit-chain-${tenantId}`, otherTenantId, `audit-chain-${otherTenantId}`]);
+  const head = async (id) => (await client.query("select last_sequence::int as sequence, last_hash from audit_chain_heads where tenant_id = $1", [id])).rows[0] ?? null;
+  const verify = async () => (await client.query("select verified, sealed_events::int as sealed from verify_audit_chain($1::uuid)", [tenantId])).rows[0];
+  const rejected = async (role, sql, params) => {
+    await client.query("savepoint chain_write");
+    try {
+      if (role) await client.query(`set local role ${role}`);
+      await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+      await client.query(sql, params);
+      return null;
+    } catch (error) {
+      return error.code;
+    } finally {
+      await client.query("rollback to savepoint chain_write");
+    }
+  };
+
+  // The worker still seals its own audit events without any privilege on audit_chain_heads.
+  await client.query("set local role shuzhiren_runtime_worker");
+  await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+  const actor = (await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [tenantId])).rows[0].id;
+  for (let index = 0; index < 3; index += 1) {
+    await client.query("insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_key, detail) values ($1, $2, 'audit_chain.sealing_probe', 'audit_chain', $3, $4::jsonb)", [tenantId, actor, `probe-${index}`, JSON.stringify({ index })]);
+  }
+  await client.query("reset role");
+  const sealedHead = await head(tenantId);
+  assert.equal(sealedHead?.sequence, 3, "the worker's audit events must advance its tenant's chain head");
+  assert.equal(await head(otherTenantId), null, "sealing must not touch another tenant's chain head");
+  assert.deepEqual(await verify(), { verified: true, sealed: 3 });
+
+  // Direct writes to a chain head are rejected for the worker and for the table owner alike.
+  for (const role of ["shuzhiren_runtime_worker", null]) {
+    assert.equal(await rejected(role, "update audit_chain_heads set last_sequence = 1, last_hash = repeat('f', 64) where tenant_id = $1", [tenantId]), "42501", `${role ?? "the owner"} must not rewrite a chain head`);
+    assert.equal(await rejected(role, "delete from audit_chain_heads where tenant_id = $1", [tenantId]), "42501", `${role ?? "the owner"} must not delete a chain head`);
+    assert.equal(await rejected(role, "insert into audit_chain_heads (tenant_id) values ($1)", [otherTenantId]), "42501", `${role ?? "the owner"} must not create a chain head`);
+  }
+  assert.equal(await rejected(null, "truncate audit_chain_heads", []), "42501", "the owner must not truncate chain heads");
+  assert.deepEqual(await head(tenantId), sealedHead, "rejected writes must leave the chain head unchanged");
+
+  // A rewritten event whose hash is nulled out must fail verification (a superuser bypasses the triggers).
+  await client.query("savepoint chain_tamper");
+  await client.query("set local session_replication_role = replica");
+  await client.query("update audit_events set detail = '{\"index\":99}'::jsonb, event_hash = null where tenant_id = $1 and chain_sequence = 3", [tenantId]);
+  await client.query("set local session_replication_role = origin");
+  assert.equal((await verify()).verified, false, "verify_audit_chain must reject an event whose event_hash was set to null");
+  await client.query("rollback to savepoint chain_tamper");
+  await client.query("savepoint chain_tamper");
+  await client.query("set local session_replication_role = replica");
+  await client.query("update audit_events set previous_hash = null where tenant_id = $1 and chain_sequence = 2", [tenantId]);
+  await client.query("set local session_replication_role = origin");
+  assert.equal((await verify()).verified, false, "verify_audit_chain must reject an event whose previous_hash was set to null");
+  await client.query("rollback to savepoint chain_tamper");
+  assert.deepEqual(await verify(), { verified: true, sealed: 3 });
 }
 
 async function expectTable(principal, table, privilege, expected) {

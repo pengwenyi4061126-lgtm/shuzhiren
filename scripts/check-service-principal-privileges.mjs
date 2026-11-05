@@ -30,7 +30,7 @@ for (const source of [
   "grant insert on audit_events to shuzhiren_runtime_worker",
   "grant execute on function runtime_worker_actor(uuid, text) to shuzhiren_runtime_worker"
 ]) if (!grants.includes(source)) throw new Error(`Service principal grants missing: ${source}`);
-for (const forbidden of ["grant all", "grant delete", " on memberships to shuzhiren_", " on users to shuzhiren_", " on products to shuzhiren_", " on show_revisions to shuzhiren_"]) {
+for (const forbidden of ["grant all", "grant delete", " on memberships to shuzhiren_", " on users to shuzhiren_", " on products to shuzhiren_", " on show_revisions to shuzhiren_", " on audit_chain_heads to shuzhiren_"]) {
   if (grants.toLowerCase().includes(forbidden)) throw new Error(`Service principal grants must not include: ${forbidden}`);
 }
 for (const [template, key] of [[runtime, "RUNTIME_WORKER_DATABASE_URL="], [channel, "CHANNEL_ADAPTER_DATABASE_URL="], [notifier, "ALERT_NOTIFIER_DATABASE_URL="]]) {

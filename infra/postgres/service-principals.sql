@@ -47,6 +47,7 @@ grant update on live_interactions to shuzhiren_runtime_worker;
 -- markDelivered closes the source interaction with "where id = $1 and status = 'queued'".
 -- PostgreSQL requires SELECT on columns read by WHERE; grant only those columns (Requirement 12.5).
 grant select (id, status) on live_interactions to shuzhiren_runtime_worker;
+-- The sealing trigger (migration 074) maintains audit_chain_heads as its owner; no service role may write
+-- chain heads directly.
 grant insert on audit_events to shuzhiren_runtime_worker;
-grant select, insert, update on audit_chain_heads to shuzhiren_runtime_worker;
 grant execute on function runtime_worker_actor(uuid, text) to shuzhiren_runtime_worker;

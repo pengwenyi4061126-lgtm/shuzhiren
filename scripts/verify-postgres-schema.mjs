@@ -31,6 +31,9 @@ requiredColumns.settlement_reconciliation_exceptions = ["exception_type", "statu
 requiredIndexes.push("settlement_batches_tenant_imported_idx", "settlement_lines_batch_type_idx", "settlement_exceptions_batch_status_idx");
 requiredPolicies.push("tenant_isolation_settlement_batches", "tenant_isolation_settlement_lines", "tenant_isolation_settlement_reconciliation_exceptions");
 const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only", "product_versions_governed_immutable", "show_revisions_append_only", "policy_profiles_governed_immutable", "model_releases_governed_immutable", "live_commands_append_only", "media_assets_governed_evidence_mutation", "recording_evidence_governed_mutation", "program_output_observations_append_only", "channel_connections_governed_verification", "channel_reply_drafts_governed_mutation", "settlement_batches_governed_mutation", "settlement_lines_governed_mutation", "settlement_exceptions_governed_mutation", "show_program_change_requests_governed_mutation", "live_runs_governed_show_revision_rebind", "show_revisions_require_runtime_scripts_for_approval", "show_program_change_requests_require_runtime_scripts", "live_runs_governed_program_cursor"];
+requiredTriggers.push("audit_chain_heads_guard", "audit_chain_heads_no_truncate");
+// Functions that must run as their owner so callers need no write privilege on the tables they maintain.
+const requiredSecurityDefinerFunctions = ["seal_audit_event"];
 const requiredConstraints = new Map([["schema_migrations_checksum_format", true], ["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true], ["show_revision_segments_runtime_script_length", true]]);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
@@ -90,6 +93,9 @@ try {
 
   const triggers = new Set((await client.query("select tgname from pg_trigger where not tgisinternal")).rows.map((row) => row.tgname));
   for (const trigger of requiredTriggers) if (!triggers.has(trigger)) errors.push(`缺少关键触发器：${trigger}`);
+
+  const securityDefiners = new Set((await client.query("select proname from pg_proc where pronamespace = 'public'::regnamespace and prosecdef")).rows.map((row) => row.proname));
+  for (const name of requiredSecurityDefinerFunctions) if (!securityDefiners.has(name)) errors.push(`函数必须为 SECURITY DEFINER：${name}`);
 
   const constraints = new Map((await client.query("select conname, convalidated from pg_constraint where connamespace = 'public'::regnamespace")).rows.map((row) => [row.conname, row]));
   for (const [constraint, mustValidate] of requiredConstraints) {
