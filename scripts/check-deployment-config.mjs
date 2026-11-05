@@ -355,6 +355,8 @@ if (runtime.get("OUTPUT_PROBE_SHARED_TOKEN")) privateSecret(runtime, "运行时"
 for (const key of ["STREAM_FPS", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "OUTBOX_POLL_MS", "SCHEDULER_POLL_MS", "SCHEDULER_BATCH_SIZE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]) positiveInteger(runtime, "运行时", key);
 boundedPositiveInteger(runtime, "运行时", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", 100, 60_000);
 equal(control, "控制面", "NODE_ENV", "production");
+// The development request-header identity switch must never be on in a deployment, placeholders or not.
+if (control.get("CONTROL_PLANE_DEV_HEADER_IDENTITY") === "true") errors.push("控制面 的 CONTROL_PLANE_DEV_HEADER_IDENTITY 不得为 true（开发请求头身份开关）");
 equal(control, "控制面", "CONTROL_PLANE_DEMO_MODE", "false");
 equal(control, "控制面", "RUNTIME_GATEWAY_DEMO_MODE", "false");
 if (!allowPlaceholders && !/^[0-9a-f]{7,40}$/i.test(control.get("RELEASE_REVISION") ?? "")) errors.push("控制面 的 RELEASE_REVISION 必须是 7 至 40 位 Git 提交");

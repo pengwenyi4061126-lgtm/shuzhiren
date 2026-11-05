@@ -342,6 +342,17 @@ try {
   assert.match(invalidReleaseRevision.stderr, /RELEASE_REVISION/, "release revision rejection must identify the traceability gate");
   await writeFile(files.control, control);
 
+  // M6: the development request-header identity switch is rejected with and without --allow-placeholders.
+  await writeFile(files.control, `${control}CONTROL_PLANE_DEV_HEADER_IDENTITY=true\n`);
+  for (const options of [["--require-cosyvoice"], ["--require-cosyvoice", "--allow-placeholders"]]) {
+    const devIdentity = check(options);
+    assert.notEqual(devIdentity.status, 0, `deployments must reject CONTROL_PLANE_DEV_HEADER_IDENTITY=true (${options.join(" ")})`);
+    assert.match(devIdentity.stderr, /CONTROL_PLANE_DEV_HEADER_IDENTITY/, "the rejection must name the development identity switch");
+  }
+  await writeFile(files.control, `${control}CONTROL_PLANE_DEV_HEADER_IDENTITY=false\n`);
+  assert.equal(check(["--require-cosyvoice"]).status, 0, "an explicitly disabled development identity switch must be accepted");
+  await writeFile(files.control, control);
+
   await writeFile(files.control, control.replace("OUTBOX_MAX_ATTEMPTS=6", "OUTBOX_MAX_ATTEMPTS=4"));
   const mismatchedOutboxAttempts = check(["--require-cosyvoice"]);
   assert.notEqual(mismatchedOutboxAttempts.status, 0, "control-plane and runtime retry limits must match");
