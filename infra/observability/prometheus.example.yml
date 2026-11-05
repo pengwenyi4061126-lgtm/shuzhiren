@@ -4,4 +4,6 @@ global:
 scrape_configs:
   - job_name: shuzhiren-control-plane
     static_configs:
-      - targets: ["console:3000"]
+      # Compose service name and container port from
+      # infra/compose/docker-compose.control-plane.yml (control-plane, PORT 3000).
+      - targets: ["control-plane:3000"]
