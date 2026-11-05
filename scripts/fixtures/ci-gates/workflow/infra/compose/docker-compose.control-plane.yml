@@ -1,0 +1,7 @@
+services:
+  control-plane:
+    image: ${CONTROL_PLANE_IMAGE:?set-in-control-plane-compose-env}
+    env_file:
+      - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
+    ports:
+      - "${CONSOLE_HOST_BIND:-127.0.0.1}:${CONSOLE_PORT:-3000}:3000"

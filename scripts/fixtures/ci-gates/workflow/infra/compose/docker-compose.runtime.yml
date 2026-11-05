@@ -1,0 +1,15 @@
+services:
+  runtime-gateway:
+    image: ${RUNTIME_GATEWAY_IMAGE:?set-in-runtime-env}
+    environment:
+      RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-gateway-env}
+  channel-adapter:
+    profiles: ["channel-adapter"]
+    image: ${CHANNEL_ADAPTER_IMAGE:?set-in-runtime-env}
+    environment:
+      DATABASE_URL: ${CHANNEL_ADAPTER_DATABASE_URL:?set-in-channel-adapter-env}
+  alert-notifier:
+    profiles: ["alert-notifier"]
+    image: ${ALERT_NOTIFIER_IMAGE:?set-in-runtime-env}
+    environment:
+      DATABASE_URL: ${ALERT_NOTIFIER_DATABASE_URL:?set-in-alert-notifier-env}

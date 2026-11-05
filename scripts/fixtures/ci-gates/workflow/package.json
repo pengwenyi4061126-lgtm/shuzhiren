@@ -1,0 +1,12 @@
+{
+  "name": "ci-workflow-gate-fixture",
+  "private": true,
+  "scripts": {
+    "ci:coverage:check": "node scripts/check-ci-coverage.mjs",
+    "membership:scopes:check": "node scripts/check-membership-resource-scopes.mjs",
+    "governance:tenant-scope:check": "node scripts/check-tenant-wide-governance-access.mjs",
+    "lint": "eslint .",
+    "unit:test": "node --test",
+    "runtime:gateway:config:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-config.py"
+  }
+}

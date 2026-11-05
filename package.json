@@ -87,6 +87,7 @@
     "verify:local": "node scripts/verify-local.mjs",
     "ci:gates:test": "node scripts/test-ci-gates.mjs",
     "ci:coverage:check": "node scripts/check-ci-coverage.mjs",
+    "ci:workflow:check": "node scripts/check-ci-workflow.mjs",
     "ci:db-fail-closed:test": "node scripts/test-ci-database-fail-closed.mjs",
     "control-plane:integration": "node scripts/test-control-plane-postgres.mjs"
   },

@@ -1,0 +1,26 @@
+services:
+  control-plane:
+    image: ${CONTROL_PLANE_IMAGE:?set-in-control-plane-compose-env}
+    restart: unless-stopped
+    env_file:
+      - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "${CONSOLE_HOST_BIND:-127.0.0.1}:${CONSOLE_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  control-plane-migrate:
+    profiles: ["migrate"]
+    image: ${CONTROL_PLANE_MIGRATOR_IMAGE:?set-in-control-plane-compose-env}
+    restart: "no"
+    env_file:
+      - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
+    command: ["node", "scripts/migrate.mjs"]
