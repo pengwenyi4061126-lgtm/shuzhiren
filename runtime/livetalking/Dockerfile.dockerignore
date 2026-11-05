@@ -1,30 +1,30 @@
-.git
-.github
-.agents
-.codex
-.env
-.env.*
-secrets
-models
-weights
-recordings
-exports
-cache
-logs
-node_modules
-.npm
-apps
-config
-data
-docs
-infra
-scripts
-*.log
-vendor/*
-!vendor/LiveTalking
+# Exclude everything, then allow only what runtime/livetalking/Dockerfile copies.
+# Docker applies the last matching rule, so the forbidden categories below the
+# allow list also apply inside vendor/LiveTalking.
+*
 !vendor/LiveTalking/**
-vendor/LiveTalking/.git
-vendor/LiveTalking/.git/**
-runtime/*
-!runtime/patches
-!runtime/patches/livetalking-observability.patch
+!runtime/patches/livetalking-*.patch
+**/.git
+**/.git/**
+**/.env
+**/.env.*
+!**/.env.example
+**/secrets
+**/secrets/**
+**/weights
+**/weights/**
+**/recordings
+**/recordings/**
+**/exports
+**/exports/**
+**/cache
+**/cache/**
+**/logs
+**/logs/**
+**/*.log
+# Model weights and avatar data are mounted read-only at deploy time. Only the
+# LiveTalking root directories are excluded: avatars/*/models are Python packages.
+vendor/LiveTalking/models
+vendor/LiveTalking/models/**
+vendor/LiveTalking/data
+vendor/LiveTalking/data/**

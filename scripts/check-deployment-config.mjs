@@ -5,6 +5,21 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateTarget as validateOutputProbeTarget } from "../apps/output-probe/lib.mjs";
 import { parseObserverTargets } from "../apps/runtime-observer/targets.mjs";
+import { checkDockerignore } from "./lib/dockerignore.mjs";
+
+// Context-relative paths the LiveTalking image build must leave out (M23) or keep.
+const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
+  ".git/config", ".env", "config/runtime.example.env", "secrets/stream-key", "apps/console/package.json", "docs/DEPLOYMENT_RUNBOOK.md",
+  "vendor/CosyVoice/requirements.txt", "vendor/MuseTalk/README.md", "runtime/gateway/app.py", "runtime/livetalking/tests/smoke.py",
+  "vendor/LiveTalking/.git", "vendor/LiveTalking/.git/config", "vendor/LiveTalking/.env", "vendor/LiveTalking/.env.local", "vendor/LiveTalking/avatars/musetalk/.env",
+  "vendor/LiveTalking/models/put models here.txt", "vendor/LiveTalking/models/musetalkV15/unet.pth", "vendor/LiveTalking/data/custom_config.json", "vendor/LiveTalking/data/avatars/approved/full_imgs/0.png",
+  "vendor/LiveTalking/livetalking.log", "vendor/LiveTalking/web/debug.log", "vendor/LiveTalking/secrets/stream-key", "vendor/LiveTalking/weights/model.pth",
+  "vendor/LiveTalking/recordings/session.mp4", "vendor/LiveTalking/exports/run.json", "vendor/LiveTalking/cache/model.bin", "vendor/LiveTalking/logs/run.txt"
+]);
+const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
+  "vendor/LiveTalking/app.py", "vendor/LiveTalking/config.py", "vendor/LiveTalking/requirements.txt", "vendor/LiveTalking/server/routes.py", "vendor/LiveTalking/streamout/rtmp.py",
+  "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch"
+]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const allowPlaceholders = process.argv.includes("--allow-placeholders");
@@ -524,7 +539,10 @@ try {
   if (!patchText.includes("last_output_error=type(error).__name__")) errors.push("LiveTalking 观测指标不得暴露原始推流异常内容");
   if (!dockerfileText.includes("livetalking-observability.patch") || !dockerfileText.includes("git apply --check --recount")) errors.push("LiveTalking 镜像没有强制应用观测补丁");
   for (const expected of ["USER livetalking", "ENV HOME=/tmp", "chown -R livetalking:livetalking /app"]) if (!dockerfileText.includes(expected)) errors.push(`LiveTalking 镜像必须以非 root 用户运行：${expected}`);
-  for (const expected of ["vendor/*", "!vendor/LiveTalking/**", "runtime/patches/livetalking-observability.patch", ".env", ".env.*", "secrets", "models", "weights", "recordings", "exports", "cache", "logs"]) if (!dockerignoreText.includes(expected)) errors.push(`LiveTalking 镜像构建上下文缺少最小化规则：${expected}`);
+  const context = checkDockerignore(dockerignoreText, { mustExclude: LIVETALKING_CONTEXT_EXCLUDED, mustInclude: LIVETALKING_CONTEXT_INCLUDED });
+  for (const file of context.leaked) errors.push(`LiveTalking 镜像构建上下文会带入敏感或无关内容：${file}`);
+  for (const file of context.missing) errors.push(`LiveTalking 镜像构建上下文缺少构建所需文件：${file}`);
+  if (!dockerfileText.includes("mkdir -p /app/models /app/data/avatars /app/data/record")) errors.push("LiveTalking 镜像必须保留 /app/models、/app/data/avatars、/app/data/record 挂载点目录");
   git(liveTalkingSource, ["apply", "--check", "--recount", observabilityPatch]);
 } catch (error) {
   errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);

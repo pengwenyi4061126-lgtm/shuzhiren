@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(root, "scripts", "check-deployment-config.mjs");
@@ -489,6 +490,17 @@ try {
   assert.notEqual(unsafePreviewBroker.status, 0, "a preview broker must use a credential-free HTTPS endpoint");
   assert.match(unsafePreviewBroker.stderr, /PREVIEW_BROKER_URL/, "unsafe preview broker must identify the controlled-preview URL gate");
   await writeFile(files.gateway, gateway);
+
+  // M23: root-anchored rules followed by `!vendor/LiveTalking/**` re-included submodule secrets and data.
+  const legacyLiveTalkingIgnore = ".git\n.env\n.env.*\nsecrets\nmodels\ndata\n*.log\nvendor/*\n!vendor/LiveTalking\n!vendor/LiveTalking/**\nvendor/LiveTalking/.git\nvendor/LiveTalking/.git/**\nruntime/*\n!runtime/patches\n!runtime/patches/livetalking-observability.patch\n";
+  const sensitiveContextPaths = ["vendor/LiveTalking/.env", "vendor/LiveTalking/models/put models here.txt", "vendor/LiveTalking/data/custom_config.json", "vendor/LiveTalking/livetalking.log", "vendor/LiveTalking/secrets/stream-key"];
+  assert.deepEqual(checkDockerignore(legacyLiveTalkingIgnore, { mustExclude: sensitiveContextPaths }).leaked, sensitiveContextPaths, "the dockerignore model must reproduce the M23 leak of the legacy rules");
+  const liveTalkingIgnore = await readFile(path.join(root, "runtime", "livetalking", "Dockerfile.dockerignore"), "utf8");
+  assert.deepEqual(checkDockerignore(liveTalkingIgnore, { mustExclude: [...sensitiveContextPaths, "vendor/LiveTalking/.git/config", "vendor/CosyVoice/requirements.txt", "config/runtime.example.env"], mustInclude: ["vendor/LiveTalking/app.py", "vendor/LiveTalking/avatars/musetalk/models/unet.py", "runtime/patches/livetalking-observability.patch"] }), { leaked: [], missing: [] }, "the LiveTalking build context must keep only the locked source and its patches");
+  const dockerignoreRules = parseDockerignore("*\n!keep/**\n**/.env\n!**/.env.example\n");
+  assert.equal(isExcluded(dockerignoreRules, "keep/a/.env"), true, "later exclusion rules must win over the allow list");
+  assert.equal(isExcluded(dockerignoreRules, "keep/a/.env.example"), false, "a later exception must re-include the example file");
+  assert.equal(isExcluded(dockerignoreRules, "other/file"), true, "a parent-directory match must exclude nested files");
 
   await writeFile(files.runtime, runtime([{ ...validProbeTarget[0], expectedHeight: undefined }]));
   const invalid = check();

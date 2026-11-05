@@ -1,30 +1,26 @@
-.git
-.github
-.agents
-.codex
-.env
-.env.*
-secrets
-config
-models
-weights
-recordings
-exports
-cache
-logs
-node_modules
-.npm
-apps
-data
-docs
-infra
-scripts
-runtime/gateway
-runtime/livetalking
-runtime/patches
-*.log
-vendor/*
-!vendor/CosyVoice
+# Exclude everything, then allow only the locked CosyVoice source. Docker applies
+# the last matching rule, so the forbidden categories below the allow list also
+# apply inside vendor/CosyVoice (including its third_party submodule).
+*
 !vendor/CosyVoice/**
-vendor/CosyVoice/.git
-vendor/CosyVoice/**/.git
+**/.git
+**/.git/**
+**/.env
+**/.env.*
+!**/.env.example
+**/secrets
+**/secrets/**
+**/weights
+**/weights/**
+**/recordings
+**/recordings/**
+**/exports
+**/exports/**
+**/cache
+**/cache/**
+**/logs
+**/logs/**
+**/*.log
+# Model weights are mounted read-only at deploy time.
+vendor/CosyVoice/pretrained_models
+vendor/CosyVoice/pretrained_models/**

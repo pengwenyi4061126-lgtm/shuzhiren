@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { checkDockerignore } from "./lib/dockerignore.mjs";
 
 const files = {
   console: "../apps/console/Dockerfile",
@@ -39,8 +40,15 @@ for (const name of ["workerIgnore", "observerIgnore", "probeIgnore", "adapterIgn
     if (!contents[name].includes(source)) throw new Error(`Runtime image build context must exclude local artifacts: ${name} ${source}`);
   }
 }
-for (const source of ["vendor/*", "!vendor/CosyVoice", "vendor/CosyVoice/.git", "models", "weights", "secrets"]) {
-  if (!contents.cosyvoiceIgnore.includes(source)) throw new Error(`CosyVoice build context must exclude local artifacts: ${source}`);
-}
+const cosyvoiceContext = checkDockerignore(contents.cosyvoiceIgnore, {
+  mustExclude: [
+    ".git/config", ".env", "config/runtime.example.env", "secrets/stream-key", "apps/console/package.json", "vendor/LiveTalking/app.py", "runtime/patches/livetalking-observability.patch",
+    "vendor/CosyVoice/.git", "vendor/CosyVoice/.git/config", "vendor/CosyVoice/third_party/Matcha-TTS/.git", "vendor/CosyVoice/.env", "vendor/CosyVoice/third_party/Matcha-TTS/.env",
+    "vendor/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B-2512/llm.pt", "vendor/CosyVoice/secrets/token", "vendor/CosyVoice/weights/model.pt", "vendor/CosyVoice/logs/run.txt", "vendor/CosyVoice/server.log"
+  ],
+  mustInclude: ["vendor/CosyVoice/requirements.txt", "vendor/CosyVoice/runtime/python/fastapi/server.py", "vendor/CosyVoice/cosyvoice/cli/cosyvoice.py", "vendor/CosyVoice/third_party/Matcha-TTS/matcha/__init__.py"]
+});
+for (const file of cosyvoiceContext.leaked) throw new Error(`CosyVoice build context must exclude local artifacts: ${file}`);
+for (const file of cosyvoiceContext.missing) throw new Error(`CosyVoice build context must include the locked source: ${file}`);
 
 console.log("PASS  runtime service images use deterministic, non-root production builds");
