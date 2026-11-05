@@ -45,4 +45,18 @@ const duplicateArgs = [...args];
 duplicateArgs[duplicateArgs.indexOf("--images") + 1] = path.join(fixture, "duplicate-images.json");
 duplicateArgs[duplicateArgs.indexOf("--output") + 1] = path.join(fixture, "duplicate-manifest.json");
 rejected(duplicateArgs, /must not reuse digest/);
+// L6: the generator and Deploy_Check share the 30-day validity limit.
+const validityArgs = (expiresAt, output) => {
+  const candidate = [...args];
+  candidate[candidate.indexOf("--expires-at") + 1] = expiresAt;
+  candidate[candidate.indexOf("--output") + 1] = output;
+  return candidate;
+};
+const issuedAtMs = Date.parse("2026-11-04T00:00:00.000Z");
+const thirtyDayOutput = path.join(fixture, "thirty-day-manifest.json");
+execFileSync(process.execPath, validityArgs(new Date(issuedAtMs + 30 * 24 * 60 * 60 * 1000).toISOString(), thirtyDayOutput), { cwd: root, stdio: "pipe" });
+assert.equal(JSON.parse(await readFile(thirtyDayOutput, "utf8")).expiresAt, "2026-12-04T00:00:00.000Z", "a 30-day validity window must be accepted");
+const overlongOutput = path.join(fixture, "overlong-manifest.json");
+rejected(validityArgs(new Date(issuedAtMs + 30 * 24 * 60 * 60 * 1000 + 1).toISOString(), overlongOutput), /no more than 30 days/);
+await assert.rejects(readFile(overlongOutput), { code: "ENOENT" }, "a rejected validity window must not write a manifest");
 console.log("PASS  release manifest generator signs complete immutable image sets and rejects overwrite or digest reuse");

@@ -171,7 +171,7 @@ async function verifyDeploymentReleaseManifest(control, controlCompose, runtime,
   if (manifest.releaseRevision !== control.get("RELEASE_REVISION")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 的 releaseRevision 必须匹配 RELEASE_REVISION");
   const issuedAt = Date.parse(manifest.issuedAt ?? "");
   const expiresAt = Date.parse(manifest.expiresAt ?? "");
-  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt || expiresAt - issuedAt > 31 * 24 * 60 * 60 * 1000 || issuedAt > Date.now() + 5 * 60 * 1000 || expiresAt <= Date.now()) errors.push("DEPLOYMENT_RELEASE_MANIFEST 的 issuedAt/expiresAt 必须为当前有效且不超过 30 天的时间窗口");
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt || expiresAt - issuedAt > 30 * 24 * 60 * 60 * 1000 || issuedAt > Date.now() + 5 * 60 * 1000 || expiresAt <= Date.now()) errors.push("DEPLOYMENT_RELEASE_MANIFEST 的 issuedAt/expiresAt 必须为当前有效且不超过 30 天的时间窗口");
   if (!/^sha256:[a-f0-9]{64}$/.test(manifest.sbomSha256 ?? "")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少 SBOM SHA-256");
   if (!/^sha256:[a-f0-9]{64}$/.test(manifest.provenanceSha256 ?? "")) errors.push("DEPLOYMENT_RELEASE_MANIFEST 缺少 provenance SHA-256");
   const images = manifest.images;

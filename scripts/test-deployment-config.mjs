@@ -87,9 +87,9 @@ function canonicalJson(value) {
   return JSON.stringify(value) ?? "null";
 }
 
-function deploymentReleaseManifest({ releaseRevision: manifestRevision = releaseRevision, manifestImages = undefined } = {}) {
+function deploymentReleaseManifest({ releaseRevision: manifestRevision = releaseRevision, manifestImages = undefined, validityMs = 24 * 60 * 60 * 1000 } = {}) {
   const issuedAt = new Date();
-  const expiresAt = new Date(issuedAt.getTime() + 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(issuedAt.getTime() + validityMs);
   const unsigned = {
     schemaVersion: 1,
     releaseRevision: manifestRevision,
@@ -299,6 +299,17 @@ try {
   const manifestRevisionMismatch = check(["--require-cosyvoice"]);
   assert.notEqual(manifestRevisionMismatch.status, 0, "signed manifests must bind the deployed source revision");
   assert.match(manifestRevisionMismatch.stderr, /releaseRevision 必须匹配 RELEASE_REVISION/, "manifest revision mismatch must identify the release binding gate");
+  await writeFile(files.releaseManifest, deploymentReleaseManifest());
+
+  // L6: Deploy_Check enforces the same 30-day validity limit as the manifest generator.
+  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  await writeFile(files.releaseManifest, deploymentReleaseManifest({ validityMs: thirtyDaysMs }));
+  const thirtyDayManifest = check(["--require-cosyvoice"]);
+  assert.equal(thirtyDayManifest.status, 0, `a manifest valid for exactly 30 days must be accepted:\n${thirtyDayManifest.stderr}`);
+  await writeFile(files.releaseManifest, deploymentReleaseManifest({ validityMs: thirtyDaysMs + 1 }));
+  const overlongManifest = check(["--require-cosyvoice"]);
+  assert.notEqual(overlongManifest.status, 0, "a manifest valid for more than 30 days must be rejected");
+  assert.match(overlongManifest.stderr, /不超过 30 天/, "the validity rejection must state the 30-day limit");
   await writeFile(files.releaseManifest, deploymentReleaseManifest());
 
   await writeFile(files.runtime, runtime(validProbeTarget).replace(images.gateway, "registry.internal/shuzhiren/runtime-gateway:latest"));
