@@ -26,7 +26,7 @@ export const CI_ONLY_STEPS = Object.freeze([
   { job: "static-gates", command: "bash -n scripts/verify-runtime-gateway-state-backup.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
   { job: "static-gates", command: "bash scripts/check-runtime-host.sh --help", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
   { job: "node-unit", command: "bash scripts/test-postgres-backup-direct.sh", localReason: "本机缺少 Linux shell 环境（flock）", label: "behavioral" },
-  { job: "python-gateway", command: "python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt", localReason: "本机缺少 Python 3", label: "static" },
+  { job: "python-gateway", command: "python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock", localReason: "本机缺少 Python 3", label: "static" },
   { job: "postgres-integration", command: "npm run db:migrate", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run db:migrate:integrity:test", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run service-principals:integration", localReason: NO_POSTGRES, label: "behavioral" },

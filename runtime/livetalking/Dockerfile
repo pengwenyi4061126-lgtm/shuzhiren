@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04@sha256:24c8e3581ea6330038b0d374920721983312627f8adbfcf390bdb4b399d280ed
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/tmp

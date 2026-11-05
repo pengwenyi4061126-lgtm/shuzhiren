@@ -16,7 +16,7 @@
 //   W7  postgres-integration declares services.postgres and a job-level
 //       DATABASE_URL, runs the six Requirement 1.3 steps with db:migrate first,
 //       and the control-plane:integration step sets RUN_CONTROL_PLANE_INTEGRATION_TESTS: "true".
-//   W8  python-gateway runs pip install -r runtime/gateway/requirements.txt before
+//   W8  python-gateway runs pip install --require-hashes -r runtime/gateway/requirements.lock before
 //       its first Python test and runs every scripts/test-runtime-gateway-*.py
 //       directly or through an npm script.
 //   W9  py_compile (with `*` expanded) compiles every .py file directly under runtime/gateway/.
@@ -67,7 +67,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const GROUP_JOBS = Object.freeze(["static-gates", "node-unit", "python-gateway", "postgres-integration", "compose-render", "docker-build"]);
 const POSTGRES_STEPS = Object.freeze(["db:migrate", "db:migrate:integrity:test", "service-principals:integration", "db:migrate:lock:test", "db:verify", "control-plane:integration"]);
 const STATIC_GATE_COMMANDS = Object.freeze(["npm run membership:scopes:check", "npm run governance:tenant-scope:check", "npm run ci:coverage:check"]);
-const GATEWAY_REQUIREMENTS = "runtime/gateway/requirements.txt";
+const GATEWAY_REQUIREMENTS = "runtime/gateway/requirements.lock";
 const CONTROL_PLANE_COMPOSE = "infra/compose/docker-compose.control-plane.yml";
 const RUNTIME_COMPOSE = "infra/compose/docker-compose.runtime.yml";
 const RUNTIME_PROFILES = Object.freeze(["output-probe", "channel-adapter", "alert-notifier", "cosyvoice"]);
@@ -363,6 +363,7 @@ function installsGatewayRequirements(tokens) {
   if ((tokens[0] === "pip" || tokens[0] === "pip3") && tokens[1] === "install") rest = tokens.slice(2);
   else if (PYTHON.includes(tokens[0]) && tokens[1] === "-m" && tokens[2] === "pip" && tokens[3] === "install") rest = tokens.slice(4);
   else return false;
+  if (!rest.includes("--require-hashes")) return false;
   return rest.some((token, index) => {
     if (token === "-r" || token === "--requirement") return toRepoPath(rest[index + 1] ?? "") === GATEWAY_REQUIREMENTS;
     if (token.startsWith("--requirement=")) return toRepoPath(token.slice("--requirement=".length)) === GATEWAY_REQUIREMENTS;
@@ -383,9 +384,9 @@ function checkGatewayTests() {
   if (!job) return;
   const jobSteps = verificationSteps(job);
   const install = jobSteps.find((step) => step.tokens.some(installsGatewayRequirements));
-  if (!install) report("W8", `${job.id}/-`, `no verification step runs pip install -r ${GATEWAY_REQUIREMENTS}`);
+  if (!install) report("W8", `${job.id}/-`, `no verification step runs pip install --require-hashes -r ${GATEWAY_REQUIREMENTS}`);
   const firstTest = jobSteps.find((step) => step.tokens.some((tokens) => runsPythonFile(tokens)));
-  if (install && firstTest && firstTest.index < install.index) report("W8", where(job, firstTest), `Python test runs before pip install -r ${GATEWAY_REQUIREMENTS} (step ${install.index})`);
+  if (install && firstTest && firstTest.index < install.index) report("W8", where(job, firstTest), `Python test runs before pip install --require-hashes -r ${GATEWAY_REQUIREMENTS} (step ${install.index})`);
   for (const file of expandGlob("scripts/test-runtime-gateway-*.py", root)) {
     const check = { kind: "python", file };
     if (!jobSteps.some((step) => step.tokens.some((tokens) => tokens !== null && covers(tokens, check, coverageContext)))) {

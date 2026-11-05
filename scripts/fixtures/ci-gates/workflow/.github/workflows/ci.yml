@@ -48,7 +48,7 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - run: python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt
+      - run: python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock
       - run: npm run runtime:gateway:config:test
       - run: python3 -m py_compile runtime/gateway/*.py scripts/test-runtime-gateway-config.py
       - run: python3 scripts/test-runtime-gateway-audio.py

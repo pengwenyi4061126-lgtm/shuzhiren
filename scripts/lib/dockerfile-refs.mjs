@@ -87,3 +87,111 @@ export function releaseDockerfiles(releaseDoc) {
   if (!Array.isArray(include)) throw new Error("release.yml build-and-push must define strategy.matrix.include");
   return [...new Set(include.map((entry) => String(entry?.dockerfile ?? "")).filter((file) => file && !file.startsWith("vendor/")))];
 }
+
+// Supply-chain pins (M24, Requirement 35).
+export const PINNED_IMAGE = /^(?<name>[^@\s]+):(?<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})@sha256:[a-f0-9]{64}$/;
+
+/** Every external image reference must be `<repository>:<tag>@sha256:<64 lowercase hex>` (Requirement 35.2). */
+export function pinViolations(file, text) {
+  const problems = [];
+  for (const ref of imageRefs(text)) {
+    if (ref.internal) continue;
+    const match = PINNED_IMAGE.exec(ref.ref);
+    const pinned = match !== null && !match.groups.name.slice(match.groups.name.lastIndexOf("/") + 1).includes(":");
+    if (!pinned) {
+      const why = ref.ref.includes("$") ? "is built from a variable that cannot be checked statically; " : "";
+      problems.push({ file, line: ref.line, ref: ref.ref, reason: `${why}base image must be <repository>:<tag>@sha256:<64 lowercase hex>` });
+    }
+  }
+  return problems;
+}
+
+/** `pip install ...` command segments of every RUN instruction, with their tokens. */
+export function pipInstalls(text) {
+  const installs = [];
+  for (const { line, keyword, args } of parseDockerfile(text)) {
+    if (keyword !== "RUN") continue;
+    for (const segment of args.split(/&&|\|\||;|\|/)) {
+      const parts = tokens(segment.trim());
+      const at = parts.findIndex((token, index) => /(?:^|\/)pip3?$/.test(token) && parts[index + 1] === "install");
+      if (at >= 0) installs.push({ line, tokens: parts.slice(at + 2) });
+    }
+  }
+  return installs;
+}
+
+const requirementFiles = (install) => install.tokens.flatMap((token, index) => token === "-r" || token === "--requirement" ? [install.tokens[index + 1] ?? ""] : token.startsWith("--requirement=") ? [token.slice(14)] : token.startsWith("-r") && token.length > 2 ? [token.slice(2)] : []);
+
+/** The Gateway image installs only the hashed lock (Requirement 35.5). */
+export function gatewayLockViolations(file, text) {
+  const installs = pipInstalls(text);
+  const problems = [];
+  if (installs.length !== 1) problems.push({ file, line: installs[1]?.line ?? 1, ref: "pip install", reason: `must run exactly one pip install, found ${installs.length}` });
+  for (const install of installs) {
+    const files = requirementFiles(install);
+    if (!install.tokens.includes("--require-hashes")) problems.push({ file, line: install.line, ref: "pip install", reason: "must pass --require-hashes" });
+    if (files.length !== 1 || files[0].replace(/^\.\//, "") !== "requirements.lock" || install.tokens.some((token) => !token.startsWith("-") && !files.includes(token))) {
+      problems.push({ file, line: install.line, ref: "pip install", reason: "must install only -r requirements.lock (no unhashed package arguments or other requirement files)" });
+    }
+  }
+  for (const { line, keyword, args } of parseDockerfile(text)) {
+    if (/\brequirements\.txt\b/.test(args) && (keyword === "COPY" || keyword === "ADD" || keyword === "RUN")) problems.push({ file, line, ref: keyword, reason: "must not copy or install requirements.txt; install requirements.lock" });
+  }
+  if (!parseDockerfile(text).some(({ keyword, args }) => keyword === "COPY" && /(?:^|\s)requirements\.lock(?:\s|$)/.test(args))) problems.push({ file, line: 1, ref: "COPY", reason: "must COPY requirements.lock into the image" });
+  return problems;
+}
+
+const normalizeName = (name) => name.toLowerCase().replace(/[-_.]+/g, "-");
+
+/**
+ * A hashed pip lock: every requirement is `<name>[extras]==<version>[ ; marker]`
+ * with at least one `--hash=sha256:<64 hex>`; no options, URLs or editables; and
+ * every `==` pin of `requirementsText` appears with the same version (Requirement 35.4).
+ * @returns {string[]}
+ */
+export function pythonLockViolations(lockText, requirementsText) {
+  const problems = [];
+  const locked = new Map();
+  const logical = [];
+  let pending = "";
+  for (const raw of String(lockText).replace(/\r\n?/g, "\n").split("\n")) {
+    const line = raw.replace(/(^|\s)#.*$/, "").trimEnd();
+    if (line.endsWith("\\")) {
+      pending += `${line.slice(0, -1)} `;
+      continue;
+    }
+    const full = `${pending}${line}`.trim();
+    pending = "";
+    if (full) logical.push(full);
+  }
+  if (pending.trim()) logical.push(pending.trim());
+  for (const entry of logical) {
+    const hashes = entry.match(/--hash=\S+/g) ?? [];
+    const spec = entry.replace(/--hash=\S+/g, "").trim();
+    if (spec.startsWith("-")) {
+      problems.push(`lock option ${spec.split(/\s+/)[0]} is not allowed`);
+      continue;
+    }
+    const match = /^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]+\])?==([A-Za-z0-9.!+_-]+)(?:\s*;\s*.+)?$/.exec(spec);
+    if (!match) {
+      problems.push(`lock entry "${spec}" must be <name>==<version>`);
+      continue;
+    }
+    if (hashes.length === 0) problems.push(`lock entry ${match[1]}==${match[3]} has no --hash`);
+    for (const hash of hashes) if (!/^--hash=sha256:[a-f0-9]{64}$/.test(hash)) problems.push(`lock entry ${match[1]}==${match[3]} has invalid ${hash}`);
+    locked.set(normalizeName(match[1]), match[3]);
+  }
+  if (locked.size === 0) problems.push("lock has no requirements");
+  for (const raw of String(requirementsText ?? "").replace(/\r\n?/g, "\n").split("\n")) {
+    const line = raw.replace(/(^|\s)#.*$/, "").trim();
+    if (!line) continue;
+    const match = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?==([^\s;]+)/.exec(line);
+    if (!match) {
+      problems.push(`requirements input "${line}" must pin ==<version>`);
+      continue;
+    }
+    const version = locked.get(normalizeName(match[1]));
+    if (version !== match[2]) problems.push(`top-level ${match[1]}==${match[2]} is ${version === undefined ? "missing from" : `locked as ${version} in`} the lock; regenerate it`);
+  }
+  return problems;
+}

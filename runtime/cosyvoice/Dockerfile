@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04@sha256:622e78a1d02c0f90ed900e3985d6c975d8e2dc9ee5e61643aed587dcf9129f42
 
 ARG MINIFORGE_URL
 ARG MINIFORGE_SHA256

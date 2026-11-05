@@ -5,7 +5,7 @@ const NO_POSTGRES = "fixture: no PostgreSQL";
 
 export const CI_ONLY_STEPS = Object.freeze([
   { job: "static-gates", command: "bash -n scripts/backup.sh", localReason: "fixture: bash checks are CI-only", label: "static" },
-  { job: "python-gateway", command: "python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt", localReason: "fixture: no Python", label: "static" },
+  { job: "python-gateway", command: "python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock", localReason: "fixture: no Python", label: "static" },
   { job: "postgres-integration", command: "npm run db:migrate", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run db:migrate:integrity:test", localReason: NO_POSTGRES, label: "behavioral" },
   { job: "postgres-integration", command: "npm run service-principals:integration", localReason: NO_POSTGRES, label: "behavioral" },

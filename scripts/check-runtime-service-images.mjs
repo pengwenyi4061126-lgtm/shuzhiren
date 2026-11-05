@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
-import { nodeMajorViolations, releaseDockerfiles } from "./lib/dockerfile-refs.mjs";
+import { gatewayLockViolations, nodeMajorViolations, pinViolations, pythonLockViolations, releaseDockerfiles } from "./lib/dockerfile-refs.mjs";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
 import { engineMinVersion, NODE_LTS_MAJOR, versionMajor } from "./lib/node-runtime.mjs";
 const repoFile = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -33,6 +33,16 @@ for (const [file, text] of Object.entries(dockerfileText)) {
 if (nodeProblems.length > 0) {
   for (const problem of nodeProblems) console.error(`ERROR  ${problem}`);
   throw new Error(`Node.js runtime must be ${NODE_LTS_MAJOR} LTS everywhere (${nodeProblems.length} problem(s) above)`);
+}
+// Supply chain (Requirement 35): digest-pinned base images, hashed Gateway lock.
+const pinProblems = Object.entries(dockerfileText).flatMap(([file, text]) => pinViolations(file, text));
+pinProblems.push(...gatewayLockViolations("runtime/gateway/Dockerfile", dockerfileText["runtime/gateway/Dockerfile"] ?? ""));
+for (const message of pythonLockViolations(await repoFile("runtime/gateway/requirements.lock"), await repoFile("runtime/gateway/requirements.txt"))) {
+  pinProblems.push({ file: "runtime/gateway/requirements.lock", line: 1, ref: "lock", reason: message });
+}
+if (pinProblems.length > 0) {
+  for (const { file, line, ref, reason } of pinProblems) console.error(`ERROR  ${file}:${line} ${ref} ${reason}`);
+  throw new Error(`Release images must use digest-pinned base images and hashed dependency locks (${pinProblems.length} problem(s) above)`);
 }
 
 const files = {
@@ -85,4 +95,4 @@ const cosyvoiceContext = checkDockerignore(contents.cosyvoiceIgnore, {
 for (const file of cosyvoiceContext.leaked) throw new Error(`CosyVoice build context must exclude local artifacts: ${file}`);
 for (const file of cosyvoiceContext.missing) throw new Error(`CosyVoice build context must include the locked source: ${file}`);
 
-console.log("PASS  runtime service images use deterministic, non-root production builds");
+console.log(`PASS  runtime service images use deterministic, non-root production builds (${imageDockerfiles.length} release Dockerfiles on digest-pinned base images, Node.js ${NODE_LTS_MAJOR}, hashed Gateway lock)`);

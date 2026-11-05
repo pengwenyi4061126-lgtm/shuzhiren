@@ -422,7 +422,7 @@ const SINGLE_RULE_SAMPLES = [
   ["W5", (text) => replaceOnce(text, "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0", "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.0.0")],
   ["W6", (text) => replaceOnce(text, "      - run: bash -n scripts/backup.sh\n", "")],
   ["W7", (text) => replaceOnce(text, "      - run: npm run db:migrate\n      - run: npm run db:migrate:integrity:test\n", "      - run: npm run db:migrate:integrity:test\n      - run: npm run db:migrate\n")],
-  ["W8", (text) => replaceOnce(text, "      - run: python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt\n      - run: npm run runtime:gateway:config:test\n", "      - run: npm run runtime:gateway:config:test\n      - run: python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt\n")],
+  ["W8", (text) => replaceOnce(text, "      - run: python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock\n      - run: npm run runtime:gateway:config:test\n", "      - run: npm run runtime:gateway:config:test\n      - run: python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock\n")],
   ["W9", (text) => replaceOnce(text, "python3 -m py_compile runtime/gateway/*.py scripts/test-runtime-gateway-config.py", "python3 -m py_compile runtime/gateway/app.py scripts/test-runtime-gateway-config.py")],
   ["W10", (text) => replaceOnce(text, "  docker-build:\n    runs-on: ubuntu-24.04\n", "  docker-build:\n    runs-on: ubuntu-24.04\n    env:\n      MINIFORGE_URL: https://example.invalid/Miniforge3.sh\n")],
   ["W11", (text) => replaceOnce(text, "CONTROL_PLANE_ENV_FILE: ../../config/control-plane.example.env", "CONTROL_PLANE_ENV_FILE: ../../config/missing.example.env")],
@@ -435,6 +435,16 @@ test("each of W1-W12 has a sample that violates only that rule", () => {
     const result = runWorkflowVariant(edit);
     assert.equal(result.status, 1, `${rule}\n${result.output}`);
     assert.deepEqual(result.ruleIds, [rule], `${rule}\n${result.output}`);
+  }
+});
+
+test("W8 requires the hashed Gateway lock, not requirements.txt or an install without --require-hashes", () => {
+  const lockInstall = "python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock";
+  for (const replacement of ["python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt", "python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.lock"]) {
+    const result = runWorkflowVariant((text) => replaceOnce(text, lockInstall, replacement));
+    assert.equal(result.status, 1, `${replacement}\n${result.output}`);
+    assert.ok(result.ruleIds.includes("W8"), `${replacement}\n${result.output}`);
+    assert.ok(result.rules.some(({ rule, message }) => rule === "W8" && message.includes("--require-hashes -r runtime/gateway/requirements.lock")), result.output);
   }
 });
 
