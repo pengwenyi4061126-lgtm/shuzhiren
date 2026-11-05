@@ -5,11 +5,11 @@ import { canTransition, nextStateFor } from "@/lib/live-run";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { findApprovedProductVersion, frozenProductVersionStatusForRun, frozenProductVersionStatusForRunInTransaction, type ProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
-import { approveShowProgramInTransaction, getShowProgram, hasApprovedFallbackProgram, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
+import { approveShowProgramInTransaction, getShowProgram, hasApprovedFallbackProgram, hasApprovedFallbackProgramInTransaction, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
 import { activeMediaAssetStatus, activeMediaAssetStatusInTransaction, currentApprovedMediaAssetsInTransaction, hasApprovedLiveRights, requiredLiveAssetKinds, runtimeVoiceForRun, runtimeVoiceForRunInTransaction } from "@/lib/assets";
 import { activeModelReleaseStatus, activeModelReleaseStatusInTransaction, requiredProductionReleaseComponents, type ReleaseComponent } from "@/lib/releases";
-import { validateChannelConnection } from "@/lib/channels";
-import { evaluateRuntimeReadiness } from "@/lib/monitoring";
+import { validateChannelConnection, validateChannelConnectionInTransaction } from "@/lib/channels";
+import { evaluateRuntimeReadiness, evaluateRuntimeReadinessInTransaction } from "@/lib/monitoring";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { enqueueMediaCommand, enqueueMediaCommandInTransaction, enqueueSpeechCommand, enqueueSpeechCommandInTransaction, type SpeechOutboxEvent } from "@/lib/control-plane/outbox";
@@ -17,7 +17,7 @@ import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import { createGroundedResponseDraft, type ResponseDraft } from "@/lib/response-draft";
 import { createSpeechCommand } from "@/lib/speech-protocol";
 import { assertLiveActivationAllowed } from "@/lib/entitlements";
-import { activePolicyProfileStatusForRun, latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
+import { activePolicyProfileStatusForRun, activePolicyProfileStatusForRunInTransaction, latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
 import { createReleaseManifestSnapshotInTransaction } from "@/lib/release-manifest";
 import type { PolicyRule } from "@/lib/policy-engine";
 
@@ -187,7 +187,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     const next = lifecycleTarget(run.state, action);
     if (action === "submit_review") await validateShowProgramInTransaction(client, run.id, run.revisionId, run.productVersionId);
     if (action === "approve") await approveShowProgramInTransaction(client, context, run.id, run.revisionId, run.productVersionId);
-    if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
+    if (action === "arm" && !(await evaluateRunPreflightInTransaction(client, context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
     try {
       await client.query("update live_runs set state = $2, has_fallback_program = case when $3 then true else has_fallback_program end, updated_at = now() where id = $1", [run.id, next, action === "approve"]);
     } catch (error) {
@@ -250,6 +250,7 @@ function getDemoRun(context: RequestContext, runId: string) {
 }
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
+  if (databasePool()) return withTenantTransaction(context.tenantId, async (client) => evaluateRunPreflightInTransaction(client, context, run), { readOnly: true });
   const [channel, runtime, policyProfile, modelRelease, mediaAssets, product] = await Promise.all([
     validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled }),
     evaluateRuntimeReadiness(context, run.id),
@@ -258,6 +259,35 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
     activeMediaAssetStatus(context, run.revisionId),
     frozenProductVersionStatusForRun(context, run.id, run.productVersionId)
   ]);
+  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id) });
+}
+
+// Reads every preflight input on the caller's client, one query at a time, so
+// lifecycle and command transactions that already hold a connection (and the
+// live run lock) neither take more connections from the pool nor read outside
+// their own snapshot.
+export async function evaluateRunPreflightInTransaction(client: PoolClient, context: RequestContext, run: StoredRun) {
+  const channel = await validateChannelConnectionInTransaction(client, context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled });
+  const runtime = await evaluateRuntimeReadinessInTransaction(client, context, run.id);
+  const policyProfile = await activePolicyProfileStatusForRunInTransaction(client, context, run.id);
+  const modelRelease = await activeModelReleaseStatusInTransaction(client, run.revisionId);
+  const mediaAssets = await activeMediaAssetStatusInTransaction(client, run.revisionId);
+  const product = await frozenProductVersionStatusForRunInTransaction(client, run.id);
+  const hasFallbackProgram = await hasApprovedFallbackProgramInTransaction(client, context, run.id);
+  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, hasFallbackProgram });
+}
+
+type RunPreflightInputs = {
+  channel: { passed: boolean; detail: string };
+  runtime: { passed: boolean; detail: string };
+  policyProfile: { active: boolean; detail: string };
+  modelRelease: { active: boolean; detail: string };
+  mediaAssets: { active: boolean; detail: string };
+  product: { active: boolean; detail: string };
+  hasFallbackProgram: boolean;
+};
+
+function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, hasFallbackProgram }: RunPreflightInputs) {
   return evaluatePreflight({
     ...run,
     hasApprovedRights: mediaAssets.active,
@@ -268,7 +298,7 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
     policyProfileDetail: policyProfile.detail,
     hasApprovedSkuVersion: product.active,
     skuDetail: product.detail,
-    hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id),
+    hasFallbackProgram,
     channelReady: channel.passed,
     channelDetail: channel.detail,
     // output_ready was an early manual flag. A fresh observer sample is the only
@@ -315,7 +345,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
     const requiresActivationConfirmation = input.action === "START" || input.action === "RECOVER";
     const requiresEndConfirmation = input.action === "END";
     const isProgramTransition = input.action === "INSERT_PROGRAM" || input.action === "ROLLBACK_PROGRAM";
-    if (input.action === "START" && !(await evaluateRunPreflight(context, run)).passed) {
+    if (input.action === "START" && !(await evaluateRunPreflightInTransaction(client, context, run)).passed) {
       throw new Response("Preflight requirements are not satisfied", { status: 409 });
     }
     if (input.action === "RECOVER" && !(await activeMediaAssetStatusInTransaction(client, run.revisionId)).active) {
@@ -324,7 +354,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (input.action === "RECOVER" && !(await activeModelReleaseStatusInTransaction(client, run.revisionId)).active) {
       throw new Response("Frozen model releases are not active for recovery", { status: 409 });
     }
-    if (input.action === "RECOVER" && !(await evaluateRuntimeReadiness(context, run.id)).passed) {
+    if (input.action === "RECOVER" && !(await evaluateRuntimeReadinessInTransaction(client, context, run.id)).passed) {
       throw new Response("Runtime health is not ready for recovery", { status: 409 });
     }
     if (input.action === "START" || input.action === "RECOVER") await assertLiveActivationAllowed(client, context, run.id);

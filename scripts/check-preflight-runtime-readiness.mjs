@@ -83,3 +83,56 @@ async function withFakePool(client, action) {
 }
 
 console.log("PASS  console database pool logs idle connection errors, keeps the original transaction error, and destroys broken connections");
+
+// Lifecycle arm and START read their preflight inputs on the transaction that
+// already holds the locked run. A fake pool counts checkouts; a fake client
+// serves the locked run and rejects overlapping queries on one connection.
+const store = await import("../apps/console/lib/control-plane/store.ts");
+const tenantId = "00000000-0000-4000-8000-000000000001";
+const runId = "00000000-0000-4000-8000-000000000002";
+const operatorContext = { tenantId, actorId: "preflight-check", actorName: "Preflight Check", role: "operator", accessScope: "tenant" };
+
+function preflightClient(state) {
+  const client = fakeClient();
+  client.statements = [];
+  let inFlight = 0;
+  client.query = async (sql) => {
+    if (inFlight > 0) throw new Error("preflight issued concurrent queries on one connection");
+    inFlight += 1;
+    try {
+      client.statements.push(sql);
+      await new Promise((resolve) => setImmediate(resolve));
+      if (sql.includes("for update of r")) return { rows: [{ id: runId, tenant_id: tenantId, show_revision_id: "00000000-0000-4000-8000-000000000003", show_name: "Preflight check", state, trace_id: "trace", channel_connection_id: "00000000-0000-4000-8000-000000000004", product_version_id: "00000000-0000-4000-8000-000000000005", has_operator: true, rights_approved: true, has_approved_sku_version: true, has_fallback_program: true, channel_ready: true, output_ready: true, ai_disclosure_enabled: true, runtime_session_id: "session-preflight-check", scheduled_at: null, active_program_segment_id: null, active_insert_source_segment_id: null, active_insert_program_segment_id: null, pending_program_transition_event_id: null }] };
+      if (sql.includes("select id from live_runs where id = $1::uuid")) return { rows: [{ id: runId }] };
+      return { rows: [] };
+    } finally {
+      inFlight -= 1;
+    }
+  };
+  return client;
+}
+
+async function withCountingPool(client, action) {
+  const previous = globalThis.shuzhirenDatabasePool;
+  let connects = 0;
+  globalThis.shuzhirenDatabasePool = { connect: async () => { connects += 1; if (connects > 1) throw new Error("preflight took a second pooled connection"); return client; } };
+  try { await action(); } finally { globalThis.shuzhirenDatabasePool = previous; }
+  return connects;
+}
+
+const rejectedPreflight = (error) => error instanceof Response && error.status === 409;
+{
+  const client = preflightClient("PREFLIGHT");
+  const connects = await withCountingPool(client, () => assert.rejects(store.advanceRunLifecycle(operatorContext, runId, "arm"), rejectedPreflight));
+  assert.equal(connects, 1, "arm must evaluate preflight on its own transaction connection");
+  assert.ok(client.statements.some((sql) => sql.includes("from runtime_health_samples")), "arm must read runtime readiness inside its transaction");
+  assert.ok(client.statements.includes("rollback"), "a failed arm preflight must roll back");
+}
+{
+  const client = preflightClient("ARMED");
+  const connects = await withCountingPool(client, () => assert.rejects(store.issueCommand(operatorContext, runId, { action: "START", expectedState: "ARMED", idempotencyKey: "preflight-check-start" }), rejectedPreflight));
+  assert.equal(connects, 1, "START must evaluate preflight on its own transaction connection");
+  assert.ok(client.statements.some((sql) => sql.includes("from show_revision_model_releases")), "START must read frozen releases inside its transaction");
+}
+
+console.log("PASS  lifecycle arm and START evaluate preflight on their transaction connection without nested pool checkouts");

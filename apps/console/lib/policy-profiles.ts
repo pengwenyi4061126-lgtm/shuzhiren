@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
-import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
+import { assertLiveRunAccess, assertLiveRunAccessInTransaction } from "@/lib/control-plane/run-access";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { isControlledEvidenceRef } from "@/lib/governance-input";
@@ -99,11 +99,17 @@ export async function policyRulesForRunInTransaction(client: PoolClient, runId: 
 export async function activePolicyProfileStatusForRun(context: RequestContext, runId: string) {
   await assertLiveRunAccess(context, runId);
   if (!databasePool()) return { active: true, detail: "开发态策略包 fixture 已绑定" };
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const profile = await boundPolicyProfile(client, runId);
-    if (!profile) return { active: false, detail: "场次修订未绑定策略包" };
-    return profile.approval_status === "approved" && isControlledEvidenceRef(profile.evidence_ref) && profile.validation_summary.trim() ? { active: true, detail: `已冻结策略包 ${profile.name} v${profile.version}` } : { active: false, detail: `已冻结策略包 ${profile.name} v${profile.version} 已撤销、未批准或缺少受控验收证据` };
-  });
+  return withTenantTransaction(context.tenantId, async (client) => boundPolicyProfileStatus(await boundPolicyProfile(client, runId)));
+}
+
+export async function activePolicyProfileStatusForRunInTransaction(client: PoolClient, context: RequestContext, runId: string) {
+  await assertLiveRunAccessInTransaction(client, context, runId);
+  return boundPolicyProfileStatus(await boundPolicyProfile(client, runId));
+}
+
+function boundPolicyProfileStatus(profile: BoundPolicyProfileRow | null) {
+  if (!profile) return { active: false, detail: "场次修订未绑定策略包" };
+  return profile.approval_status === "approved" && isControlledEvidenceRef(profile.evidence_ref) && profile.validation_summary.trim() ? { active: true, detail: `已冻结策略包 ${profile.name} v${profile.version}` } : { active: false, detail: `已冻结策略包 ${profile.name} v${profile.version} 已撤销、未批准或缺少受控验收证据` };
 }
 
 async function boundPolicyProfile(client: PoolClient, runId: string) {

@@ -1,5 +1,6 @@
+import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
-import { assertLiveRunAccess, hasRestrictedMembership } from "@/lib/control-plane/run-access";
+import { assertLiveRunAccess, assertLiveRunAccessInTransaction, hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; audioActive: boolean; fallbackReady: boolean };
@@ -30,10 +31,17 @@ export async function getTelemetry(context: RequestContext, runId: string) {
     const telemetry = monitoringStore().telemetry.get(runId);
     return telemetry?.tenantId === context.tenantId ? telemetry : null;
   }
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready from runtime_health_samples where live_run_id = $1 order by sampled_at desc limit 1`, [runId]);
-    return result.rows[0] ? persistentTelemetry(result.rows[0]) : null;
-  });
+  return withTenantTransaction(context.tenantId, async (client) => latestTelemetry(client, runId));
+}
+
+export async function getTelemetryInTransaction(client: PoolClient, context: RequestContext, runId: string) {
+  await assertLiveRunAccessInTransaction(client, context, runId);
+  return latestTelemetry(client, runId);
+}
+
+async function latestTelemetry(client: PoolClient, runId: string) {
+  const result = await client.query<PersistentTelemetryRow>(`select tenant_id, live_run_id, sampled_at, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready from runtime_health_samples where live_run_id = $1 order by sampled_at desc limit 1`, [runId]);
+  return result.rows[0] ? persistentTelemetry(result.rows[0]) : null;
 }
 
 export async function getRuntimeSamplingSlo(context: RequestContext, runId: string): Promise<RuntimeSamplingSlo> {
@@ -145,7 +153,14 @@ export function requiresRuntimeIntervention(telemetry: RuntimeTelemetry) {
 }
 
 export async function evaluateRuntimeReadiness(context: RequestContext, runId: string) {
-  const telemetry = await getTelemetry(context, runId);
+  return runtimeReadinessFrom(await getTelemetry(context, runId));
+}
+
+export async function evaluateRuntimeReadinessInTransaction(client: PoolClient, context: RequestContext, runId: string) {
+  return runtimeReadinessFrom(await getTelemetryInTransaction(client, context, runId));
+}
+
+function runtimeReadinessFrom(telemetry: RuntimeTelemetry | null) {
   if (!telemetry) return { passed: false, detail: "没有运行时遥测数据" };
   const telemetryAgeMs = Date.now() - new Date(telemetry.sampledAt).getTime();
   if (!Number.isFinite(telemetryAgeMs) || telemetryAgeMs > maxTelemetryAgeMs) return { passed: false, detail: `运行时遥测已过期：${telemetry.sampledAt}` };

@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { databasePool, withTenantTransaction } from "@/lib/database";
@@ -74,16 +75,18 @@ export async function getChannelConnection(context: RequestContext, id: string) 
     const connection = channelStore().connections.get(id);
     return connection?.tenantId === context.tenantId ? connection : null;
   }
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const scopeClause = restrictedMembership(context)
-      ? "and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and scope.resource_type = 'channel_connection' and scope.resource_id = channel_connections.id)"
-      : "";
-    const result = await client.query<PersistentConnectionRow>(
-      `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by from channel_connections where id = $1 ${scopeClause}`,
-      restrictedMembership(context) ? [id, context.membershipId] : [id]
-    );
-    return result.rows[0] ? persistentConnection(result.rows[0]) : null;
-  });
+  return withTenantTransaction(context.tenantId, async (client) => getChannelConnectionInTransaction(client, context, id));
+}
+
+export async function getChannelConnectionInTransaction(client: PoolClient, context: RequestContext, id: string) {
+  const scopeClause = restrictedMembership(context)
+    ? "and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and scope.resource_type = 'channel_connection' and scope.resource_id = channel_connections.id)"
+    : "";
+  const result = await client.query<PersistentConnectionRow>(
+    `select id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by from channel_connections where id = $1 ${scopeClause}`,
+    restrictedMembership(context) ? [id, context.membershipId] : [id]
+  );
+  return result.rows[0] ? persistentConnection(result.rows[0]) : null;
 }
 
 export async function createChannelConnection(context: RequestContext, input: CreateChannelConnectionInput) {
@@ -149,8 +152,17 @@ export async function recordChannelVerification(context: RequestContext, id: str
   });
 }
 
-export async function validateChannelConnection(context: RequestContext, id: string | undefined, input: { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean }) {
-  const connection = id ? await getChannelConnection(context, id) : null;
+type ChannelShowInput = { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean };
+
+export async function validateChannelConnection(context: RequestContext, id: string | undefined, input: ChannelShowInput) {
+  return channelReadiness(id ? await getChannelConnection(context, id) : null, input);
+}
+
+export async function validateChannelConnectionInTransaction(client: PoolClient, context: RequestContext, id: string | undefined, input: ChannelShowInput) {
+  return channelReadiness(id ? await getChannelConnectionInTransaction(client, context, id) : null, input);
+}
+
+function channelReadiness(connection: ChannelConnection | null, input: ChannelShowInput) {
   if (!connection) return { passed: false, detail: "未绑定有效的平台连接" };
   const verification = channelVerificationStatus(connection);
   if (!verification.active) return { passed: false, detail: verification.detail };

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
-import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
+import { assertLiveRunAccess, assertLiveRunAccessInTransaction } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type ProgramSegmentKind = "prepared_product" | "interactive" | "fallback" | "human_handoff";
@@ -64,20 +64,27 @@ export async function getShowProgram(context: RequestContext, runId: string) {
     const program = programStore().programs.get(runId);
     return program?.tenantId === context.tenantId ? program : null;
   }
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentProgramRow>(
-      `select r.id as run_id, r.tenant_id, sr.id as revision_id, sr.approval_status, r.state as run_state,
-        s.id as segment_id, s.position, s.kind, s.title, s.duration_seconds,
-        s.product_version_id, s.purpose, s.runtime_script, s.is_fallback
-       from live_runs r
-       join show_revisions sr on sr.id = r.show_revision_id
-       left join show_revision_segments s on s.show_revision_id = sr.id
-       where r.id = $1
-       order by s.position asc nulls last`,
-      [runId]
-    );
-    return result.rows[0] ? persistentProgram(result.rows) : null;
-  });
+  return withTenantTransaction(context.tenantId, async (client) => loadPersistentProgram(client, runId));
+}
+
+export async function getShowProgramInTransaction(client: PoolClient, context: RequestContext, runId: string) {
+  await assertLiveRunAccessInTransaction(client, context, runId);
+  return loadPersistentProgram(client, runId);
+}
+
+async function loadPersistentProgram(client: PoolClient, runId: string) {
+  const result = await client.query<PersistentProgramRow>(
+    `select r.id as run_id, r.tenant_id, sr.id as revision_id, sr.approval_status, r.state as run_state,
+      s.id as segment_id, s.position, s.kind, s.title, s.duration_seconds,
+      s.product_version_id, s.purpose, s.runtime_script, s.is_fallback
+     from live_runs r
+     join show_revisions sr on sr.id = r.show_revision_id
+     left join show_revision_segments s on s.show_revision_id = sr.id
+     where r.id = $1
+     order by s.position asc nulls last`,
+    [runId]
+  );
+  return result.rows[0] ? persistentProgram(result.rows) : null;
 }
 
 export function registerDemoProgram(program: ShowProgram) {
@@ -123,7 +130,14 @@ export function updateDemoProgramLifecycle(runId: string, action: "submit_review
 }
 
 export async function hasApprovedFallbackProgram(context: RequestContext, runId: string) {
-  const program = await getShowProgram(context, runId);
+  return hasApprovedFallback(await getShowProgram(context, runId));
+}
+
+export async function hasApprovedFallbackProgramInTransaction(client: PoolClient, context: RequestContext, runId: string) {
+  return hasApprovedFallback(await getShowProgramInTransaction(client, context, runId));
+}
+
+function hasApprovedFallback(program: ShowProgram | null) {
   return Boolean(program?.status === "approved" && program.segments.some((segment) => segment.fallback));
 }
 
