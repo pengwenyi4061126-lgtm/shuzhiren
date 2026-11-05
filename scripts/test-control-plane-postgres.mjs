@@ -1130,6 +1130,53 @@ try {
   assert.equal(crossTenantMembership.status, 201, "a second tenant should provision its own membership for an existing subject");
   assert.equal((await crossTenantMembership.json()).data.displayName, "Isolated tenant name", "the provisioning response must report the stored display name");
   assert.deepEqual((await client.query("select display_name from users where external_subject = $1", [sharedSubject])).rows, [{ display_name: "Isolated tenant name" }], "one tenant's administrator must not rename a user shared with another tenant");
+  // L8 (081): every write path resolves its actor through sync_control_plane_actor. Called by the application
+  // account from either tenant with another display name (or none), it returns the existing user and leaves the
+  // global display name alone; only a subject seen for the first time takes the requested name.
+  {
+    const actorClient = new Client({ connectionString: appDatabaseUrl });
+    await actorClient.connect();
+    const syncActor = async (actingTenantId, subject, requestedName) => {
+      await actorClient.query("begin");
+      try {
+        await actorClient.query("select set_config('app.tenant_id', $1, true)", [actingTenantId]);
+        const synced = await actorClient.query("select sync_control_plane_actor($1::uuid, $2, $3, 'admin'::membership_role) as id", [actingTenantId, subject, requestedName]);
+        await actorClient.query("commit");
+        return synced.rows[0].id;
+      } catch (error) {
+        await actorClient.query("rollback").catch(() => undefined);
+        throw error;
+      }
+    };
+    try {
+      const sharedUser = (await client.query("select id from users where external_subject = $1", [sharedSubject])).rows[0];
+      for (const [actingTenantId, requestedName] of [[tenantId, "Renamed through the integration tenant"], [isolatedTenantId, "Renamed through the isolated tenant"], [tenantId, ""], [isolatedTenantId, null]]) {
+        assert.equal(await syncActor(actingTenantId, sharedSubject, requestedName), sharedUser.id, "an existing subject must resolve to its existing user id");
+        assert.deepEqual((await client.query("select display_name from users where external_subject = $1", [sharedSubject])).rows, [{ display_name: "Isolated tenant name" }], `acting with display name ${JSON.stringify(requestedName)} must not rename the shared user`);
+      }
+      const isolatedDirectory = await (await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: isolatedRequestHeaders })).json();
+      assert.equal(isolatedDirectory.data.find((member) => member.externalSubject === sharedSubject)?.displayName, "Isolated tenant name", "the other tenant must still list the original display name");
+      const newSubject = `integration-new-actor-${randomUUID()}`;
+      const newUserId = await syncActor(isolatedTenantId, newSubject, "  First seen actor  ");
+      assert.deepEqual((await client.query("select id, display_name from users where external_subject = $1", [newSubject])).rows, [{ id: newUserId, display_name: "First seen actor" }], "a new subject takes the trimmed requested name");
+      assert.equal(await syncActor(tenantId, newSubject, "Second tenant name"), newUserId);
+      assert.equal((await client.query("select display_name from users where external_subject = $1", [newSubject])).rows[0].display_name, "First seen actor", "the second tenant must not rename the new subject either");
+      const unnamedSubject = `integration-unnamed-actor-${randomUUID()}`;
+      await syncActor(tenantId, unnamedSubject, " ");
+      assert.equal((await client.query("select display_name from users where external_subject = $1", [unnamedSubject])).rows[0].display_name, unnamedSubject, "a new subject without a name is named after its subject");
+      // The deployment bootstrap of a third tenant's first admin must not rename the shared user either.
+      const bootstrapTenantId = randomUUID();
+      await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Bootstrap rename probe')", [bootstrapTenantId, `bootstrap-rename-${bootstrapTenantId}`]);
+      const bootstrapProcess = spawn(process.execPath, [path.join(consoleRoot, "scripts", "bootstrap-admin.mjs"), "--tenant-id", bootstrapTenantId, "--subject", sharedSubject, "--display-name", "Renamed by bootstrap"], { env: { ...process.env, DATABASE_URL: databaseUrl }, stdio: ["ignore", "ignore", "pipe"] });
+      let bootstrapStderr = "";
+      bootstrapProcess.stderr.setEncoding("utf8").on("data", (chunk) => { bootstrapStderr += chunk; });
+      const bootstrapExit = await new Promise((resolve) => bootstrapProcess.once("exit", resolve));
+      assert.equal(bootstrapExit, 0, `bootstrap-admin failed: ${bootstrapStderr}`);
+      assert.deepEqual((await client.query("select u.display_name, m.role from memberships m join users u on u.id = m.user_id where m.tenant_id = $1", [bootstrapTenantId])).rows, [{ display_name: "Isolated tenant name", role: "admin" }], "bootstrapping another tenant's admin must keep the shared user's display name");
+    } finally {
+      await actorClient.end();
+    }
+  }
   // L3: pages carry a per-request nonce CSP without 'unsafe-inline' scripts, and responses carry HSTS.
   const pageNonces = [];
   for (let attempt = 0; attempt < 2; attempt += 1) {
