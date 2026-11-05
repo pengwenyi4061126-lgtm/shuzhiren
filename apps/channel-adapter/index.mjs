@@ -1,7 +1,7 @@
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { createServicePool } from "./db.mjs";
-import { parseControlPlaneUrl, parseNormalizedEvent, parseOutboundReply, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
+import { installGracefulShutdown, parseControlPlaneUrl, parseNormalizedEvent, parseOutboundReply, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
 import { createPgReplayStore } from "./replay-store.mjs";
 import { FORWARD_TIMEOUT_MS, controlPlaneRequest, createWebhookProcessor, forwardToControlPlane } from "./webhook.mjs";
 
@@ -24,7 +24,8 @@ const processWebhook = createWebhookProcessor({
   allowRequest,
   forward: ({ target, eventId, event }) => {
     const request = controlPlaneRequest({ target, eventId, event });
-    return forwardToControlPlane({ url: new URL(request.path, controlPlaneUrl), token: request.token, body: request.body });
+    // An aborted forward fails like a network error, so its replay lease is released for the platform's retry.
+    return forwardToControlPlane({ url: new URL(request.path, controlPlaneUrl), token: request.token, body: request.body, signal: shutdown.signal });
   }
 });
 
@@ -52,12 +53,14 @@ const server = http.createServer(async (request, response) => {
     const outcome = await processWebhook({ target, eventId, payloadSha256: payloadSha256(rawBody), event });
     return json(response, outcome.status, outcome.body, outcome.headers);
   } catch (error) {
+    if (shutdown.signal.aborted) return json(response, 503, { error: "shutting_down" });
     const result = publicRequestError(error);
     console.error("channel-adapter.request_failed", { error: error instanceof Error ? error.message : "unknown_error", status: result.status, code: result.error });
     return json(response, result.status, { error: result.error });
   }
 });
 
+const shutdown = installGracefulShutdown({ server, log, cleanup: () => pool.end() });
 server.listen(port, "0.0.0.0", () => console.log(`channel-adapter listening on ${port}`));
 async function dispatchReply(request, response) {
   if (!hasBearerToken(request, dispatchToken)) return json(response, 401, { error: "invalid_dispatch_token" });
@@ -68,7 +71,7 @@ async function dispatchReply(request, response) {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${target.providerReplyToken}` },
     body: JSON.stringify({ channelConnectionId: reply.channelConnectionId, replyId: reply.replyId, runId: reply.runId, interactionId: reply.interactionId, body: reply.body, bodySha256: reply.bodySha256, idempotencyKey: reply.idempotencyKey }),
-    signal: AbortSignal.timeout(8_000)
+    signal: AbortSignal.any([AbortSignal.timeout(8_000), shutdown.signal])
   });
   if (!forwarded.ok) return json(response, forwarded.status >= 500 || forwarded.status === 429 ? 502 : 422, { error: "provider_reply_rejected", status: forwarded.status });
   const receipt = await forwarded.json().catch(() => null);

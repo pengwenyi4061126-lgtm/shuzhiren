@@ -12,10 +12,11 @@ export function controlPlaneRequest({ target, eventId, event }) {
 }
 
 /** @returns {Promise<{ok:true}|{ok:false,kind:"rejected",status:number}|{ok:false,kind:"network"}|{ok:false,kind:"timeout"}>} */
-export async function forwardToControlPlane({ url, token, body, timeoutMs = FORWARD_TIMEOUT_MS, fetchImpl = fetch }) {
+export async function forwardToControlPlane({ url, token, body, timeoutMs = FORWARD_TIMEOUT_MS, fetchImpl = fetch, signal }) {
   let response;
   try {
-    response = await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+    const timeout = AbortSignal.timeout(timeoutMs);
+    response = await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body), signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
   } catch (error) {
     return { ok: false, kind: error?.name === "TimeoutError" ? "timeout" : "network" };
   }

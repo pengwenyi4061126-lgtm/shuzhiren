@@ -51,13 +51,14 @@ function requiredSecret(value, label) {
   return value;
 }
 
-export async function probeTarget(target, { ffprobePath = "ffprobe", ffmpegPath = "ffmpeg", timeoutMs = 5000, audioSampleSeconds = 5, silenceThresholdDb = -50, silenceDurationSeconds = 2, fetchImpl = fetch, execute = execFileAsync } = {}) {
+export async function probeTarget(target, { ffprobePath = "ffprobe", ffmpegPath = "ffmpeg", timeoutMs = 5000, audioSampleSeconds = 5, silenceThresholdDb = -50, silenceDurationSeconds = 2, fetchImpl = fetch, execute = execFileAsync, signal } = {}) {
+  // `signal` aborts every measurement at shutdown: fetches are cancelled and ffprobe and ffmpeg are killed.
   const [primary, fallback, avSyncMs, audioActive, programObservation] = await Promise.all([
-    inspectStream(target.streamUrl, { ffprobePath, timeoutMs, execute }),
-    target.fallbackStreamUrl ? inspectStream(target.fallbackStreamUrl, { ffprobePath, timeoutMs, execute }).then(() => true).catch(() => false) : Promise.resolve(false),
-    fetchAvSync(target.avSyncProbeUrl, { timeoutMs, fetchImpl }),
-    detectAudioActivity(target.streamUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute }),
-    fetchProgramEvidence(target, { timeoutMs, fetchImpl })
+    inspectStream(target.streamUrl, { ffprobePath, timeoutMs, execute, signal }),
+    target.fallbackStreamUrl ? inspectStream(target.fallbackStreamUrl, { ffprobePath, timeoutMs, execute, signal }).then(() => true).catch(() => false) : Promise.resolve(false),
+    fetchAvSync(target.avSyncProbeUrl, { timeoutMs, fetchImpl, signal }),
+    detectAudioActivity(target.streamUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute, signal }),
+    fetchProgramEvidence(target, { timeoutMs, fetchImpl, signal })
   ]);
   if (!primary.hasAudio || !primary.hasVideo || primary.outputFps === null || primary.bitrateMbps === null) throw new Error("primary_stream_measurement_incomplete");
   if (target.expectedFps !== null && Math.abs(primary.outputFps - target.expectedFps) > 0.05) throw new Error("primary_stream_fps_mismatch");
@@ -66,8 +67,8 @@ export async function probeTarget(target, { ffprobePath = "ffprobe", ffmpegPath 
   return programObservation ? { ...result, programObservation } : result;
 }
 
-async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
-  const { stdout } = await execute(ffprobePath, ["-v", "error", "-show_entries", "stream=codec_type,width,height,avg_frame_rate,r_frame_rate,bit_rate:format=bit_rate", "-of", "json", sourceUrl], { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute, signal }) {
+  const { stdout } = await execute(ffprobePath, ["-v", "error", "-show_entries", "stream=codec_type,width,height,avg_frame_rate,r_frame_rate,bit_rate:format=bit_rate", "-of", "json", sourceUrl], { timeout: timeoutMs, maxBuffer: 1024 * 1024, ...(signal ? { signal } : {}) });
   const payload = JSON.parse(stdout);
   const streams = Array.isArray(payload?.streams) ? payload.streams : [];
   const video = streams.find((stream) => stream?.codec_type === "video");
@@ -79,8 +80,8 @@ async function inspectStream(sourceUrl, { ffprobePath, timeoutMs, execute }) {
   return { hasVideo: Boolean(video), hasAudio, outputFps, width, height, bitrateMbps: bitrate === null ? null : round(bitrate / 1_000_000) };
 }
 
-async function fetchAvSync(url, { timeoutMs, fetchImpl }) {
-  const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+async function fetchAvSync(url, { timeoutMs, fetchImpl, signal }) {
+  const response = await fetchImpl(url, { signal: withShutdown(AbortSignal.timeout(timeoutMs), signal) });
   if (!response.ok) throw new Error(`av_sync_probe_http_${response.status}`);
   const payload = await response.json();
   const value = payload?.avSyncMs;
@@ -88,12 +89,12 @@ async function fetchAvSync(url, { timeoutMs, fetchImpl }) {
   return round(value);
 }
 
-async function fetchProgramEvidence(target, { timeoutMs, fetchImpl }) {
+async function fetchProgramEvidence(target, { timeoutMs, fetchImpl, signal }) {
   if (!target.programEvidenceUrl) return null;
   try {
     const response = await fetchImpl(target.programEvidenceUrl, {
       headers: target.programEvidenceToken ? { authorization: `Bearer ${target.programEvidenceToken}` } : undefined,
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: withShutdown(AbortSignal.timeout(timeoutMs), signal)
     });
     if (!response.ok) return null;
     return validateProgramObservation(await response.json(), "program evidence response");
@@ -102,6 +103,8 @@ async function fetchProgramEvidence(target, { timeoutMs, fetchImpl }) {
     return null;
   }
 }
+
+function withShutdown(timeout, signal) { return signal ? AbortSignal.any([timeout, signal]) : timeout; }
 
 export function validateProgramObservation(value, label = "program observation") {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
@@ -118,8 +121,8 @@ export function validateProgramObservation(value, label = "program observation")
   return { outboxEventId: observation.outboxEventId, commandId: observation.commandId, programSegmentId: observation.programSegmentId, action: observation.action, source: observation.source, evidenceRef: observation.evidenceRef, contentSha256: observation.contentSha256, confidence: observation.confidence, mediaTimeMs: observation.mediaTimeMs, observedAt: new Date(observation.observedAt).toISOString(), attestation: { issuer: envelope.issuer, keyId: envelope.keyId, audience: envelope.audience, issuedAt: new Date(envelope.issuedAt).toISOString(), expiresAt: new Date(envelope.expiresAt).toISOString(), signature: envelope.signature } };
 }
 
-async function detectAudioActivity(sourceUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute }) {
-  const { stderr = "" } = await execute(ffmpegPath, ["-hide_banner", "-nostdin", "-t", String(audioSampleSeconds), "-i", sourceUrl, "-map", "0:a:0", "-af", `silencedetect=n=${silenceThresholdDb}dB:d=${silenceDurationSeconds}`, "-f", "null", "-"], { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+async function detectAudioActivity(sourceUrl, { ffmpegPath, timeoutMs, audioSampleSeconds, silenceThresholdDb, silenceDurationSeconds, execute, signal }) {
+  const { stderr = "" } = await execute(ffmpegPath, ["-hide_banner", "-nostdin", "-t", String(audioSampleSeconds), "-i", sourceUrl, "-map", "0:a:0", "-af", `silencedetect=n=${silenceThresholdDb}dB:d=${silenceDurationSeconds}`, "-f", "null", "-"], { timeout: timeoutMs, maxBuffer: 1024 * 1024, ...(signal ? { signal } : {}) });
   const silentFromStart = /silence_start:\s*0(?:\.0+)?(?:\s|$)/.test(stderr);
   const becameActive = /silence_end:/.test(stderr);
   return !(silentFromStart && !becameActive);
@@ -146,3 +149,49 @@ function isUuid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a
 function isMediaCommandId(value) { return typeof value === "string" && /^media_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
 function allowedAction(value) { return typeof value === "string" && ["START", "RECOVER", "SCHEDULED_START", "INSERT_PROGRAM", "ROLLBACK_PROGRAM"].includes(value); }
 function isSessionTimestamp(value) { return typeof value === "string" && !Number.isNaN(Date.parse(value)); }
+
+// Graceful SIGTERM and SIGINT handling (L7). Node installs no default handler for these signals when it runs
+// as PID 1 in a container, so `docker stop` used to wait 10 s and then kill the process with SIGKILL (137).
+// Stop listening at once, let in-flight requests finish for SHUTDOWN_GRACE_MS, then abort their downstream calls
+// through `signal` and close the remaining connections, run `cleanup` for at most SHUTDOWN_CLEANUP_MS and exit 0.
+// A repeated signal is ignored. If shutdown still hangs, the process exits 1 after both budgets.
+export const SHUTDOWN_GRACE_MS = 5_000;
+export const SHUTDOWN_CLEANUP_MS = 2_000;
+
+export function installGracefulShutdown({ server, log, cleanup = async () => {}, graceMs = SHUTDOWN_GRACE_MS, cleanupMs = SHUTDOWN_CLEANUP_MS, signals = ["SIGTERM", "SIGINT"], emitter = process, exit = (code) => process.exit(code) }) {
+  const controller = new AbortController();
+  const active = new Set();
+  let shutdown = null;
+  server.on("request", (request, response) => {
+    active.add(response);
+    response.once("close", () => {
+      active.delete(response);
+      if (shutdown) setImmediate(() => server.closeIdleConnections?.());
+    });
+  });
+  const run = async (signal) => {
+    const startedAt = Date.now();
+    const forced = setTimeout(() => { log("shutdown_forced", { inflight: active.size }); exit(1); }, graceMs + 2 * cleanupMs + 500);
+    forced.unref?.();
+    log("shutdown_started", { signal, inflight: active.size });
+    const closed = new Promise((resolve) => server.close(() => resolve()));
+    server.closeIdleConnections?.();
+    if (!(await settlesWithin(closed, graceMs))) {
+      log("shutdown_aborting", { inflight: active.size });
+      controller.abort(new Error("shutting_down"));
+      if (!(await settlesWithin(closed, cleanupMs))) server.closeAllConnections?.();
+    }
+    await settlesWithin(Promise.resolve().then(cleanup).catch((error) => log("shutdown_cleanup_failed", { error: error instanceof Error ? error.message : String(error) })), cleanupMs);
+    clearTimeout(forced);
+    log("shutdown_complete", { durationMs: Date.now() - startedAt });
+    exit(0);
+  };
+  const begin = (signal) => { shutdown ??= run(signal); return shutdown; };
+  for (const signal of signals) emitter.on(signal, () => { void begin(signal); });
+  return { signal: controller.signal, get stopping() { return shutdown !== null; }, shutdown: begin };
+}
+
+function settlesWithin(promise, timeoutMs) {
+  let timer;
+  return Promise.race([promise.then(() => true), new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); })]).finally(() => clearTimeout(timer));
+}

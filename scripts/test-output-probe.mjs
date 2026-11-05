@@ -99,6 +99,26 @@ try {
 }
 console.log("PASS  output probe guards request handlers and compares credentials in constant time");
 
+// L7: the output probe registered no SIGTERM handler, so as a container's PID 1 it ignored `docker stop` until
+// Docker killed it after 10 s.
+{
+  const { installGracefulShutdown } = await import("../apps/output-probe/lib.mjs");
+  const { assertGracefulShutdownBehaviour, assertProcessExitsOnSigterm } = await import("./fixtures/graceful-shutdown-scenarios.mjs");
+  await assertGracefulShutdownBehaviour(installGracefulShutdown, "output probe");
+  let abortedSignal = null;
+  await assert.rejects(probeTarget({ ...target, fallbackStreamUrl: null }, { signal: AbortSignal.abort(), execute: async (_command, _arguments, options) => { abortedSignal = options.signal; throw new Error("aborted"); }, fetchImpl: async (_url, options) => { if (options.signal.aborted) throw new Error("aborted"); return new Response("{}"); } }));
+  assert.equal(abortedSignal?.aborted, true, "the shutdown signal must reach ffprobe and ffmpeg so that they are killed");
+  const { fileURLToPath } = await import("node:url");
+  const ran = await assertProcessExitsOnSigterm({
+    name: "output probe",
+    args: [fileURLToPath(new URL("../apps/output-probe/index.mjs", import.meta.url))],
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    portVariable: "OUTPUT_PROBE_PORT",
+    env: { OUTPUT_PROBE_SHARED_TOKEN: "output-probe-shared-token-at-least-32-chars", OUTPUT_PROBE_TARGETS: JSON.stringify([{ id: "probe_demo", streamUrl: "rtmp://relay.internal/live/primary", avSyncProbeUrl: "http://analyzer.internal/av-sync" }]) }
+  });
+  console.log(`PASS  output probe stops listening on SIGTERM, aborts in-flight measurements after the grace period and exits 0 (process check: ${ran}) (L7)`);
+}
+
 function getLocal(port, requestPath, headers = {}) {
   return new Promise((resolve) => {
     let settled = false;

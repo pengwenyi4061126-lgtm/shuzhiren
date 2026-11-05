@@ -96,3 +96,49 @@ export function parseNormalizedEvent(value) {
   }
   throw new Error("Unsupported webhook kind");
 }
+
+// Graceful SIGTERM and SIGINT handling (L7). Node installs no default handler for these signals when it runs
+// as PID 1 in a container, so `docker stop` used to wait 10 s and then kill the process with SIGKILL (137).
+// Stop listening at once, let in-flight requests finish for SHUTDOWN_GRACE_MS, then abort their downstream calls
+// through `signal` and close the remaining connections, run `cleanup` for at most SHUTDOWN_CLEANUP_MS and exit 0.
+// A repeated signal is ignored. If shutdown still hangs, the process exits 1 after both budgets.
+export const SHUTDOWN_GRACE_MS = 5_000;
+export const SHUTDOWN_CLEANUP_MS = 2_000;
+
+export function installGracefulShutdown({ server, log, cleanup = async () => {}, graceMs = SHUTDOWN_GRACE_MS, cleanupMs = SHUTDOWN_CLEANUP_MS, signals = ["SIGTERM", "SIGINT"], emitter = process, exit = (code) => process.exit(code) }) {
+  const controller = new AbortController();
+  const active = new Set();
+  let shutdown = null;
+  server.on("request", (request, response) => {
+    active.add(response);
+    response.once("close", () => {
+      active.delete(response);
+      if (shutdown) setImmediate(() => server.closeIdleConnections?.());
+    });
+  });
+  const run = async (signal) => {
+    const startedAt = Date.now();
+    const forced = setTimeout(() => { log("shutdown_forced", { inflight: active.size }); exit(1); }, graceMs + 2 * cleanupMs + 500);
+    forced.unref?.();
+    log("shutdown_started", { signal, inflight: active.size });
+    const closed = new Promise((resolve) => server.close(() => resolve()));
+    server.closeIdleConnections?.();
+    if (!(await settlesWithin(closed, graceMs))) {
+      log("shutdown_aborting", { inflight: active.size });
+      controller.abort(new Error("shutting_down"));
+      if (!(await settlesWithin(closed, cleanupMs))) server.closeAllConnections?.();
+    }
+    await settlesWithin(Promise.resolve().then(cleanup).catch((error) => log("shutdown_cleanup_failed", { error: error instanceof Error ? error.message : String(error) })), cleanupMs);
+    clearTimeout(forced);
+    log("shutdown_complete", { durationMs: Date.now() - startedAt });
+    exit(0);
+  };
+  const begin = (signal) => { shutdown ??= run(signal); return shutdown; };
+  for (const signal of signals) emitter.on(signal, () => { void begin(signal); });
+  return { signal: controller.signal, get stopping() { return shutdown !== null; }, shutdown: begin };
+}
+
+function settlesWithin(promise, timeoutMs) {
+  let timer;
+  return Promise.race([promise.then(() => true), new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); })]).finally(() => clearTimeout(timer));
+}

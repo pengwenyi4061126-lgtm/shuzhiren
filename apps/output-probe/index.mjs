@@ -1,6 +1,6 @@
 import http from "node:http";
 import { createProbeHandler, guardedHandler } from "./handler.mjs";
-import { probeTarget, validateTarget } from "./lib.mjs";
+import { installGracefulShutdown, probeTarget, validateTarget } from "./lib.mjs";
 
 const port = positiveInt(process.env.OUTPUT_PROBE_PORT, 8081);
 const timeoutMs = positiveInt(process.env.OUTPUT_PROBE_TIMEOUT_MS, 5000);
@@ -32,11 +32,12 @@ function configuredTargets() {
 async function measuredTarget(target) {
   const existing = cache.get(target.id);
   if (existing && existing.expiresAt > Date.now()) return existing.value;
-  const value = probeTarget(target, { timeoutMs, audioSampleSeconds, silenceDurationSeconds, silenceThresholdDb });
+  const value = probeTarget(target, { timeoutMs, audioSampleSeconds, silenceDurationSeconds, silenceThresholdDb, signal: shutdown.signal });
   cache.set(target.id, { value, expiresAt: Date.now() + cacheMs });
   try { return await value; } catch (error) { cache.delete(target.id); throw error; }
 }
 
 const server = http.createServer(guardedHandler(createProbeHandler({ token, targets, measure: measuredTarget })));
+const shutdown = installGracefulShutdown({ server, log: (event, fields = {}) => process.stdout.write(`${JSON.stringify({ service: "output-probe", event, ...fields })}\n`) });
 
 server.listen(port, "0.0.0.0", () => process.stdout.write(`${JSON.stringify({ service: "output-probe", event: "started", pid: process.pid, port, targetCount: targets.size, timeoutMs, cacheMs, audioSampleSeconds, silenceDurationSeconds, silenceThresholdDb })}\n`));

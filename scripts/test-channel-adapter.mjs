@@ -374,3 +374,23 @@ await assertSurvivesIdleConnectionTermination({
   env: { ...adapterEnvironment(), CONTROL_PLANE_URL: "http://127.0.0.1:9", CHANNEL_ADAPTER_TARGETS: JSON.stringify([adapterTarget]), DATABASE_QUERY_TIMEOUT_MS: "2000" }
 });
 console.log("PASS  channel adapter survives the termination of idle database connections and logs the pool error (M3)");
+
+// L7: the channel adapter registered no SIGTERM handler, so as a container's PID 1 it ignored `docker stop`
+// until Docker killed it after 10 s.
+{
+  const { installGracefulShutdown } = await import("../apps/channel-adapter/lib.mjs");
+  const { assertGracefulShutdownBehaviour, assertProcessExitsOnSigterm } = await import("./fixtures/graceful-shutdown-scenarios.mjs");
+  await assertGracefulShutdownBehaviour(installGracefulShutdown, "channel adapter");
+  let forwardedSignal = null;
+  const aborted = await forwardToControlPlane({ url: "http://127.0.0.1:9/", token: "t", body: {}, signal: AbortSignal.abort(), fetchImpl: async (_url, options) => { forwardedSignal = options.signal; throw options.signal.reason; } });
+  assert.equal(forwardedSignal?.aborted, true, "the shutdown signal must reach the Control_Plane forward");
+  assert.deepEqual(aborted, { ok: false, kind: "network" }, "an aborted forward must fail like a network error so its lease is released");
+  const ran = await assertProcessExitsOnSigterm({
+    name: "channel adapter",
+    args: ["--import", fakePgRegister, adapterEntry],
+    cwd: root,
+    portVariable: "CHANNEL_ADAPTER_PORT",
+    env: { ...adapterEnvironment(), CONTROL_PLANE_URL: controlPlane.url, CHANNEL_ADAPTER_TARGETS: JSON.stringify([adapterTarget]) }
+  });
+  console.log(`PASS  channel adapter stops listening on SIGTERM, aborts in-flight forwards after the grace period and exits 0 (process check: ${ran}) (L7)`);
+}
