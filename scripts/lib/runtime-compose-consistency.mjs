@@ -98,5 +98,68 @@ export function checkRuntimeComposeConsistency({ composeDoc, envFiles }) {
       }
     }
   }
+  // L10: the worker reaches the adapter on CHANNEL_ADAPTER_URL, the adapter listens on CHANNEL_ADAPTER_PORT.
+  const adapterPort = effectiveValue("CHANNEL_ADAPTER_PORT", envFiles, references);
+  for (const file of envFiles.filter((item) => item.values.has("CHANNEL_ADAPTER_URL"))) {
+    let url;
+    try {
+      url = new URL(normalizeEnvValue(file.values.get("CHANNEL_ADAPTER_URL")));
+    } catch {
+      errors.push({ code: "RC-CHANNEL-PORT", message: `${file.path} 的 CHANNEL_ADAPTER_URL 无法解析为 URL` });
+      continue;
+    }
+    if (url.hostname !== "channel-adapter") continue;
+    const urlPort = url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
+    if (urlPort !== adapterPort) errors.push({ code: "RC-CHANNEL-PORT", message: `${file.path} 的 CHANNEL_ADAPTER_URL 使用端口 ${urlPort || "未知"}，而 channel-adapter 监听 CHANNEL_ADAPTER_PORT=${adapterPort ?? "未定义"}` });
+  }
+  return { errors };
+}
+
+function portExpressions(service) {
+  const expressions = new Set();
+  for (const entry of service?.expose ?? []) expressions.add(String(entry).replace(/\/(tcp|udp)$/, ""));
+  for (const entry of service?.ports ?? []) {
+    const text = typeof entry === "object" && entry !== null ? String(entry.target ?? "") : String(entry);
+    const containerSide = text.slice(text.lastIndexOf(":") + 1).replace(/\/(tcp|udp)$/, "");
+    if (containerSide) expressions.add(containerSide);
+  }
+  return expressions;
+}
+
+/**
+ * L10: a service that reads its listen port from an environment variable must expose and health-check
+ * that same interpolation, and URLs pointing at another service must use the port it listens on.
+ * @returns {{ errors: Array<{ code: string, message: string }> }}
+ */
+export function checkComposePorts(composeDoc) {
+  const errors = [];
+  const services = isMapping(composeDoc?.services) ? composeDoc.services : {};
+  const listenPorts = new Map();
+  for (const [name, service] of Object.entries(services)) {
+    const environment = isMapping(service?.environment) ? service.environment : {};
+    const configured = Object.entries(environment).filter(([key]) => /_PORT$/.test(key)).map(([, value]) => String(value));
+    const exposed = portExpressions(service);
+    if (configured.length > 0) {
+      for (const expression of exposed) if (!configured.includes(expression)) errors.push({ code: "RCT-PORT", message: `${name} exposes ${expression} but listens on ${configured.join(", ")}` });
+    }
+    const ports = configured.length > 0 ? new Set(configured) : exposed;
+    listenPorts.set(name, ports);
+    const health = [].concat(service?.healthcheck?.test ?? []).join(" ");
+    for (const match of health.matchAll(/localhost:(\$\{[^}]+\}|\d+)\//g)) {
+      if (!ports.has(match[1])) errors.push({ code: "RCT-PORT", message: `${name} health check probes port ${match[1]} but listens on ${[...ports].join(", ") || "no declared port"}` });
+    }
+  }
+  for (const [name, service] of Object.entries(services)) {
+    const environment = isMapping(service?.environment) ? service.environment : {};
+    for (const [key, value] of Object.entries(environment)) {
+      const text = String(value ?? "");
+      const candidates = [text, ...parseInterpolations(text).filter((reference) => reference.operator === ":-" || reference.operator === "-").map((reference) => reference.argument)];
+      for (const candidate of candidates) {
+        const match = /^https?:\/\/([a-z0-9-]+):(\$\{[^}]+\}|\d+)(\/|$)/.exec(candidate);
+        if (!match || !listenPorts.has(match[1])) continue;
+        if (!listenPorts.get(match[1]).has(match[2])) errors.push({ code: "RCT-PORT", message: `${name} environment.${key} reaches ${match[1]} on port ${match[2]} but it listens on ${[...listenPorts.get(match[1])].join(", ")}` });
+      }
+    }
+  }
   return { errors };
 }

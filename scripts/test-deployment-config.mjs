@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
-import { checkRuntimeComposeConsistency } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkRuntimeComposeConsistency } from "./lib/runtime-compose-consistency.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(root, "scripts", "check-deployment-config.mjs");
@@ -539,6 +539,23 @@ try {
   assert.notEqual(undefinedVariable.status, 0, "a Compose variable missing from every env file must fail the preflight");
   assert.match(undefinedVariable.stderr, /\[RC-UNDEFINED\][^\n]*output-probe[^\n]*OUTPUT_PROBE_CACHE_MS/, "the undefined variable must name the service");
   await writeFile(files.runtime, runtime(validProbeTarget));
+
+  // L10: the worker's adapter URL must use the port the adapter listens on.
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("CHANNEL_ADAPTER_URL=http://channel-adapter.internal:8082", "CHANNEL_ADAPTER_URL=http://channel-adapter:9000"));
+  const mismatchedAdapterPort = check(["--require-cosyvoice"]);
+  assert.notEqual(mismatchedAdapterPort.status, 0, "an adapter URL on a port the adapter does not listen on must fail the preflight");
+  assert.match(mismatchedAdapterPort.stderr, /\[RC-CHANNEL-PORT\][^\n]*9000[^\n]*8082/, "the port mismatch must name both ports");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  const portDefaults = new Map([["RUNTIME_WORKER_PORT", "18080"], ["RUNTIME_OBSERVER_PORT", "18084"], ["CHANNEL_ADAPTER_PORT", "18082"], ["ALERT_NOTIFIER_PORT", "18083"]]);
+  for (const [service, variable] of [["runtime-worker", "RUNTIME_WORKER_PORT"], ["runtime-observer", "RUNTIME_OBSERVER_PORT"], ["channel-adapter", "CHANNEL_ADAPTER_PORT"], ["alert-notifier", "ALERT_NOTIFIER_PORT"]]) {
+    const definition = runtimeComposeDoc.services[service];
+    const port = portDefaults.get(variable);
+    assert.equal(interpolate(String(definition.environment[variable]), portDefaults), port, `${service} must listen on ${variable}`);
+    assert.deepEqual(definition.expose.map((entry) => interpolate(String(entry), portDefaults)), [port], `${service} must expose ${variable}`);
+    assert.match(interpolate(definition.healthcheck.test.join(" "), portDefaults), new RegExp(`localhost:${port}/healthz`), `${service} must health-check ${variable}`);
+  }
+  assert.equal(interpolate(String(runtimeComposeDoc.services["runtime-worker"].environment.CHANNEL_ADAPTER_URL), portDefaults), "http://channel-adapter:18082", "the default adapter URL must follow CHANNEL_ADAPTER_PORT");
+  assert.deepEqual(checkComposePorts(yaml.load("services:\n  runtime-worker:\n    environment:\n      RUNTIME_WORKER_PORT: ${RUNTIME_WORKER_PORT:-8080}\n    expose: [\"8080\"]\n    healthcheck:\n      test: [\"CMD\", \"node\", \"-e\", \"fetch('http://localhost:8080/healthz')\"]\n")).errors.map((error) => error.code), ["RCT-PORT", "RCT-PORT"], "a hard-coded expose and health-check port must be reported");
 
   // M23: root-anchored rules followed by `!vendor/LiveTalking/**` re-included submodule secrets and data.
   const legacyLiveTalkingIgnore = ".git\n.env\n.env.*\nsecrets\nmodels\ndata\n*.log\nvendor/*\n!vendor/LiveTalking\n!vendor/LiveTalking/**\nvendor/LiveTalking/.git\nvendor/LiveTalking/.git/**\nruntime/*\n!runtime/patches\n!runtime/patches/livetalking-observability.patch\n";

@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import yaml from "js-yaml";
+import { checkComposePorts } from "./lib/runtime-compose-consistency.mjs";
 
 const files = {
   compose: "../infra/compose/docker-compose.runtime.yml",
@@ -25,5 +27,9 @@ for (const required of ["PREVIEW_BROKER_URL: ${PREVIEW_BROKER_URL:-}", "PREVIEW_
 for (const required of ["RUNTIME_WORKER_DATABASE_URL", "CHANNEL_ADAPTER_DATABASE_URL", "ALERT_NOTIFIER_DATABASE_URL", "CONTROL_PLANE_URL", "LIVETALKING_AVATAR_ID", "STREAM_RTMP_URL", "STREAM_KEY", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_MODEL_PATH", "COSYVOICE_MODEL_DIR"]) {
   if (!Object.values(contents).some((content) => content.includes(`${required}=`))) throw new Error(`Runtime Compose template set must supply ${required}`);
 }
+
+const composeDoc = yaml.load(contents.compose);
+const portErrors = checkComposePorts(composeDoc).errors;
+if (portErrors.length) throw new Error(`Runtime Compose ports must agree between environment, expose, health checks and service URLs:\n${portErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
 
 console.log("PASS  runtime Compose templates cover every service profile and required interpolation input");

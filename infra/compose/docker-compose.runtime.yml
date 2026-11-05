@@ -43,7 +43,7 @@ services:
       RUNTIME_GATEWAY_URL: http://runtime-gateway:8090
       RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
       RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: ${RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS:-20000}
-      CHANNEL_ADAPTER_URL: ${CHANNEL_ADAPTER_URL:-http://channel-adapter:8082}
+      CHANNEL_ADAPTER_URL: ${CHANNEL_ADAPTER_URL:-http://channel-adapter:${CHANNEL_ADAPTER_PORT:-8082}}
       CHANNEL_ADAPTER_DISPATCH_TOKEN: ${CHANNEL_ADAPTER_DISPATCH_TOKEN:?set-in-runtime-env}
       OUTBOX_POLL_MS: ${OUTBOX_POLL_MS:-1000}
       SCHEDULER_POLL_MS: ${SCHEDULER_POLL_MS:-1000}
@@ -59,9 +59,9 @@ services:
       RUNTIME_WORKER_PORT: ${RUNTIME_WORKER_PORT:-8080}
     restart: unless-stopped
     expose:
-      - "8080"
+      - "${RUNTIME_WORKER_PORT:-8080}"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:${RUNTIME_WORKER_PORT:-8080}/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -85,9 +85,9 @@ services:
     volumes:
       - ${RUNTIME_OBSERVER_TARGETS_DIR:-../../config}:/run/shuzhiren/observer-config:ro
     expose:
-      - "8084"
+      - "${RUNTIME_OBSERVER_PORT:-8084}"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8084/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:${RUNTIME_OBSERVER_PORT:-8084}/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -129,9 +129,9 @@ services:
       CHANNEL_ADAPTER_DISPATCH_TOKEN: ${CHANNEL_ADAPTER_DISPATCH_TOKEN:?set-in-runtime-env}
       CHANNEL_ADAPTER_TARGETS: ${CHANNEL_ADAPTER_TARGETS:-[]}
     expose:
-      - "8082"
+      - "${CHANNEL_ADAPTER_PORT:-8082}"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8082/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:${CHANNEL_ADAPTER_PORT:-8082}/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -151,9 +151,9 @@ services:
       ALERT_NOTIFIER_RETRY_MAX_MS: ${ALERT_NOTIFIER_RETRY_MAX_MS:-60000}
       ALERT_NOTIFIER_TARGETS: ${ALERT_NOTIFIER_TARGETS:-[]}
     expose:
-      - "8083"
+      - "${ALERT_NOTIFIER_PORT:-8083}"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8083/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:${ALERT_NOTIFIER_PORT:-8083}/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
