@@ -86,6 +86,8 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "ci:workflow:check", kind: "npm", script: "ci:workflow:check", label: "static" },
   { id: "ci:db-fail-closed:test", kind: "npm", script: "ci:db-fail-closed:test", label: "behavioral" },
   { id: "ci:evidence:test", kind: "npm", script: "ci:evidence:test", label: "behavioral" },
+  { id: "docs:governance:check", kind: "npm", script: "docs:governance:check", label: "static" },
+  { id: "docs:governance:test", kind: "npm", script: "docs:governance:test", label: "behavioral" },
   { id: "typecheck", kind: "npm", script: "typecheck", label: "static" },
   { id: "lint", kind: "npm", script: "lint", label: "static" },
   { id: "build", kind: "npm", script: "build", label: "static" },

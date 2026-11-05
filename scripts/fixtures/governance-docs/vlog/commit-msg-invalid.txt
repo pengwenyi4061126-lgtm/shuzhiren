@@ -1,0 +1,25 @@
+docs(sample): commit message with invalid verification claims
+
+Used by scripts/test-governance-docs.mjs. The first trailer is not an entry
+id, the second names an entry that valid-log.md does not have, and the block
+has a short commit and a verdict that differs from the recomputed one.
+
+```yaml
+编号: V-20261106-08
+类型: 结论
+结论: 判定写错的本机运行
+判定: 静态检查
+依据来源:
+  - 类别: 本机运行
+    命令: npm run ci:gates:test
+    日期: 2026-11-06
+    退出码: "0"
+    操作系统: Windows 11 专业版 10.0.22631.7376
+    提交: abc
+    检查:
+      - { 名称: "ci:gates:test", 标签: behavioral }
+    未执行的 CI 检查: [无]
+```
+
+Verification-Log: V-20261399-01
+Verification-Log: V-20261106-09

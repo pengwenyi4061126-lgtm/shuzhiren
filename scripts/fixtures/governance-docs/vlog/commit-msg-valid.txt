@@ -1,0 +1,25 @@
+docs(sample): commit message with valid verification claims
+
+Used by scripts/test-governance-docs.mjs. The trailer names an entry of
+valid-log.md; the embedded block records a local run of this commit.
+
+```yaml
+编号: V-20261106-07
+类型: 结论
+结论: 本提交的 ci:gates:test 在本机通过
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run ci:gates:test
+    日期: 2026-11-06
+    退出码: "0"
+    操作系统: Windows 11 专业版 10.0.22631.7376
+    提交: 本提交
+    检查:
+      - { 名称: "ci:gates:test", 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: "npm run db:migrate", 原因: 本机缺少 PostgreSQL }
+```
+
+Task: sample
+Verification-Log: V-20261106-01

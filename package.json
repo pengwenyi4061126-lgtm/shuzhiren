@@ -93,6 +93,8 @@
     "ci:action-pins:verify": "node scripts/verify-action-pins.mjs",
     "ci:evidence:collect": "node scripts/collect-ci-run-evidence.mjs",
     "ci:steps:diff": "node scripts/diff-ci-steps.mjs",
+    "docs:governance:check": "node scripts/check-governance-docs.mjs",
+    "docs:governance:test": "node scripts/test-governance-docs.mjs",
     "control-plane:integration": "node scripts/test-control-plane-postgres.mjs"
   },
   "devDependencies": {
