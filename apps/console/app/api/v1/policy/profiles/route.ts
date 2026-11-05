@@ -7,9 +7,14 @@ import { isControlledEvidenceRef } from "@/lib/governance-input";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const context = await requestContextFrom(request);
-  requireRole(context, ["admin", "operator", "reviewer", "analyst"]);
-  return Response.json({ data: await listPolicyProfiles(context) });
+  try {
+    const context = await requestContextFrom(request);
+    requireRole(context, ["admin", "operator", "reviewer", "analyst"]);
+    return Response.json({ data: await listPolicyProfiles(context) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "policy_profile_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {

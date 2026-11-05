@@ -6,9 +6,14 @@ export const dynamic = "force-dynamic";
 const roles = new Set<ActorRole>(["admin", "operator", "reviewer", "analyst"]);
 
 export async function GET(request: Request) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin"]);
-  return Response.json({ data: await listMemberships(actor) });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin"]);
+    return Response.json({ data: await listMemberships(actor) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "membership_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {

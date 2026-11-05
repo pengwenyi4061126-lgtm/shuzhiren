@@ -5,9 +5,14 @@ import { createIncidentFromAlert, listIncidents } from "@/lib/incidents";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator", "analyst"]);
-  return Response.json({ data: await listIncidents(actor, new URL(request.url).searchParams.get("runId") ?? undefined) });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator", "analyst"]);
+    return Response.json({ data: await listIncidents(actor, new URL(request.url).searchParams.get("runId") ?? undefined) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "incident_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {

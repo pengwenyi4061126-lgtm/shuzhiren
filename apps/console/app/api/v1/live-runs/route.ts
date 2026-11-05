@@ -7,27 +7,32 @@ import { observeRuntimeSession } from "@/lib/runtime-gateway";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
-  return Response.json({ data: await listRuns(actor) });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
+    return Response.json({ data: await listRuns(actor) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "live_run_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator"]);
-  let body: unknown;
-  try { body = await readBoundedJson(request); }
-  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
-  if (!isInput(body)) return Response.json({ error: "invalid_live_run" }, { status: 400 });
-  if (body.runtimeSessionId) {
-    try {
-      const observation = await observeRuntimeSession(body.runtimeSessionId);
-      if (!observation.session.active) return Response.json({ error: "runtime_session_not_active" }, { status: 409 });
-    } catch {
-      return Response.json({ error: "runtime_session_verification_failed" }, { status: 502 });
-    }
-  }
   try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator"]);
+    let body: unknown;
+    try { body = await readBoundedJson(request); }
+    catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
+    if (!isInput(body)) return Response.json({ error: "invalid_live_run" }, { status: 400 });
+    if (body.runtimeSessionId) {
+      try {
+        const observation = await observeRuntimeSession(body.runtimeSessionId);
+        if (!observation.session.active) return Response.json({ error: "runtime_session_not_active" }, { status: 409 });
+      } catch {
+        return Response.json({ error: "runtime_session_verification_failed" }, { status: 502 });
+      }
+    }
     const run = await createLiveRun(actor, body);
     await recordAuditEvent(actor, { type: "live_run.created", resource: "live_run", resourceId: run.id, detail: { scheduledAt: run.scheduledAt ?? null, channelConnectionId: body.channelConnectionId, productVersionId: body.productVersionId } });
     return Response.json({ data: run }, { status: 201 });

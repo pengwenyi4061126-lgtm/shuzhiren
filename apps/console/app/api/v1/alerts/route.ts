@@ -4,11 +4,16 @@ import { listAlerts } from "@/lib/monitoring";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator", "analyst"]);
-  const runId = new URL(request.url).searchParams.get("runId") ?? undefined;
-  if (runId && !isUuid(runId)) return Response.json({ error: "invalid_run_id" }, { status: 400 });
-  return Response.json({ data: await listAlerts(actor, runId) });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator", "analyst"]);
+    const runId = new URL(request.url).searchParams.get("runId") ?? undefined;
+    if (runId && !isUuid(runId)) return Response.json({ error: "invalid_run_id" }, { status: 400 });
+    return Response.json({ data: await listAlerts(actor, runId) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "runtime_alert_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 function isUuid(value: string) {

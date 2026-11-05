@@ -10,15 +10,15 @@ const actions = new Set<LiveCommandAction>(["START", "PAUSE", "HANDOFF", "END", 
 const states = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT", "ARMED", "LIVE", "DEGRADED", "ENDED", "ARCHIVED"]);
 
 export async function POST(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/commands">) {
-  const requestContext = await requestContextFrom(request);
-  requireRole(requestContext, ["admin", "operator"]);
-  let body: unknown;
-  try { body = await readBoundedJson(request); }
-  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
-  if (!isCommandBody(body)) return Response.json({ error: "invalid_command" }, { status: 400 });
-  const { runId } = await context.params;
-
   try {
+    const requestContext = await requestContextFrom(request);
+    requireRole(requestContext, ["admin", "operator"]);
+    let body: unknown;
+    try { body = await readBoundedJson(request); }
+    catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
+    if (!isCommandBody(body)) return Response.json({ error: "invalid_command" }, { status: 400 });
+    const { runId } = await context.params;
+
     const result = await issueCommand(requestContext, runId, body);
     if (!result.duplicate) {
       await recordAuditEvent(requestContext, { type: "live_command.accepted", resource: "live_run", resourceId: runId, detail: { action: body.action, commandId: result.command.id, programSegmentId: body.programSegmentId ?? null } });

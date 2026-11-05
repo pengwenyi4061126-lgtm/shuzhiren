@@ -7,19 +7,24 @@ import { isSafeObjectKey, isSha256Digest } from "@/lib/governance-input";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
-  return Response.json({ data: await listAssets(actor) });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
+    return Response.json({ data: await listAssets(actor) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "media_asset_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {
-  const context = await requestContextFrom(request);
-  requireRole(context, ["admin", "operator"]);
-  let body: unknown;
-  try { body = await readBoundedJson(request); }
-  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
-  if (!isAssetInput(body)) return Response.json({ error: "invalid_media_asset" }, { status: 400 });
   try {
+    const context = await requestContextFrom(request);
+    requireRole(context, ["admin", "operator"]);
+    let body: unknown;
+    try { body = await readBoundedJson(request); }
+    catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
+    if (!isAssetInput(body)) return Response.json({ error: "invalid_media_asset" }, { status: 400 });
     const asset = await createMediaAsset(context, body);
     await recordAuditEvent(context, { type: "media_asset.created", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectKey: asset.objectKey, objectVersion: asset.contentVerification?.objectVersion ?? "unverified", checksum: asset.checksum, verificationEvidenceRef: asset.contentVerification?.evidenceRef ?? "unverified" } });
     return Response.json({ data: asset }, { status: 201 });

@@ -4,7 +4,12 @@ import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-contex
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const context = await requestContextFrom(request);
-  requireRole(context, ["admin", "reviewer", "analyst"]);
-  return Response.json({ data: await verifyAuditChain(context) });
+  try {
+    const context = await requestContextFrom(request);
+    requireRole(context, ["admin", "reviewer", "analyst"]);
+    return Response.json({ data: await verifyAuditChain(context) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "audit_verification_rejected" }, { status: error.status });
+    throw error;
+  }
 }

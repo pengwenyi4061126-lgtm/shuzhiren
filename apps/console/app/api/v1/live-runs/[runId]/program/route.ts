@@ -5,22 +5,27 @@ import { getShowProgram, replaceShowProgram, type ProgramSegmentInput } from "@/
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/program">) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
-  const { runId } = await context.params;
-  const program = await getShowProgram(actor, runId);
-  return program ? Response.json({ data: program }) : Response.json({ error: "not_found" }, { status: 404 });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
+    const { runId } = await context.params;
+    const program = await getShowProgram(actor, runId);
+    return program ? Response.json({ data: program }) : Response.json({ error: "not_found" }, { status: 404 });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "show_program_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function PUT(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/program">) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator"]);
-  let body: unknown;
-  try { body = await readBoundedJson(request); }
-  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
-  if (!isProgramInput(body)) return Response.json({ error: "invalid_show_program" }, { status: 400 });
-  const { runId } = await context.params;
   try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator"]);
+    let body: unknown;
+    try { body = await readBoundedJson(request); }
+    catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
+    if (!isProgramInput(body)) return Response.json({ error: "invalid_show_program" }, { status: 400 });
+    const { runId } = await context.params;
     const program = await replaceShowProgram(actor, runId, body.segments);
     return program ? Response.json({ data: program }) : Response.json({ error: "not_found" }, { status: 404 });
   } catch (error) {

@@ -5,10 +5,10 @@ import { acknowledgeAlert } from "@/lib/monitoring";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request, { params }: { params: Promise<{ alertId: string }> }) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator"]);
-  const { alertId } = await params;
   try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator"]);
+    const { alertId } = await params;
     const result = await acknowledgeAlert(actor, alertId);
     if (!result.duplicate) await recordAuditEvent(actor, { type: "runtime_alert.acknowledged", resource: "runtime_alert", resourceId: result.alert.id, detail: { runId: result.alert.runId, code: result.alert.code, severity: result.alert.severity } });
     return Response.json({ data: result });

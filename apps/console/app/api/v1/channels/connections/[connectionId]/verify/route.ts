@@ -7,14 +7,14 @@ export const dynamic = "force-dynamic";
 const statuses = new Set<ChannelStatus>(["connected", "degraded", "disabled"]);
 
 export async function POST(request: Request, context: RouteContext<"/api/v1/channels/connections/[connectionId]/verify">) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator"]);
-  let body: unknown;
-  try { body = await readBoundedJson(request); }
-  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
-  if (!isVerificationInput(body)) return Response.json({ error: "invalid_channel_verification" }, { status: 400 });
-  const { connectionId } = await context.params;
   try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator"]);
+    let body: unknown;
+    try { body = await readBoundedJson(request); }
+    catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
+    if (!isVerificationInput(body)) return Response.json({ error: "invalid_channel_verification" }, { status: 400 });
+    const { connectionId } = await context.params;
     const connection = await recordChannelVerification(actor, connectionId, body);
     return Response.json({ data: connection });
   } catch (error) {

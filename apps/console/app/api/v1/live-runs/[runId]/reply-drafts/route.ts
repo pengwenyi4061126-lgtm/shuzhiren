@@ -5,10 +5,15 @@ import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-contex
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/reply-drafts">) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
-  const { runId } = await context.params;
-  return Response.json({ data: await listChannelReplyDrafts(actor, runId) });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
+    const { runId } = await context.params;
+    return Response.json({ data: await listChannelReplyDrafts(actor, runId) });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "channel_reply_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function POST(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/reply-drafts">) {

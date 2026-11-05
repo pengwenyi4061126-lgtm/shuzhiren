@@ -4,11 +4,16 @@ import { runtimeGatewayHealth } from "@/lib/runtime-gateway";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const context = await requestContextFrom(request);
-  requireRole(context, ["admin", "operator"]);
   try {
-    return Response.json({ data: await runtimeGatewayHealth() });
+    const context = await requestContextFrom(request);
+    requireRole(context, ["admin", "operator"]);
+    try {
+      return Response.json({ data: await runtimeGatewayHealth() });
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : "runtime_unavailable" }, { status: 503 });
+    }
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "runtime_unavailable" }, { status: 503 });
+    if (error instanceof Response) return Response.json({ error: error.statusText || "runtime_health_rejected" }, { status: error.status });
+    throw error;
   }
 }

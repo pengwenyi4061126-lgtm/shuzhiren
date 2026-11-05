@@ -8,10 +8,15 @@ import { readBoundedJson } from "@/lib/bounded-json";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/interactions">) {
-  const actor = await requestContextFrom(request);
-  requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
-  const { runId } = await context.params;
-  return Response.json({ data: await listInteractions(actor, runId, new URL(request.url).searchParams.get("status") === "handled" ? "handled" : "queued") });
+  try {
+    const actor = await requestContextFrom(request);
+    requireRole(actor, ["admin", "operator", "reviewer", "analyst"]);
+    const { runId } = await context.params;
+    return Response.json({ data: await listInteractions(actor, runId, new URL(request.url).searchParams.get("status") === "handled" ? "handled" : "queued") });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "interaction_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 export async function POST(request: Request, context: RouteContext<"/api/v1/live-runs/[runId]/interactions">) {

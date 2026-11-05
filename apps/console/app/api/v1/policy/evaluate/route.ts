@@ -7,15 +7,20 @@ import { readBoundedJson } from "@/lib/bounded-json";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const context = await requestContextFrom(request);
-  requireRole(context, ["admin", "operator", "reviewer"]);
-  let body: unknown;
-  try { body = await readBoundedJson(request); }
-  catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
-  if (!isPolicyInput(body)) return Response.json({ error: "invalid_input" }, { status: 400 });
-  const decision = evaluatePolicy(body.question, body.evidenceIds);
-  await recordAuditEvent(context, { type: "policy.evaluated", resource: "policy_evaluation", resourceId: `policy-evaluation:${crypto.randomUUID()}`, detail: { questionSha256: createHash("sha256").update(body.question).digest("hex"), action: decision.action, riskLevel: decision.riskLevel, reasons: decision.reasons.join(";"), requiredEvidence: decision.requiredEvidence.join(";"), evidenceIds: body.evidenceIds.join(";") } });
-  return Response.json({ data: decision });
+  try {
+    const context = await requestContextFrom(request);
+    requireRole(context, ["admin", "operator", "reviewer"]);
+    let body: unknown;
+    try { body = await readBoundedJson(request); }
+    catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
+    if (!isPolicyInput(body)) return Response.json({ error: "invalid_input" }, { status: 400 });
+    const decision = evaluatePolicy(body.question, body.evidenceIds);
+    await recordAuditEvent(context, { type: "policy.evaluated", resource: "policy_evaluation", resourceId: `policy-evaluation:${crypto.randomUUID()}`, detail: { questionSha256: createHash("sha256").update(body.question).digest("hex"), action: decision.action, riskLevel: decision.riskLevel, reasons: decision.reasons.join(";"), requiredEvidence: decision.requiredEvidence.join(";"), evidenceIds: body.evidenceIds.join(";") } });
+    return Response.json({ data: decision });
+  } catch (error) {
+    if (error instanceof Response) return Response.json({ error: error.statusText || "policy_evaluation_rejected" }, { status: error.status });
+    throw error;
+  }
 }
 
 function isPolicyInput(value: unknown): value is { question: string; evidenceIds: string[] } {
