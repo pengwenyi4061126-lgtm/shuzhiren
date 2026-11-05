@@ -387,3 +387,104 @@
   scripts/static-gate-coverage.mjs（任务 7.3 建立）；[无] 只表示映射尚未登记覆盖测试。判定为行为验证只说明
   Local_Verification 中标为 behavioral 的检查在本机执行并通过；上面 38 个 CI 步骤既没有本机结果，也还没有 CI 结果。
 ```
+
+## V-20261105-04 提交 13f9212（任务 2.1）的工作树上 npm run verify:local 以退出码 0 结束
+
+```yaml
+编号: V-20261105-04
+类型: 结论
+结论: 提交 13f9212（任务 2.1）的工作树上 npm run verify:local（不带 --with-gateway）以退出码 0 结束，71 项检查全部通过；新增的 docs:governance:check、docs:governance:test 与受 ci.yml、LOCAL_CHECKS 改动影响的 ci:coverage:check、ci:workflow:check、ci:gates:test 都在其中
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-05
+    退出码: "0"
+    操作系统: Windows 11 专业版 10.0.22631.7376（23H2）
+    提交: 13f9212b6daba87b194a7c5f4212ab7f3af39bab
+    检查:
+      - { 名称: "docs:governance:check", 标签: static }
+      - { 名称: "docs:governance:test", 标签: behavioral }
+      - { 名称: "ci:coverage:check", 标签: static }
+      - { 名称: "ci:workflow:check", 标签: static }
+      - { 名称: "ci:gates:test", 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: static-gates, 名称: "npm run ci:action-pins:verify", 原因: 需要访问 github.com 的网络（Local_Verification 不访问网络） }
+      - { job: static-gates, 名称: bash -n scripts/check-runtime-host.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/backup-postgres.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/test-postgres-backup-direct.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/restore-postgres-drill.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/test-postgres-restore-drill.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/backup-runtime-gateway-state.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/restore-runtime-gateway-state-drill.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/verify-postgres-backup.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash -n scripts/verify-runtime-gateway-state-backup.sh, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: static-gates, 名称: bash scripts/check-runtime-host.sh --help, 原因: Local_Verification 只收录 Requirement 2.2 定义了覆盖判定的 npm、node --check、Python 与 py_compile 检查，不含 bash 检查 }
+      - { job: node-unit, 名称: bash scripts/test-postgres-backup-direct.sh, 原因: 本机缺少 Linux shell 环境（flock） }
+      - { job: python-gateway, 名称: python3 -m pip install --disable-pip-version-check --no-cache-dir -r runtime/gateway/requirements.txt, 原因: 本机缺少 Python 3 }
+      - { job: python-gateway, 名称: "npm run runtime:gateway:config:test", 原因: 未启用 --with-gateway }
+      - { job: python-gateway, 名称: "npm run runtime:gateway:errors:test", 原因: 未启用 --with-gateway }
+      - { job: python-gateway, 名称: "python3 -m py_compile runtime/gateway/*.py scripts/test-runtime-gateway-config.py", 原因: 未启用 --with-gateway }
+      - { job: python-gateway, 名称: python3 scripts/test-runtime-gateway-audio.py, 原因: 未启用 --with-gateway }
+      - { job: python-gateway, 名称: python3 scripts/test-runtime-gateway-concurrency.py, 原因: 未启用 --with-gateway }
+      - { job: python-gateway, 名称: python3 scripts/test-runtime-gateway-state-backup.py, 原因: 未启用 --with-gateway }
+      - { job: python-gateway, 名称: python3 scripts/test-runtime-gateway-state-restore-drill.py, 原因: 未启用 --with-gateway }
+      - { job: postgres-integration, 名称: "npm run db:migrate", 原因: 本机缺少 PostgreSQL }
+      - { job: postgres-integration, 名称: "npm run db:migrate:integrity:test", 原因: 本机缺少 PostgreSQL }
+      - { job: postgres-integration, 名称: "npm run service-principals:integration", 原因: 本机缺少 PostgreSQL }
+      - { job: postgres-integration, 名称: "npm run db:migrate:lock:test", 原因: 本机缺少 PostgreSQL }
+      - { job: postgres-integration, 名称: "npm run db:verify -- --allow-privileged", 原因: 本机缺少 PostgreSQL }
+      - { job: postgres-integration, 名称: "npm run control-plane:integration", 原因: 本机缺少 PostgreSQL }
+      - { job: compose-render, 名称: docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config, 原因: 本机缺少 Docker }
+      - { job: compose-render, 名称: docker compose --env-file config/runtime.example.env --env-file config/runtime-gateway.example.env --env-file config/channel-adapter.example.env --env-file config/alert-notifier.example.env --profile output-probe --profile channel-adapter --profile alert-notifier --profile cosyvoice -f infra/compose/docker-compose.runtime.yml config, 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci ., 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file apps/console/Dockerfile --target migrator --tag shuzhiren-control-plane-migrator-ci ., 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci ., 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file apps/runtime-observer/Dockerfile --tag shuzhiren-runtime-observer-ci ., 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file apps/output-probe/Dockerfile --tag shuzhiren-output-probe-ci ., 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file apps/channel-adapter/Dockerfile --tag shuzhiren-channel-adapter-ci ., 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file apps/alert-notifier/Dockerfile --tag shuzhiren-alert-notifier-ci ., 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway, 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: "docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: "docker build --file runtime/cosyvoice/Dockerfile --build-arg MINIFORGE_URL=\"$url\" --build-arg MINIFORGE_SHA256=\"$sha\" --tag shuzhiren-cosyvoice-ci .", 原因: 本机缺少 Docker }
+静态门禁覆盖:
+  - { 门禁: "docs:governance:check", 行为测试: [无] }
+  - { 门禁: "ci:coverage:check", 行为测试: [无] }
+  - { 门禁: "ci:workflow:check", 行为测试: [无] }
+说明: >-
+  转录自任务 2.1 的提交 13f9212b6daba87b194a7c5f4212ab7f3af39bab 的提交说明中的内嵌块（git show -s --format=%B 13f9212），本次没有重新运行。
+  按"先运行，后登记"的规则在后续提交中登记：提交 由"本提交"改为该 SHA，结论中的"本提交"改为"提交 13f9212（任务 2.1）"，
+  其余字段照录。原说明：Node.js v20.19.2，npm 10.8.2，PowerShell 7.6.9；2026-11-05 09:39:08 至 09:40:35（UTC+08:00）；
+  运行时的工作树是父提交 ae6e0ea 加任务 2.1 的改动（当时尚未提交），内容与 13f9212 相同。检查只列出了 71 项中
+  受任务 2.1 改动影响的 5 项；未执行的 CI 检查与 V-20261105-03 完全相同（38 项）。
+```
+
+## V-20261105-05 首轮登记 Audit_Register 时读取的审计报告文件的 SHA-256（本机计算）
+
+```yaml
+编号: V-20261105-05
+类型: 结论
+结论: docs/AUDIT_REGISTER.md 首轮登记所依据的审计报告 f9d9e2ed-88ca-4736-978b-9c1242d28819.md（2026-11-04，25707 字节）的 SHA-256 为 9021ab946370f41adc3b25e386d16eb8b19a69dbd4d95a2dd1fd410204d940c3
+判定: 未验证
+依据来源:
+  - 类别: 本机运行
+    命令: "pwsh -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 -LiteralPath '<报告目录>\\f9d9e2ed-88ca-4736-978b-9c1242d28819.md').Hash\""
+    日期: 2026-11-05
+    退出码: "0"
+    操作系统: Windows 11 专业版 10.0.22631.7376（23H2），PowerShell 7.6.9
+    提交: 13f9212b6daba87b194a7c5f4212ab7f3af39bab
+    检查:
+      - { 名称: "pwsh -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 -LiteralPath '<报告目录>\\f9d9e2ed-88ca-4736-978b-9c1242d28819.md').Hash\"", 标签: static }
+    未执行的 CI 检查:
+      - { 名称: CI_Pipeline 六个 job 的全部验证步骤, 原因: 本次本机运行只执行上面的哈希命令，没有运行 Local_Verification；本提交工作树上的 Local_Verification 结果写在其提交说明的内嵌块中 }
+风险: >-
+  审计报告不在仓库内（设计"风险"一节）。Audit_Register 只按"审计报告 §<章节> <编号>"引用报告，不复制全文；
+  本条记录登记时读取的文件的 SHA-256，之后若报告文件被改动或替换，可以据此发现，并据此判断哪些记录需要按新文本复核。
+说明: >-
+  <报告目录> 是仓库外的 %APPDATA%\Kiro\User\globalStorage\kiro.kiroagent\artifacts\sess_2931bc78-595e-4291-947d-8fa9fd1e8357-d3ed5214，
+  按设计第 1 部分 §7.1 以文件名定位。命令于 2026-11-05 在 HEAD 为 13f9212、工作区干净时运行，输出
+  9021AB946370F41ADC3B25E386D16EB8B19A69DBD4D95A2DD1FD410204D940C3，转为小写后即上面的值，与
+  scripts/lib/audit-register.mjs 的 AUDIT_REPORT.sha256 相同；Get-Item 读出的文件长度为 25707 字节，与设计第 1 部分 §0.1
+  记录的大小一致。判定为未验证：Get-FileHash 不是 LOCAL_CHECKS 或 CI_ONLY_STEPS 中登记的检查，不满足 Requirement 4.2
+  以 npm 脚本名或测试文件名标识检查的要求。本条只证明登记所依据的文件内容，不证明报告中任何问题的真伪。
+```

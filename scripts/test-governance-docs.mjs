@@ -1,10 +1,11 @@
 // Behavioral tests of the documentation governance gate: the VERIFICATION_LOG
-// rules of scripts/lib/verification-log.mjs and the scripts/check-governance-docs.mjs
-// CLI (design part 1 §4.5; Requirement 1.12, 1.14, 1.15, 4.1-4.8, 6.8, 36.13,
-// 36.14). Labels are resolved against the real LOCAL_CHECKS, CI_ONLY_STEPS and
-// package.json; workflows are inline. Samples live in
-// scripts/fixtures/governance-docs/vlog/; secret-like strings are assembled at
-// run time so that no fixture contains one.
+// rules of scripts/lib/verification-log.mjs, the Audit_Register rules of
+// scripts/lib/audit-register.mjs and the scripts/check-governance-docs.mjs CLI
+// (design part 1 §4.5, §7.5; Requirement 1.12, 1.14, 1.15, 4.1-4.8, 6.8,
+// 7.1-7.15, 36.13, 36.14). Labels are resolved against the real LOCAL_CHECKS,
+// CI_ONLY_STEPS and package.json; workflows are inline. Samples live in
+// scripts/fixtures/governance-docs/vlog/ and scripts/fixtures/governance-docs/audit/;
+// secret-like strings are assembled at run time so that no fixture contains one.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -29,10 +30,27 @@ import {
   validateEntry,
   validateVerificationLog
 } from "./lib/verification-log.mjs";
+import {
+  AUDIT_REPORT,
+  countByStatus,
+  deriveStatus,
+  initialStatus,
+  isCompleteFix,
+  REPORT_ISSUE_IDS,
+  REPORT_LOW_ITEMS,
+  REPORT_SERIES,
+  REPORT_SOURCE_MARKS,
+  REQUIREMENT_PRIORITIES,
+  SOURCE_MARKS,
+  STATUSES,
+  validateAuditRegister,
+  VERIFY_CONCLUSIONS
+} from "./lib/audit-register.mjs";
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptsDir, "..");
 const fixture = (name) => path.join(scriptsDir, "fixtures", "governance-docs", "vlog", name);
+const auditFixture = (name) => path.join(scriptsDir, "fixtures", "governance-docs", "audit", name);
 const scripts = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")).scripts;
 const resolver = createCheckResolver({ scripts, root: repoRoot });
 const emptyCoverage = () => ({ status: "ok", mapping: {} });
@@ -484,4 +502,338 @@ test("the repository docs/VERIFICATION_LOG.md has no errors", async () => {
   assert.equal(verdicts["V-20261104-01"], "未验证");
   const gate = runGate([]);
   assert.equal(gate.status, 0, gate.stderr);
+});
+
+// ---------------------------------------------------------------------------
+// Audit_Register (design part 1 §7.5; Requirement 6.8, 7.1-7.15). The
+// properties of design Property 25-29 are checked by enumerating their small
+// input spaces (source marks × verification sequences × fix variants, and all
+// subsets of N1-N5).
+
+const PARENT_SHA = "89abcdef0123456789abcdef0123456789abcdef";
+const completeFix = () => ({
+  提交: SHA,
+  回归测试: ["scripts/integration/example.test.mjs"],
+  修复前失败: { 命令: "npm run postgres:integration", 提交: PARENT_SHA },
+  修复后通过: { "run id": "41900000000" }
+});
+
+/** A minimal valid record with its initial state: report issues cite the report, other ids are new defects. */
+function auditRecord(id, overrides = {}) {
+  const prefix = id[0];
+  const series = REPORT_SERIES[prefix];
+  const data = {
+    编号: id,
+    标题: `样例问题 ${id}`,
+    来源: series && REPORT_ISSUE_IDS.includes(id) ? `审计报告 §${series.section} ${id}` : "本规格执行期间新发现（样例）",
+    来源标记: REPORT_SOURCE_MARKS[id] ?? "新发现"
+  };
+  if (prefix === "L" && REPORT_ISSUE_IDS.includes(id)) data.原始描述 = REPORT_LOW_ITEMS[Number(id.slice(1)) - 1];
+  data.优先级 = prefix === "N" ? "P1" : "P0";
+  data.位置 = [`scripts/example-${id.toLowerCase()}.mjs:1`];
+  data.状态 = initialStatus(data.来源标记);
+  data.对应需求 = ["7"];
+  data.证据 = [data.来源];
+  const merged = { ...data, ...overrides };
+  for (const [key, value] of Object.entries(merged)) if (value === undefined) delete merged[key];
+  return merged;
+}
+const reportRecords = () => REPORT_ISSUE_IDS.map((id) => auditRecord(id));
+
+/** A register document with one heading and yaml block per record. */
+function renderRegister(records, extraLines = []) {
+  return ["# 样例", "", ...records.flatMap((data) => [`### ${data.编号} ${data.标题}`, "", "```yaml", yaml.dump(data, { lineWidth: -1 }).trimEnd(), "```", ""]), ...extraLines].join("\n");
+}
+const auditLine = (error) => `${error.code} ${error.id}${error.field ? ` ${error.field}` : ""}: ${error.message}`;
+const describeAudit = (errors) => errors.map(auditLine).join("\n");
+const auditErrors = (records, options = {}) => validateAuditRegister(renderRegister(records), { resolver, ...options }).errors;
+/** Errors of one record placed among the 54 report records (it replaces the record with the same id, or is added). */
+function recordErrors(record, options) {
+  const records = reportRecords().map((data) => (data.编号 === record.编号 ? record : data));
+  if (!REPORT_ISSUE_IDS.includes(record.编号)) records.push(record);
+  return auditErrors(records, options);
+}
+const fieldsOf = (record, options) => recordErrors(record, options).map((error) => `${error.code} ${error.field}`);
+/** The record with 状态 set to the derived state, so that only the rule under test can fail. */
+const consistent = (record) => ({ ...record, 状态: deriveStatus(record) });
+
+test("the 54-record sample of C1-C4, H1-H7, M1-M25 and L1-L18 validates (Requirement 7.1)", () => {
+  assert.equal(REPORT_ISSUE_IDS.length, 54);
+  assert.deepEqual(Object.fromEntries(Object.entries(REPORT_SERIES).map(([prefix, series]) => [prefix, series.count])), { C: 4, H: 7, M: 25, L: 18 });
+  assert.equal(REPORT_LOW_ITEMS.length, 18);
+  assert.ok(Object.isFrozen(REPORT_LOW_ITEMS));
+  assert.match(AUDIT_REPORT.sha256, /^[0-9a-f]{64}$/);
+  const result = validateAuditRegister(renderRegister(reportRecords()), { resolver });
+  assert.equal(describeAudit(result.errors), "");
+  assert.equal(result.records.length, 54);
+  const sample = validateAuditRegister(readFileSync(auditFixture("valid-register.md"), "utf8"), { resolver, vlog: [{ id: "V-20261106-01", verdict: "静态检查", valid: true }] });
+  assert.equal(describeAudit(sample.errors), "");
+  assert.deepEqual(countByStatus(sample.records), { 待复核: 30, 已确认: 21, 已否定: 1, 需环境验证: 1, 已修复: 1 });
+});
+
+test("AR-SET: deleting L18, duplicating M3, N2 without N1 and unknown ids are reported (Requirement 7.1, 7.14)", () => {
+  const withoutL18 = auditErrors(reportRecords().filter((data) => data.编号 !== "L18"));
+  assert.deepEqual(withoutL18.map((error) => `${error.code} ${error.id}`), ["AR-SET docs/AUDIT_REGISTER.md"]);
+  assert.match(withoutL18[0].message, /^缺少 L18：审计报告 §5/);
+  const duplicated = auditErrors([...reportRecords(), auditRecord("M3", { 标题: "复制的 M3" })]);
+  assert.deepEqual(duplicated.map((error) => `${error.code} ${error.id}`), ["AR-SET M3"]);
+  assert.match(duplicated[0].message, /重复登记（第 \d+、\d+ 行）/);
+  const gap = auditErrors([...reportRecords(), auditRecord("N2")]);
+  assert.deepEqual(gap.map((error) => `${error.code} ${error.id}`), ["AR-SET docs/AUDIT_REGISTER.md"]);
+  assert.match(gap[0].message, /已登记到 N2，缺少 N1/);
+  for (const id of ["C5", "M26", "X1", "N0", "N01"]) {
+    const unknown = auditErrors([...reportRecords(), auditRecord(id)]).filter((error) => error.code === "AR-SET");
+    assert.deepEqual(unknown.map((error) => error.id), [id], id);
+  }
+  // Property 28: for every subset S of N1-N5, AR-SET is silent iff S = {N1, …, Nk}.
+  for (let mask = 0; mask < 32; mask += 1) {
+    const numbers = [1, 2, 3, 4, 5].filter((number) => mask & (1 << (number - 1)));
+    const errors = auditErrors([...reportRecords(), ...numbers.map((number) => auditRecord(`N${number}`))]).filter((error) => error.code === "AR-SET");
+    assert.equal(errors.length === 0, numbers.every((number, index) => number === index + 1), `N set {${numbers.join(", ")}}: ${describeAudit(errors)}`);
+  }
+  assert.ok(auditErrors([...reportRecords(), auditRecord("N1"), auditRecord("N1")]).some((error) => error.code === "AR-SET" && error.id === "N1"));
+});
+
+test("AR-LOW-TEXT: L descriptions equal the frozen REPORT_LOW_ITEMS word for word (Requirement 7.2)", () => {
+  const changed = recordErrors(auditRecord("L1", { 原始描述: "token 比较不安全" }));
+  assert.deepEqual(changed.map((error) => `${error.code} ${error.id} ${error.field}`), ["AR-LOW-TEXT L1 原始描述"]);
+  assert.match(changed[0].message, /"token 比较不是常量时间"/);
+  assert.deepEqual(fieldsOf(auditRecord("L18", { 原始描述: undefined })), ["AR-LOW-TEXT 原始描述"]);
+  assert.deepEqual(fieldsOf(auditRecord("L9", { 原始描述: "Gateway 的小问题 " })), ["AR-LOW-TEXT 原始描述"]);
+  assert.deepEqual(fieldsOf(auditRecord("L9", { 报告子项: ["子项一", "子项二"] })), []);
+  assert.deepEqual(fieldsOf(auditRecord("L9", { 报告子项: [] })), ["AR-FIELD 报告子项"]);
+});
+
+test("deriveStatus: the initial state of each 来源标记, then the last verification, then a complete fix (Requirement 7.4, 7.5)", () => {
+  const initial = { 已核实: "已确认", 待复核: "待复核", 需环境验证: "需环境验证", 未标注: "待复核", 新发现: "待复核" };
+  assert.deepEqual(Object.keys(initial), [...SOURCE_MARKS]);
+  for (const mark of SOURCE_MARKS) assert.equal(deriveStatus({ 来源标记: mark }), initial[mark], mark);
+  for (const record of [{}, { 来源标记: "其他" }, null, "text"]) assert.equal(deriveStatus(record), "待复核");
+  // Property 25 and 26: closed over STATUSES; without verifications and fixes only 来源标记 decides.
+  const verificationLists = [undefined, [], ...VERIFY_CONCLUSIONS.map((结论) => [{ 结论 }]), [{ 结论: "已确认" }, { 结论: "已否定" }], [{ 结论: "已否定" }, { 结论: "未知" }], ["not a mapping"], "not a list"];
+  const fixes = [undefined, {}, { 提交: SHA }, completeFix(), "not a mapping"];
+  for (const mark of [...SOURCE_MARKS, undefined, "其他"]) {
+    for (const list of verificationLists) {
+      for (const fix of fixes) {
+        const status = deriveStatus({ 来源标记: mark, 核实: list, 修复: fix });
+        const valid = Array.isArray(list) ? list.filter((item) => item !== null && typeof item === "object" && VERIFY_CONCLUSIONS.includes(item.结论)) : [];
+        const expected = isCompleteFix(fix) ? "已修复" : valid.length > 0 ? valid.at(-1).结论 : initialStatus(mark);
+        assert.ok(STATUSES.includes(status));
+        assert.equal(status, expected, `${mark} ${JSON.stringify(list)} ${JSON.stringify(fix)}`);
+      }
+    }
+  }
+  assert.deepEqual(fieldsOf(auditRecord("M10", { 状态: "已确认" })), ["AR-STATUS 状态"]);
+  assert.deepEqual(fieldsOf(auditRecord("M10", { 状态: "已验证" })), ["AR-STATUS 状态"]);
+  assert.deepEqual(fieldsOf(auditRecord("M10", { 来源标记: "已核实", 状态: "已确认" })), ["AR-FIELD 来源标记"], "the report marks M10 待复核");
+  assert.deepEqual(fieldsOf(auditRecord("M18", { 状态: "需环境验证" })), []);
+});
+
+test("a fix record without 修复前失败 keeps the previous state; 已修复 needs all four parts (Requirement 7.11-7.13)", () => {
+  assert.equal(deriveStatus({ 来源标记: "已核实", 修复: completeFix() }), "已修复");
+  // Property 27: removing any part of a complete fix returns the state to the verification or source value.
+  for (const part of ["提交", "回归测试", "修复前失败", "修复后通过"]) {
+    const fix = completeFix();
+    delete fix[part];
+    assert.equal(isCompleteFix(fix), false, part);
+    assert.equal(deriveStatus({ 来源标记: "已核实", 修复: fix }), "已确认", part);
+    assert.equal(deriveStatus({ 来源标记: "新发现", 核实: [{ 结论: "已确认" }], 修复: fix }), "已确认", part);
+    assert.equal(deriveStatus({ 来源标记: "需环境验证", 修复: fix }), "需环境验证", part);
+  }
+  assert.equal(isCompleteFix({ ...completeFix(), 提交: "abc123" }), false, "a commit needs at least 7 hex digits");
+  assert.equal(isCompleteFix({ ...completeFix(), 回归测试: [] }), false);
+  assert.equal(isCompleteFix({ ...completeFix(), 修复前失败: { 命令: "npm run postgres:integration" } }), false);
+  assert.equal(isCompleteFix({ ...completeFix(), 修复后通过: { "run id": "run-1" } }), false);
+  assert.equal(isCompleteFix({ ...completeFix(), 提交: SHA.slice(0, 7), 修复后通过: { 命令: "npm run postgres:integration", 提交: SHA } }), true);
+
+  const withoutBefore = completeFix();
+  delete withoutBefore.修复前失败;
+  assert.deepEqual(fieldsOf(auditRecord("C1", { 修复: withoutBefore })), []);
+  const claimed = recordErrors(auditRecord("C1", { 修复: withoutBefore, 状态: "已修复" }));
+  assert.deepEqual(claimed.map((error) => `${error.code} ${error.field}`), ["AR-FIX 状态"]);
+  assert.match(claimed[0].message, /修复前失败.*状态保持 已确认/);
+  assert.deepEqual(fieldsOf(auditRecord("C1", { 修复: completeFix(), 状态: "已修复" })), []);
+  assert.deepEqual(fieldsOf(auditRecord("C1", { 修复: completeFix() })), ["AR-STATUS 状态"]);
+  assert.deepEqual(fieldsOf(auditRecord("C1", { 修复: { 提交: "not-a-sha" } })), ["AR-FIX 修复.提交"]);
+  assert.deepEqual(fieldsOf(auditRecord("C1", { 修复: { 提交: SHA, 修复前失败: { 命令: "npm test" } } })), ["AR-FIX 修复.修复前失败"]);
+});
+
+test("已否定 needs a behavioral or code-reading basis and a 无需修复 key; a static check alone is an error (Requirement 7.9, 7.10)", () => {
+  const negated = (method, evidence, extra = {}) => auditRecord("M11", { 状态: "已否定", 对应需求: ["28"], 优先级: "P1", 核实: [{ 提交: SHA, 方法: method, 结论: "已否定", 证据: evidence }], 无需修复: [], ...extra });
+  const codeReading = { 文件: "apps/console/lib/control-plane/outbox.ts", 行号范围: "125-134", 推理: "样例：markDelivered 失败时不调用 markFailed" };
+  const staticLocal = recordErrors(negated("本机测试", { 测试名称: "runtime:outbox:check", 命令: "npm run runtime:outbox:check" }));
+  assert.deepEqual(staticLocal.map((error) => `${error.code} ${error.field}`), ["AR-NEGATE 核实[0]"]);
+  assert.match(staticLocal[0].message, /只有 static 检查（runtime:outbox:check）/);
+  assert.deepEqual(fieldsOf(negated("CI_Pipeline 运行", { "run id": "41900000000", 步骤: ["Run npm run runtime:outbox:check"] })), ["AR-NEGATE 核实[0]"]);
+  assert.deepEqual(fieldsOf(negated("本机测试", { 测试名称: "ci:gates:test", 命令: "npm run ci:gates:test" })), []);
+  assert.deepEqual(fieldsOf(negated("CI_Pipeline 运行", { "run id": "41900000000", 步骤: ["Run npm run runtime:outbox:check", "Run npm run db:migrate"] })), []);
+  assert.deepEqual(fieldsOf(negated("代码阅读", codeReading)), []);
+  assert.deepEqual(fieldsOf(negated("本机测试", { 测试名称: "ci:gates:test" })), ["AR-VERIFY 核实[0].证据.命令", "AR-NEGATE 核实[0]"]);
+
+  const unregistered = { 测试名称: "scripts/integration/example.test.mjs", 命令: "npm run postgres:integration", 记录: "V-20261106-02" };
+  const log = (verdict) => [{ id: "V-20261106-02", verdict, valid: true }];
+  assert.match(describeAudit(recordErrors(negated("本机测试", unregistered), { vlog: log("静态检查") })), /^AR-NEGATE M11 核实\[0\]: 无法确认否定依据是 Behavioral_Test/m);
+  assert.deepEqual(fieldsOf(negated("本机测试", unregistered), { vlog: log("行为验证") }), []);
+  assert.deepEqual(fieldsOf(negated("本机测试", unregistered), { vlog: [] }), ["AR-VERIFY 核实[0].证据.记录", "AR-NEGATE 核实[0]"]);
+  const external = { 环境: "4090 主机", 日期: "2026-11-06", 记录: "V-20261106-02" };
+  assert.deepEqual(fieldsOf(negated("外部环境测试", external), { vlog: log("行为验证") }), []);
+  assert.deepEqual(fieldsOf(negated("外部环境测试", external), { vlog: log("未验证") }), ["AR-NEGATE 核实[0]"]);
+
+  assert.deepEqual(fieldsOf(negated("代码阅读", codeReading, { 无需修复: undefined })), ["AR-NEGATE 无需修复"]);
+  assert.deepEqual(fieldsOf(negated("代码阅读", codeReading, { 无需修复: ["28.12"] })), []);
+  assert.deepEqual(fieldsOf(negated("代码阅读", codeReading, { 无需修复: ["25.4"] })), ["AR-NEGATE 无需修复"], "25.4 is not an acceptance criterion of Requirement 28");
+  assert.deepEqual(fieldsOf(negated("代码阅读", codeReading, { 无需修复: ["28"] })), ["AR-NEGATE 无需修复"]);
+  const { 推理: _reasoning, ...withoutReasoning } = codeReading;
+  assert.deepEqual(fieldsOf(negated("代码阅读", withoutReasoning)), ["AR-VERIFY 核实[0].证据.推理", "AR-NEGATE 核实[0]"]);
+  const confirmedLater = consistent(auditRecord("M11", { 对应需求: ["28"], 优先级: "P1", 核实: [{ 提交: SHA, 方法: "代码阅读", 结论: "已否定", 证据: codeReading }, { 提交: SHA, 方法: "代码阅读", 结论: "已确认", 证据: codeReading }] }));
+  assert.equal(confirmedLater.状态, "已确认");
+  assert.deepEqual(fieldsOf(confirmedLater), []);
+  assert.deepEqual(fieldsOf({ ...confirmedLater, 无需修复: ["28.12"] }), ["AR-NEGATE 无需修复"]);
+});
+
+test("AR-ORDER: an unreviewed issue with a fix record needs a 已确认 verification first (Requirement 7.8)", () => {
+  const reading = (结论) => ({ 提交: SHA, 方法: "代码阅读", 结论, 证据: { 文件: "apps/example.mjs", 行号范围: "1-2", 推理: "样例" } });
+  // Property 29, over every source mark and verification sequences with and without 已确认.
+  for (const [id, mark] of [["M10", "待复核"], ["L2", "未标注"], ["N1", "新发现"], ["C1", "已核实"], ["M18", "需环境验证"]]) {
+    for (const verifications of [undefined, [reading("需环境验证")], [reading("已确认")], [reading("已确认"), reading("需环境验证")]]) {
+      const record = consistent(auditRecord(id, { 核实: verifications, 修复: { 提交: SHA } }));
+      const ordered = recordErrors(record).filter((error) => error.code === "AR-ORDER");
+      const confirmed = (verifications ?? []).some((item) => item.结论 === "已确认");
+      assert.equal(ordered.length, ["待复核", "未标注", "新发现"].includes(mark) && !confirmed ? 1 : 0, `${id} ${JSON.stringify(verifications?.map((item) => item.结论))}`);
+      assert.deepEqual(recordErrors(record).filter((error) => error.code !== "AR-ORDER"), [], id);
+    }
+  }
+});
+
+test("AR-VERIFY: each verification records 提交, 方法, 结论 and the evidence fields of its method (Requirement 7.6, 7.7)", () => {
+  const evidenceByMethod = {
+    代码阅读: { 文件: "apps/example.mjs", 行号范围: "1-9", 推理: "样例" },
+    本机测试: { 测试名称: "ci:gates:test", 命令: "npm run ci:gates:test" },
+    "CI_Pipeline 运行": { "run id": "41900000000", 步骤: ["Run npm run ci:gates:test"] },
+    外部环境测试: { 环境: "Linux 主机", 日期: "2026-11-06", 记录: "V-20261106-01" }
+  };
+  const vlog = [{ id: "V-20261106-01", verdict: "行为验证", valid: true }];
+  const verified = (item) => fieldsOf(consistent(auditRecord("M10", { 优先级: "P1", 对应需求: ["28"], 核实: [item] })), { vlog });
+  for (const [method, evidence] of Object.entries(evidenceByMethod)) {
+    const base = { 提交: SHA, 方法: method, 结论: "已确认", 证据: evidence };
+    assert.deepEqual(verified(base), [], method);
+    assert.deepEqual(verified({ ...base, 证据: [evidence, evidence] }), [], `${method} with an evidence list`);
+    for (const field of Object.keys(evidence)) {
+      const reduced = { ...evidence };
+      delete reduced[field];
+      assert.deepEqual(verified({ ...base, 证据: reduced }), [`AR-VERIFY 核实[0].证据.${field}`], `${method} without ${field}`);
+    }
+  }
+  for (const field of ["提交", "方法", "结论"]) {
+    const item = { 提交: SHA, 方法: "代码阅读", 结论: "已确认", 证据: evidenceByMethod.代码阅读 };
+    delete item[field];
+    assert.deepEqual(verified(item), [`AR-VERIFY 核实[0].${field}`], field);
+  }
+  const reading = (evidence, extra = {}) => ({ 提交: SHA, 方法: "代码阅读", 结论: "已确认", 证据: { ...evidenceByMethod.代码阅读, ...evidence }, ...extra });
+  assert.deepEqual(verified(reading({ 行号范围: "第 1 行" })), ["AR-VERIFY 核实[0].证据.行号范围"]);
+  assert.deepEqual(verified(reading({ 文件: "C:\\repo\\x.mjs" })), ["AR-VERIFY 核实[0].证据.文件"]);
+  assert.deepEqual(verified(reading({}, { 提交: "HEAD" })), ["AR-VERIFY 核实[0].提交"]);
+  assert.deepEqual(verified(reading({}, { 方法: "人工评审" })), ["AR-VERIFY 核实[0].方法"]);
+  assert.deepEqual(verified(reading({}, { 结论: "已复核" })), ["AR-VERIFY 核实[0].结论"]);
+  const external = (evidence) => ({ 提交: SHA, 方法: "外部环境测试", 结论: "已确认", 证据: { ...evidenceByMethod.外部环境测试, ...evidence } });
+  assert.deepEqual(verified(external({ 日期: "2026-13-01" })), ["AR-VERIFY 核实[0].证据.日期"]);
+  assert.deepEqual(verified(external({ 记录: "V-20261106-09" })), ["AR-VERIFY 核实[0].证据.记录"]);
+  assert.deepEqual(verified({ 提交: SHA, 方法: "CI_Pipeline 运行", 结论: "已确认", 证据: { "run id": "run-1", 步骤: [] } }), ["AR-VERIFY 核实[0].证据.run id", "AR-VERIFY 核实[0].证据.步骤"]);
+});
+
+test("AR-FIELD: the five required fields, 对应需求 \"无\" without a reason, record pairing, and the report's 来源 and 来源标记 (Requirement 7.3)", () => {
+  const withoutId = validateAuditRegister(renderRegister(reportRecords()).replace("```yaml\n编号: M5\n", "```yaml\n"), { resolver }).errors;
+  for (const field of ["编号", "位置", "状态", "证据", "对应需求"]) {
+    const errors = field === "编号" ? withoutId : recordErrors(auditRecord("M5", { [field]: undefined }));
+    assert.ok(errors.some((error) => error.code === "AR-FIELD" && error.id === "M5" && error.field === field && /缺少字段/.test(error.message)), `${field}\n${describeAudit(errors)}`);
+  }
+  assert.deepEqual(fieldsOf(auditRecord("N1", { 对应需求: ["无"] })), ["AR-FIELD 对应需求[0]"]);
+  assert.deepEqual(fieldsOf(auditRecord("N1", { 对应需求: ["无："] })), ["AR-FIELD 对应需求[0]"]);
+  assert.deepEqual(fieldsOf(auditRecord("N1", { 对应需求: ["无：不属于 Requirement 1 至 40 的验收标准"] })), []);
+  assert.deepEqual(fieldsOf(auditRecord("N1", { 对应需求: ["无：样例理由", "8"] })), ["AR-FIELD 对应需求[0]"]);
+  assert.deepEqual(fieldsOf(auditRecord("M5", { 对应需求: ["41"] })), ["AR-FIELD 对应需求[0]"]);
+  assert.deepEqual(fieldsOf(auditRecord("M5", { 对应需求: [] })), ["AR-FIELD 对应需求"]);
+  for (const location of ["C:\\repo\\x.mjs", "/srv/x.mjs", "scripts/x.mjs:第 3 行", "../outside.mjs", "scripts/x.mjs:"]) assert.deepEqual(fieldsOf(auditRecord("M5", { 位置: [location] })), ["AR-FIELD 位置[0]"], location);
+  assert.deepEqual(fieldsOf(auditRecord("M5", { 位置: ["apps/console/app/api/v1/products/[productId]/versions/route.ts:8", "scripts/check-*.mjs", "infra/postgres/migrations/059_x.sql:21,25,62-64", ".github/workflows/ci.yml"] })), []);
+  assert.deepEqual(fieldsOf(auditRecord("M5", { 证据: [] })), ["AR-FIELD 证据"]);
+  assert.deepEqual(fieldsOf(auditRecord("M5", { 来源: "审计报告 §5 M5" })), ["AR-FIELD 来源"]);
+  assert.deepEqual(fieldsOf(auditRecord("N1", { 来源标记: "待复核" })), ["AR-FIELD 来源标记"]);
+  const text = renderRegister(reportRecords());
+  const mismatched = validateAuditRegister(text.replace("```yaml\n编号: M5\n", "```yaml\n编号: M6\n"), { resolver }).errors;
+  assert.deepEqual(mismatched.map((error) => `${error.code} ${error.id} ${error.field}`), ["AR-FIELD M5 编号"]);
+  const retitled = validateAuditRegister(text.replace("### M5 样例问题 M5", "### M5 另一个标题"), { resolver }).errors;
+  assert.deepEqual(retitled.map((error) => `${error.code} ${error.id} ${error.field}`), ["AR-FIELD M5 标题"]);
+  const broken = validateAuditRegister(text.replace(/(### H1 [^\n]*\n\n```yaml\n)/, "$1编号: H1\n"), { resolver }).errors;
+  assert.deepEqual(broken.map((error) => `${error.code} ${error.id}`), ["AR-FIELD H1"], "a record whose YAML fails still counts for AR-SET");
+  assert.match(broken[0].message, /YAML 解析失败：duplicated mapping key/);
+  const unpaired = validateAuditRegister(`${text}\n### N1 没有块\n\n正文\n\n\`\`\`yaml\n编号: N2\n\`\`\`\n\n### N2 未结束\n\n\`\`\`yaml\n编号: N2\n`, { resolver }).errors;
+  assert.deepEqual(unpaired.map((error) => error.message.replace(/第 \d+ 行/, "第 n 行")), ["标题后没有紧跟 YAML 块", "YAML 块前没有 `### <编号> <标题>` 记录标题", "代码块没有结束标记"]);
+});
+
+test("AR-PRIORITY: new defects need a priority; report issues take the highest priority of their requirements (Requirement 7.15)", () => {
+  assert.deepEqual(fieldsOf(auditRecord("N1", { 优先级: undefined })), ["AR-PRIORITY 优先级"]);
+  assert.deepEqual(fieldsOf(auditRecord("N1", { 优先级: "P3" })), ["AR-PRIORITY 优先级"]);
+  for (const priority of ["P0", "P1", "P2"]) assert.deepEqual(fieldsOf(auditRecord("N1", { 优先级: priority, 对应需求: ["8"] })), [], priority);
+  assert.deepEqual(fieldsOf(auditRecord("L2", { 对应需求: ["37"], 优先级: "P0" })), ["AR-PRIORITY 优先级"]);
+  assert.deepEqual(fieldsOf(auditRecord("L2", { 对应需求: ["37"], 优先级: "P2" })), []);
+  assert.deepEqual(fieldsOf(auditRecord("L1", { 对应需求: ["17", "37"], 优先级: "P0" })), []);
+  assert.deepEqual(fieldsOf(auditRecord("M2", { 优先级: undefined })), ["AR-PRIORITY 优先级"]);
+  assert.deepEqual(Object.entries(REQUIREMENT_PRIORITIES).filter(([, priority]) => priority === "P2").map(([number]) => number), ["35", "37", "38", "39"]);
+  assert.deepEqual(["1", "3", "7", "19", "20", "36", "40"].map((number) => REQUIREMENT_PRIORITIES[number]), ["P0", "P1", "P0", "P0", "P1", "P1", "P1"]);
+});
+
+test("the register is scanned for the secret patterns of design part 1 §6.1 (Requirement 6.8)", () => {
+  const line = `STREAM${"_KEY"}=live_0123456789`;
+  const errors = validateAuditRegister(renderRegister(reportRecords(), ["", line]), { resolver }).errors;
+  assert.deepEqual(errors.map((error) => error.code), ["SECRET"]);
+  assert.match(errors[0].id, /^docs\/AUDIT_REGISTER\.md:\d+$/);
+  assert.equal(errors[0].message.includes(line), false);
+  assert.deepEqual(recordErrors(auditRecord("M5", { 说明: `样例 -----BEGIN ${"OPENSSH PRIVATE"} KEY-----` })).map((error) => error.code), ["SECRET"]);
+});
+
+test("the repository docs/AUDIT_REGISTER.md has no errors and holds the first-round registration", () => {
+  const text = readFileSync(path.join(repoRoot, "docs", "AUDIT_REGISTER.md"), "utf8");
+  const log = validateVerificationLog(readFileSync(path.join(repoRoot, "docs", "VERIFICATION_LOG.md"), "utf8"), options);
+  const result = validateAuditRegister(text, { resolver, vlog: log.entries });
+  assert.equal(describeAudit(result.errors), "");
+  assert.deepEqual(result.records.map((record) => record.id), [...REPORT_ISSUE_IDS, "N1", "N2", "N3", "N4", "N5"]);
+  assert.deepEqual(countByStatus(result.records), { 待复核: 36, 已确认: 21, 已否定: 0, 需环境验证: 2, 已修复: 0 });
+  const byId = Object.fromEntries(result.records.map((record) => [record.id, record]));
+  assert.equal(byId.M20.status, "已确认");
+  assert.deepEqual(byId.M20.data.核实.map((item) => [item.提交.slice(0, 7), item.方法, item.结论]), [["dc2916e", "代码阅读", "已确认"]]);
+  for (const id of ["N1", "N2", "N3", "N4", "N5"]) assert.equal(byId[id].status, "待复核", id);
+  assert.deepEqual(["N2", "N3", "N4", "N5"].map((id) => byId[id].data.优先级), ["P1", "P2", "P2", "P1"]);
+  assert.deepEqual(byId.N5.data.对应需求, ["无：不属于 Requirement 1 至 40 的验收标准"]);
+  assert.ok(result.records.every((record) => record.data.修复 === undefined), "no fix has been committed in phase 1");
+  assert.ok(text.includes(AUDIT_REPORT.file) && text.includes("VERIFICATION_LOG.md#v-20261105-05"));
+  assert.ok(log.entries.find((entry) => entry.id === "V-20261105-05")?.data.结论.includes(AUDIT_REPORT.sha256));
+});
+
+test("CLI: --register validates a register fixture; errors exit 1, a missing register exits 2", () => {
+  const valid = runGate(["--log", fixture("valid-log.md"), "--register", auditFixture("valid-register.md")]);
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.match(valid.stdout, /valid-register\.md has 54 valid records \(待复核 30, 已确认 21, 已否定 1, 需环境验证 1, 已修复 1\)/);
+  const invalid = runGate(["--log", fixture("valid-log.md"), "--register", auditFixture("invalid-register.md")]);
+  assert.equal(invalid.status, 1, invalid.stdout);
+  for (const expected of [
+    /^AR-FIELD H1 YAML 解析失败：duplicated mapping key/m,
+    /^AR-SET C1 重复登记（第 \d+、\d+ 行）/m,
+    /^AR-SET \S+invalid-register\.md 新缺陷编号必须从 N1 起顺序递增、不跳号：已登记到 N2，缺少 N1/m,
+    /^AR-SET \S+invalid-register\.md 缺少 C2：/m,
+    /^AR-FIX C1 状态: 修复记录缺少或写错 修复前失败，不能标为已修复，状态保持 已确认/m,
+    /^AR-LOW-TEXT L1 原始描述: "token 比较不安全"/m,
+    /^AR-ORDER M10 修复: /m,
+    /^AR-NEGATE M11 无需修复: /m,
+    /^AR-NEGATE M11 核实\[0\]: 否定依据只有 static 检查（runtime:outbox:check）/m,
+    /^AR-VERIFY M12 核实\[0\]\.方法: 缺少字段/m,
+    /^AR-STATUS M13 状态: 取值 "已验证"/m,
+    /^AR-FIELD M14 对应需求\[0\]: 没有对应需求时必须写明理由/m,
+    /^AR-PRIORITY N2 优先级: 新缺陷必须/m,
+    /^FAIL {2}governance docs: /m
+  ]) assert.match(invalid.stderr, expected);
+  assert.doesNotMatch(invalid.stderr, /缺少 H1：/);
+  const missing = runGate(["--register", path.join(temporaryDirectory("audit-missing-"), "AUDIT_REGISTER.md")]);
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /^ERROR missing \S*AUDIT_REGISTER\.md/m);
+  assert.equal(runGate(["--register"]).status, 2);
 });
