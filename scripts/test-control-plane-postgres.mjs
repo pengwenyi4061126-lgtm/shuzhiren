@@ -323,7 +323,7 @@ try {
   assert.equal(programSubmitReview.status, 200, "a valid draft program should enter review");
   const lockedProgramWrite = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ segments: editedSegments }) });
   assert.equal(lockedProgramWrite.status, 409, "reviewed program edits must be rejected by the API");
-  await assert.rejects(client.query("update show_revision_segments set title = 'illegal mutation' where show_revision_id = (select show_revision_id from live_runs where id = $1) and position = 1", [createdRun.data.id]), /editable only while.*DRAFT/i, "reviewed program edits must be rejected by the database");
+  await assert.rejects(client.query("update show_revision_segments set title = 'illegal mutation' where show_revision_id = (select show_revision_id from live_runs where id = $1) and position = 1", [createdRun.data.id]), /editable only in an attached DRAFT run/i, "reviewed program edits must be rejected by the database");
   const liveSessionRebind = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${staleRunId}/runtime-session`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ runtimeSessionId: "0" }) });
   assert.equal(liveSessionRebind.status, 409, "operators must not redirect a live run to another runtime session");
   const runtimeSessionBinding = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/runtime-session`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ runtimeSessionId: "0" }) });
@@ -353,7 +353,7 @@ try {
   assert.equal(revisionCreate.status, 201, "an operator should create a governed candidate program revision before arming");
   const revisionRequest = await revisionCreate.json();
   const sourceRevisionId = (await client.query("select show_revision_id from live_runs where id = $1", [createdRun.data.id])).rows[0].show_revision_id;
-  await assert.rejects(client.query("update live_runs set show_revision_id = $2 where id = $1", [createdRun.data.id, revisionRequest.data.candidateRevisionId]), /approved governed change request/i, "the database must reject an unapproved direct show revision rebind");
+  await assert.rejects(client.query("update live_runs set show_revision_id = $2 where id = $1", [createdRun.data.id, revisionRequest.data.candidateRevisionId]), /must be an approved revision of the same show/i, "the database must reject an unapproved direct show revision rebind");
   const revisedSegments = revisionRequest.data.program.segments.map((segment, index) => ({ kind: segment.kind, title: index === 0 ? "Approved revision opening" : segment.title, durationSeconds: segment.durationSeconds, purpose: segment.purpose, runtimeScript: segment.runtimeScript }));
   const revisionEdit = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions/${revisionRequest.data.id}`, { method: "PUT", headers: operatorRequestHeaders, body: JSON.stringify({ segments: revisedSegments }) });
   assert.equal(revisionEdit.status, 200, "the requesting operator should edit its candidate program revision");
