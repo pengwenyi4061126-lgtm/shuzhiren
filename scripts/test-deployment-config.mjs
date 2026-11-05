@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
-import { checkComposePorts, checkRuntimeComposeConsistency } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkRuntimeComposeConsistency, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(root, "scripts", "check-deployment-config.mjs");
@@ -556,6 +556,11 @@ try {
   }
   assert.equal(interpolate(String(runtimeComposeDoc.services["runtime-worker"].environment.CHANNEL_ADAPTER_URL), portDefaults), "http://channel-adapter:18082", "the default adapter URL must follow CHANNEL_ADAPTER_PORT");
   assert.deepEqual(checkComposePorts(yaml.load("services:\n  runtime-worker:\n    environment:\n      RUNTIME_WORKER_PORT: ${RUNTIME_WORKER_PORT:-8080}\n    expose: [\"8080\"]\n    healthcheck:\n      test: [\"CMD\", \"node\", \"-e\", \"fetch('http://localhost:8080/healthz')\"]\n")).errors.map((error) => error.code), ["RCT-PORT", "RCT-PORT"], "a hard-coded expose and health-check port must be reported");
+
+  // L11: required Compose variables must name the template that defines them.
+  const hintDoc = yaml.load("services:\n  livetalking:\n    command: run --avatar ${LIVETALKING_AVATAR_ID:?set-in-runtime-env} --model ${MODEL_DIR:?set-in-runtime-gateway-env}\n");
+  const hintTemplates = { runtime: new Map(), "runtime-gateway": new Map([["LIVETALKING_AVATAR_ID", "approved_avatar"]]), "channel-adapter": new Map(), "alert-notifier": new Map() };
+  assert.deepEqual(checkTemplateRequirements({ composeDoc: hintDoc, templates: hintTemplates }).errors.map((error) => `${error.code} ${error.message.split(" ")[0]}`), ["RCT-HINT LIVETALKING_AVATAR_ID", "RCT-HINT MODEL_DIR", "RCT-REQUIRED MODEL_DIR"], "wrong template hints and undefined required variables must be reported");
 
   // M23: root-anchored rules followed by `!vendor/LiveTalking/**` re-included submodule secrets and data.
   const legacyLiveTalkingIgnore = ".git\n.env\n.env.*\nsecrets\nmodels\ndata\n*.log\nvendor/*\n!vendor/LiveTalking\n!vendor/LiveTalking/**\nvendor/LiveTalking/.git\nvendor/LiveTalking/.git/**\nruntime/*\n!runtime/patches\n!runtime/patches/livetalking-observability.patch\n";

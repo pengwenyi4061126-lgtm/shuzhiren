@@ -115,6 +115,31 @@ export function checkRuntimeComposeConsistency({ composeDoc, envFiles }) {
   return { errors };
 }
 
+export const TEMPLATE_NAMES = Object.freeze(["runtime", "runtime-gateway", "channel-adapter", "alert-notifier"]);
+const OWN_TEMPLATE_VARIABLES = Object.freeze({ CHANNEL_ADAPTER_DATABASE_URL: "channel-adapter", ALERT_NOTIFIER_DATABASE_URL: "alert-notifier" });
+
+/**
+ * L11: every required (`:?`) Compose variable names, in its `set-in-<name>-env` hint, the repository
+ * template that actually defines it, and that template gives it a non-empty value.
+ * @param {{ composeDoc: object, templates: Record<string, Map<string, string>> }} input keyed by TEMPLATE_NAMES
+ * @returns {{ errors: Array<{ code: string, message: string }> }}
+ */
+export function checkTemplateRequirements({ composeDoc, templates }) {
+  const errors = [];
+  const defines = (name, variable) => Boolean(normalizeEnvValue(templates[name]?.get(variable) ?? ""));
+  for (const [variable, uses] of collectComposeReferences(composeDoc)) {
+    const required = uses.filter((use) => use.operator === ":?" || use.operator === "?");
+    if (required.length === 0) continue;
+    for (const use of required) {
+      const hint = /^set-in-(.+)-env$/.exec(use.argument ?? "")?.[1];
+      if (!hint || !TEMPLATE_NAMES.includes(hint) || !defines(hint, variable)) errors.push({ code: "RCT-HINT", message: `${variable} at ${use.path} says ${use.argument || "(no hint)"}, but config/${hint ?? "<unknown>"}.example.env does not define it` });
+    }
+    const owners = OWN_TEMPLATE_VARIABLES[variable] ? [OWN_TEMPLATE_VARIABLES[variable]] : ["runtime", "runtime-gateway"];
+    if (!owners.some((name) => defines(name, variable))) errors.push({ code: "RCT-REQUIRED", message: `${variable} is required by the runtime Compose but config/${owners.join(".example.env or config/")}.example.env does not define it` });
+  }
+  return { errors };
+}
+
 function portExpressions(service) {
   const expressions = new Set();
   for (const entry of service?.expose ?? []) expressions.add(String(entry).replace(/\/(tcp|udp)$/, ""));

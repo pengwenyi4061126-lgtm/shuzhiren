@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
-import { checkComposePorts } from "./lib/runtime-compose-consistency.mjs";
+import { parseEnvFile } from "./lib/compose-interpolation.mjs";
+import { checkComposePorts, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
 
 const files = {
   compose: "../infra/compose/docker-compose.runtime.yml",
@@ -31,5 +32,13 @@ for (const required of ["RUNTIME_WORKER_DATABASE_URL", "CHANNEL_ADAPTER_DATABASE
 const composeDoc = yaml.load(contents.compose);
 const portErrors = checkComposePorts(composeDoc).errors;
 if (portErrors.length) throw new Error(`Runtime Compose ports must agree between environment, expose, health checks and service URLs:\n${portErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
+const templates = {
+  runtime: parseEnvFile(contents.runtime, "config/runtime.example.env"),
+  "runtime-gateway": parseEnvFile(contents.gateway, "config/runtime-gateway.example.env"),
+  "channel-adapter": parseEnvFile(contents.channel, "config/channel-adapter.example.env"),
+  "alert-notifier": parseEnvFile(contents.notifier, "config/alert-notifier.example.env")
+};
+const templateErrors = checkTemplateRequirements({ composeDoc, templates }).errors;
+if (templateErrors.length) throw new Error(`Runtime Compose required variables must point at the template that defines them:\n${templateErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
 
 console.log("PASS  runtime Compose templates cover every service profile and required interpolation input");

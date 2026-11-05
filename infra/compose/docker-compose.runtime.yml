@@ -165,13 +165,13 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
     command: >-
-      python3 app.py --transport rtmp --model musetalk --avatar_id ${LIVETALKING_AVATAR_ID:?set-in-runtime-env}
+      python3 app.py --transport rtmp --model musetalk --avatar_id ${LIVETALKING_AVATAR_ID:?set-in-runtime-gateway-env}
       --listenport 8010 --max_session 1 --fps ${STREAM_FPS:-25}
       --push_url ${STREAM_RTMP_URL:?set-in-runtime-env}/${STREAM_KEY:?set-in-runtime-env}
     volumes:
-      - ${MODEL_VOLUME_PATH:?set-in-runtime-env}:/app/models:ro
-      - ${AVATAR_VOLUME_PATH:?set-in-runtime-env}:/app/data/avatars:ro
-      - ${RECORDINGS_VOLUME_PATH:?set-in-runtime-env}:/app/data/record
+      - ${MODEL_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/models:ro
+      - ${AVATAR_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/data/avatars:ro
+      - ${RECORDINGS_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/data/record
     expose:
       - "8010"
     healthcheck:
@@ -189,8 +189,8 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
     command: >-
-      /bin/bash -c "cd /opt/CosyVoice/CosyVoice/runtime/python/fastapi && python3 server.py --port 50000 --model_dir ${COSYVOICE_MODEL_DIR:?set-in-runtime-env}"
+      /bin/bash -c "cd /opt/CosyVoice/CosyVoice/runtime/python/fastapi && python3 server.py --port 50000 --model_dir ${COSYVOICE_MODEL_DIR:?set-in-runtime-gateway-env}"
     volumes:
-      - ${COSYVOICE_MODEL_PATH:?set-in-runtime-env}:/opt/CosyVoice/CosyVoice/pretrained_models:ro
+      - ${COSYVOICE_MODEL_PATH:?set-in-runtime-gateway-env}:/opt/CosyVoice/CosyVoice/pretrained_models:ro
     expose:
       - "50000"
