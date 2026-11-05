@@ -9,7 +9,7 @@
 - 证据列只写引用（`V-` 编号，或 `位置=…，日期=…，提供方=…`），不写推流地址、推流密钥、签名私钥、OAuth 应用密钥或 registry 凭据的值。
 - "说明"列中的"验证方式"是验证所用的命令或步骤，本身不是证据。
 
-核对基准：`origin/master` = `e3046789e5917d5f588a3975f14290d4e087fff8`（2026-11-06 核对）。VERIFICATION_LOG 中最近一条登记的 CI 运行是 #502（run 42040219509，提交 fd9179d，`V-20261105-20`）；之后的 #503、#504 只改动文档，结论为 success，没有登记条目。
+核对基准：`origin/master` = `ed934bf669b02c1d3efe070ffa8749226bd1a04b`（2026-11-06 核对）。VERIFICATION_LOG 中最近一条登记的 CI 运行是 #506（run 42083647115，提交 ed934bf，`V-20261106-02`）；#503、#504 只改动文档，结论为 success，没有登记条目；#505（run 42077391358）为 failure，原因见 `V-20261106-02` 的说明。
 
 ## 状态定义
 
@@ -54,11 +54,11 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 
 ## 仓库交付项
 
-证据列中的 `V-20261105-20` 是 #502（run 42040219509，提交 fd9179d）：六个 job 全部 success，skipped 步骤数为 0。下表所列修复提交都是 fd9179d 的祖先（2026-11-06 以 `git merge-base --is-ancestor` 核对）。审计修复行的事项只覆盖该审计问题的修复范围，没有逐条核对所属需求的全部验收标准。
+证据列中的 `V-20261105-20` 是 #502（run 42040219509，提交 fd9179d）：六个 job 全部 success，skipped 步骤数为 0。下表所列修复提交都是 fd9179d 的祖先（2026-11-06 以 `git merge-base --is-ancestor` 核对）。`V-20261106-02` 是 #506（run 42083647115，提交 ed934bf）：六个 job 全部 success，skipped 步骤数为 0，覆盖 e304678 之后的 16 个提交。审计修复行的事项只覆盖该审计问题的修复范围，没有逐条核对所属需求的全部验收标准。
 
 | 编号 | 事项 | 状态 | 证据 | 对应需求 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| RW-001-01 | CI 六个 job 在 `master` 推送时全部为 success，skipped 步骤为 0 | 代码已完成且有验证证据 | V-20261105-16；V-20261105-20 | 1, 2 | #498（run 41993338992）是 #491 之后第一次全绿；#499 至 #502 均已登记为 success。#491 的失败基线见 V-20261104-01 |
+| RW-001-01 | CI 六个 job 在 `master` 推送时全部为 success，skipped 步骤为 0 | 代码已完成且有验证证据 | V-20261105-16；V-20261105-20；V-20261106-02 | 1, 2 | #498（run 41993338992）是 #491 之后第一次全绿；#499 至 #502 与 #506 均已登记为 success。#491 的失败基线见 V-20261104-01 |
 | RW-001-02 | CI 中的数据库步骤在缺少数据库时失败而不是跳过 | 代码已完成且有验证证据 | V-20261105-20 | 1 | 相关检查：node-unit 的 `ci:db-fail-closed:test`（behavioral） |
 | RW-002-01 | 失败隔离：一个 job 失败时其余 job 仍执行到结束 | 代码已完成但待 CI 或 Linux 验证 | V-20261105-09；V-20261105-10 | 2 | 这两条失败运行中其余 job 仍执行到结束，但条目判定为"未验证"；任务 4.2 的隔离演练没有登记 |
 | RW-002-02 | CI_Coverage_Gate：Local_Verification 的每项检查在 CI 中都有对应步骤 | 代码已完成且有验证证据 | V-20261105-20 | 2 | 相关检查：`ci:gates:test`（behavioral）；门禁 `ci:coverage:check` 本身为 static |
@@ -66,17 +66,17 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-003-01 | `ci.yml` 顶层 permissions 为 `contents: read`，W1–W12 结构门禁 | 代码已完成且有验证证据 | V-20261105-20 | 3 | 相关检查：`ci:gates:test`、`ci:evidence:test`（behavioral）。M20：已确认，没有登记修复记录 |
 | RW-003-02 | `ci.yml` 与 `release.yml` 的第三方 action 按 commit SHA 锁定（`.github/action-pins.json`） | 代码已完成且有验证证据 | V-20261105-20 | 3 | 相关检查：`release:workflow:gate:test`（behavioral）；`ci:action-pins:verify` 为 static |
 | RW-004-01 | VERIFICATION_LOG 条目 schema 与 `docs:governance:check`（判定复核、标签、机密扫描） | 代码已完成且有验证证据 | V-20261105-20 | 4 | 相关检查：node-unit 的 `docs:governance:test`（behavioral） |
-| RW-005-01 | Handoff_Doc 更正与 CLAIM、CI-CLAIM、RUN-REF、AUDIT-LIST、CHECKPOINT、STALE-SYNC、MATRIX-STATUS、D1-* 门禁（`scripts/lib/handoff-docs.mjs`） | 代码已完成但待 CI 或 Linux 验证 | — | 4, 5, 40 | 与本矩阵同一提交引入，尚无包含该提交的 CI 运行登记。`docs/DEPLOYMENT_RUNBOOK.md` 的 CLAIM 命中已处理，该文件已从 `CLAIM_PENDING_FILES` 中删除，命中改报错误 |
-| RW-006-01 | 六状态就绪矩阵与 RM-* 门禁（`scripts/lib/readiness-matrix.mjs`） | 代码已完成但待 CI 或 Linux 验证 | — | 6, 32, 40 | 与本矩阵同一提交引入，尚无包含该提交的 CI 运行登记 |
+| RW-005-01 | Handoff_Doc 更正与 CLAIM、CI-CLAIM、RUN-REF、AUDIT-LIST、CHECKPOINT、STALE-SYNC、MATRIX-STATUS、D1-* 门禁（`scripts/lib/handoff-docs.mjs`） | 代码已完成且有验证证据 | V-20261106-02 | 4, 5, 40 | 与本矩阵同一提交（3798221）引入；相关检查：node-unit 的 `docs:governance:test`（behavioral）。`docs/DEPLOYMENT_RUNBOOK.md` 的 CLAIM 命中已处理，该文件已从 `CLAIM_PENDING_FILES` 中删除，命中改报错误 |
+| RW-006-01 | 六状态就绪矩阵与 RM-* 门禁（`scripts/lib/readiness-matrix.mjs`） | 代码已完成且有验证证据 | V-20261106-02 | 6, 32, 40 | 与本矩阵同一提交（3798221）引入；相关检查：node-unit 的 `docs:governance:test`（behavioral） |
 | RW-007-01 | Audit_Register 登记与 AR-* 门禁 | 代码已完成且有验证证据 | V-20261105-20 | 7 | 相关检查：`docs:governance:test`。66 条记录：已修复 5、已确认 59、需环境验证 2 |
 | RW-008-01 | C1：`channel_connections` 的 INSERT 不再失败 | 代码已完成且有验证证据 | V-20261105-20 | 8, 10 | C1：已修复（f35eb30）；相关检查：postgres-integration 的 `db:verify -- --allow-privileged` |
 | RW-008-02 | N2：渠道连接创建与 `channel_connection.created` 审计在同一事务 | 代码已完成且有验证证据 | V-20261105-20 | 8 | N2：已确认（e427a45）；相关检查：`control-plane:integration` |
 | RW-009-01 | C2：结算批次与差异记录的不可变治理触发器 | 代码已完成且有验证证据 | V-20261105-20 | 9, 10 | C2：已确认（416df39）；相关检查：`db:verify -- --allow-privileged` |
-| RW-010-01 | Migration_Lint（`db:migrations:lint`）报告触发器中对 TG_OP 的小写比较 | 代码已完成但待 CI 或 Linux 验证 | — | 10 | `scripts/check-migration-lint.mjs`（af12a15）；`db:migrations:lint` 与 `db:migrations:lint:extra`（datafix、before-delete-return 规则）在 static-gates 运行，为 static；相关检查：node-unit 的 `db:migrations:lint:test`（behavioral），尚无包含它的 CI 运行登记 |
+| RW-010-01 | Migration_Lint（`db:migrations:lint`）报告触发器中对 TG_OP 的小写比较 | 代码已完成且有验证证据 | V-20261106-02 | 10 | `scripts/check-migration-lint.mjs`（af12a15）；`db:migrations:lint` 与 `db:migrations:lint:extra`（datafix、before-delete-return 规则）在 static-gates 运行，为 static；相关检查：node-unit 的 `db:migrations:lint:test`（behavioral） |
 | RW-011-01 | C3：Alert_Notifier 逐目标轮询并投递告警 | 代码已完成且有验证证据 | V-20261105-20 | 11 | C3：已确认（39ebbc0）；相关检查：`alert-notifier:test`；`control-plane:integration` 在真实 PostgreSQL 上断言 `alert_notification_deliveries` |
 | RW-011-02 | N3、N4：`/healthz` 查询总时长与最后一次尝试后崩溃的投递记录 | 代码已完成且有验证证据 | V-20261105-20 | 11 | N3（9be485d）、N4（50a36ff）：已确认；相关检查：`alert-notifier:test` |
 | RW-012-01 | C4、N1：Runtime_Worker 对 `live_interactions` 的列级 SELECT 与 `outbox_events` 的 INSERT 授权 | 代码已完成但待 CI 或 Linux 验证 | — | 12, 28 | 修复提交 cf05466；Audit_Register 中 C4、N1 没有登记回归测试与修复后通过记录 |
-| RW-013-01 | H1：Release_Workflow 删除可注入的输入，registry 与签名配置改由 `release-production` environment 提供 | 代码已完成但待 CI 或 Linux 验证 | — | 13 | H1：已确认（2e010f0）；完整方案在 576ec68：工作流没有任何输入，五个 environment variables 由 `scripts/release-environment.mjs` 在运行时校验，registry 白名单为 `.github/release-registry-allowlist.json`。相关检查：`release:workflow:gate:test` 与 `release:environment:test`（behavioral），尚无包含 576ec68 的 CI 运行登记。Release_Workflow 本身尚无运行记录 |
+| RW-013-01 | H1：Release_Workflow 删除可注入的输入，registry 与签名配置改由 `release-production` environment 提供 | 代码已完成且有验证证据 | V-20261106-02 | 13 | H1：已确认（2e010f0）；完整方案在 576ec68：工作流没有任何输入，五个 environment variables 由 `scripts/release-environment.mjs` 在运行时校验，registry 白名单为 `.github/release-registry-allowlist.json`。相关检查：`release:workflow:gate:test` 与 `release:environment:test`（behavioral）。Release_Workflow 本身尚无运行记录 |
 | RW-013-02 | 13.7：清空 `release-production` 变量后 release job 失败且不生成 Release_Manifest | 代码已完成但待外部环境验证 | — | 13 | 环境：release-production environment 与签名 runner。验收入口：一次故意清空变量的演练运行，记录 run id；尚无记录 |
 | RW-014-01 | H2：推流密钥改由只读 secret 文件提供，Deploy_Check 拒绝 env 文件中的推流密钥值 | 代码已完成且有验证证据 | V-20261105-20 | 14 | H2：已确认（0ff6621）；相关检查：`deploy:check:test` |
 | RW-014-02 | 14.1：LiveTalking_Runtime 容器内任何进程的命令行参数不携带推流密钥 | 代码已完成但待外部环境验证 | — | 14 | 环境：4090。验收入口：设计第 3 部分 §2.5 的 4090 验收命令表（`ps`、`docker inspect`） |
@@ -105,11 +105,11 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-028-02 | M11：手工投递在下发已被接受、写库失败时不重复下发 | 代码已完成且有验证证据 | V-20261105-20 | 28 | M11：已确认（f627116）；相关检查：`control-plane:integration` |
 | RW-029-01 | M13：以 approved 状态插入须带审批证据 | 代码已完成且有验证证据 | V-20261105-20 | 29 | M13：已确认（f9bf8dc）；相关检查：`db:verify -- --allow-privileged` |
 | RW-029-02 | M14：并发移除最后一名管理员时至少一个事务失败 | 代码已完成且有验证证据 | V-20261105-20 | 29 | M14：已确认（13282e5）；相关检查：`control-plane:integration` |
-| RW-029-03 | L8：成员接口不改写已有用户的显示名 | 代码已完成且有验证证据 | V-20261105-20 | 29 | L8：已确认（5e1ef6e）；相关检查：`control-plane:integration`。迁移 081（f0e8f68）另修 `sync_control_plane_actor` 与 bootstrap-admin 的同类问题，本行证据不含该提交 |
+| RW-029-03 | L8：成员接口不改写已有用户的显示名 | 代码已完成且有验证证据 | V-20261105-20；V-20261106-02 | 29 | L8：已确认（5e1ef6e）；相关检查：`control-plane:integration`。迁移 081（f0e8f68）另修 `sync_control_plane_actor` 与 bootstrap-admin 的同类问题，其 `control-plane:integration` 用例在 V-20261106-02 中为 success |
 | RW-030-01 | M12：数据修复迁移的行数守卫 | 代码已完成且有验证证据 | V-20261105-20 | 30 | M12：已确认（ba28eab）；相关检查：`db:migrate:integrity:test` |
 | RW-030-02 | M15：租户一致的复合外键 | 代码已完成且有验证证据 | V-20261105-20 | 30 | M15：已确认（806d24a）；相关检查：`db:verify -- --allow-privileged` |
 | RW-030-03 | L16：审计哈希链与链头不可被服务主体改写 | 代码已完成且有验证证据 | V-20261105-20 | 30 | L16：已确认（3fd7235）；相关检查：`service-principals:integration` |
-| RW-031-01 | M17：运行时媒体私有网络与 Observer 只读凭据 | 代码已完成但待 CI 或 Linux 验证 | — | 31 | M17：已确认（7e7ed12）；登记的回归测试 `runtime:compose:check` 为 static。只读凭据 `RUNTIME_GATEWAY_READ_TOKEN` 在 709e404：相关检查为 `observer:runtime:test`、`deploy:check:test`、`test-runtime-gateway-config.py`、`test-runtime-gateway-concurrency.py`（behavioral），尚无包含 709e404 的 CI 运行登记 |
+| RW-031-01 | M17：运行时媒体私有网络与 Observer 只读凭据 | 代码已完成但待 CI 或 Linux 验证 | — | 31 | M17：已确认（7e7ed12）；登记的回归测试 `runtime:compose:check` 为 static。只读凭据 `RUNTIME_GATEWAY_READ_TOKEN` 在 709e404，其行为测试 `observer:runtime:test`、`deploy:check:test`、`test-runtime-gateway-config.py`、`test-runtime-gateway-concurrency.py` 在 V-20261106-02 中为 success；Audit_Register 为 M17 登记的回归测试仍只有 static 的 `runtime:compose:check`，按本矩阵的取证规则不改状态 |
 | RW-031-02 | 31.4：Gateway 能访问 LiveTalking 与 CosyVoice（`/healthz` 中两个依赖均可用） | 代码已完成但待外部环境验证 | — | 31 | 环境：4090。验收入口 `scripts/acceptance/runtime-network-isolation.sh` 尚不在仓库中（任务 32.5） |
 | RW-031-03 | 31.5：Gateway 以外的运行时服务无法连接 LiveTalking 与 CosyVoice | 代码已完成但待外部环境验证 | — | 31 | 环境：4090。验收入口同 RW-031-02 |
 | RW-031-04 | 31.6：LiveTalking 经 `livetalking-egress` 推流成功 | 代码已完成但待外部环境验证 | — | 31 | 环境：4090。验收入口同 RW-031-02，另需 RTMP 接收端记录 |
@@ -126,7 +126,7 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-034-03 | L6：发布清单有效期上限统一为 30 天 | 代码已完成且有验证证据 | V-20261105-20 | 34 | L6：已确认（b662f72）；相关检查：`deploy:manifest:test`、`deploy:check:test` |
 | RW-035-01 | M24：基础镜像 digest 与依赖锁定 | 代码已完成且有验证证据 | V-20261105-20 | 35 | M24：已确认（44857e1）；相关检查：`deploy:images:test` |
 | RW-036-01 | M8：静态门禁改为结构化解析而非子串匹配 | 代码已完成但待 CI 或 Linux 验证 | — | 36 | M8：已确认（fb763f5）；登记的回归测试均为 static |
-| RW-036-02 | 共享 PostgreSQL 测试 harness、触发器覆盖断言、回归登记表与 `test:registries:check` | 代码已完成但待 CI 或 Linux 验证 | — | 36 | harness 与触发器用例在 `scripts/integration/`（265d47b、28585b5），由 postgres-integration 的 `postgres:integration` 运行；回归登记表、静态门禁覆盖表与取证工具在 38054f8、ef2968a，门禁脚本名为 `regression:registry:check`（static）。相关检查：`postgres:integration`、`integration:lib:test`、`regression:registry:test`、`regression:evidence:test`（behavioral），尚无包含这些提交的 CI 运行登记 |
+| RW-036-02 | 共享 PostgreSQL 测试 harness、触发器覆盖断言、回归登记表与 `test:registries:check` | 代码已完成且有验证证据 | V-20261106-02 | 36 | harness 与触发器用例在 `scripts/integration/`（265d47b、28585b5），由 postgres-integration 的 `postgres:integration` 运行；回归登记表、静态门禁覆盖表与取证工具在 38054f8、ef2968a，门禁脚本名为 `regression:registry:check`（static）。相关检查：`postgres:integration`、`integration:lib:test`、`regression:registry:test`、`regression:evidence:test`（behavioral） |
 | RW-037-01 | L1：服务 token 以常量时间比较 | 代码已完成且有验证证据 | V-20261105-20 | 37, 17 | L1：已确认（38665a8）；相关检查：`output-probe:config:test` |
 | RW-037-02 | L2：租户 token 映射配置错误时启动失败 | 代码已完成且有验证证据 | V-20261105-20 | 37 | L2：已确认（b1f1138）；相关检查：`control-plane:integration` |
 | RW-037-03 | L3：生产环境 HSTS 与每请求 nonce CSP | 代码已完成且有验证证据 | V-20261105-20 | 37 | L3：已确认（c331479）；相关检查：`control-plane:integration` |

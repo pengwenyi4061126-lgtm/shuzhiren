@@ -3389,3 +3389,317 @@ skipped 步骤数: "0"
   N12（8aee413）的代码修复提交及其回归测试。docker-build 第 15、18 步是 211f379 新增的镜像许可证检查，两步都实际执行并为 success。
   docker-build 第 17 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
+
+## V-20261106-01 W11 修复：compose-render 的控制面渲染步骤增加 MIGRATION_OWNER_ENV_FILE，无删除、跳过或放宽
+
+```yaml
+编号: V-20261106-01
+类型: CI 步骤变更
+结论: 提交 59bc842 给 compose-render 第一个 docker compose 步骤的 step env 增加 MIGRATION_OWNER_ENV_FILE（指向 config/control-plane-migration-owner.example.env）；命令、参数、job 与条件不变，没有步骤被删除、跳过或放宽；其余 112 个验证步骤不变，新增 10 个
+判定: 静态检查
+基线提交: e3046789e5917d5f588a3975f14290d4e087fff8
+变更提交: 59bc842613182c8a178288a89b5d57ae4c7dc5ef
+依据来源:
+  - 类别: 本机运行
+    命令: npm run --silent ci:steps:diff -- e3046789e5917d5f588a3975f14290d4e087fff8 ed934bf669b02c1d3efe070ffa8749226bd1a04b
+    日期: 2026-11-06
+    退出码: "0"
+    操作系统: Windows 11 专业版 10.0.22631.7376（23H2）
+    提交: ed934bf669b02c1d3efe070ffa8749226bd1a04b
+    检查:
+      - { 名称: "npm run --silent ci:steps:diff -- e3046789e5917d5f588a3975f14290d4e087fff8 ed934bf669b02c1d3efe070ffa8749226bd1a04b", 标签: static }
+    未执行的 CI 检查:
+      - { 名称: CI_Pipeline 六个验证组的全部验证步骤, 原因: 本次本机运行只执行 ci:steps:diff（只读取 git 对象）；变更后的步骤在 CI 中的结果见下一项来源与 V-20261106-02 }
+  - 类别: CI 或 Linux 运行
+    平台: GitHub Actions
+    run id: "42083647115"
+    提交: ed934bf669b02c1d3efe070ffa8749226bd1a04b
+    运行结论: success
+    runner 镜像:
+      - { job: compose-render, 镜像: ubuntu-24.04, 版本: "20261101.360.1" }
+    步骤:
+      - { job: compose-render, 序号: "5", 步骤: "Run docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config", 结论: success, 标签: static }
+变更:
+  - 原命令: docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config
+    原 job: compose-render
+    变更方式: 移动
+    替代命令: docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config
+    替代 job: compose-render
+    理由: >-
+      docker compose 命令、参数、job 与条件都不变。唯一的差异是 step env 在 CONTROL_PLANE_ENV_FILE 之外新增
+      MIGRATION_OWNER_ENV_FILE: ../../config/control-plane-migration-owner.example.env。1f8f5af 让一次性服务
+      control-plane-migrate 只加载 ${MIGRATION_OWNER_ENV_FILE:?set-in-control-plane-compose-env}；
+      config/control-plane-compose.example.env 中的值 /srv/shuzhiren/migration-owner.env 在 runner 上不存在，
+      ci:workflow:check 的 W11 因此报告该步骤会失败。新值与 CONTROL_PLANE_ENV_FILE 一样按 compose 文件所在的
+      infra/compose/ 解析，指向仓库中的迁移账号模板。步骤没有被删除，没有新增 if:、continue-on-error 或忽略退出码的写法，
+      渲染仍须以退出码 0 结束，所以不是删除、跳过或放宽。新增的变量让渲染多解析一个 env_file，但五个取值中没有
+      "为新的必填变量提供值"这一类；沿用 V-20261105-01 对 step env 路径改正的处理，按最保守的解释记为移动，
+      不记为加强，以免把提供模板路径写成增加了断言。
+说明: >-
+  ci:steps:diff 草稿的统计为：未变 112，移动 0，加强 0，待定 1，放宽 0，跳过 0，删除 0，新增 10。上面 1 项是草稿中的待定（已定为移动）。
+  新增的 10 个验证步骤为 static-gates 的 db:migrations:lint、db:migrations:lint:extra、regression:registry:check，
+  node-unit 的 release:environment:test、integration:lib:test、db:migrations:lint:test、regression:registry:test、
+  regression:evidence:test，postgres-integration 的 db:migrate:owner-model:test 与 postgres:integration（integration:lib:test 与
+  postgres:integration 由 265d47b、b011375 加入），不属于 Requirement 1.14 的记录范围。准备步骤的变化不在草稿比较范围内：
+  5ac8a07 给 node-unit 的 Checkout 增加 fetch-depth: 0（原因见 V-20261106-02 的说明），该 job 的验证步骤命令不变。
+  变更后的步骤在 run 42083647115 中为 success（标签 static），所以判定为静态检查。
+```
+
+## V-20261106-02 CI #506（run 42083647115，提交 ed934bf）为 success：六个 job 全部通过，没有 skipped 步骤（harness、Migration_Lint、回归登记与 H1 完整方案首次在 CI 中运行）
+
+```yaml
+编号: V-20261106-02
+类型: 结论
+结论: 第 506 次 CI 运行（run 42083647115，提交 ed934bf）的结论为 success，六个 job 的全部步骤为 success，skipped 步骤数为 0；本批新增的 db:migrations:lint:test、regression:registry:test、regression:evidence:test、release:environment:test、db:migrate:owner-model:test 与 postgres:integration 均实际执行并通过
+判定: 行为验证
+依据来源:
+  - 类别: CI 或 Linux 运行
+    平台: GitHub Actions
+    run id: "42083647115"
+    提交: ed934bf669b02c1d3efe070ffa8749226bd1a04b
+    运行结论: success
+    runner 镜像:
+      - { job: compose-render, 镜像: ubuntu-24.04, 版本: "20261101.360.1" }
+      - { job: python-gateway, 镜像: ubuntu-24.04, 版本: "20261101.360.1" }
+      - { job: docker-build, 镜像: ubuntu-24.04, 版本: "20261101.360.1" }
+      - { job: static-gates, 镜像: ubuntu-24.04, 版本: "20261101.360.1" }
+      - { job: postgres-integration, 镜像: ubuntu-24.04, 版本: "20261101.360.1" }
+      - { job: node-unit, 镜像: ubuntu-24.04, 版本: "20261101.360.1" }
+    步骤:
+      - { job: compose-render, 序号: "1", 步骤: "Set up job", 结论: success }
+      - { job: compose-render, 序号: "2", 步骤: "Checkout", 结论: success }
+      - { job: compose-render, 序号: "3", 步骤: "Set up Node.js", 结论: success }
+      - { job: compose-render, 序号: "4", 步骤: "Run npm ci", 结论: success }
+      - { job: compose-render, 序号: "5", 步骤: "Run docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config", 结论: success, 标签: static }
+      - { job: compose-render, 序号: "6", 步骤: "Run docker compose --env-file config/runtime.example.env --env-file config/runtime-gateway.example.env --env-file config/channel-adapter.example.env --env-file config/alert-notifier.example.env --profile output-probe --profile channel-adapter --profile alert-notifier --profile cosyvoice -f infra/compose/docker-compose.runtime.yml config", 结论: success, 标签: static }
+      - { job: compose-render, 序号: "11", 步骤: "Post Set up Node.js", 结论: success }
+      - { job: compose-render, 序号: "12", 步骤: "Post Checkout", 结论: success }
+      - { job: compose-render, 序号: "13", 步骤: "Complete job", 结论: success }
+      - { job: python-gateway, 序号: "1", 步骤: "Set up job", 结论: success }
+      - { job: python-gateway, 序号: "2", 步骤: "Checkout", 结论: success }
+      - { job: python-gateway, 序号: "3", 步骤: "Set up Python", 结论: success }
+      - { job: python-gateway, 序号: "4", 步骤: "Set up Node.js", 结论: success }
+      - { job: python-gateway, 序号: "5", 步骤: "Run python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock", 结论: success, 标签: static }
+      - { job: python-gateway, 序号: "6", 步骤: "Run npm run runtime:gateway:config:test", 结论: success, 标签: behavioral }
+      - { job: python-gateway, 序号: "7", 步骤: "Run npm run runtime:gateway:errors:test", 结论: success, 标签: behavioral }
+      - { job: python-gateway, 序号: "8", 步骤: "Run python3 -m py_compile runtime/gateway/*.py scripts/test-runtime-gateway-config.py", 结论: success, 标签: static }
+      - { job: python-gateway, 序号: "9", 步骤: "Run python3 scripts/test-runtime-gateway-audio.py", 结论: success, 标签: behavioral }
+      - { job: python-gateway, 序号: "10", 步骤: "Run python3 scripts/test-runtime-gateway-concurrency.py", 结论: success, 标签: behavioral }
+      - { job: python-gateway, 序号: "11", 步骤: "Run python3 scripts/test-runtime-gateway-state-backup.py", 结论: success, 标签: behavioral }
+      - { job: python-gateway, 序号: "12", 步骤: "Run python3 scripts/test-runtime-gateway-state-restore-drill.py", 结论: success, 标签: behavioral }
+      - { job: python-gateway, 序号: "22", 步骤: "Post Set up Node.js", 结论: success }
+      - { job: python-gateway, 序号: "23", 步骤: "Post Set up Python", 结论: success }
+      - { job: python-gateway, 序号: "24", 步骤: "Post Checkout", 结论: success }
+      - { job: python-gateway, 序号: "25", 步骤: "Complete job", 结论: success }
+      - { job: docker-build, 序号: "1", 步骤: "Set up job", 结论: success }
+      - { job: docker-build, 序号: "2", 步骤: "Checkout", 结论: success }
+      - { job: docker-build, 序号: "3", 步骤: "Set up Node.js", 结论: success }
+      - { job: docker-build, 序号: "4", 步骤: "Run npm ci", 结论: success }
+      - { job: docker-build, 序号: "5", 步骤: "prep: free runner disk", 结论: success }
+      - { job: docker-build, 序号: "6", 步骤: "Run docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "7", 步骤: "Run docker build --file apps/console/Dockerfile --target migrator --tag shuzhiren-control-plane-migrator-ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "8", 步骤: "Run docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "9", 步骤: "Run docker build --file apps/runtime-observer/Dockerfile --tag shuzhiren-runtime-observer-ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "10", 步骤: "Run docker build --file apps/output-probe/Dockerfile --tag shuzhiren-output-probe-ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "11", 步骤: "Run docker build --file apps/channel-adapter/Dockerfile --tag shuzhiren-channel-adapter-ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "12", 步骤: "Run docker build --file apps/alert-notifier/Dockerfile --tag shuzhiren-alert-notifier-ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "15", 步骤: "Run node scripts/check-runtime-image-licenses.mjs --livetalking-image shuzhiren/livetalking:ci", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "16", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
+      - { job: docker-build, 序号: "18", 步骤: "Run node scripts/check-runtime-image-licenses.mjs --cosyvoice-image shuzhiren-cosyvoice-ci", 结论: success, 标签: static }
+      - { job: docker-build, 序号: "35", 步骤: "Post Set up Node.js", 结论: success }
+      - { job: docker-build, 序号: "36", 步骤: "Post Checkout", 结论: success }
+      - { job: docker-build, 序号: "37", 步骤: "Complete job", 结论: success }
+      - { job: static-gates, 序号: "1", 步骤: "Set up job", 结论: success }
+      - { job: static-gates, 序号: "2", 步骤: "Checkout", 结论: success }
+      - { job: static-gates, 序号: "3", 步骤: "Set up Node.js", 结论: success }
+      - { job: static-gates, 序号: "4", 步骤: "Run npm ci", 结论: success }
+      - { job: static-gates, 序号: "5", 步骤: "Run npm run ci:coverage:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "6", 步骤: "Run npm run ci:workflow:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "7", 步骤: "Run npm run ci:action-pins:verify", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "8", 步骤: "Run npm run docs:governance:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "9", 步骤: "Run bash -n scripts/check-runtime-host.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "10", 步骤: "Run bash -n scripts/backup-postgres.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "11", 步骤: "Run bash -n scripts/test-postgres-backup-direct.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "12", 步骤: "Run bash -n scripts/restore-postgres-drill.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "13", 步骤: "Run bash -n scripts/test-postgres-restore-drill.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "14", 步骤: "Run bash -n scripts/backup-runtime-gateway-state.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "15", 步骤: "Run bash -n scripts/restore-runtime-gateway-state-drill.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "16", 步骤: "Run bash -n scripts/verify-postgres-backup.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "17", 步骤: "Run bash -n scripts/verify-runtime-gateway-state-backup.sh", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "18", 步骤: "Run bash scripts/check-runtime-host.sh --help", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "19", 步骤: "Run npm run deploy:check -- --allow-placeholders", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "20", 步骤: "Run npm run release:workflow:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "21", 步骤: "Run npm run backup:automation:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "22", 步骤: "Run npm run control-plane:compose:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "23", 步骤: "Run npm run runtime:compose:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "24", 步骤: "Run npm run console:page-auth:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "25", 步骤: "Run npm run console:security-headers:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "26", 步骤: "Run npm run console:client-requests:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "27", 步骤: "Run npm run membership:authz:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "28", 步骤: "Run npm run membership:scopes:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "29", 步骤: "Run npm run governance:tenant-scope:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "30", 步骤: "Run npm run governance:immutability:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "31", 步骤: "Run npm run program:revisions:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "32", 步骤: "Run npm run program:runtime-scripts:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "33", 步骤: "Run npm run runtime:program-transition:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "34", 步骤: "Run npm run control-room:program-transition:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "35", 步骤: "Run npm run runtime:program-output:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "36", 步骤: "Run npm run preflight:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "37", 步骤: "Run npm run lifecycle:authz:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "38", 步骤: "Run npm run command:confirmation:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "39", 步骤: "Run npm run service-ingest:auth:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "40", 步骤: "Run npm run service-principals:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "41", 步骤: "Run npm run start:ack:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "42", 步骤: "Run npm run runtime:watchdog:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "43", 步骤: "Run npm run runtime:outbox:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "44", 步骤: "Run npm run runtime:telemetry-alerts:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "45", 步骤: "Run npm run entitlement:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "46", 步骤: "Run npm run runtime:media:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "47", 步骤: "Run npm run runtime:voice:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "48", 步骤: "Run npm run runtime:journal:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "49", 步骤: "Run npm run runtime:preview:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "50", 步骤: "Run npm run media:evidence:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "51", 步骤: "Run npm run recording:evidence:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "52", 步骤: "Run npm run runtime:images:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "53", 步骤: "Run npm run runtime:images:licenses:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "54", 步骤: "Run npm run output-probe:response:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "55", 步骤: "Run npm run channel:verification:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "56", 步骤: "Run npm run settlement:reconciliation:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "57", 步骤: "Run npm run alert-notifier:health:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "58", 步骤: "Run npm run db:migrations:lint", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "59", 步骤: "Run npm run db:migrations:lint:extra", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "60", 步骤: "Run npm run regression:registry:check", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "61", 步骤: "Run node --check apps/runtime-worker/index.mjs", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "62", 步骤: "Run node --check apps/runtime-observer/index.mjs", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "63", 步骤: "Run node --check apps/runtime-observer/targets.mjs", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "64", 步骤: "Run node --check apps/output-probe/index.mjs", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "65", 步骤: "Run node --check apps/channel-adapter/index.mjs", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "66", 步骤: "Run node --check apps/alert-notifier/index.mjs", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "67", 步骤: "Run npm run typecheck", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "68", 步骤: "Run npm run lint", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "69", 步骤: "Run npm run build", 结论: success, 标签: static }
+      - { job: static-gates, 序号: "137", 步骤: "Post Set up Node.js", 结论: success }
+      - { job: static-gates, 序号: "138", 步骤: "Post Checkout", 结论: success }
+      - { job: static-gates, 序号: "139", 步骤: "Complete job", 结论: success }
+      - { job: postgres-integration, 序号: "1", 步骤: "Set up job", 结论: success }
+      - { job: postgres-integration, 序号: "2", 步骤: "Initialize containers", 结论: success }
+      - { job: postgres-integration, 序号: "3", 步骤: "Checkout", 结论: success }
+      - { job: postgres-integration, 序号: "4", 步骤: "Set up Node.js", 结论: success }
+      - { job: postgres-integration, 序号: "5", 步骤: "Run npm ci", 结论: success }
+      - { job: postgres-integration, 序号: "6", 步骤: "Run npm run db:migrate", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "7", 步骤: "Run npm run db:migrate:integrity:test", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "8", 步骤: "Run npm run service-principals:integration", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "9", 步骤: "Run npm run db:migrate:lock:test", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "10", 步骤: "Run npm run db:migrate:owner-model:test", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "11", 步骤: "Run npm run postgres:integration", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "12", 步骤: "Run npm run db:verify -- --allow-privileged", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "13", 步骤: "prep: build console for control-plane integration", 结论: success }
+      - { job: postgres-integration, 序号: "14", 步骤: "Run npm run control-plane:integration", 结论: success, 标签: behavioral }
+      - { job: postgres-integration, 序号: "26", 步骤: "Post Set up Node.js", 结论: success }
+      - { job: postgres-integration, 序号: "27", 步骤: "Post Checkout", 结论: success }
+      - { job: postgres-integration, 序号: "28", 步骤: "Stop containers", 结论: success }
+      - { job: postgres-integration, 序号: "29", 步骤: "Complete job", 结论: success }
+      - { job: node-unit, 序号: "1", 步骤: "Set up job", 结论: success }
+      - { job: node-unit, 序号: "2", 步骤: "Checkout", 结论: success }
+      - { job: node-unit, 序号: "3", 步骤: "Set up Node.js", 结论: success }
+      - { job: node-unit, 序号: "4", 步骤: "Run npm ci", 结论: success }
+      - { job: node-unit, 序号: "5", 步骤: "Run npm run deploy:check:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "6", 步骤: "Run npm run deploy:manifest:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "7", 步骤: "Run npm run deploy:images:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "8", 步骤: "Run npm run runtime:images:licenses:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "9", 步骤: "Run npm run release:evidence:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "10", 步骤: "Run bash scripts/test-postgres-backup-direct.sh", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "11", 步骤: "Run bash scripts/test-postgres-restore-drill.sh", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "12", 步骤: "Run npm run policy:red-team", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "13", 步骤: "Run npm run runtime:worker:config:test", 结论: success, 标签: static }
+      - { job: node-unit, 序号: "14", 步骤: "Run npm run runtime:worker:health:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "15", 步骤: "Run npm run runtime:acceptance:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "16", 步骤: "Run npm run observer:runtime:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "17", 步骤: "Run npm run observer:targets:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "18", 步骤: "Run npm run observer:targets:apply:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "19", 步骤: "Run npm run output-probe:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "20", 步骤: "Run npm run output-probe:config:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "21", 步骤: "Run npm run channel-adapter:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "22", 步骤: "Run npm run alert-notifier:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "23", 步骤: "Run npm run ci:gates:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "24", 步骤: "Run npm run ci:db-fail-closed:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "25", 步骤: "Run npm run ci:evidence:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "26", 步骤: "Run npm run release:workflow:gate:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "27", 步骤: "Run npm run release:environment:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "28", 步骤: "Run npm run docs:governance:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "29", 步骤: "Run npm run integration:lib:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "30", 步骤: "Run npm run db:migrations:lint:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "31", 步骤: "Run npm run regression:registry:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "32", 步骤: "Run npm run regression:evidence:test", 结论: success, 标签: behavioral }
+      - { job: node-unit, 序号: "63", 步骤: "Post Set up Node.js", 结论: success }
+      - { job: node-unit, 序号: "64", 步骤: "Post Checkout", 结论: success }
+      - { job: node-unit, 序号: "65", 步骤: "Complete job", 结论: success }
+    skipped 步骤数: "0"
+    node20 弃用告警数: "0"
+静态门禁覆盖:
+  - { 门禁: "ci:coverage:check", 行为测试: ["ci:gates:test"] }
+  - { 门禁: "ci:workflow:check", 行为测试: ["ci:gates:test"] }
+  - { 门禁: "docs:governance:check", 行为测试: ["docs:governance:test"] }
+  - { 门禁: "deploy:check", 行为测试: ["deploy:check:test"] }
+  - { 门禁: "release:workflow:check", 行为测试: ["release:workflow:gate:test"] }
+  - { 门禁: "backup:automation:check", 行为测试: ["backup:restore:drill:test", "scripts/test-postgres-backup-direct.sh"] }
+  - { 门禁: "control-plane:compose:check", 行为测试: [无] }
+  - { 门禁: "runtime:compose:check", 行为测试: ["deploy:check:test"] }
+  - { 门禁: "console:page-auth:check", 行为测试: [无] }
+  - { 门禁: "console:security-headers:check", 行为测试: [无] }
+  - { 门禁: "console:client-requests:check", 行为测试: [无] }
+  - { 门禁: "membership:authz:check", 行为测试: [无] }
+  - { 门禁: "membership:scopes:check", 行为测试: [无] }
+  - { 门禁: "governance:tenant-scope:check", 行为测试: [无] }
+  - { 门禁: "governance:immutability:check", 行为测试: ["db:verify"] }
+  - { 门禁: "program:revisions:check", 行为测试: [无] }
+  - { 门禁: "program:runtime-scripts:check", 行为测试: [无] }
+  - { 门禁: "runtime:program-transition:check", 行为测试: [无] }
+  - { 门禁: "control-room:program-transition:check", 行为测试: [无] }
+  - { 门禁: "runtime:program-output:check", 行为测试: [无] }
+  - { 门禁: "preflight:check", 行为测试: [无] }
+  - { 门禁: "lifecycle:authz:check", 行为测试: [无] }
+  - { 门禁: "command:confirmation:check", 行为测试: [无] }
+  - { 门禁: "service-ingest:auth:check", 行为测试: [无] }
+  - { 门禁: "service-principals:check", 行为测试: ["service-principals:integration"] }
+  - { 门禁: "start:ack:check", 行为测试: [无] }
+  - { 门禁: "runtime:watchdog:check", 行为测试: ["control-plane:integration"] }
+  - { 门禁: "runtime:outbox:check", 行为测试: [无] }
+  - { 门禁: "runtime:telemetry-alerts:check", 行为测试: [无] }
+  - { 门禁: "entitlement:check", 行为测试: [无] }
+  - { 门禁: "runtime:media:check", 行为测试: [无] }
+  - { 门禁: "runtime:voice:check", 行为测试: [无] }
+  - { 门禁: "runtime:journal:check", 行为测试: ["scripts/test-runtime-gateway-concurrency.py"] }
+  - { 门禁: "runtime:preview:check", 行为测试: [无] }
+  - { 门禁: "media:evidence:check", 行为测试: [无] }
+  - { 门禁: "recording:evidence:check", 行为测试: [无] }
+  - { 门禁: "runtime:images:check", 行为测试: ["deploy:images:test"] }
+  - { 门禁: "runtime:images:licenses:check", 行为测试: ["runtime:images:licenses:test"] }
+  - { 门禁: "output-probe:response:check", 行为测试: [无] }
+  - { 门禁: "channel:verification:check", 行为测试: [无] }
+  - { 门禁: "settlement:reconciliation:check", 行为测试: [无] }
+  - { 门禁: "alert-notifier:health:check", 行为测试: ["alert-notifier:test", "control-plane:integration"] }
+  - { 门禁: "db:migrations:lint", 行为测试: ["db:migrations:lint:test"] }
+  - { 门禁: "db:migrations:lint:extra", 行为测试: ["db:migrations:lint:test"] }
+  - { 门禁: "regression:registry:check", 行为测试: ["regression:registry:test"] }
+说明: >-
+  依据由 npm run ci:evidence:collect -- --repo pengwenyi4061126-lgtm/shuzhiren --run-id 42083647115 于 2026-11-06 在本机生成
+  （设置了用户授权读取 CI 的 GITHUB_TOKEN，退出码 0；token 只放在子进程环境中，没有打印或写入文件），改为本文件的流式写法，
+  内容不变；runner 镜像取自各 job 日志 Set up job 步骤的 Runner Image 组。标签由 scripts/lib/verification-log.mjs 的
+  createCheckResolver 按当前的 LOCAL_CHECKS、CI_ONLY_STEPS 与 package.json 求出后补入，准备步骤（Set up job、Initialize containers、
+  Checkout、Set up Node.js、Set up Python、npm ci、prep: 开头的步骤、Post、Stop containers、Complete job）不写标签；静态门禁覆盖
+  取自 ed934bf 的 scripts/static-gate-coverage.mjs。运行由推送 master 触发，2026-11-05T18:22:46Z 开始，18:39:54Z 结束。
+  job 结论与 job id：compose-render success（127442906903）、python-gateway success（127442907401）、docker-build success（127442907429）、
+  static-gates success（127442907490）、postgres-integration success（127442907541）、node-unit success（127442907561）。
+  本运行覆盖 e304678 之后的 16 个提交（3798221 至 ed934bf）：E 的就绪矩阵与交接门禁（3798221），A 的 PostgreSQL harness 与触发器用例
+  （265d47b、28585b5、b011375），C 的 D4 迁移 owner、Migration_Lint 与迁移 081（1f8f5af、af12a15、f0e8f68），D 的 H1 完整方案与
+  observer 只读令牌（576ec68、709e404），B 的回归登记与取证（38054f8、ef2968a），以及集成提交 08358fd、59bc842、f0edff6、5ac8a07、ed934bf。
+  上一轮 #505（run 42077391358，提交 f0edff6）结论为 failure：node-unit 第 31 步 npm run regression:registry:test 失败，
+  "each registry rule is reported on its own" 期望未知 fixCommit 报 REG-COMMIT 错误，而默认深度为 1 的 checkout 是浅克隆，
+  check-test-registries.mjs 按设计把 REG-COMMIT 改报为 NOTE（job 日志的断言输出；本机 git clone --depth 1 复现）。5ac8a07 让 node-unit
+  的 Checkout 取完整历史（fetch-depth: 0），门禁与测试未改；#505 的其余五个 job 为 success。docker-build 第 17 步
+  docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，与 V-20261105-20 相同的原因没有列入 步骤；skipped 步骤数
+  仍按采集器的统计。
+```
