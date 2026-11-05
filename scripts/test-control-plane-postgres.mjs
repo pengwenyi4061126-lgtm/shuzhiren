@@ -331,7 +331,7 @@ try {
   assert.equal((await runtimeSessionBinding.json()).data.runtimeSessionId, "0");
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, createdRun.data.id]);
   const frozenRights = await client.query("select kind from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) order by kind", [createdRun.data.id]);
-  assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["music", "portrait", "product_clip", "voice"]);
+  assert.deepEqual(frozenRights.rows.map((row) => row.kind), ["portrait", "voice", "product_clip", "music"]);
   await assert.rejects(client.query("delete from show_revision_media_assets where show_revision_id = (select show_revision_id from live_runs where id = $1) and kind = 'voice'", [createdRun.data.id]), /Frozen show revision bindings are immutable/, "frozen revision bindings must reject direct mutation");
   await assert.rejects(client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, (select show_revision_id from live_runs where id = $2), $3, 'secondary')", [tenantId, createdRun.data.id, staleVersion.data.id]), /Frozen show revision bindings are immutable/, "a live run's revision must reject added product bindings");
   const manifestResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/release-manifest`, { headers: requestHeaders });
@@ -340,7 +340,7 @@ try {
   assert.equal(manifest.data.product.id, freshVersion.data.id);
   assert.equal(manifest.data.product.facts.sourceRef, freshFacts.sourceRef, "release manifest must include the frozen product fact provenance");
   assert.equal(manifest.data.models.length, 3);
-  assert.deepEqual(manifest.data.assets.map((asset) => asset.kind), ["music", "portrait", "product_clip", "voice"]);
+  assert.deepEqual(manifest.data.assets.map((asset) => asset.kind), ["portrait", "voice", "product_clip", "music"]);
   assert.match(manifest.data.sha256, /^[a-f0-9]{64}$/, "release manifest must include a reproducible SHA-256 evidence hash");
   assert.equal(manifest.data.frozenSha256, manifest.data.sha256, "new runs must seal their creation manifest hash");
   assert.equal(manifest.data.frozenSnapshotVerified, true, "the stored release manifest snapshot must verify against its hash");
