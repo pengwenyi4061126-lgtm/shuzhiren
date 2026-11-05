@@ -52,6 +52,38 @@ export async function enforceMigrationLedgerIntegrity(client) {
   end $$;`);
 }
 
+const timeoutVariables = { lockTimeoutMs: ["MIGRATION_LOCK_TIMEOUT_MS", 10_000], statementTimeoutMs: ["MIGRATION_STATEMENT_TIMEOUT_MS", 1_800_000] };
+
+/**
+ * lock_timeout and statement_timeout for each migration transaction, in milliseconds. A migration that waits
+ * behind application locks fails after lock_timeout instead of queueing every later query behind its own
+ * lock. A migration file can still override either value with SET LOCAL.
+ */
+export function migrationTimeouts(env) {
+  const result = {};
+  for (const [key, [name, fallback]] of Object.entries(timeoutVariables)) {
+    const raw = env[name];
+    if (raw === undefined || raw === "") { result[key] = fallback; continue; }
+    if (!/^[1-9]\d*$/.test(raw) || Number(raw) > 86_400_000) throw new Error(`${name} must be an integer between 1 and 86400000`);
+    result[key] = Number(raw);
+  }
+  return result;
+}
+
+/** Files that sort before the newest recorded migration but are not recorded; applying them now would run out of order. */
+export function findOutOfOrderMigrations(appliedNames, migrations) {
+  let newestApplied = null;
+  for (const name of appliedNames) if (newestApplied === null || name > newestApplied) newestApplied = name;
+  if (newestApplied === null) return [];
+  return migrations.filter((migration) => !appliedNames.has(migration.name) && migration.name < newestApplied);
+}
+
+/** Wraps a failure of one migration file so the message names the file and a lock or statement timeout. */
+export function migrationFailure(name, error) {
+  const timeout = error?.code === "55P03" ? " (lock_timeout)" : error?.code === "57014" ? " (statement_timeout)" : "";
+  return new Error(`migration ${name} failed: ${error instanceof Error ? error.message : String(error)}${timeout}`, { cause: error });
+}
+
 export function assertKnownMigrationLedger(appliedRows, migrations) {
   const known = new Map(migrations.map((migration) => [migration.name, migration]));
   for (const row of appliedRows) {
