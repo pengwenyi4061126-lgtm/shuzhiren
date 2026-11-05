@@ -32,10 +32,9 @@ export const CLAIM_EXCLUDED_FILES = Object.freeze(["docs/VERIFICATION_LOG.md", "
 /**
  * docs/*.md files whose CLAIM hits are reported as NOTE instead of errors until
  * their maintainer processes them; remove a file from this list in the commit
- * that resolves its hits. docs/DEPLOYMENT_RUNBOOK.md is maintained outside the
- * Readiness_Matrix and Handoff_Doc work.
+ * that resolves its hits. Empty since docs/DEPLOYMENT_RUNBOOK.md resolved its hits.
  */
-export const CLAIM_PENDING_FILES = Object.freeze(["docs/DEPLOYMENT_RUNBOOK.md"]);
+export const CLAIM_PENDING_FILES = Object.freeze([]);
 export const ERROR_CODES = Object.freeze(["CLAIM", "CI-CLAIM", "RUN-REF", "AUDIT-LIST", "CHECKPOINT", "STALE-SYNC", "MATRIX-STATUS", "D1-MENTION", "D1-STATUS", "D1-DEFAULT"]);
 
 export const CLAIM_WORDS = /已验证|已覆盖|已通过/;

@@ -31,8 +31,8 @@
 // scripts/lib/handoff-docs.mjs (design part 1 §4.4, §5.1-5.5; part 8
 // Requirement 40 §6.1): CLAIM, CI-CLAIM, RUN-REF, AUDIT-LIST, CHECKPOINT,
 // STALE-SYNC, MATRIX-STATUS and, while D1 is 待用户决策, D1-MENTION, D1-STATUS,
-// D1-DEFAULT. CLAIM hits in CLAIM_PENDING_FILES (docs/DEPLOYMENT_RUNBOOK.md)
-// print as NOTE lines until that file's maintainer resolves them.
+// D1-DEFAULT. CLAIM hits in CLAIM_PENDING_FILES (currently none) print as
+// NOTE lines until that file's maintainer resolves them.
 // With --commit-msg it also validates a commit message: each
 // `Verification-Log: V-YYYYMMDD-NN` trailer must name a valid log entry, and
 // each embedded ```yaml block must be a valid entry, where `提交: 本提交` is
