@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
-import { checkComposePorts, checkRuntimeComposeConsistency, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(root, "scripts", "check-deployment-config.mjs");
@@ -556,6 +556,18 @@ try {
   }
   assert.equal(interpolate(String(runtimeComposeDoc.services["runtime-worker"].environment.CHANNEL_ADAPTER_URL), portDefaults), "http://channel-adapter:18082", "the default adapter URL must follow CHANNEL_ADAPTER_PORT");
   assert.deepEqual(checkComposePorts(yaml.load("services:\n  runtime-worker:\n    environment:\n      RUNTIME_WORKER_PORT: ${RUNTIME_WORKER_PORT:-8080}\n    expose: [\"8080\"]\n    healthcheck:\n      test: [\"CMD\", \"node\", \"-e\", \"fetch('http://localhost:8080/healthz')\"]\n")).errors.map((error) => error.code), ["RCT-PORT", "RCT-PORT"], "a hard-coded expose and health-check port must be reported");
+
+  // M17: only runtime-gateway may share a network with the unauthenticated LiveTalking and CosyVoice APIs.
+  assert.deepEqual(checkRuntimeComposeIsolation(runtimeComposeDoc).errors, [], "the runtime Compose must isolate LiveTalking and CosyVoice");
+  const workerOnMedia = structuredClone(runtimeComposeDoc);
+  workerOnMedia.services["runtime-worker"].networks = ["default", "runtime-media"];
+  assert.match(checkRuntimeComposeIsolation(workerOnMedia).errors.map((error) => error.message).join("\n"), /livetalking shares network runtime-media with runtime-worker/, "a sidecar joining the media network must be reported");
+  const routableMedia = structuredClone(runtimeComposeDoc);
+  routableMedia.networks["runtime-media"].internal = false;
+  assert.notDeepEqual(checkRuntimeComposeIsolation(routableMedia).errors, [], "a media network with a default route must be reported");
+  const flatNetwork = structuredClone(runtimeComposeDoc);
+  for (const service of Object.values(flatNetwork.services)) delete service.networks;
+  assert.notDeepEqual(checkRuntimeComposeIsolation(flatNetwork).errors, [], "the pre-M17 single default network must be reported");
 
   // L11: required Compose variables must name the template that defines them.
   const hintDoc = yaml.load("services:\n  livetalking:\n    command: run --avatar ${LIVETALKING_AVATAR_ID:?set-in-runtime-env} --model ${MODEL_DIR:?set-in-runtime-gateway-env}\n");

@@ -21,6 +21,8 @@ services:
       HUMAN_HANDOFF_AUDIOTYPE: ${HUMAN_HANDOFF_AUDIOTYPE:-2}
     runtime: nvidia
     restart: unless-stopped
+    # default: callers and the published port; runtime-media: the only route to LiveTalking and CosyVoice.
+    networks: [default, runtime-media]
     ports:
       - "${RUNTIME_GATEWAY_HOST_BIND:-127.0.0.1}:8090:8090"
     volumes:
@@ -162,6 +164,8 @@ services:
     image: ${LIVETALKING_IMAGE:?set-in-runtime-env}
     runtime: nvidia
     restart: unless-stopped
+    # Unauthenticated API: reachable only from runtime-gateway; livetalking-egress carries the RTMP push.
+    networks: [runtime-media, livetalking-egress]
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
     command: >-
@@ -186,6 +190,8 @@ services:
     restart: unless-stopped
     image: ${COSYVOICE_IMAGE:?set-in-runtime-env}
     runtime: nvidia
+    # Unauthenticated API without egress: reachable only from runtime-gateway.
+    networks: [runtime-media]
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
     command: >-
@@ -194,3 +200,9 @@ services:
       - ${COSYVOICE_MODEL_PATH:?set-in-runtime-gateway-env}:/opt/CosyVoice/CosyVoice/pretrained_models:ro
     expose:
       - "50000"
+
+networks:
+  # No default gateway: LiveTalking and CosyVoice cannot be reached from, or reach, anything but runtime-gateway here.
+  runtime-media:
+    internal: true
+  livetalking-egress: {}

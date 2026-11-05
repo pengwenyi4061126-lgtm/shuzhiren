@@ -115,6 +115,53 @@ export function checkRuntimeComposeConsistency({ composeDoc, envFiles }) {
   return { errors };
 }
 
+const MEDIA_SERVICES = Object.freeze(["livetalking", "cosyvoice"]);
+const MEDIA_PEERS = new Set([...MEDIA_SERVICES, "runtime-gateway"]);
+
+function serviceNetworks(service) {
+  const networks = service?.networks;
+  if (networks === undefined || networks === null) return ["default"];
+  return Array.isArray(networks) ? networks.map(String) : Object.keys(networks);
+}
+
+/**
+ * M17: LiveTalking and CosyVoice have no authentication, so only runtime-gateway may share a network
+ * with them. The shared media network is internal (no egress); LiveTalking alone gets an egress bridge
+ * for RTMP; neither publishes host ports, and no service bypasses Compose networking with network_mode.
+ * @returns {{ errors: Array<{ code: string, message: string }> }}
+ */
+export function checkRuntimeComposeIsolation(composeDoc) {
+  const errors = [];
+  const services = isMapping(composeDoc?.services) ? composeDoc.services : {};
+  const declared = isMapping(composeDoc?.networks) ? composeDoc.networks : {};
+  const members = new Map();
+  for (const [name, service] of Object.entries(services)) {
+    if (service?.network_mode !== undefined) errors.push({ code: "RCT-NETWORK", message: `${name} must not set network_mode` });
+    for (const network of serviceNetworks(service)) {
+      if (!members.has(network)) members.set(network, new Set());
+      members.get(network).add(name);
+    }
+  }
+  const isInternal = (network) => declared[network]?.internal === true;
+  for (const media of MEDIA_SERVICES) {
+    const service = services[media];
+    if (!service) {
+      errors.push({ code: "RCT-NETWORK", message: `${media} service is missing` });
+      continue;
+    }
+    if (service.ports !== undefined) errors.push({ code: "RCT-NETWORK", message: `${media} must not publish host ports` });
+    for (const network of serviceNetworks(service)) {
+      const outsiders = [...members.get(network)].filter((name) => !MEDIA_PEERS.has(name));
+      if (outsiders.length) errors.push({ code: "RCT-NETWORK", message: `${media} shares network ${network} with ${outsiders.join(", ")}; only runtime-gateway may reach it` });
+      if (!isInternal(network) && (media !== "livetalking" || members.get(network).size !== 1)) errors.push({ code: "RCT-NETWORK", message: `${media} network ${network} must be internal, or an egress network used by livetalking alone` });
+    }
+  }
+  const mediaNetworks = Object.keys(declared).filter((network) => isInternal(network) && MEDIA_SERVICES.every((media) => serviceNetworks(services[media]).includes(network)));
+  if (mediaNetworks.length !== 1 || !serviceNetworks(services["runtime-gateway"]).includes(mediaNetworks[0])) errors.push({ code: "RCT-NETWORK", message: "runtime-gateway, livetalking and cosyvoice must share exactly one internal media network" });
+  if (!serviceNetworks(services["runtime-gateway"]).includes("default")) errors.push({ code: "RCT-NETWORK", message: "runtime-gateway must stay on the default network for its callers and published port" });
+  return { errors };
+}
+
 export const TEMPLATE_NAMES = Object.freeze(["runtime", "runtime-gateway", "channel-adapter", "alert-notifier"]);
 const OWN_TEMPLATE_VARIABLES = Object.freeze({ CHANNEL_ADAPTER_DATABASE_URL: "channel-adapter", ALERT_NOTIFIER_DATABASE_URL: "alert-notifier" });
 

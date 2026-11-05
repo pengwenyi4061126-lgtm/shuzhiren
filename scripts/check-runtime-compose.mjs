@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
 import { parseEnvFile } from "./lib/compose-interpolation.mjs";
-import { checkComposePorts, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkRuntimeComposeIsolation, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
 
 const files = {
   compose: "../infra/compose/docker-compose.runtime.yml",
@@ -32,6 +32,8 @@ for (const required of ["RUNTIME_WORKER_DATABASE_URL", "CHANNEL_ADAPTER_DATABASE
 const composeDoc = yaml.load(contents.compose);
 const portErrors = checkComposePorts(composeDoc).errors;
 if (portErrors.length) throw new Error(`Runtime Compose ports must agree between environment, expose, health checks and service URLs:\n${portErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
+const isolationErrors = checkRuntimeComposeIsolation(composeDoc).errors;
+if (isolationErrors.length) throw new Error(`Runtime Compose must keep LiveTalking and CosyVoice reachable only from runtime-gateway:\n${isolationErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
 const templates = {
   runtime: parseEnvFile(contents.runtime, "config/runtime.example.env"),
   "runtime-gateway": parseEnvFile(contents.gateway, "config/runtime-gateway.example.env"),
