@@ -1,0 +1,96 @@
+# Manual fix-parent evidence for a registered regression test (Requirement 7.12,
+# 36.2, 36.3; design part 8 §2.1). Not part of the CI_Pipeline: it runs only on
+# workflow_dispatch and never on push or pull_request. The inputs reach the
+# script through step env; scripts/regression-evidence.mjs validates them.
+name: regression-evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Audit issue id registered in scripts/regression-registry.mjs (for example C3)"
+        required: true
+        type: string
+      mode:
+        description: "parent: run the test on the fix's first parent; fix: run it on the fix commit"
+        required: true
+        type: choice
+        options:
+          - parent
+          - fix
+      fix_sha:
+        description: "Optional 40-character fix commit, to select one entry when an issue has several"
+        required: false
+        type: string
+        default: ""
+      target:
+        description: "Optional test path (run.target), to select one entry when an issue has several"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: shuzhiren
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d shuzhiren"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shuzhiren
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Install Gateway Python dependencies
+        run: python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock
+      - name: Run regression evidence
+        env:
+          ISSUE: ${{ inputs.issue }}
+          MODE: ${{ inputs.mode }}
+          FIX_SHA: ${{ inputs.fix_sha }}
+          TARGET: ${{ inputs.target }}
+          REGRESSION_PYTHON: python3
+        run: |
+          set -o pipefail
+          args=(--issue "$ISSUE" --mode "$MODE")
+          if [ -n "$FIX_SHA" ]; then args+=(--fix "$FIX_SHA"); fi
+          if [ -n "$TARGET" ]; then args+=(--target "$TARGET"); fi
+          status=0
+          node scripts/regression-evidence.mjs "${args[@]}" > "$RUNNER_TEMP/regression-evidence.txt" || status=$?
+          cat "$RUNNER_TEMP/regression-evidence.txt"
+          {
+            echo "## regression-evidence"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/regression-evidence.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
