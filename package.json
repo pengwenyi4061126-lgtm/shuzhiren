@@ -97,9 +97,12 @@
     "ci:steps:diff": "node scripts/diff-ci-steps.mjs",
     "docs:governance:check": "node scripts/check-governance-docs.mjs",
     "docs:governance:test": "node scripts/test-governance-docs.mjs",
-    "control-plane:integration": "node scripts/test-control-plane-postgres.mjs"
+    "control-plane:integration": "node scripts/test-control-plane-postgres.mjs",
+    "postgres:integration": "node scripts/run-postgres-integration.mjs",
+    "integration:lib:test": "node scripts/test-integration-lib.mjs"
   },
   "devDependencies": {
+    "fast-check": "4.10.2",
     "jose": "6.2.1",
     "js-yaml": "4.3.2",
     "pg": "8.23.1"
