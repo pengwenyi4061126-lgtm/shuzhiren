@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { lstat, open, readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import path from "node:path";
@@ -7,12 +7,13 @@ import { validateTarget as validateOutputProbeTarget } from "../apps/output-prob
 import { parseObserverTargets } from "../apps/runtime-observer/targets.mjs";
 import yaml from "js-yaml";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
-import { checkRuntimeComposeConsistency } from "./lib/runtime-compose-consistency.mjs";
+import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
+import { checkRuntimeComposeConsistency, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 // Context-relative paths the LiveTalking image build must leave out (M23) or keep.
 const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
   ".git/config", ".env", "config/runtime.example.env", "secrets/stream-key", "apps/console/package.json", "docs/DEPLOYMENT_RUNBOOK.md",
-  "vendor/CosyVoice/requirements.txt", "vendor/MuseTalk/README.md", "runtime/gateway/app.py", "runtime/livetalking/tests/smoke.py",
+  "vendor/CosyVoice/requirements.txt", "vendor/MuseTalk/README.md", "runtime/gateway/app.py", "runtime/livetalking/tests/test_stream_secret.py", "runtime/livetalking/Dockerfile",
   "vendor/LiveTalking/.git", "vendor/LiveTalking/.git/config", "vendor/LiveTalking/.env", "vendor/LiveTalking/.env.local", "vendor/LiveTalking/avatars/musetalk/.env",
   "vendor/LiveTalking/models/put models here.txt", "vendor/LiveTalking/models/musetalkV15/unet.pth", "vendor/LiveTalking/data/custom_config.json", "vendor/LiveTalking/data/avatars/approved/full_imgs/0.png",
   "vendor/LiveTalking/livetalking.log", "vendor/LiveTalking/web/debug.log", "vendor/LiveTalking/secrets/stream-key", "vendor/LiveTalking/weights/model.pth",
@@ -20,7 +21,8 @@ const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
 ]);
 const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "vendor/LiveTalking/app.py", "vendor/LiveTalking/config.py", "vendor/LiveTalking/requirements.txt", "vendor/LiveTalking/server/routes.py", "vendor/LiveTalking/streamout/rtmp.py",
-  "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch"
+  "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch",
+  "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py"
 ]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -305,8 +307,8 @@ const alertNotifier = parseEnv(alertNotifierText);
 required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_DEMO_MODE", "RELEASE_REVISION", "DEPLOYMENT_RELEASE_MANIFEST", "DEPLOYMENT_RELEASE_MANIFEST_TRUST", "OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OUTBOX_MAX_ATTEMPTS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS", "RECORDING_EVIDENCE_VERIFIER_URL", "RECORDING_EVIDENCE_VERIFIER_TOKEN", "RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS", "CHANNEL_EVIDENCE_VERIFIER_URL", "CHANNEL_EVIDENCE_VERIFIER_TOKEN", "CHANNEL_EVIDENCE_VERIFIER_TIMEOUT_MS", "RUNTIME_TELEMETRY_TENANT_TOKENS", "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS", "PROGRAM_OUTPUT_VERIFIER_TRUST", "RUNTIME_RECORDING_TENANT_TOKENS", "PIM_INGEST_TENANT_TOKENS", "CHANNEL_INGEST_TENANT_TOKENS", "CHANNEL_COMMERCE_TENANT_TOKENS", "SETTLEMENT_INGEST_TENANT_TOKENS"]);
 if (!allowPlaceholders && !/^[a-f0-9]{40}$/.test(control.get("RELEASE_REVISION") ?? "")) errors.push("控制面 的 RELEASE_REVISION 必须是完整 40 位小写 git SHA");
 required(controlCompose, "控制面 Compose", ["CONTROL_PLANE_IMAGE", "CONTROL_PLANE_MIGRATOR_IMAGE"]);
-required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "RUNTIME_WORKER_DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_POLL_MS", "SCHEDULER_POLL_MS", "SCHEDULER_BATCH_SIZE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
-required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_REQUEST_TIMEOUT_SECONDS", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "PREVIEW_GRANT_MAX_SECONDS", "STREAM_RTMP_URL", "STREAM_KEY", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
+required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY_FILE", "STREAM_FPS", "LIVETALKING_REF", "MUSETALK_REF", "COSYVOICE_REF", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "RUNTIME_WORKER_DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_POLL_MS", "SCHEDULER_POLL_MS", "SCHEDULER_BATCH_SIZE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
+required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_REQUEST_TIMEOUT_SECONDS", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "PREVIEW_GRANT_MAX_SECONDS", "STREAM_RTMP_URL", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 required(channelAdapter, "渠道适配器", ["CHANNEL_ADAPTER_DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "CHANNEL_ADAPTER_TARGETS"]);
 required(alertNotifier, "告警通知器", ["ALERT_NOTIFIER_DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS", "ALERT_NOTIFIER_TARGETS"]);
 const controlImageKeys = ["CONTROL_PLANE_IMAGE", "CONTROL_PLANE_MIGRATOR_IMAGE"];
@@ -492,7 +494,63 @@ if (runtime.get("RUNTIME_SHARED_TOKEN") !== gateway.get("RUNTIME_SHARED_TOKEN"))
 if (control.get("RUNTIME_SHARED_TOKEN") !== runtime.get("RUNTIME_SHARED_TOKEN")) errors.push("控制面与运行时的 RUNTIME_SHARED_TOKEN 必须一致");
 if (control.get("RUNTIME_GATEWAY_DEMO_MODE") !== runtime.get("RUNTIME_GATEWAY_DEMO_MODE")) errors.push("控制面与运行时的 RUNTIME_GATEWAY_DEMO_MODE 必须一致");
 if (runtime.get("STREAM_RTMP_URL") !== gateway.get("STREAM_RTMP_URL")) errors.push("运行时与 Gateway 的 STREAM_RTMP_URL 必须一致");
-if (runtime.get("STREAM_KEY") !== gateway.get("STREAM_KEY")) errors.push("运行时与 Gateway 的 STREAM_KEY 必须一致");
+
+// H2: the RTMP stream key lives only in the file named by STREAM_KEY_FILE. Nothing below prints its content.
+for (const [name, values] of [["运行时", runtime], ["Gateway", gateway], ["渠道适配器", channelAdapter], ["告警通知器", alertNotifier]]) {
+  if (values.get("STREAM_KEY")) errors.push(`${name} env 文件不得定义 STREAM_KEY，请写入 STREAM_KEY_FILE 指向的文件`);
+}
+{
+  const rtmpUrl = runtime.get("STREAM_RTMP_URL") ?? "";
+  if (rtmpUrl && !(allowPlaceholders && isPlaceholder(rtmpUrl))) {
+    let valid = false;
+    try {
+      const url = new URL(rtmpUrl);
+      valid = ["rtmp:", "rtmps:"].includes(url.protocol) && Boolean(url.hostname) && !url.username && !url.password && !url.search && !url.hash && !rtmpUrl.includes("?") && !rtmpUrl.includes("#") && !rtmpUrl.endsWith("/");
+    } catch {
+      valid = false;
+    }
+    if (!valid) errors.push("运行时 的 STREAM_RTMP_URL 必须是不含凭据、查询串、片段且不以 / 结尾的 rtmp:// 或 rtmps:// 推流基址");
+  }
+  const keyFile = runtime.get("STREAM_KEY_FILE") ?? "";
+  if (keyFile && !path.isAbsolute(keyFile)) errors.push("运行时 的 STREAM_KEY_FILE 必须是部署主机绝对路径");
+  else if (keyFile && !allowPlaceholders) {
+    const problem = await streamKeyFileProblem(keyFile);
+    if (problem) errors.push(`运行时 的 STREAM_KEY_FILE 指向的密钥文件${problem}`);
+  }
+}
+
+async function streamKeyFileProblem(file) {
+  let info;
+  try {
+    info = await lstat(file);
+  } catch {
+    return "不存在";
+  }
+  if (!info.isFile()) return "不是普通文件";
+  let raw;
+  try {
+    const handle = await open(file, "r");
+    try {
+      const buffer = Buffer.alloc(1025);
+      const { bytesRead } = await handle.read(buffer, 0, 1025, 0);
+      raw = buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return "不可读";
+  }
+  let text = raw.toString("latin1");
+  if (text.endsWith("\r\n")) text = text.slice(0, -2);
+  else if (text.endsWith("\n")) text = text.slice(0, -1);
+  if (!text.trim()) return "为空";
+  if (text.length > 1024 || /[^\x21-\x7e]|["\\]/.test(text)) return "格式非法（只允许 1 至 1024 个不含空白、引号和反斜杠的可打印 ASCII 字符）";
+  if (process.platform !== "win32") {
+    if (info.mode & 0o022) return "可被同组或其他用户写入";
+    if (info.mode & 0o004) return "可被其他用户读取";
+  }
+  return "";
+}
 if (runtime.get("PROGRAM_AUDIOTYPE") !== gateway.get("PROGRAM_AUDIOTYPE")) errors.push("运行时与 Gateway 的 PROGRAM_AUDIOTYPE 必须一致");
 if (runtime.get("FALLBACK_AUDIOTYPE") !== gateway.get("FALLBACK_AUDIOTYPE")) errors.push("运行时与 Gateway 的 FALLBACK_AUDIOTYPE 必须一致");
 if (runtime.get("HUMAN_HANDOFF_AUDIOTYPE") !== gateway.get("HUMAN_HANDOFF_AUDIOTYPE")) errors.push("运行时与 Gateway 的 HUMAN_HANDOFF_AUDIOTYPE 必须一致");
@@ -540,16 +598,26 @@ try {
   const observabilityPatch = path.join(files.sourceRoot, "runtime", "patches", "livetalking-observability.patch");
   const liveTalkingDockerfile = path.join(files.sourceRoot, "runtime", "livetalking", "Dockerfile");
   const liveTalkingDockerignore = path.join(files.sourceRoot, "runtime", "livetalking", "Dockerfile.dockerignore");
-  const [patchText, dockerfileText, dockerignoreText] = await Promise.all([readFile(observabilityPatch, "utf8"), readFile(liveTalkingDockerfile, "utf8"), readFile(liveTalkingDockerignore, "utf8")]);
+  const streamSecretPatch = path.join(files.sourceRoot, "runtime", "patches", "livetalking-stream-secret.patch");
+  const patchSeries = path.join(files.sourceRoot, "runtime", "patches", "livetalking.series");
+  const [patchText, streamSecretText, dockerfileText, dockerignoreText] = await Promise.all([readFile(observabilityPatch, "utf8"), readFile(streamSecretPatch, "utf8"), readFile(liveTalkingDockerfile, "utf8"), readFile(liveTalkingDockerignore, "utf8")]);
   if (!patchText.includes("/api/admin/runtime-metrics")) errors.push("LiveTalking 观测补丁缺少运行时指标接口");
   if (!patchText.includes("last_output_error=type(error).__name__")) errors.push("LiveTalking 观测指标不得暴露原始推流异常内容");
-  if (!dockerfileText.includes("livetalking-observability.patch") || !dockerfileText.includes("git apply --check --recount")) errors.push("LiveTalking 镜像没有强制应用观测补丁");
+  // H2: the stream key is read from --stream_key_file and redacted from option logs, RTMP logs, errors and HTTP responses.
+  for (const expected of ["parser.add_argument('--stream_key_file'", "apply_stream_key(opt)", "install_log_redaction([logger])", "logger.info(redacted_options(opt))", "middlewares=[secret_redaction_middleware()]", "redacted_options_dict(opt)", "redact_text(str(msg))", "redact_push_url(self.push_url)", "RTMP streamer init failed: {type(error).__name__}\") from None", "RTMP stream_frame failed: {type(error).__name__}\") from None"]) {
+    if (!streamSecretText.includes(expected)) errors.push(`LiveTalking 推流密钥补丁缺少脱敏挂接：${expected}`);
+  }
+  for (const expected of ["COPY runtime/patches/livetalking.series runtime/patches/livetalking-*.patch /tmp/livetalking-patches/", "done < /tmp/livetalking-patches/livetalking.series", "git apply --check --recount \"/tmp/livetalking-patches/$patch\"", "COPY runtime/livetalking/launcher.py runtime/livetalking/shuzhiren_secrets.py /opt/shuzhiren/", "ENV PYTHONPATH=/opt/shuzhiren", "ENTRYPOINT [\"python3\", \"/opt/shuzhiren/launcher.py\"]"]) {
+    if (!dockerfileText.includes(expected)) errors.push(`LiveTalking 镜像没有按补丁序列构建或没有以脱敏启动器运行：${expected}`);
+  }
   for (const expected of ["USER livetalking", "ENV HOME=/tmp", "chown -R livetalking:livetalking /app"]) if (!dockerfileText.includes(expected)) errors.push(`LiveTalking 镜像必须以非 root 用户运行：${expected}`);
   const context = checkDockerignore(dockerignoreText, { mustExclude: LIVETALKING_CONTEXT_EXCLUDED, mustInclude: LIVETALKING_CONTEXT_INCLUDED });
   for (const file of context.leaked) errors.push(`LiveTalking 镜像构建上下文会带入敏感或无关内容：${file}`);
   for (const file of context.missing) errors.push(`LiveTalking 镜像构建上下文缺少构建所需文件：${file}`);
   if (!dockerfileText.includes("mkdir -p /app/models /app/data/avatars /app/data/record")) errors.push("LiveTalking 镜像必须保留 /app/models、/app/data/avatars、/app/data/record 挂载点目录");
-  git(liveTalkingSource, ["apply", "--check", "--recount", observabilityPatch]);
+  const series = checkPatchSeries({ sourceDir: liveTalkingSource, seriesFile: patchSeries });
+  for (const required of ["livetalking-observability.patch", "livetalking-stream-secret.patch"]) if (!series.patches.includes(required)) errors.push(`LiveTalking 补丁序列缺少 ${required}`);
+  for (const { patch, message } of series.failures) errors.push(`LiveTalking 补丁 ${patch} 无法应用到锁定提交 ${series.commit}：${message}`);
 } catch (error) {
   errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);
 }
@@ -559,6 +627,7 @@ try {
   const runtimeComposeDoc = yaml.load(await readFile(path.join(files.sourceRoot, "infra", "compose", "docker-compose.runtime.yml"), "utf8"));
   const envFiles = [["runtime", files.runtime, runtime], ["gateway", files.gateway, gateway], ["channelAdapter", files.channelAdapter, channelAdapter], ["alertNotifier", files.alertNotifier, alertNotifier]].map(([id, file, values]) => ({ id, path: file, values }));
   for (const { code, message } of checkRuntimeComposeConsistency({ composeDoc: runtimeComposeDoc, envFiles }).errors) errors.push(`[${code}] ${message}`);
+  for (const message of streamKeyComposeProblems(runtimeComposeDoc)) errors.push(message);
 } catch (error) {
   errors.push(`[RC-PARSE] 运行时 Compose 无法解析：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
 }

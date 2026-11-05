@@ -4,6 +4,9 @@
 *
 !vendor/LiveTalking/**
 !runtime/patches/livetalking-*.patch
+!runtime/patches/livetalking.series
+!runtime/livetalking/launcher.py
+!runtime/livetalking/shuzhiren_secrets.py
 **/.git
 **/.git/**
 **/.env

@@ -235,3 +235,24 @@ export function checkComposePorts(composeDoc) {
   }
   return { errors };
 }
+
+// H2: Runtime Compose passes the key only as the stream_key secret file, never through argv or interpolation.
+export function streamKeyComposeProblems(doc) {
+  const problems = [];
+  if (collectComposeReferences(doc).has("STREAM_KEY")) problems.push("运行时 Compose 不得插值 STREAM_KEY；推流密钥只能经 stream_key secret 文件传入");
+  const liveTalking = doc?.services?.livetalking ?? {};
+  const command = [].concat(liveTalking.command ?? []).join(" ");
+  const tokens = command.split(/\s+/).filter(Boolean);
+  if (command.split("--stream_key_file /run/secrets/stream-key").length !== 2) problems.push("运行时 Compose 的 livetalking.command 必须恰好包含一次 --stream_key_file /run/secrets/stream-key");
+  const pushUrlIndex = tokens.indexOf("--push_url");
+  if (pushUrlIndex < 0 || !tokens[pushUrlIndex + 1] || tokens[pushUrlIndex + 1].includes("STREAM_KEY") || tokens.slice(pushUrlIndex + 2).includes("--push_url")) problems.push("运行时 Compose 的 livetalking --push_url 只能是不含推流密钥的推流基址");
+  const secretRefs = (service) => [].concat(service?.secrets ?? []).map((entry) => (typeof entry === "string" ? { source: entry } : entry ?? {}));
+  if (!secretRefs(liveTalking).some((entry) => entry.source === "stream_key" && entry.target === "stream-key")) problems.push("运行时 Compose 的 livetalking 必须以 {source: stream_key, target: stream-key} 挂载推流密钥");
+  for (const [name, service] of Object.entries(doc?.services ?? {})) {
+    if (name !== "livetalking" && secretRefs(service).some((entry) => entry.source === "stream_key")) problems.push(`运行时 Compose 的 ${name} 不得挂载推流密钥`);
+  }
+  const file = String(doc?.secrets?.stream_key?.file ?? "");
+  const references = file ? parseInterpolations(file) : [];
+  if (references.length !== 1 || references[0].name !== "STREAM_KEY_FILE" || references[0].raw !== file) problems.push("运行时 Compose 的 secrets.stream_key.file 必须是 ${STREAM_KEY_FILE…} 插值");
+  return problems;
+}

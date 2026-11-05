@@ -171,7 +171,13 @@ services:
     command: >-
       python3 app.py --transport rtmp --model musetalk --avatar_id ${LIVETALKING_AVATAR_ID:?set-in-runtime-gateway-env}
       --listenport 8010 --max_session 1 --fps ${STREAM_FPS:-25}
-      --push_url ${STREAM_RTMP_URL:?set-in-runtime-env}/${STREAM_KEY:?set-in-runtime-env}
+      --push_url ${STREAM_RTMP_URL:?set-in-runtime-env} --stream_key_file /run/secrets/stream-key
+    # The stream key never enters argv, the environment or rendered Compose: it is a
+    # read-only file that the image launcher validates and LiveTalking appends to
+    # --push_url in memory (logs and HTTP responses are redacted).
+    secrets:
+      - source: stream_key
+        target: stream-key
     volumes:
       - ${MODEL_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/models:ro
       - ${AVATAR_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/data/avatars:ro
@@ -206,3 +212,9 @@ networks:
   runtime-media:
     internal: true
   livetalking-egress: {}
+
+secrets:
+  stream_key:
+    # Host file holding only the stream key, readable by UID 10002 (for example
+    # chown 10002:10002 and chmod 0400); deploy:check validates it.
+    file: ${STREAM_KEY_FILE:?set-in-runtime-env}

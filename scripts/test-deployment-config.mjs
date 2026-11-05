@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -8,12 +8,25 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
-import { checkComposePorts, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements } from "./lib/runtime-compose-consistency.mjs";
+import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
+import { checkComposePorts, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
+
+function findPython() {
+  const requested = process.env.PYTHON?.trim();
+  const candidates = requested ? [requested] : process.platform === "win32" ? ["py", "python", "python3"] : ["python3", "python"];
+  for (const command of candidates) {
+    const probe = spawnSync(command, ["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"], { encoding: "utf8" });
+    if (!probe.error && probe.status === 0) return command;
+  }
+  return undefined;
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(root, "scripts", "check-deployment-config.mjs");
 const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), "shuzhiren-deploy-config-"));
 const deploymentReleaseManifestPath = path.join(fixtureDirectory, "deployment-release-manifest.json");
+const streamKeyPath = path.join(fixtureDirectory, "stream-key");
+const streamKey = `ci-sentinel-${randomBytes(16).toString("hex")}`;
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const channelConnectionId = "22222222-2222-4222-8222-222222222222";
 const runtimeToken = "runtime-shared-token-at-least-32-bytes";
@@ -145,7 +158,7 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     COSYVOICE_IMAGE: images.cosyvoice,
     STREAM_OUTPUT_MODE: "rtmp",
     STREAM_RTMP_URL: "rtmp://ingest.internal/live",
-    STREAM_KEY: "fixture-stream-key-not-a-placeholder",
+    STREAM_KEY_FILE: streamKeyPath,
     STREAM_FPS: "25",
     LIVETALKING_REF: commits.LiveTalking,
     MUSETALK_REF: commits.MuseTalk,
@@ -217,7 +230,6 @@ const gateway = env({
   PREVIEW_BROKER_TOKEN: "",
   PREVIEW_GRANT_MAX_SECONDS: "600",
   STREAM_RTMP_URL: "rtmp://ingest.internal/live",
-  STREAM_KEY: "fixture-stream-key-not-a-placeholder",
   PROGRAM_AUDIOTYPE: "0",
   FALLBACK_AUDIOTYPE: "1",
   HUMAN_HANDOFF_AUDIOTYPE: "2"
@@ -264,6 +276,7 @@ function check(options = []) {
 
 try {
   const validProbeTarget = [{ id: "fixture", streamUrl: "rtmp://relay.internal/live/fixture", avSyncProbeUrl: "https://av-sync.internal/fixture", expectedFps: 25, expectedWidth: 1280, expectedHeight: 720 }];
+  await writeFile(streamKeyPath, `${streamKey}\n`, { mode: 0o600 });
   await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.releaseSbom, releaseEvidence.sbom), writeFile(files.releaseProvenance, releaseEvidence.provenance), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
@@ -568,6 +581,68 @@ try {
   const flatNetwork = structuredClone(runtimeComposeDoc);
   for (const service of Object.values(flatNetwork.services)) delete service.networks;
   assert.notDeepEqual(checkRuntimeComposeIsolation(flatNetwork).errors, [], "the pre-M17 single default network must be reported");
+
+  // H2: the stream key may only live in the STREAM_KEY_FILE file and is never printed.
+  const assertStreamKeyRejected = (result, pattern, description) => {
+    assert.notEqual(result.status, 0, description);
+    assert.match(result.stderr, pattern, description);
+    assert.ok(!`${result.stdout}${result.stderr}`.includes(streamKey), `${description}: the preflight must not print the stream key`);
+  };
+  await writeFile(files.runtime, `${runtime(validProbeTarget)}STREAM_KEY=${streamKey}\n`);
+  assertStreamKeyRejected(check(["--require-cosyvoice"]), /运行时 env 文件不得定义 STREAM_KEY/, "a stream key in the runtime env file must be rejected");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  await writeFile(files.gateway, `${gateway}STREAM_KEY=${streamKey}\n`);
+  assertStreamKeyRejected(check(["--require-cosyvoice"]), /Gateway env 文件不得定义 STREAM_KEY/, "a stream key in the Gateway env file must be rejected");
+  await writeFile(files.gateway, gateway);
+  await writeFile(files.runtime, runtime(validProbeTarget).replace(`STREAM_KEY_FILE=${streamKeyPath}`, "STREAM_KEY_FILE=secrets/stream-key"));
+  assertStreamKeyRejected(check(["--require-cosyvoice"]), /STREAM_KEY_FILE 必须是部署主机绝对路径/, "a relative stream key file path must be rejected");
+  await writeFile(files.runtime, runtime(validProbeTarget).replace(`STREAM_KEY_FILE=${streamKeyPath}`, `STREAM_KEY_FILE=${streamKeyPath}.absent`));
+  assertStreamKeyRejected(check(["--require-cosyvoice"]), /STREAM_KEY_FILE 指向的密钥文件不存在/, "a missing stream key file must be rejected");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  for (const [content, pattern] of [["\n", /密钥文件为空/], [`${streamKey} trailing\n`, /密钥文件格式非法/], [`"${streamKey}"\n`, /密钥文件格式非法/]]) {
+    await writeFile(streamKeyPath, content, { mode: 0o600 });
+    assertStreamKeyRejected(check(["--require-cosyvoice"]), pattern, `stream key file content ${JSON.stringify(content.slice(0, 3))}… must be rejected`);
+  }
+  if (process.platform !== "win32") {
+    for (const [mode, pattern] of [[0o644, /可被其他用户读取/], [0o620, /可被同组或其他用户写入/]]) {
+      await writeFile(streamKeyPath, `${streamKey}\n`);
+      await chmod(streamKeyPath, mode);
+      assertStreamKeyRejected(check(["--require-cosyvoice"]), pattern, `a stream key file with mode ${mode.toString(8)} must be rejected`);
+    }
+    await chmod(streamKeyPath, 0o600);
+  }
+  await writeFile(streamKeyPath, `${streamKey}\n`, { mode: 0o600 });
+  for (const url of ["rtmp://ingest.internal/live?token=1", "rtmp://user:pass@ingest.internal/live", "rtmp://ingest.internal/live/", "https://ingest.internal/live"]) {
+    await writeFile(files.runtime, runtime(validProbeTarget).replace("STREAM_RTMP_URL=rtmp://ingest.internal/live", `STREAM_RTMP_URL=${url}`));
+    await writeFile(files.gateway, gateway.replace("STREAM_RTMP_URL=rtmp://ingest.internal/live", `STREAM_RTMP_URL=${url}`));
+    assertStreamKeyRejected(check(["--require-cosyvoice"]), /STREAM_RTMP_URL 必须是不含凭据、查询串、片段/, `STREAM_RTMP_URL ${url} must be rejected`);
+  }
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  await writeFile(files.gateway, gateway);
+  const validWithKeyFile = check(["--require-cosyvoice"]);
+  assert.equal(validWithKeyFile.status, 0, `the restored stream key file must pass:\n${validWithKeyFile.stderr}`);
+
+  // H2: the legacy Compose command put the key into argv; the current file mounts it as a secret.
+  const legacyStreamCompose = yaml.load("services:\n  livetalking:\n    command: >-\n      python3 app.py --transport rtmp --push_url ${STREAM_RTMP_URL:?set-in-runtime-env}/${STREAM_KEY:?set-in-runtime-env}\n");
+  const legacyProblems = streamKeyComposeProblems(legacyStreamCompose).join("\n");
+  for (const pattern of [/不得插值 STREAM_KEY/, /--stream_key_file \/run\/secrets\/stream-key/, /--push_url 只能是不含推流密钥/, /stream_key, target: stream-key/, /secrets\.stream_key\.file/]) assert.match(legacyProblems, pattern, "the legacy stream key wiring must be reported");
+  assert.deepEqual(streamKeyComposeProblems(runtimeComposeDoc), [], "the runtime Compose must pass the stream key only as a secret file");
+  const renderedCommand = interpolate(String(runtimeComposeDoc.services.livetalking.command), new Map([["LIVETALKING_AVATAR_ID", "approved"], ["STREAM_RTMP_URL", "rtmp://ingest.internal/live"], ["STREAM_KEY", streamKey]]));
+  assert.ok(!renderedCommand.includes(streamKey) && renderedCommand.includes("--stream_key_file /run/secrets/stream-key"), "a STREAM_KEY left in an env file must not reach the LiveTalking argv");
+
+  // H2: patched LiveTalking and the image launcher, exercised in Python against the locked commit plus the patch series.
+  const python = findPython();
+  if (!python) {
+    if (process.env.CI) throw new Error("Python 3 is required in CI for the LiveTalking stream-key tests; set PYTHON");
+    console.warn("SKIP  Python 3 not found; LiveTalking stream-key behavior tests not run (set PYTHON to enable)");
+  } else {
+    const patchedSource = path.join(fixtureDirectory, "livetalking-patched");
+    const series = checkPatchSeries({ sourceDir: path.join(root, "vendor", "LiveTalking"), seriesFile: path.join(root, "runtime", "patches", "livetalking.series"), checkoutTo: patchedSource, paths: ["app.py", "config.py", "registry.py", "utils/logger.py", "server/__init__.py", "server/routes.py", "streamout/__init__.py", "streamout/rtmp.py"] });
+    assert.deepEqual(series.failures, [], "the LiveTalking patch series must apply to the locked commit");
+    const pythonTest = spawnSync(python, [path.join(root, "runtime", "livetalking", "tests", "test_stream_secret.py"), "--livetalking-source", patchedSource], { cwd: root, encoding: "utf8", timeout: 240_000 });
+    assert.equal(pythonTest.status, 0, `LiveTalking stream-key behavior tests failed:\n${pythonTest.stdout}\n${pythonTest.stderr}`);
+    process.stdout.write(pythonTest.stdout);
+  }
 
   // L11: required Compose variables must name the template that defines them.
   const hintDoc = yaml.load("services:\n  livetalking:\n    command: run --avatar ${LIVETALKING_AVATAR_ID:?set-in-runtime-env} --model ${MODEL_DIR:?set-in-runtime-gateway-env}\n");

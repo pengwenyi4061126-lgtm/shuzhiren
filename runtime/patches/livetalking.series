@@ -1,0 +1,5 @@
+# Patches applied to vendor/LiveTalking (locked commit in runtime/open-source.lock.json)
+# by runtime/livetalking/Dockerfile and checked by deploy:check, one per line in
+# order. Each patch is generated on top of the ones listed before it.
+livetalking-observability.patch
+livetalking-stream-secret.patch
