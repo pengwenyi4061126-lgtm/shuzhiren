@@ -1043,6 +1043,17 @@ try {
     await client.query("drop function integration_reject_channel_created_audit()");
   }
   assert.equal((await client.query("select count(*)::int as count from channel_connections where tenant_id = $1 and name = $2", [tenantId, rolledBackChannelName])).rows[0].count, 0, "a failed audit write must roll back the channel connection");
+  // M3: PostgreSQL terminating an idle control-plane connection must be logged, not crash the process.
+  let consoleStderr = "";
+  next.stderr.setEncoding("utf8");
+  next.stderr.on("data", (chunk) => { consoleStderr += chunk; });
+  assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/health`)).status, 200, "the control plane pool must hold an idle connection before the termination check");
+  const terminatedConsoleBackends = await client.query("select pg_terminate_backend(pid) as terminated from pg_stat_activity where application_name = 'shuzhiren-control-plane' and state = 'idle'");
+  assert.ok(terminatedConsoleBackends.rows.some((row) => row.terminated === true), "the control plane pool must expose its idle connections by application_name");
+  await waitFor(async () => consoleStderr.includes('"event":"database.pool_error"'), 10_000, "control plane pool error log");
+  assert.equal(next.exitCode, null, "an idle connection terminated by PostgreSQL must not crash the control plane");
+  assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/health`)).status, 200, "the control plane must reconnect after an idle connection error");
+  assert.ok(!consoleStderr.includes(new URL(appDatabaseUrl).password), "database error logs must not contain the connection password");
   console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, revokes frozen model releases and media rights fail-closed, ingests idempotent reviewable PIM facts, enforces entitlements, meters LIVE and DEGRADED minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);
