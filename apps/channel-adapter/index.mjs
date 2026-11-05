@@ -35,7 +35,9 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, { ok: true, channels: targets.size });
     }
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
-    if (request.method === "POST" && path === "/v1/replies") return dispatchReply(request, response);
+    // Await inside the try block so a rejected dispatch reaches the error boundary below instead of becoming an
+    // unhandled rejection that terminates the process.
+    if (request.method === "POST" && path === "/v1/replies") return await dispatchReply(request, response);
     const match = request.method === "POST" ? path.match(/^\/v1\/webhooks\/([^/]+)$/) : null;
     if (!match) return json(response, 404, { error: "not_found" });
     const target = targets.get(decodeURIComponent(match[1]));

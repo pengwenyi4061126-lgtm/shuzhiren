@@ -120,6 +120,41 @@ assert.doesNotMatch(shortLease.stderr, new RegExp(validTarget.signingSecret));
 
 console.log("PASS  channel adapter releases its replay lease after failed forwards and answers in-flight duplicates with 503");
 
+// /v1/replies regression: a reply dispatch that fails (a malformed JSON body sent with the correct dispatch
+// token, or an unreachable provider) must be answered through the request error boundary, not crash the process.
+const replyAdapter = await startAdapter({ CONTROL_PLANE_URL: "http://127.0.0.1:9", CHANNEL_ADAPTER_TARGETS: JSON.stringify([adapterTarget]) });
+try {
+  const malformedReply = await postReply(replyAdapter.port, "{not-json");
+  assert.equal(malformedReply.failure, undefined, `a malformed reply must be answered instead of dropping the connection (${malformedReply.failure})`);
+  assert.equal(malformedReply.status, 400);
+  assert.deepEqual(malformedReply.body, { error: "invalid_webhook_payload" });
+  const unreachableProvider = await postReply(replyAdapter.port, JSON.stringify({ tenantId: adapterTarget.tenantId, replyId: "323e4567-e89b-12d3-a456-426614174000", runId: "run_1", interactionId: "423e4567-e89b-12d3-a456-426614174000", channelConnectionId: adapterTarget.channelConnectionId, body: replyBody, bodySha256: payloadSha256(replyBody), idempotencyKey: "channel_reply_323e4567-e89b-12d3-a456-426614174000" }));
+  assert.equal(unreachableProvider.failure, undefined, `a reply to an unreachable provider must be answered instead of dropping the connection (${unreachableProvider.failure})`);
+  assert.equal(unreachableProvider.status, 500);
+  const health = await fetch(`http://127.0.0.1:${replyAdapter.port}/healthz`, { signal: AbortSignal.timeout(5_000) }).then(async (response) => ({ status: response.status, body: await response.json() }), (error) => ({ failure: error?.cause?.code ?? error?.name ?? "request_failed" }));
+  assert.deepEqual(health, { status: 200, body: { ok: true, channels: 1 } }, "/healthz must still answer after failed reply dispatches");
+  assert.equal(replyAdapter.child.exitCode, null, "the adapter must keep running after failed reply dispatches");
+  assert.doesNotMatch(replyAdapter.stderr(), new RegExp(adapterEnvironment().CHANNEL_ADAPTER_DISPATCH_TOKEN));
+} finally {
+  replyAdapter.child.kill();
+}
+
+console.log("PASS  channel adapter answers failed /v1/replies dispatches with an error status and keeps running");
+
+async function postReply(port, rawBody) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/replies`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${adapterEnvironment().CHANNEL_ADAPTER_DISPATCH_TOKEN}` },
+      body: rawBody,
+      signal: AbortSignal.timeout(15_000)
+    });
+    return { status: response.status, body: await response.json() };
+  } catch (error) {
+    return { failure: error?.cause?.code ?? error?.name ?? "request_failed" };
+  }
+}
+
 function adapterEnvironment() {
   return { ...process.env, DATABASE_URL: "postgres://fake-pg.invalid/channel_adapter", CHANNEL_ADAPTER_DISPATCH_TOKEN: "channel-adapter-dispatch-token-at-least-32-bytes" };
 }
