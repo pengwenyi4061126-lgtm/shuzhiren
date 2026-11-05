@@ -21,6 +21,7 @@ let selected;
 await client.connect();
 try {
   await assertLineEndingIndependentChecksums();
+  await assertSchemaVerifierRlsCoverage();
   selected = (await client.query("select name, checksum from schema_migrations order by name limit 1")).rows[0];
   assert.ok(selected?.name && selected?.checksum, "test fixture requires a checksum-protected applied migration");
   await client.query("update schema_migrations set checksum = repeat('0', 64) where name = $1", [selected.name]);
@@ -87,4 +88,36 @@ async function assertLineEndingIndependentChecksums() {
   for (let index = 0; index + 2 < attributes.length; index += 3) if (attributes[index + 2] !== "lf") notLf.push(attributes[index]);
   assert.deepEqual(notLf, [], "every tracked migration and shell script must have the eol=lf attribute");
   console.log("PASS migration checksums are independent of CRLF checkouts and still match the recorded ledger (M4)");
+}
+
+// M5: the Schema_Verifier's RLS list was built with Set.add(a, b, c), which adds only the first argument, so
+// settlement_lines and settlement_reconciliation_exceptions were never checked, and tables missing from the
+// hand-written list were never checked at all. RLS coverage now comes from the catalog.
+async function assertSchemaVerifierRlsCoverage() {
+  const verifier = path.join(root, "scripts", "verify-postgres-schema.mjs");
+  const verify = () => spawnSync(process.execPath, [verifier, "--allow-privileged"], { cwd: root, env: { ...process.env, DATABASE_URL: databaseUrl }, encoding: "utf8" });
+  const baseline = verify();
+  assert.equal(baseline.status, 0, `the Schema_Verifier must pass on the migrated database: ${baseline.stderr}`);
+  for (const table of ["settlement_lines", "settlement_reconciliation_exceptions"]) {
+    await client.query(`alter table ${table} no force row level security`);
+    try {
+      const result = verify();
+      assert.notEqual(result.status, 0, `the Schema_Verifier must fail when ${table} does not force RLS`);
+      assert.match(result.stderr, new RegExp(`table=${table} missing=FORCE`));
+    } finally {
+      await client.query(`alter table ${table} force row level security`);
+    }
+  }
+  const probe = `rls_probe_${process.pid}`;
+  await client.query(`create table ${probe} (id uuid primary key, tenant_id uuid not null)`);
+  try {
+    const result = verify();
+    assert.notEqual(result.status, 0, "the Schema_Verifier must fail for a tenant table without RLS that no list mentions");
+    assert.match(result.stderr, new RegExp(`table=${probe} missing=ENABLE,FORCE`));
+  } finally {
+    await client.query(`drop table if exists ${probe}`);
+  }
+  const restored = verify();
+  assert.equal(restored.status, 0, `the Schema_Verifier must pass again after RLS is restored: ${restored.stderr}`);
+  console.log("PASS Schema_Verifier reports every tenant table without ENABLE and FORCE row level security (M5)");
 }
