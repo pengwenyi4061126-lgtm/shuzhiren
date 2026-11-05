@@ -79,6 +79,9 @@ jobs:
       - run: npm run channel:verification:check
       - run: npm run settlement:reconciliation:check
       - run: npm run alert-notifier:health:check
+      - run: npm run db:migrations:lint
+      - run: npm run db:migrations:lint:extra
+      - run: npm run regression:registry:check
       - run: node --check apps/runtime-worker/index.mjs
       - run: node --check apps/runtime-observer/index.mjs
       - run: node --check apps/runtime-observer/targets.mjs
@@ -125,8 +128,12 @@ jobs:
       - run: npm run ci:db-fail-closed:test
       - run: npm run ci:evidence:test
       - run: npm run release:workflow:gate:test
+      - run: npm run release:environment:test
       - run: npm run docs:governance:test
       - run: npm run integration:lib:test
+      - run: npm run db:migrations:lint:test
+      - run: npm run regression:registry:test
+      - run: npm run regression:evidence:test
 
   python-gateway:
     runs-on: ubuntu-24.04
@@ -183,6 +190,7 @@ jobs:
       - run: npm run db:migrate:integrity:test
       - run: npm run service-principals:integration
       - run: npm run db:migrate:lock:test
+      - run: npm run db:migrate:owner-model:test
       - run: npm run postgres:integration
       - run: npm run db:verify -- --allow-privileged
       - name: "prep: build console for control-plane integration"
@@ -206,6 +214,7 @@ jobs:
       - run: docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config
         env:
           CONTROL_PLANE_ENV_FILE: ../../config/control-plane.example.env
+          MIGRATION_OWNER_ENV_FILE: ../../config/control-plane-migration-owner.example.env
       - run: docker compose --env-file config/runtime.example.env --env-file config/runtime-gateway.example.env --env-file config/channel-adapter.example.env --env-file config/alert-notifier.example.env --profile output-probe --profile channel-adapter --profile alert-notifier --profile cosyvoice -f infra/compose/docker-compose.runtime.yml config
 
   docker-build:

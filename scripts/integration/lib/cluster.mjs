@@ -46,7 +46,7 @@ export const SERVICE_PRINCIPALS = Object.freeze(ROLE_SPECS.filter((spec) => spec
 export const GRANT_SCRIPTS = Object.freeze([
   Object.freeze({ file: "infra/postgres/service-principals.sql", optional: false }),
   Object.freeze({ file: "infra/postgres/backup-principal.sql", optional: false }),
-  Object.freeze({ file: "infra/postgres/control-plane-principal.sql", optional: true })
+  Object.freeze({ file: "infra/postgres/control-plane-principal.sql", optional: false })
 ]);
 /** The only psql variable a grant script may use (cross-part ruling 17). */
 export const PSQL_VARIABLES = Object.freeze({ control_plane_role: PRINCIPALS.control_plane });

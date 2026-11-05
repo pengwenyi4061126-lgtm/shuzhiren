@@ -3,10 +3,7 @@
 // a private env object, so values with newlines or trailing spaces reach the
 // validator exactly as GitHub Actions would pass them; console.error/log are
 // captured per call. A few cases also run the CLI in a child process.
-//
-// Until package.json has a separate `release:environment:test` script (design
-// part 3, 1.2), scripts/test-release-workflow-gate.mjs imports this file, so
-// `npm run release:workflow:gate:test` runs these tests as well.
+// `npm run release:environment:test` runs this file (design part 3, 1.2).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

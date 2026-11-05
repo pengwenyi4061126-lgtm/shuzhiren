@@ -21,7 +21,7 @@ export const STATIC_GATE_COVERAGE = Object.freeze({
     { test: "scripts/test-postgres-backup-direct.sh", case: "executes scripts/backup-postgres.sh with PostgreSQL client stand-ins and asserts its outputs and refusals" }
   ],
   "control-plane:compose:check": [],
-  "runtime:compose:check": [{ test: "deploy:check:test", case: "asserts checkComposePorts, checkRuntimeComposeIsolation, checkTemplateRequirements and liveTalkingTtsComposeProblems of scripts/lib/runtime-compose-consistency.mjs, which the gate calls" }],
+  "runtime:compose:check": [{ test: "deploy:check:test", case: "asserts checkComposePorts, checkObserverCredentials, checkRuntimeComposeIsolation, checkTemplateRequirements and liveTalkingTtsComposeProblems of scripts/lib/runtime-compose-consistency.mjs, which the gate calls" }],
   "console:page-auth:check": [],
   "console:security-headers:check": [],
   "console:client-requests:check": [],
@@ -62,8 +62,7 @@ export const STATIC_GATE_COVERAGE = Object.freeze({
   "ci:coverage:check": [{ test: "ci:gates:test", case: "runs the scripts/check-ci-coverage.mjs rules on fixture workflows and check lists" }],
   "ci:workflow:check": [{ test: "ci:gates:test", case: "runs the scripts/check-ci-workflow.mjs rules W1–W12 on fixture workflows" }],
   "docs:governance:check": [{ test: "docs:governance:test", case: "runs scripts/check-governance-docs.mjs and its libraries on fixture registers and verification logs" }],
-  // Not wired yet (no package.json script or LOCAL_CHECKS entry). When db:migrations:lint
-  // and db:migrations:lint:test are added, this becomes
-  // [{ test: "db:migrations:lint:test", case: "runs scripts/check-migration-lint.mjs rules on fixture migrations" }].
-  "db:migrations:lint": []
+  "db:migrations:lint": [{ test: "db:migrations:lint:test", case: "runs scripts/check-migration-lint.mjs rules on fixture migrations" }],
+  "db:migrations:lint:extra": [{ test: "db:migrations:lint:test", case: "runs scripts/check-migration-lint.mjs --rules datafix,before-delete-return on fixture migrations and asserts deleteReachesReturnNew" }],
+  "regression:registry:check": [{ test: "regression:registry:test", case: "runs scripts/check-test-registries.mjs on registries, coverage maps and workflows that each violate one rule and asserts the exit code and error code" }]
 });

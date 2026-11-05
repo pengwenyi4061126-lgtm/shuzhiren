@@ -15,9 +15,6 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { expressionContexts, RULES } from "./lib/release-workflow-gate.mjs";
 import { scanShellQuotes } from "./lib/shell-quote-scan.mjs";
-// Runs the scripts/release-environment.mjs tests in the same `node --test`
-// process until package.json has its own release:environment:test script.
-import "./test-release-environment.mjs";
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptsDir, "..");
