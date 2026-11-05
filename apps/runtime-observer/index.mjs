@@ -5,7 +5,10 @@ import { parseObserverTargets } from "./targets.mjs";
 
 const controlPlaneUrl = requiredUrl("CONTROL_PLANE_URL");
 const gatewayUrl = requiredUrl("RUNTIME_GATEWAY_URL");
-const gatewayToken = requiredSecret("RUNTIME_SHARED_TOKEN");
+// Requirement 31.8, 31.10: the observer only reads GET /v1/observations/{id}, so it holds the
+// Gateway's read-only credential. The command credential must never reach this process.
+if (process.env.RUNTIME_SHARED_TOKEN !== undefined) throw new Error("RUNTIME_SHARED_TOKEN must not be provided to runtime-observer; use RUNTIME_GATEWAY_READ_TOKEN");
+const gatewayToken = requiredSecret("RUNTIME_GATEWAY_READ_TOKEN");
 const pollMs = positiveInt(process.env.RUNTIME_OBSERVER_POLL_MS, 5000);
 const timeoutMs = positiveInt(process.env.RUNTIME_OBSERVER_TIMEOUT_MS, 3000);
 const failClosed = process.env.RUNTIME_OBSERVER_FAIL_CLOSED !== "false";

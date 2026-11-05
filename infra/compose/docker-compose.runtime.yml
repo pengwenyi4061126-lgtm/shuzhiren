@@ -7,6 +7,8 @@ services:
       COSYVOICE_BASE_URL: http://cosyvoice:50000
       COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}
       RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
+      # Read-only credential of runtime-observer: GET /v1/observations/{session_id} only (M17).
+      RUNTIME_GATEWAY_READ_TOKEN: ${RUNTIME_GATEWAY_READ_TOKEN:?set-in-runtime-env}
       RUNTIME_REQUEST_TIMEOUT_SECONDS: ${RUNTIME_REQUEST_TIMEOUT_SECONDS:-15}
       # Every program script and speech command is synthesized by CosyVoice (D2).
       COSYVOICE_REQUIRED: ${COSYVOICE_REQUIRED:-true}
@@ -83,7 +85,9 @@ services:
     environment:
       CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:?set-in-runtime-env}
       RUNTIME_GATEWAY_URL: http://runtime-gateway:8090
-      RUNTIME_SHARED_TOKEN: ${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}
+      # The observer reads observations only: it gets the read-only Gateway credential and never
+      # RUNTIME_SHARED_TOKEN, which can issue speech and media commands (M17, Requirement 31.8).
+      RUNTIME_GATEWAY_READ_TOKEN: ${RUNTIME_GATEWAY_READ_TOKEN:?set-in-runtime-env}
       RUNTIME_OBSERVER_POLL_MS: ${RUNTIME_OBSERVER_POLL_MS:-5000}
       RUNTIME_OBSERVER_TIMEOUT_MS: ${RUNTIME_OBSERVER_TIMEOUT_MS:-3000}
       RUNTIME_OBSERVER_FAIL_CLOSED: ${RUNTIME_OBSERVER_FAIL_CLOSED:-true}

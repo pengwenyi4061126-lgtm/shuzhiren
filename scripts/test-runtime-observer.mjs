@@ -10,7 +10,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const observer = path.join(root, "apps", "runtime-observer", "index.mjs");
 const telemetryToken = "observer-tenant-token-at-least-16";
 const programOutputToken = "observer-program-output-token-at-least-32";
-const gatewayToken = "gateway-shared-token-at-least-16";
+// Requirement 31.10: the observer authenticates to the Gateway with the read-only credential only.
+const gatewayReadToken = "gateway-read-only-token-at-least-32-chars";
+const gatewaySharedToken = "gateway-shared-command-token-at-least-32";
 const observerPort = 18084;
 // Every wait in this test is bounded so that a failure ends the test with a message instead of hanging the CI job.
 const requestTimeoutMs = 1000;
@@ -23,7 +25,7 @@ async function startServer(probeMode) {
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/v1/observations/session_demo") {
-      assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
+      assert.equal(request.headers.authorization, `Bearer ${gatewayReadToken}`);
       if (probeMode === "slow") await new Promise((resolve) => setTimeout(resolve, 500));
       return json(response, 200, { session: { id: "session_demo", active: true }, gpu: { available: true, utilization_percent: 71, memory_used_mib: 14200 }, quality: { writer_accepting_frames: true, inference_fps: 28.5 } });
     }
@@ -64,7 +66,9 @@ async function requestBody(request) {
 }
 
 function observerEnvironment(fixture, overrides) {
-  return { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort), ...overrides };
+  // The parent environment may carry RUNTIME_SHARED_TOKEN; the observer must not inherit it.
+  const { RUNTIME_SHARED_TOKEN: _inherited, ...inherited } = process.env;
+  return { ...inherited, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_GATEWAY_READ_TOKEN: gatewayReadToken, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort), ...overrides };
 }
 
 function targetsFor(fixture, runId = "run_demo") {
@@ -209,6 +213,38 @@ async function observeStartupHealth() {
   });
 }
 
+// Requirement 31.8: a command credential in the environment, or a missing or weak read-only credential,
+// stops the observer at startup with a non-zero exit code and without polling the Gateway.
+async function observeCredentialStartupFailures() {
+  const cases = [
+    ["RUNTIME_SHARED_TOKEN present", { RUNTIME_SHARED_TOKEN: gatewaySharedToken }, /RUNTIME_SHARED_TOKEN must not be provided to runtime-observer/],
+    ["RUNTIME_SHARED_TOKEN empty", { RUNTIME_SHARED_TOKEN: "" }, /RUNTIME_SHARED_TOKEN must not be provided to runtime-observer/],
+    ["RUNTIME_GATEWAY_READ_TOKEN missing", { RUNTIME_GATEWAY_READ_TOKEN: undefined }, /RUNTIME_GATEWAY_READ_TOKEN is required/],
+    ["RUNTIME_GATEWAY_READ_TOKEN short", { RUNTIME_GATEWAY_READ_TOKEN: "short-read-token" }, /RUNTIME_GATEWAY_READ_TOKEN must contain at least 32 non-whitespace characters/]
+  ];
+  for (const [label, overrides, expected] of cases) {
+    const fixture = await startServer("healthy");
+    let gatewayRequests = 0;
+    fixture.server.prependListener("request", (request) => { if (request.url?.startsWith("/v1/observations/")) gatewayRequests += 1; });
+    const env = observerEnvironment(fixture, { RUNTIME_OBSERVER_TARGETS: JSON.stringify(targetsFor(fixture)), ...overrides });
+    for (const [key, value] of Object.entries(env)) if (value === undefined) delete env[key];
+    const observed = spawnObserver(env);
+    try {
+      let timer;
+      const exit = await Promise.race([observed.exited, new Promise((resolve) => { timer = setTimeout(() => resolve(null), exitTimeoutMs); })]);
+      clearTimeout(timer);
+      assert.ok(exit, `${label}: the observer must exit at startup\n${describeObserver(observed)}`);
+      assert.notEqual(exit.code, 0, `${label}: the observer must exit with a non-zero code\n${describeObserver(observed)}`);
+      assert.match(observed.output, expected, `${label}\n${describeObserver(observed)}`);
+      assert.ok(!observed.output.includes(gatewaySharedToken), `${label}: the startup error must not echo the shared token`);
+      assert.equal(gatewayRequests, 0, `${label}: the observer must not poll the Gateway`);
+    } finally {
+      await stopObserver(observed).catch(() => {});
+      await closeServer(fixture.server);
+    }
+  }
+}
+
 async function waitFor(predicate, timeoutMs, description) {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
@@ -232,5 +268,6 @@ assert.deepEqual(observed.programOutputObservation, { tenantId: "tenant_demo", r
 await observeReloadedTargets();
 await observeTelemetryDeliveryFailure();
 await observeStartupHealth();
+await observeCredentialStartupFailures();
 
-console.log("PASS  runtime observer activity-audio, output-evidence forwarding, fail-closed, startup health, delivery health, and target reload paths");
+console.log("PASS  runtime observer activity-audio, output-evidence forwarding, fail-closed, startup health, delivery health, target reload and read-only Gateway credential paths");

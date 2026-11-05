@@ -9,7 +9,8 @@ import yaml from "js-yaml";
 import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
-import { checkComposePorts, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
+import { parseEnvFile } from "./lib/compose-interpolation.mjs";
+import { checkComposePorts, checkObserverCredentials, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 function findPython() {
   const requested = process.env.PYTHON?.trim();
@@ -30,6 +31,7 @@ const streamKey = `ci-sentinel-${randomBytes(16).toString("hex")}`;
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const channelConnectionId = "22222222-2222-4222-8222-222222222222";
 const runtimeToken = "runtime-shared-token-at-least-32-bytes";
+const gatewayReadToken = "runtime-gateway-read-only-token-at-least-32";
 const mediaEvidenceToken = "media-evidence-verifier-token-at-least-32-bytes";
 const recordingEvidenceToken = "recording-evidence-verifier-token-at-least-32-bytes";
 const channelEvidenceToken = "channel-evidence-verifier-token-at-least-32-bytes";
@@ -165,6 +167,7 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     STREAM_FPS: "25",
     RUNTIME_GATEWAY_URL: "http://runtime-gateway:8090",
     RUNTIME_SHARED_TOKEN: runtimeToken,
+    RUNTIME_GATEWAY_READ_TOKEN: gatewayReadToken,
     RUNTIME_GATEWAY_DEMO_MODE: "false",
     RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
     CHANNEL_ADAPTER_URL: "http://channel-adapter.internal:8082",
@@ -457,6 +460,33 @@ try {
   await writeFile(files.runtime, runtime(validProbeTarget));
   await writeFile(files.gateway, gateway);
 
+  // M17 (Requirement 31.9): RUNTIME_GATEWAY_READ_TOKEN is a separate private credential of runtime-observer.
+  const withReadToken = (value) => runtime(validProbeTarget).replace(`RUNTIME_GATEWAY_READ_TOKEN=${gatewayReadToken}\n`, value === undefined ? "" : `RUNTIME_GATEWAY_READ_TOKEN=${value}\n`);
+  const previewGateway = gateway.replace("PREVIEW_BROKER_URL=\n", "PREVIEW_BROKER_URL=https://preview-broker.internal\n").replace("PREVIEW_BROKER_TOKEN=\n", "PREVIEW_BROKER_TOKEN=preview-broker-token-at-least-32-bytes\n");
+  for (const [label, runtimeText, gatewayText, pattern, secret] of [
+    ["a missing read-only token", withReadToken(undefined), gateway, /运行时 缺少 RUNTIME_GATEWAY_READ_TOKEN/, undefined],
+    ["a 31-character read-only token", withReadToken("r".repeat(31)), gateway, /RUNTIME_GATEWAY_READ_TOKEN（Gateway 只读凭据）必须是至少 32 个字符且不含空白/, "r".repeat(31)],
+    ["a read-only token with a space", withReadToken("read only token with a space inside it"), gateway, /RUNTIME_GATEWAY_READ_TOKEN（Gateway 只读凭据）必须是至少 32 个字符且不含空白/, "read only token with a space inside it"],
+    ["a read-only token with a tab", withReadToken("read-only-token\twith-a-tab-inside-it-32"), gateway, /RUNTIME_GATEWAY_READ_TOKEN（Gateway 只读凭据）必须是至少 32 个字符且不含空白/, "read-only-token\twith-a-tab-inside-it-32"],
+    ["the shared token as read-only token", withReadToken(runtimeToken), gateway, /RUNTIME_GATEWAY_READ_TOKEN（Gateway 只读凭据）不得与 RUNTIME_SHARED_TOKEN 相同/, runtimeToken],
+    ["the output-probe token as read-only token", withReadToken(outputProbeToken), gateway, /RUNTIME_GATEWAY_READ_TOKEN（Gateway 只读凭据）不得与 output-probe 的 token 相同/, outputProbeToken],
+    ["a tenant telemetry token as read-only token", withReadToken(telemetryToken), gateway, new RegExp(`RUNTIME_GATEWAY_READ_TOKEN（Gateway 只读凭据）不得与 RUNTIME_TELEMETRY_TENANT_TOKENS:${tenantId} 的 token 相同`), telemetryToken],
+    ["the preview broker token as read-only token", withReadToken("preview-broker-token-at-least-32-bytes"), previewGateway, /RUNTIME_GATEWAY_READ_TOKEN（Gateway 只读凭据）不得与 PREVIEW_BROKER_TOKEN 的 token 相同/, "preview-broker-token-at-least-32-bytes"],
+    ["a different read-only token in gateway.env", runtime(validProbeTarget), `${gateway}RUNTIME_GATEWAY_READ_TOKEN=another-read-only-token-at-least-32-chars\n`, /Gateway 的 RUNTIME_GATEWAY_READ_TOKEN 与运行时取值不同/, "another-read-only-token-at-least-32-chars"]
+  ]) {
+    await writeFile(files.runtime, runtimeText);
+    await writeFile(files.gateway, gatewayText);
+    const rejected = check(["--require-cosyvoice"]);
+    assert.notEqual(rejected.status, 0, `${label} must be rejected`);
+    assert.match(rejected.stderr, pattern, `${label}:\n${rejected.stderr}`);
+    assert.match(rejected.stderr, /RUNTIME_GATEWAY_READ_TOKEN/, label);
+    if (secret) assert.ok(!`${rejected.stdout}${rejected.stderr}`.includes(secret), `${label}: errors must not echo the token`);
+  }
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  await writeFile(files.gateway, `${gateway}RUNTIME_GATEWAY_READ_TOKEN=${gatewayReadToken}\n`);
+  const sameReadTokenInGateway = check(["--require-cosyvoice"]);
+  assert.equal(sameReadTokenInGateway.status, 0, `the same read-only token in gateway.env must be accepted:\n${sameReadTokenInGateway.stderr}`);
+  await writeFile(files.gateway, gateway);
   await writeFile(files.gateway, gateway.replace("FALLBACK_AUDIOTYPE=1", "FALLBACK_AUDIOTYPE=0"));
   const duplicateGatewayActionSlot = check(["--require-cosyvoice"]);
   assert.notEqual(duplicateGatewayActionSlot.status, 0, "Gateway deployment must reject reused program and fallback action slots");
@@ -681,7 +711,36 @@ try {
   for (const service of Object.values(flatNetwork.services)) delete service.networks;
   assert.notDeepEqual(checkRuntimeComposeIsolation(flatNetwork).errors, [], "the pre-M17 single default network must be reported");
 
-  // H2: the stream key may only live in the STREAM_KEY_FILE file and is never printed.
+  // M17 (Requirement 31.7, 31.8): runtime-observer gets the read-only Gateway credential and never RUNTIME_SHARED_TOKEN.
+  const runtimeTemplates = Object.fromEntries(await Promise.all([["runtime", "runtime"], ["runtime-gateway", "runtime-gateway"], ["channel-adapter", "channel-adapter"], ["alert-notifier", "alert-notifier"]].map(async ([name, file]) => [name, parseEnvFile(await readFile(path.join(root, "config", `${file}.example.env`), "utf8"), `config/${file}.example.env`)])));
+  assert.deepEqual(checkObserverCredentials(runtimeComposeDoc, runtimeTemplates).errors, [], "the runtime Compose must give runtime-observer only the read-only Gateway credential");
+  const credentialCodes = (doc, templates) => checkObserverCredentials(doc, templates).errors.map((error) => error.code);
+  const observerWithShared = structuredClone(runtimeComposeDoc);
+  observerWithShared.services["runtime-observer"].environment.RUNTIME_SHARED_TOKEN = "${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}";
+  assert.deepEqual(credentialCodes(observerWithShared), ["RCT-OBSERVER-TOKEN"], "an observer RUNTIME_SHARED_TOKEN key must be reported");
+  const observerAliasShared = structuredClone(runtimeComposeDoc);
+  observerAliasShared.services["runtime-observer"].environment.GATEWAY_COMMAND_TOKEN = "prefix-${RUNTIME_SHARED_TOKEN}";
+  assert.deepEqual(credentialCodes(observerAliasShared), ["RCT-OBSERVER-TOKEN"], "another observer key interpolating RUNTIME_SHARED_TOKEN must be reported");
+  const observerReadAsShared = structuredClone(runtimeComposeDoc);
+  observerReadAsShared.services["runtime-observer"].environment.RUNTIME_GATEWAY_READ_TOKEN = "${RUNTIME_SHARED_TOKEN:?set-in-runtime-env}";
+  assert.deepEqual(credentialCodes(observerReadAsShared), ["RCT-READ-TOKEN", "RCT-OBSERVER-TOKEN"], "a read-only token mapped to the shared token must be reported");
+  const observerEnvFile = structuredClone(runtimeComposeDoc);
+  observerEnvFile.services["runtime-observer"].env_file = ["../../config/runtime.env"];
+  assert.deepEqual(credentialCodes(observerEnvFile), ["RCT-OBSERVER-TOKEN"], "an observer env_file must be reported");
+  const observerListShared = structuredClone(runtimeComposeDoc);
+  observerListShared.services["runtime-observer"].environment = [...Object.entries(observerListShared.services["runtime-observer"].environment).map(([key, value]) => `${key}=${value}`), "RUNTIME_SHARED_TOKEN"];
+  assert.deepEqual(credentialCodes(observerListShared), ["RCT-OBSERVER-TOKEN"], "a pass-through RUNTIME_SHARED_TOKEN list entry must be reported");
+  for (const service of ["runtime-gateway", "runtime-observer"]) {
+    const withoutReadToken = structuredClone(runtimeComposeDoc);
+    delete withoutReadToken.services[service].environment.RUNTIME_GATEWAY_READ_TOKEN;
+    assert.deepEqual(credentialCodes(withoutReadToken), ["RCT-READ-TOKEN"], `${service} without RUNTIME_GATEWAY_READ_TOKEN must be reported`);
+  }
+  const sameTemplateValue = { ...runtimeTemplates, runtime: new Map([...runtimeTemplates.runtime, ["RUNTIME_GATEWAY_READ_TOKEN", runtimeTemplates.runtime.get("RUNTIME_SHARED_TOKEN")]]) };
+  assert.deepEqual(credentialCodes(runtimeComposeDoc, sameTemplateValue), ["RCT-READ-TOKEN", "RCT-READ-TOKEN"], "a template giving both credentials one value must be reported for runtime and runtime-gateway");
+  const gatewayTemplateReadToken = { ...runtimeTemplates, "runtime-gateway": new Map([...runtimeTemplates["runtime-gateway"], ["RUNTIME_GATEWAY_READ_TOKEN", "x"]]) };
+  assert.deepEqual(credentialCodes(runtimeComposeDoc, gatewayTemplateReadToken), ["RCT-READ-TOKEN"], "the read-only token must be defined in the runtime template only");
+  const noTemplateReadToken = { ...runtimeTemplates, runtime: new Map([...runtimeTemplates.runtime].filter(([key]) => key !== "RUNTIME_GATEWAY_READ_TOKEN")) };
+  assert.deepEqual(credentialCodes(runtimeComposeDoc, noTemplateReadToken), ["RCT-READ-TOKEN"], "a runtime template without the read-only token must be reported");  // H2: the stream key may only live in the STREAM_KEY_FILE file and is never printed.
   const assertStreamKeyRejected = (result, pattern, description) => {
     assert.notEqual(result.status, 0, description);
     assert.match(result.stderr, pattern, description);

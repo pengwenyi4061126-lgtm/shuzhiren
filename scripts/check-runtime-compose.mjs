@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
 import { parseEnvFile } from "./lib/compose-interpolation.mjs";
-import { checkComposePorts, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingTtsComposeProblems } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkObserverCredentials, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingTtsComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 const files = {
   compose: "../infra/compose/docker-compose.runtime.yml",
@@ -19,7 +19,7 @@ for (const source of ["RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_
   if (!contents.compose.includes(source) || !contents.runtime.includes(`${source}=`)) throw new Error(`Runtime Compose must retain immutable deployment image input: ${source}`);
 }
 if (contents.compose.includes("build:")) throw new Error("Runtime production Compose must not build mutable local images");
-for (const [name, key] of [["runtime", "RUNTIME_SHARED_TOKEN="], ["gateway", "RUNTIME_GATEWAY_STATE_PATH="], ["gateway", "PREVIEW_GRANT_MAX_SECONDS="], ["channel", "CHANNEL_ADAPTER_TARGETS="], ["notifier", "ALERT_NOTIFIER_TARGETS="]]) {
+for (const [name, key] of [["runtime", "RUNTIME_SHARED_TOKEN="], ["runtime", "RUNTIME_GATEWAY_READ_TOKEN="], ["gateway", "RUNTIME_GATEWAY_STATE_PATH="], ["gateway", "PREVIEW_GRANT_MAX_SECONDS="], ["channel", "CHANNEL_ADAPTER_TARGETS="], ["notifier", "ALERT_NOTIFIER_TARGETS="]]) {
   if (!contents[name].includes(key)) throw new Error(`${name} template must supply ${key} for Compose interpolation`);
 }
 for (const required of ["PREVIEW_BROKER_URL: ${PREVIEW_BROKER_URL:-}", "PREVIEW_BROKER_TOKEN: ${PREVIEW_BROKER_TOKEN:-}", "PREVIEW_GRANT_MAX_SECONDS: ${PREVIEW_GRANT_MAX_SECONDS:-600}"]) {
@@ -48,7 +48,9 @@ const templates = {
   "channel-adapter": parseEnvFile(contents.channel, "config/channel-adapter.example.env"),
   "alert-notifier": parseEnvFile(contents.notifier, "config/alert-notifier.example.env")
 };
+const credentialErrors = checkObserverCredentials(composeDoc, templates).errors;
+if (credentialErrors.length) throw new Error(`Runtime Compose must give runtime-observer the read-only Gateway credential and never RUNTIME_SHARED_TOKEN:\n${credentialErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
 const templateErrors = checkTemplateRequirements({ composeDoc, templates }).errors;
 if (templateErrors.length) throw new Error(`Runtime Compose required variables must point at the template that defines them:\n${templateErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
 
-console.log("PASS  runtime Compose templates cover every service profile and required interpolation input");
+console.log("PASS  runtime Compose templates cover every service profile and required interpolation input; runtime-observer holds only the read-only Gateway credential");

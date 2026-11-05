@@ -74,6 +74,85 @@ async def check_unauthenticated_surfaces() -> None:
             raise AssertionError("a non-ASCII bearer token must be rejected")
 
 
+async def check_read_only_token() -> None:
+    """Requirement 31.11, 31.12, 31.14: RUNTIME_GATEWAY_READ_TOKEN reads observations and nothing else."""
+    shared_token, read_token = "g" * 32, "r" * 32
+    gateway.RUNTIME_TOKEN = shared_token
+    gateway.RUNTIME_READ_TOKEN = read_token
+    shared = {"authorization": f"Bearer {shared_token}"}
+    read = {"authorization": f"Bearer {read_token}"}
+    downstream: list[str] = []
+    original_get = gateway.livetalking_get
+
+    async def runtime_metrics(path: str) -> dict:
+        downstream.append(path)
+        return {"code": 0, "data": {"sessions": [{"sessionid": "0", "metrics": {"output_connected": True}}]}}
+
+    gateway.livetalking_get = runtime_metrics
+    speak_body = {"command_id": "c1", "session_id": "s1", "text": "hello", "voice": "v", "provider": "cosyvoice"}
+    media_body = {"command_id": "c1", "session_id": "s1", "action": "stop_program"}
+    resolution_body = {"resolution": "failed_definite", "note": "checked"}
+    commands = (("GET", "/v1/previews/0", None), ("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body), ("GET", "/v1/ops/uncertain-commands", None), ("POST", "/v1/ops/uncertain-commands/c1/resolution", resolution_body))
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway.app), base_url="http://gateway") as client:
+            for session in ("0", "1", "bad id"):
+                as_read = await client.get(f"/v1/observations/{session}", headers=read)
+                as_shared = await client.get(f"/v1/observations/{session}", headers=shared)
+                assert as_read.status_code == as_shared.status_code and as_read.status_code not in (401, 403), f"observation {session!r}: read {as_read.status_code}, shared {as_shared.status_code}"
+                assert as_read.json() == as_shared.json(), f"observation {session!r} must not depend on the token scope"
+            assert (await client.get("/v1/observations/0", headers=read)).json()["session"]["active"] is True
+            downstream.clear()
+            for method, path, body in commands:
+                refused = await client.request(method, path, headers=read, json=body)
+                assert refused.status_code == 403, f"the read-only token must be refused on {method} {path} (got {refused.status_code})"
+                assert refused.json() == {"detail": "Read-only runtime gateway token cannot use this endpoint"}, refused.text
+            assert downstream == [], f"a refused read-only request must not reach LiveTalking: {downstream}"
+            invalid = [None, "Bearer wrong", f"bearer {shared_token}", f"Bearer {shared_token} ", f"bearer {read_token}", f"Bearer {read_token} ", f"Bearer {read_token[:31]}", f"Bearer {read_token}{shared_token}", "Basic Z2dnZw==", b"Bearer \xc3\xa9"]
+            for method, path, body in (("GET", "/v1/observations/0", None), *commands):
+                for header in invalid:
+                    response = await client.request(method, path, headers={} if header is None else {"authorization": header}, json=body)
+                    assert response.status_code == 401, f"{header!r} on {method} {path} must be unauthorized (got {response.status_code})"
+            assert (await client.get("/healthz")).status_code != 401
+            # Without a configured read-only token only the shared token is accepted.
+            gateway.RUNTIME_READ_TOKEN = ""
+            assert (await client.get("/v1/observations/0", headers=read)).status_code == 401
+            assert (await client.get("/v1/observations/0", headers={"authorization": "Bearer "})).status_code == 401
+            assert (await client.get("/v1/observations/0", headers=shared)).status_code == 200
+    finally:
+        gateway.livetalking_get = original_get
+        gateway.RUNTIME_READ_TOKEN = ""
+    assert gateway.authorize(f"Bearer {shared_token}") == "command"
+    gateway.RUNTIME_READ_TOKEN = read_token
+    assert gateway.authorize(f"Bearer {read_token}", allow_read=True) == "read"
+    try:
+        gateway.authorize(f"Bearer {read_token}")
+    except HTTPException as error:
+        assert error.status_code == 403
+    else:
+        raise AssertionError("authorize() must refuse the read-only token unless the endpoint allows it")
+    finally:
+        gateway.RUNTIME_READ_TOKEN = ""
+
+
+async def reject_read_token(value: str, expected: str, *, preview_token: str = "") -> None:
+    gateway.RUNTIME_TOKEN = "g" * 32
+    gateway.RUNTIME_READ_TOKEN = value
+    gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = False
+    if preview_token:
+        gateway.PREVIEW_BROKER_URL = "https://preview-broker.example"
+        gateway.PREVIEW_BROKER_TOKEN = preview_token
+    try:
+        async with gateway.lifespan(gateway.app):
+            raise AssertionError(f"Runtime Gateway must reject RUNTIME_GATEWAY_READ_TOKEN={value!r} before startup")
+    except RuntimeError as error:
+        assert expected in str(error), str(error)
+        assert value not in str(error) or len(value) < 8, "the startup error must not echo the token"
+    finally:
+        gateway.RUNTIME_READ_TOKEN = ""
+        gateway.PREVIEW_BROKER_URL = ""
+        gateway.PREVIEW_BROKER_TOKEN = ""
+
+
 def check_gpu_index() -> None:
     class NVMLError(Exception):
         pass
@@ -112,6 +191,17 @@ async def main() -> None:
     gateway.COSYVOICE_MODEL_KIND = "zero_shot"
     gateway.COSYVOICE_VOICE_LIBRARY_DIR = str(pathlib.Path(tempfile.gettempdir()).resolve() / "shuzhiren-voices-not-required-at-startup")
     await check_unauthenticated_surfaces()
+    await check_read_only_token()
+    for value in ("short", "r" * 31, "read only token with whitespace inside it", f"{'r' * 32}\t"):
+        await reject_read_token(value, "RUNTIME_GATEWAY_READ_TOKEN must contain at least 32 non-whitespace characters")
+    await reject_read_token("g" * 32, "RUNTIME_GATEWAY_READ_TOKEN must differ from every other runtime gateway credential")
+    await reject_read_token("p" * 32, "RUNTIME_GATEWAY_READ_TOKEN must differ from every other runtime gateway credential", preview_token="p" * 32)
+    gateway.RUNTIME_TOKEN = "g" * 32
+    gateway.RUNTIME_READ_TOKEN = "r" * 32
+    gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = False
+    async with gateway.lifespan(gateway.app):
+        pass
+    gateway.RUNTIME_READ_TOKEN = ""
     check_gpu_index()
     await reject("")
     await reject("short")

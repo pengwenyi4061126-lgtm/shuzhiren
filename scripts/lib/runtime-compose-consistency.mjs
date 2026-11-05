@@ -162,6 +162,53 @@ export function checkRuntimeComposeIsolation(composeDoc) {
   return { errors };
 }
 
+export const READ_TOKEN_EXPRESSION = "${RUNTIME_GATEWAY_READ_TOKEN:?set-in-runtime-env}";
+
+function environmentEntries(service) {
+  const environment = service?.environment;
+  if (Array.isArray(environment)) {
+    return environment.filter((item) => typeof item === "string").map((item) => (item.includes("=") ? [item.slice(0, item.indexOf("=")), item.slice(item.indexOf("=") + 1)] : [item, null]));
+  }
+  return isMapping(environment) ? Object.entries(environment).map(([key, value]) => [key, value === null || value === undefined ? null : String(value)]) : [];
+}
+
+/**
+ * M17 (Requirement 31.7, 31.8): runtime-observer only reads observations, so it gets the Gateway's
+ * read-only credential and never the command credential RUNTIME_SHARED_TOKEN. Checked on the source
+ * Compose file: runtime-gateway and runtime-observer both map RUNTIME_GATEWAY_READ_TOKEN to
+ * READ_TOKEN_EXPRESSION; the observer has no RUNTIME_SHARED_TOKEN key, no value interpolating it and
+ * no env_file (which would inject every variable of that file). With `templates`, the runtime template
+ * defines the read-only token with a value different from RUNTIME_SHARED_TOKEN in every template.
+ * Messages name keys and files, never values.
+ * @param {object} composeDoc
+ * @param {Record<string, Map<string, string>>} [templates] keyed by TEMPLATE_NAMES
+ * @returns {{ errors: Array<{ code: string, message: string }> }}
+ */
+export function checkObserverCredentials(composeDoc, templates) {
+  const errors = [];
+  const services = isMapping(composeDoc?.services) ? composeDoc.services : {};
+  for (const name of ["runtime-gateway", "runtime-observer"]) {
+    const value = environmentEntries(services[name]).find(([key]) => key === "RUNTIME_GATEWAY_READ_TOKEN")?.[1];
+    if (value !== READ_TOKEN_EXPRESSION) errors.push({ code: "RCT-READ-TOKEN", message: `${name} environment.RUNTIME_GATEWAY_READ_TOKEN must be ${READ_TOKEN_EXPRESSION}` });
+  }
+  const observer = services["runtime-observer"];
+  for (const [key, value] of environmentEntries(observer)) {
+    if (key === "RUNTIME_SHARED_TOKEN") errors.push({ code: "RCT-OBSERVER-TOKEN", message: "runtime-observer must not receive RUNTIME_SHARED_TOKEN; it uses RUNTIME_GATEWAY_READ_TOKEN" });
+    else if (value !== null && parseInterpolations(value).some((reference) => reference.name === "RUNTIME_SHARED_TOKEN")) errors.push({ code: "RCT-OBSERVER-TOKEN", message: `runtime-observer environment.${key} must not interpolate RUNTIME_SHARED_TOKEN` });
+  }
+  if (observer?.env_file !== undefined) errors.push({ code: "RCT-OBSERVER-TOKEN", message: "runtime-observer must not declare env_file; it would receive every variable of that file, including RUNTIME_SHARED_TOKEN" });
+  if (templates) {
+    const readToken = normalizeEnvValue(templates.runtime?.get("RUNTIME_GATEWAY_READ_TOKEN") ?? "");
+    if (!readToken) errors.push({ code: "RCT-READ-TOKEN", message: "config/runtime.example.env must define RUNTIME_GATEWAY_READ_TOKEN" });
+    for (const name of TEMPLATE_NAMES) {
+      const shared = normalizeEnvValue(templates[name]?.get("RUNTIME_SHARED_TOKEN") ?? "");
+      if (readToken && shared === readToken) errors.push({ code: "RCT-READ-TOKEN", message: `config/${name}.example.env gives RUNTIME_SHARED_TOKEN the value of RUNTIME_GATEWAY_READ_TOKEN; the two credentials must differ` });
+      if (name !== "runtime" && templates[name]?.has("RUNTIME_GATEWAY_READ_TOKEN")) errors.push({ code: "RCT-READ-TOKEN", message: `config/${name}.example.env must not define RUNTIME_GATEWAY_READ_TOKEN; it belongs in config/runtime.example.env only` });
+    }
+  }
+  return { errors };
+}
+
 export const TEMPLATE_NAMES = Object.freeze(["runtime", "runtime-gateway", "channel-adapter", "alert-notifier"]);
 const OWN_TEMPLATE_VARIABLES = Object.freeze({ CHANNEL_ADAPTER_DATABASE_URL: "channel-adapter", ALERT_NOTIFIER_DATABASE_URL: "alert-notifier" });
 

@@ -658,7 +658,51 @@ async def check_command_journal_states() -> None:
         journal_dir.cleanup()
 
 
+async def check_read_token_cannot_command() -> None:
+    """Requirement 31.12, 31.13: the read-only token is refused before locks, the journal and upstreams."""
+    upstreams = Upstreams()
+    original = {name: getattr(gateway, name, "") for name in ("RUNTIME_TOKEN", "RUNTIME_READ_TOKEN", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "COSYVOICE_MODEL_KIND")}
+    original_client = gateway.httpx.AsyncClient
+    gateway.httpx.AsyncClient = lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(upstreams.handler), **kwargs)
+    journal_dir = tempfile.TemporaryDirectory()
+    gateway.RUNTIME_TOKEN = "test-runtime-token-for-commands-32"
+    gateway.RUNTIME_READ_TOKEN = "test-runtime-read-only-token-32-chars"
+    gateway.RUNTIME_COMMAND_JOURNAL_PATH = str(pathlib.Path(journal_dir.name) / "commands.sqlite3")
+    gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = True
+    gateway.COSYVOICE_MODEL_KIND = "sft"
+    gateway.runtime_command_cache.clear()
+    gateway.runtime_command_locks.clear()
+    read = {"authorization": f"Bearer {gateway.RUNTIME_READ_TOKEN}"}
+    shared = {"authorization": f"Bearer {gateway.RUNTIME_TOKEN}"}
+    speak_body = {"command_id": "read_scope_speak", "session_id": "session_1", "text": "Welcome to the show.", "voice": "speaker_1", "provider": "cosyvoice"}
+    media_body = {"command_id": "read_scope_media", "session_id": "session_1", "action": "stop_program"}
+    client = RealAsyncClient(transport=httpx.ASGITransport(app=gateway.app), base_url="http://gateway")
+    try:
+        for method, path, body in (("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body), ("GET", "/v1/previews/session_1", None), ("GET", "/v1/ops/uncertain-commands", None), ("POST", "/v1/ops/uncertain-commands/read_scope_media/resolution", {"resolution": "failed_definite", "note": "checked"})):
+            response = await client.request(method, path, headers=read, json=body)
+            assert response.status_code == 403, f"the read-only token must be refused on {method} {path} (got {response.status_code})"
+            assert response.json() == {"detail": "Read-only runtime gateway token cannot use this endpoint"}, response.text
+        assert upstreams.requests == [], f"a refused read-only request must not reach LiveTalking or CosyVoice: {upstreams.requests}"
+        assert gateway.runtime_command_locks == {}, "a refused read-only request must not take a command lock"
+        journal = pathlib.Path(gateway.RUNTIME_COMMAND_JOURNAL_PATH)
+        assert not journal.exists() or journal_ids() == set(), "a refused read-only request must not reserve its command id"
+        spoken = await client.post("/v1/speak", headers=shared, json=speak_body)
+        assert spoken.status_code == 200 and spoken.json()["duplicate"] is False, f"the shared token must run the command refused for the read-only token: {spoken.text}"
+        media = await client.post("/v1/media", headers=shared, json=media_body)
+        assert media.status_code == 200 and media.json()["duplicate"] is False, f"the shared token must run the media command refused for the read-only token: {media.text}"
+        assert upstreams.inference_count() == 1 and "/humanaudio" in upstreams.paths("livetalking")
+    finally:
+        await client.aclose()
+        gateway.httpx.AsyncClient = original_client
+        for name, value in original.items():
+            setattr(gateway, name, value)
+        gateway.runtime_command_cache.clear()
+        gateway.runtime_command_locks.clear()
+        journal_dir.cleanup()
+
+
 async def main() -> None:
+    await check_read_token_cannot_command()
     await check_cosyvoice_audio_path()
     await check_command_journal_states()
     gateway.RUNTIME_TOKEN = "test-runtime-token"

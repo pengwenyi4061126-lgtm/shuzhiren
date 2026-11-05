@@ -42,6 +42,9 @@ LIVE_TALKING_URL = os.environ.get("LIVETALKING_BASE_URL", "http://livetalking:80
 COSYVOICE_URL = os.environ.get("COSYVOICE_BASE_URL", "http://cosyvoice:50000").rstrip("/")
 COSYVOICE_SAMPLE_RATE = int(os.environ.get("COSYVOICE_SAMPLE_RATE", "24000"))
 RUNTIME_TOKEN = os.environ.get("RUNTIME_SHARED_TOKEN", "")
+# Read-only credential of runtime-observer (Requirement 31.7-31.12): accepted only by
+# endpoints that call authorize(..., allow_read=True). Empty disables the read scope.
+RUNTIME_READ_TOKEN = os.environ.get("RUNTIME_GATEWAY_READ_TOKEN", "")
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("RUNTIME_REQUEST_TIMEOUT_SECONDS", "15"))
 COSYVOICE_REQUIRED = os.environ.get("COSYVOICE_REQUIRED", "false").lower() == "true"
 # sft: /inference_sft with spk_id = runtime voice id. zero_shot: /inference_zero_shot with the
@@ -75,7 +78,8 @@ async def lifespan(_: FastAPI):
     yield
 
 # The interactive docs and the OpenAPI schema are not registered: every
-# Gateway route except /healthz requires the shared runtime token.
+# Gateway route except /healthz requires the shared runtime token, and
+# GET /v1/observations/{session_id} also accepts RUNTIME_GATEWAY_READ_TOKEN.
 app = FastAPI(
     title="Shuzhiren Runtime Gateway",
     version="0.1.0",
@@ -215,8 +219,11 @@ PROGRAM_AUDIOTYPE = int(os.environ.get("PROGRAM_AUDIOTYPE", "0"))
 FALLBACK_AUDIOTYPE = int(os.environ.get("FALLBACK_AUDIOTYPE", "1"))
 HUMAN_HANDOFF_AUDIOTYPE = int(os.environ.get("HUMAN_HANDOFF_AUDIOTYPE", "2"))
 
+TokenScope = Literal["command", "read"]
+
+
 def bearer_matches(authorization: str | None, token: str) -> bool:
-    if not authorization:
+    if not authorization or not token:
         return False
     try:
         # Starlette decodes header bytes as latin-1; encoding back restores the raw bytes.
@@ -226,11 +233,29 @@ def bearer_matches(authorization: str | None, token: str) -> bool:
     expected = f"Bearer {token}".encode("utf-8")
     return hmac.compare_digest(hashlib.sha256(presented).digest(), hashlib.sha256(expected).digest())
 
-def authorize(authorization: str | None) -> None:
+def authenticate(authorization: str | None) -> TokenScope:
     if not RUNTIME_TOKEN:
         raise HTTPException(status_code=503, detail="Runtime gateway token is not configured")
-    if not bearer_matches(authorization, RUNTIME_TOKEN):
-        raise HTTPException(status_code=401, detail="Invalid runtime gateway token")
+    # Both comparisons always run, so the time taken does not reveal which token matched.
+    is_command = bearer_matches(authorization, RUNTIME_TOKEN)
+    is_read = bearer_matches(authorization, RUNTIME_READ_TOKEN)
+    if is_command:
+        return "command"
+    if is_read:
+        return "read"
+    raise HTTPException(status_code=401, detail="Invalid runtime gateway token")
+
+
+def authorize(authorization: str | None, *, allow_read: bool = False) -> TokenScope:
+    """First statement of every authenticated endpoint: before locks, the journal and upstream calls.
+
+    The shared token (command scope) may use every endpoint; the read-only token only
+    endpoints that pass allow_read=True, others answer 403 (default deny).
+    """
+    scope = authenticate(authorization)
+    if scope == "read" and not allow_read:
+        raise HTTPException(status_code=403, detail="Read-only runtime gateway token cannot use this endpoint")
+    return scope
 
 def parse_upstream_json(response: httpx.Response, upstream: str) -> dict:
     try:
@@ -517,6 +542,10 @@ def command_journal_status() -> dict:
 def validate_runtime_configuration() -> None:
     if len(RUNTIME_TOKEN) < 32 or any(character.isspace() for character in RUNTIME_TOKEN):
         raise RuntimeError("RUNTIME_SHARED_TOKEN must contain at least 32 non-whitespace characters")
+    if RUNTIME_READ_TOKEN:
+        validate_secret("RUNTIME_GATEWAY_READ_TOKEN", RUNTIME_READ_TOKEN)
+        if RUNTIME_READ_TOKEN in (RUNTIME_TOKEN, PREVIEW_BROKER_TOKEN):
+            raise RuntimeError("RUNTIME_GATEWAY_READ_TOKEN must differ from every other runtime gateway credential")
     validate_service_url("LIVETALKING_BASE_URL", LIVE_TALKING_URL)
     validate_service_url("COSYVOICE_BASE_URL", COSYVOICE_URL)
     validate_integer_range("COSYVOICE_SAMPLE_RATE", COSYVOICE_SAMPLE_RATE, 8_000, 192_000)
@@ -1125,7 +1154,7 @@ async def healthz() -> JSONResponse:
 
 @app.get("/v1/observations/{session_id}")
 async def observation(session_id: str, authorization: str | None = Header(default=None)) -> dict:
-    authorize(authorization)
+    authorize(authorization, allow_read=True)
     if not SESSION_ID_PATTERN.fullmatch(session_id):
         raise HTTPException(status_code=400, detail="Invalid runtime session id")
     data = await livetalking_get("/api/admin/runtime-metrics")

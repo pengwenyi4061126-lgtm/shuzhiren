@@ -480,6 +480,27 @@ try {
   const message = "告警通知器的 ALERT_NOTIFIER_TARGETS 必须包含租户 UUID、HTTPS 目标、独立签名密钥和有效最低等级";
   if (allowPlaceholders) warnings.push(message); else errors.push(message);
 }
+claimPrivateToken(gateway.get("PREVIEW_BROKER_TOKEN"), "PREVIEW_BROKER_TOKEN");
+// M17 (Requirement 31.9): runtime-observer holds RUNTIME_GATEWAY_READ_TOKEN, which the Gateway accepts only on
+// GET /v1/observations/{session_id}. It runs after every claimPrivateToken() above so that reuse of any
+// registered token is found; messages name the owner, never the token value.
+function readOnlyGatewayToken() {
+  const name = "RUNTIME_GATEWAY_READ_TOKEN";
+  const label = `运行时 的 ${name}（Gateway 只读凭据）`;
+  required(runtime, "运行时", [name]);
+  const value = runtime.get(name);
+  if (gateway.has(name) && gateway.get(name) !== value) errors.push(`Gateway 的 ${name} 与运行时取值不同；Compose 读取两个 --env-file 时后者覆盖前者，只读凭据只应写在运行时 env 文件中`);
+  if (!value || (allowPlaceholders && isPlaceholder(value))) return;
+  if (value.length < 32 || /\s/.test(value)) {
+    errors.push(`${label}必须是至少 32 个字符且不含空白的私网密钥`);
+    return;
+  }
+  if ([control, runtime, gateway].some((values) => values.get("RUNTIME_SHARED_TOKEN") === value)) errors.push(`${label}不得与 RUNTIME_SHARED_TOKEN 相同`);
+  const owner = tokenOwners.get(value);
+  if (owner && owner !== "runtime-gateway") errors.push(`${label}不得与 ${owner} 的 token 相同`);
+  if (!owner) claimPrivateToken(value, "runtime-gateway-read");
+}
+readOnlyGatewayToken();
 equal(runtime, "运行时", "LIVE_MAX_CONCURRENT_AVATARS", "1");
 equal(runtime, "运行时", "LIVE_ALLOW_LLM_FREEFORM", "false");
 equal(runtime, "运行时", "LIVE_REQUIRE_HUMAN_HANDOFF_FOR_HIGH_RISK", "true");
