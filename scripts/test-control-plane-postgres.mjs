@@ -45,6 +45,11 @@ let notifierProcess;
 
 try {
   await client.connect();
+  // The seeding client above may be a superuser, and superusers bypass RLS.
+  // Production application accounts must not bypass RLS (DEPLOYMENT_RUNBOOK),
+  // so the console and runtime services under test connect as a login role
+  // that has ordinary DML privileges but no SUPERUSER or BYPASSRLS.
+  const appDatabaseUrl = await provisionApplicationRole();
   mock = await startMockServer();
   const consolePort = await availablePort();
   const issuer = `${mock.baseUrl}/issuer`;
@@ -113,7 +118,7 @@ try {
     cwd: consoleRoot,
     env: {
       ...process.env,
-      DATABASE_URL: databaseUrl,
+      DATABASE_URL: appDatabaseUrl,
       CONTROL_PLANE_DEMO_MODE: "false",
       RELEASE_REVISION: "abc1234",
       RUNTIME_GATEWAY_URL: mock.baseUrl,
@@ -690,7 +695,7 @@ try {
     cwd: root,
     env: {
       ...process.env,
-      DATABASE_URL: databaseUrl,
+      DATABASE_URL: appDatabaseUrl,
       CONTROL_PLANE_URL: `http://127.0.0.1:${consolePort}`,
       CHANNEL_ADAPTER_PORT: String(adapterPort),
       CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE: "1",
@@ -797,7 +802,7 @@ try {
     cwd: root,
     env: {
       ...process.env,
-      DATABASE_URL: databaseUrl,
+      DATABASE_URL: appDatabaseUrl,
       RUNTIME_GATEWAY_URL: mock.baseUrl,
       RUNTIME_SHARED_TOKEN: gatewayToken,
       CHANNEL_ADAPTER_URL: `http://127.0.0.1:${adapterPort}`,
@@ -896,7 +901,7 @@ try {
     cwd: root,
     env: {
       ...process.env,
-      DATABASE_URL: databaseUrl,
+      DATABASE_URL: appDatabaseUrl,
       ALERT_NOTIFIER_PORT: String(notifierPort),
       ALERT_NOTIFIER_POLL_MS: "20",
       ALERT_NOTIFIER_ALLOW_INSECURE_HTTP: "true",
@@ -1097,6 +1102,25 @@ async function seedRunScopeArtifacts(recoverRunId, staleRunId) {
   const recoverOutbox = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id", [tenantId, recoverRunId, outboxPayload(recoverRunId)]);
   const staleOutbox = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id", [tenantId, staleRunId, outboxPayload(staleRunId)]);
   return { recoverAlertId: recoverAlert.rows[0].id, staleAlertId: staleAlert.rows[0].id, recoverIncidentId: recoverIncident.rows[0].id, staleIncidentId: staleIncident.rows[0].id, recoverRecordingId: recoverRecording.rows[0].id, staleRecordingId: staleRecording.rows[0].id, recoverOutboxEventId: recoverOutbox.rows[0].id, staleOutboxEventId: staleOutbox.rows[0].id };
+}
+
+async function provisionApplicationRole() {
+  const role = "shuzhiren_integration_app";
+  const password = randomUUID();
+  if (!/^[0-9a-f-]{36}$/.test(password)) throw new Error("integration application role password must be a UUID");
+  await client.query(`do $$ begin if not exists (select 1 from pg_roles where rolname = '${role}') then create role ${role} login nosuperuser nobypassrls noinherit nocreatedb nocreaterole; end if; end $$;`);
+  await client.query(`alter role ${role} with login nosuperuser nobypassrls noinherit nocreatedb nocreaterole password '${password}'`);
+  await client.query(`grant usage on schema public to ${role}`);
+  await client.query(`grant select, insert, update, delete on all tables in schema public to ${role}`);
+  await client.query(`grant usage, select, update on all sequences in schema public to ${role}`);
+  // runtime_worker_actor is revoked from PUBLIC; the spawned runtime worker records its service actor through it.
+  await client.query(`grant execute on function runtime_worker_actor(uuid, text) to ${role}`);
+  const attributes = await client.query("select rolsuper, rolbypassrls from pg_roles where rolname = $1", [role]);
+  assert.deepEqual(attributes.rows, [{ rolsuper: false, rolbypassrls: false }], "services under test must connect without RLS bypass");
+  const url = new URL(databaseUrl);
+  url.username = role;
+  url.password = password;
+  return url.toString();
 }
 
 async function seedMembership(targetTenantId, subject, displayName, role) {
