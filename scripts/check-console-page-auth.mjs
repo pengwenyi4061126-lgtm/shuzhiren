@@ -102,3 +102,70 @@ const instrumentation = await readFile(new URL("../apps/console/instrumentation.
 if (!instrumentation.includes("enforceDevIdentityStartupGuard()")) throw new Error("the control plane must refuse to start with the development identity switch outside loopback development");
 
 console.log("PASS  development header identity requires CONTROL_PLANE_DEV_HEADER_IDENTITY=true on a loopback, non-production server");
+
+// JWT hardening: every token goes to both the proxy and the route-side
+// requestContextFrom. tenant_id is never a UUID here, so a token that passes
+// verification stops at 403 invalid_tenant_subject before any database access.
+const { SignJWT, exportJWK, generateKeyPair } = await import("jose");
+const http = await import("node:http");
+const rsa = await generateKeyPair("RS256");
+const ec = await generateKeyPair("ES256");
+const jwks = { keys: [{ ...(await exportJWK(rsa.publicKey)), kid: "rs", alg: "RS256", use: "sig" }, { ...(await exportJWK(ec.publicKey)), kid: "es", alg: "ES256", use: "sig" }] };
+const jwksServer = http.createServer((request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(jwks)); });
+await new Promise((resolve) => jwksServer.listen(0, "127.0.0.1", resolve));
+const issuer = "https://issuer.jwt-hardening.test";
+const audience = "shuzhiren-jwt-hardening";
+const oidcEnv = { OIDC_ISSUER_URL: issuer, OIDC_AUDIENCE: audience, OIDC_JWKS_URL: `http://127.0.0.1:${jwksServer.address().port}/jwks` };
+const now = Math.floor(Date.now() / 1000);
+async function operatorToken({ alg = "RS256", typ, claims = {} } = {}) {
+  const header = { alg, kid: alg === "RS256" ? "rs" : "es", ...(typ === undefined ? {} : { typ }) };
+  return new SignJWT({ tenant_id: "not-a-uuid", exp: now + 300, ...claims }).setProtectedHeader(header).setSubject("jwt-hardening").setIssuer(issuer).setAudience(audience).setIssuedAt(now).sign(alg === "RS256" ? rsa.privateKey : ec.privateKey);
+}
+async function outcomes(token) {
+  const proxyResponse = await runProxy(new NextRequest("http://console.internal/api/v1/alerts", { headers: { authorization: `Bearer ${token}` } }));
+  const proxyBody = await proxyResponse.json().catch(() => null);
+  let route;
+  try {
+    await authContext.requestContextFrom(new Request("http://console.internal/api/v1/alerts", { headers: { authorization: `Bearer ${token}` } }));
+    route = "accepted";
+  } catch (error) {
+    route = error instanceof Response ? `${error.status}` : `error: ${error.message}`;
+  }
+  return { proxy: `${proxyResponse.status} ${proxyBody?.error ?? ""}`.trim(), proxyContinues: proxyResponse.headers.get("x-middleware-next") !== null, route };
+}
+const oidcModule = await import("../apps/console/lib/control-plane/oidc.ts");
+try {
+  const rejected = { proxy: "401 bearer_token_verification_failed", proxyContinues: false, route: "401" };
+  const verifiedButNoTenant = { proxy: "403 invalid_tenant_subject", proxyContinues: false, route: "403" };
+  await withEnv({ NODE_ENV: "production" }, async () => {
+    Object.assign(process.env, oidcEnv, { OIDC_ALLOWED_ALGORITHMS: "RS256" });
+    assert.deepEqual(await outcomes(await operatorToken()), verifiedButNoTenant, "a well-formed RS256 token must pass verification");
+    for (const [label, token] of [
+      ["without exp", await new SignJWT({ tenant_id: "not-a-uuid" }).setProtectedHeader({ alg: "RS256", kid: "rs" }).setSubject("jwt-hardening").setIssuer(issuer).setAudience(audience).sign(rsa.privateKey)],
+      ["with a string exp", await operatorToken({ claims: { exp: "9999999999" } })],
+      ["expiring now", await operatorToken({ claims: { exp: Math.floor(Date.now() / 1000) } })],
+      ["expired a minute ago", await operatorToken({ claims: { exp: now - 60 } })],
+      ["signed with ES256 outside the allowlist", await operatorToken({ alg: "ES256" })]
+    ]) assert.deepEqual(await outcomes(token), rejected, `a token ${label} must be rejected`);
+
+    process.env.OIDC_EXPECTED_TYP = "at+jwt";
+    for (const [label, typ] of [["without typ", undefined], ["with typ JWT", "JWT"]]) assert.deepEqual(await outcomes(await operatorToken({ typ })), rejected, `a token ${label} must be rejected when at+jwt is expected`);
+    for (const typ of ["application/at+jwt", "AT+JWT", "at+jwt"]) assert.deepEqual(await outcomes(await operatorToken({ typ })), verifiedButNoTenant, `typ ${typ} must satisfy at+jwt`);
+    delete process.env.OIDC_EXPECTED_TYP;
+
+    for (const value of ["", " , ", "HS256", "RS256,none"]) {
+      process.env.OIDC_ALLOWED_ALGORITHMS = value;
+      assert.deepEqual(await outcomes(await operatorToken()), { proxy: "503 oidc_algorithms_not_configured", proxyContinues: false, route: "503" }, `OIDC_ALLOWED_ALGORITHMS=${JSON.stringify(value)} must leave verification unconfigured`);
+    }
+    delete process.env.OIDC_ALLOWED_ALGORITHMS;
+    assert.deepEqual(oidcModule.oidcVerificationConfig(process.env).algorithms, [...oidcModule.supportedOidcAlgorithms], "an unset allowlist must default to the asymmetric algorithms");
+    assert.deepEqual(await outcomes(await operatorToken({ alg: "ES256" })), verifiedButNoTenant, "the default allowlist must accept asymmetric algorithms");
+    for (const name of ["OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL"]) delete process.env[name];
+    assert.deepEqual(await outcomes(await operatorToken()), { proxy: "503 oidc_configuration_missing", proxyContinues: false, route: "503" }, "missing OIDC configuration must answer 503 rather than 500");
+  });
+} finally {
+  for (const name of ["OIDC_ISSUER_URL", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OIDC_ALLOWED_ALGORITHMS", "OIDC_EXPECTED_TYP"]) delete process.env[name];
+  await new Promise((resolve) => jwksServer.close(resolve));
+}
+
+console.log("PASS  operator JWTs require an allowlisted asymmetric alg, a numeric unexpired exp, and the configured typ in the proxy and route handlers");

@@ -1,5 +1,6 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet } from "jose";
 import { assertDevIdentityPermitted, devHeaderIdentityEnabled } from "@/lib/control-plane/dev-identity";
+import { oidcVerificationConfig, verifyOperatorToken } from "@/lib/control-plane/oidc";
 import { withTenantTransaction } from "@/lib/database";
 
 export type ActorRole = "admin" | "operator" | "reviewer" | "analyst";
@@ -49,14 +50,12 @@ function devHeaderContext(request: Request): RequestContext {
 async function contextFromBearerToken(request: Request): Promise<RequestContext> {
   const token = accessTokenFrom(request);
   if (!token) throw new Response("Missing bearer token", { status: 401 });
-  const issuer = process.env.OIDC_ISSUER_URL;
-  const audience = process.env.OIDC_AUDIENCE;
-  const jwksUrl = process.env.OIDC_JWKS_URL;
-  if (!issuer || !audience || !jwksUrl) throw new Error("OIDC_ISSUER_URL, OIDC_AUDIENCE, and OIDC_JWKS_URL are required in production");
+  const oidc = oidcVerificationConfig();
+  if (!oidc.ok) throw new Response("OIDC token verification is not configured", { status: 503, statusText: oidc.code });
 
   try {
-    const keys = jwksFor(jwksUrl);
-    const { payload } = await jwtVerify(token, keys, { issuer, audience });
+    const keys = jwksFor(oidc.jwksUrl);
+    const payload = await verifyOperatorToken(token, keys, oidc);
     const tenantId = stringClaim(payload, "tenant_id");
     const actorId = stringClaim(payload, "sub");
     if (!isUuid(tenantId) || !actorId) throw new Response("Token does not contain a valid tenant subject", { status: 403 });

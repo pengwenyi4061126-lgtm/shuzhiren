@@ -1,6 +1,7 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet } from "jose";
 import { NextResponse, type NextRequest } from "next/server";
 import { devHeaderIdentityEnabled } from "@/lib/control-plane/dev-identity";
+import { oidcVerificationConfig, verifyOperatorToken } from "@/lib/control-plane/oidc";
 
 const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
@@ -11,13 +12,12 @@ export async function proxy(request: NextRequest) {
   const token = accessTokenFrom(request);
   if (!token) return error("missing_bearer_token", 401);
   if (usesCookieAuth(request) && isUnsafeMethod(request.method) && !hasTrustedOrigin(request)) return error("csrf_origin_rejected", 403);
-  const issuer = process.env.OIDC_ISSUER_URL;
-  const audience = process.env.OIDC_AUDIENCE;
-  const jwksUrl = process.env.OIDC_JWKS_URL;
-  if (!issuer || !audience || !jwksUrl) return error("oidc_configuration_missing", 503);
+  const oidc = oidcVerificationConfig();
+  if (!oidc.ok) return error(oidc.code, 503);
+  const jwksUrl = oidc.jwksUrl;
   try {
     const keys = jwksFor(jwksUrl);
-    const { payload } = await jwtVerify(token, keys, { issuer, audience });
+    const payload = await verifyOperatorToken(token, keys, oidc);
     const tenantId = stringClaim(payload, "tenant_id");
     const subject = stringClaim(payload, "sub");
     if (!isUuid(tenantId) || !subject) return error("invalid_tenant_subject", 403);
