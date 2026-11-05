@@ -2,6 +2,7 @@
 // list. Every assertion is about values returned or errors thrown by the code
 // under test; inputs come from scripts/fixtures/ci-gates/ or inline text.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -11,8 +12,19 @@ import { InvalidInterpolation, interpolate, MissingRequiredVariable, parseEnvFil
 import { CHECK_LABELS, covers, describeCommand, expandGlob, LOCAL_CHECKS, localChecks, validateLocalChecks } from "./verify-local-checks.mjs";
 import { CI_ONLY_STEPS, GATEWAY_NOT_ENABLED, notRunCiSteps, UNREGISTERED_REASON, validateCiOnlySteps } from "./ci-required-steps.mjs";
 
-const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "ci-gates", "lib");
+const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(scriptsDir, "..");
+const fixtures = path.join(scriptsDir, "fixtures", "ci-gates", "lib");
 const fixture = (...parts) => path.join(fixtures, ...parts);
+const coverageFixture = (...parts) => path.join(scriptsDir, "fixtures", "ci-gates", "coverage", ...parts);
+
+/** Runs the CI_Coverage_Gate in a child process and collects its UNCOVERED lines. */
+function runCoverageGate(args = []) {
+  const result = spawnSync(process.execPath, [path.join(scriptsDir, "check-ci-coverage.mjs"), ...args], { cwd: repoRoot, encoding: "utf8" });
+  if (result.error) throw result.error;
+  const output = `${result.stdout}${result.stderr}`;
+  return { status: result.status, output, uncovered: [...output.matchAll(/^UNCOVERED {2}(.+)$/gm)].map((match) => match[1]) };
+}
 
 test("tokenize splits words like a POSIX shell", () => {
   assert.deepEqual(tokenize("npm run deploy:check -- --allow-placeholders"), ["npm", "run", "deploy:check", "--", "--allow-placeholders"]);
@@ -290,4 +302,54 @@ test("notRunCiSteps lists uncovered CI verification steps with their reasons", (
     { job: "other", index: 0, command: "bash -n scripts/x.sh", reason: UNREGISTERED_REASON }
   ]);
   assert.deepEqual(notRunCiSteps({ workflow, executedChecks: [...executed, ...skipped], ciOnlySteps }).map((step) => step.index), [3, 5, 0]);
+});
+
+test("CI_ONLY_STEPS registers exactly the ci.yml verification steps that no local check covers", () => {
+  const workflow = loadWorkflow(path.join(repoRoot, ".github", "workflows", "ci.yml"));
+  const scripts = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")).scripts;
+  const notRun = notRunCiSteps({ workflow, executedChecks: LOCAL_CHECKS, scripts, root: repoRoot });
+  assert.deepEqual(notRun.filter((step) => step.reason === UNREGISTERED_REASON), []);
+  const key = (step) => `${step.job}  ${step.command}`;
+  assert.deepEqual(notRun.map(key).sort(), CI_ONLY_STEPS.map(key).sort());
+});
+
+test("coverage gate passes on the repository ci.yml and check list", () => {
+  const result = runCoverageGate();
+  assert.equal(result.status, 0, result.output);
+  assert.deepEqual(result.uncovered, []);
+  assert.match(result.output, new RegExp(`^PASS {2}CI coverage: ${LOCAL_CHECKS.length} Local_Verification checks covered by \\d+ CI_Pipeline steps$`, "m"));
+});
+
+test("coverage gate applies rules (a)-(e) of Requirement 2.2", () => {
+  const result = runCoverageGate(["--workflow", coverageFixture("rules.yml"), "--checks", coverageFixture("rules-checks.mjs")]);
+  assert.equal(result.status, 1, result.output);
+  assert.deepEqual(result.uncovered, ["a-uncovered", "b-uncovered", "c-uncovered", "d-uncovered", "e-uncovered"]);
+});
+
+test("coverage gate reports a check that is added only to the check list", () => {
+  const result = runCoverageGate(["--checks", coverageFixture("extra-check.mjs")]);
+  assert.equal(result.status, 1, result.output);
+  assert.deepEqual(result.uncovered, ["x:new"]);
+});
+
+test("coverage gate finds exactly the three dc2916e gaps", () => {
+  const result = runCoverageGate(["--workflow", coverageFixture("dc2916e", "ci.yml"), "--checks", coverageFixture("dc2916e", "verify-local-checks.mjs")]);
+  assert.equal(result.status, 1, result.output);
+  assert.deepEqual(result.uncovered, ["membership:scopes:check", "governance:tenant-scope:check", "py_compile"]);
+});
+
+test("coverage gate exits 2 and names the source it cannot read or parse", () => {
+  const cases = [
+    [["--checks", coverageFixture("empty-checks.mjs")], "Local_Verification"],
+    [["--checks", coverageFixture("does-not-exist.mjs")], "Local_Verification"],
+    [["--workflow", coverageFixture("broken.yml")], "CI_Pipeline"],
+    [["--workflow", coverageFixture("no-run-steps.yml")], "CI_Pipeline"],
+    [["--workflow", coverageFixture("does-not-exist.yml")], "CI_Pipeline"]
+  ];
+  for (const [args, source] of cases) {
+    const result = runCoverageGate(args);
+    assert.equal(result.status, 2, `${args.join(" ")}\n${result.output}`);
+    assert.match(result.output, new RegExp(`^ERROR source=${source} `, "m"), args.join(" "));
+    assert.deepEqual(result.uncovered, [], args.join(" "));
+  }
 });

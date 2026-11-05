@@ -1,0 +1,24 @@
+# One CI command per Requirement 2.2 coverage rule. ./rules-checks.mjs pairs
+# each rule with a check this file covers and a check it does not.
+name: coverage-rules
+on: push
+jobs:
+  sample:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: npm ci
+      # (a) same npm script with the same args
+      - run: npm run deploy:check -- --allow-placeholders
+      - run: npm run lint -- --fix
+      # (b) the npm script's package.json command
+      - run: bash scripts/test-postgres-restore-drill.sh
+      - run: node scripts/check-release-workflow.mjs --strict
+      # (c) node --check on the same entry
+      - run: node --check apps/runtime-worker/index.mjs
+      - run: node --check apps/runtime-observer/targets.mjs
+      # (d) the same Python test file, directly or through an npm script
+      - run: npm run runtime:gateway:config:test
+      - run: python3 -m pytest scripts/test-runtime-gateway-errors.py
+      # (e) py_compile over a superset of the files
+      - run: python3 -m py_compile runtime/gateway/*.py scripts/test-runtime-gateway-config.py
