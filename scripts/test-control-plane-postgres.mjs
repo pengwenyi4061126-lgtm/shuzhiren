@@ -45,6 +45,7 @@ let notifierProcess;
 
 try {
   await client.connect();
+  await assertConcurrentLastAdminRemovalRejected();
   // The seeding client above may be a superuser, and superusers bypass RLS.
   // Production application accounts must not bypass RLS (DEPLOYMENT_RUNBOOK),
   // so the console and runtime services under test connect as a login role
@@ -1266,3 +1267,62 @@ async function requestBody(request) { return JSON.parse(await requestRawBody(req
 async function availablePort() { const server = http.createServer(); await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); await new Promise((resolve) => server.close(resolve)); if (!address || typeof address === "string") throw new Error("could not reserve a TCP port"); return address.port; }
 async function waitFor(predicate, timeoutMs, label) { const deadline = Date.now() + timeoutMs; let lastError; while (Date.now() < deadline) { try { if (await predicate()) return; } catch (error) { lastError = error; } await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error(`${label} timed out${lastError instanceof Error ? `: ${lastError.message}` : ""}`); }
 async function stop(child) { if (!child || child.exitCode !== null) return; child.kill("SIGTERM"); await Promise.race([new Promise((resolve) => child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 5_000))]); if (child.exitCode === null) child.kill("SIGKILL"); }
+
+// M14: the last-admin trigger of 054 checked "another active admin exists" with a plain read, so two concurrent
+// transactions that each removed a different admin both passed and left the tenant without an admin (076).
+async function assertConcurrentLastAdminRemovalRejected() {
+  const raceTenantId = randomUUID();
+  await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Last admin race')", [raceTenantId, `last-admin-race-${raceTenantId}`]);
+  const admins = [];
+  for (const name of ["a", "b", "c"]) {
+    const user = await client.query("insert into users (external_subject, display_name) values ($1, $2) returning id", [`last-admin-race-${name}-${raceTenantId}`, `Last admin race ${name}`]);
+    admins.push((await client.query("insert into memberships (tenant_id, user_id, role) values ($1, $2, 'admin') returning id", [raceTenantId, user.rows[0].id])).rows[0].id);
+  }
+  const inTenant = async (connection, sql, params) => {
+    await connection.query("begin");
+    await connection.query("select set_config('app.tenant_id', $1, true)", [raceTenantId]);
+    try { const result = await connection.query(sql, params); await connection.query("commit"); return result; } catch (error) { await connection.query("rollback"); throw error; }
+  };
+  const restore = () => inTenant(client, "update memberships set role = 'admin', status = 'active' where tenant_id = $1", [raceTenantId]);
+  const activeAdmins = async () => Number((await inTenant(client, "select count(*) from memberships where tenant_id = $1 and role = 'admin' and status = 'active'", [raceTenantId])).rows[0].count);
+
+  // Without concurrency, removing one of several admins still succeeds and persists.
+  await inTenant(client, "update memberships set role = 'operator' where id = $1", [admins[2]]);
+  assert.equal(await activeAdmins(), 2, "demoting one of three admins must persist");
+
+  const first = new Client({ connectionString: databaseUrl });
+  const second = new Client({ connectionString: databaseUrl });
+  await first.connect();
+  await second.connect();
+  try {
+    for (const isolation of ["read committed", "repeatable read", "serializable"]) {
+      for (const change of ["role = 'operator'", "status = 'suspended'"]) {
+        await inTenant(client, "update memberships set role = 'admin', status = 'active' where id = any($1::uuid[])", [admins.slice(0, 2)]);
+        for (const connection of [first, second]) {
+          await connection.query(`begin isolation level ${isolation}`);
+          await connection.query("select set_config('app.tenant_id', $1, true)", [raceTenantId]);
+          await connection.query("select count(*) from memberships");
+        }
+        await first.query(`update memberships set ${change} where id = $1`, [admins[0]]);
+        const secondPid = (await second.query("select pg_backend_pid() as pid")).rows[0].pid;
+        const secondUpdate = second.query(`update memberships set ${change} where id = $1`, [admins[1]]).then(() => null, (error) => error);
+        // Give the second removal time to reach the guard (it waits there once the fix is in place).
+        const waitDeadline = Date.now() + 2_000;
+        while (Date.now() < waitDeadline && !(await client.query("select wait_event_type = 'Lock' as waiting from pg_stat_activity where pid = $1", [secondPid])).rows[0]?.waiting) await new Promise((resolve) => setTimeout(resolve, 25));
+        await first.query("commit");
+        const secondError = await secondUpdate;
+        let secondCommitError = null;
+        if (secondError) await second.query("rollback");
+        else await second.query("commit").catch(async (error) => { secondCommitError = error; await second.query("rollback").catch(() => undefined); });
+        const failure = secondError ?? secondCommitError;
+        assert.ok(failure, `${isolation}, ${change}: one of two concurrent removals of the last two admins must fail`);
+        assert.ok(failure.code === "40001" || /cannot remove the last active tenant admin/.test(failure.message), `${isolation}, ${change}: unexpected failure ${failure.code} ${failure.message}`);
+        assert.equal(await activeAdmins(), 1, `${isolation}, ${change}: the tenant must keep an active admin`);
+      }
+    }
+  } finally {
+    for (const connection of [first, second]) { await connection.query("rollback").catch(() => undefined); await connection.end().catch(() => undefined); }
+    await restore().catch(() => undefined);
+  }
+  console.log("PASS  concurrent removals of a tenant's last two admins leave one active admin under every isolation level (M14)");
+}

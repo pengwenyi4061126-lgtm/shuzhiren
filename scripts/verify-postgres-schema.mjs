@@ -34,7 +34,9 @@ const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain",
 requiredTriggers.push("audit_chain_heads_guard", "audit_chain_heads_no_truncate");
 requiredTriggers.push("product_versions_approved_insert_evidence", "show_revisions_approved_insert_evidence", "media_assets_approved_insert_evidence", "model_releases_approved_insert_evidence", "policy_profiles_approved_insert_evidence");
 // Functions that must run as their owner so callers need no write privilege on the tables they maintain.
-const requiredSecurityDefinerFunctions = ["seal_audit_event"];
+const requiredSecurityDefinerFunctions = ["seal_audit_event", "protect_last_active_tenant_admin"];
+requiredTables.push("membership_admin_guards");
+requiredPolicies.push("tenant_isolation_membership_admin_guards");
 const requiredConstraints = new Map([["schema_migrations_checksum_format", true], ["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true], ["show_revision_segments_runtime_script_length", true]]);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
