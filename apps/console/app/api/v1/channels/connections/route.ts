@@ -1,5 +1,4 @@
 import { createChannelConnection, isChannelProvider, listChannelConnections, type CreateChannelConnectionInput } from "@/lib/channels";
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 
@@ -25,7 +24,6 @@ export async function POST(request: Request) {
     catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
     if (!isConnectionInput(body)) return Response.json({ error: "invalid_channel_connection" }, { status: 400 });
     const connection = await createChannelConnection(context, body);
-    await recordAuditEvent(context, { type: "channel_connection.created", resource: "channel_connection", resourceId: connection.id, detail: { provider: connection.provider, protocol: connection.outputProtocol } });
     return Response.json({ data: connection }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText }, { status: error.status });

@@ -1021,6 +1021,28 @@ try {
   assert.equal(audit.rows.length, 1);
   const fallback = await client.query("select state, payload #>> '{command,type}' as action from outbox_events where aggregate_id = $1 order by created_at desc limit 1", [staleRunId]);
   assert.deepEqual(fallback.rows[0], { state: "delivered", action: "switch_to_fallback" });
+  // N2: a channel connection and its channel_connection.created audit event commit in one transaction.
+  const createdChannelName = `IT channel ${randomUUID()}`;
+  const createdChannelResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ name: `  ${createdChannelName}  `, provider: "generic-rtmp", outputProtocol: "rtmp", secretRef: "kms://shuzhiren/integration/channel/created" }) });
+  assert.equal(createdChannelResponse.status, 201, "a tenant-wide operator should create a channel connection");
+  const createdChannel = (await createdChannelResponse.json()).data;
+  assert.equal(createdChannel.status, "disabled", "a new channel connection must start disabled");
+  assert.equal(createdChannel.name, createdChannelName, "a channel connection name must be stored without surrounding whitespace");
+  const createdChannelAudit = await client.query("select u.external_subject from audit_events a join users u on u.id = a.actor_id where a.event_type = 'channel_connection.created' and a.resource_key = $1", [createdChannel.id]);
+  assert.deepEqual(createdChannelAudit.rows, [{ external_subject: "integration-second-operator" }], "channel connection creation must be audited exactly once with the requesting operator");
+  const duplicateChannelResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ name: createdChannelName, provider: "generic-rtmp", outputProtocol: "rtmp", secretRef: "kms://shuzhiren/integration/channel/duplicate" }) });
+  assert.equal(duplicateChannelResponse.status, 409, "a duplicate channel connection name must be rejected");
+  const rolledBackChannelName = `IT rolled back channel ${randomUUID()}`;
+  await client.query("create function integration_reject_channel_created_audit() returns trigger language plpgsql as $$ begin if new.event_type = 'channel_connection.created' then raise exception 'integration audit write failure'; end if; return new; end $$");
+  await client.query("create trigger integration_reject_channel_created_audit before insert on audit_events for each row execute function integration_reject_channel_created_audit()");
+  try {
+    const failedAuditChannel = await fetch(`http://127.0.0.1:${consolePort}/api/v1/channels/connections`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ name: rolledBackChannelName, provider: "generic-rtmp", outputProtocol: "rtmp", secretRef: "kms://shuzhiren/integration/channel/rolled-back" }) });
+    assert.ok(failedAuditChannel.status >= 500, "a failed channel_connection.created audit write must fail the request");
+  } finally {
+    await client.query("drop trigger integration_reject_channel_created_audit on audit_events");
+    await client.query("drop function integration_reject_channel_created_audit()");
+  }
+  assert.equal((await client.query("select count(*)::int as count from channel_connections where tenant_id = $1 and name = $2", [tenantId, rolledBackChannelName])).rows[0].count, 0, "a failed audit write must roll back the channel connection");
   console.log("PASS  PostgreSQL control plane isolates tenant reads and service credentials, rejects stale product facts, evaluates sampling quality SLOs, revokes frozen model releases and media rights fail-closed, ingests idempotent reviewable PIM facts, enforces entitlements, meters LIVE and DEGRADED minutes, gates recovery, records idempotent commerce facts, durably notifies, tracks incidents, acknowledges runtime alerts, and degrades stale LIVE telemetry");
 } finally {
   await stop(notifierProcess);

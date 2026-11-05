@@ -91,19 +91,25 @@ export async function createChannelConnection(context: RequestContext, input: Cr
   const adapter = getChannelAdapter(input.provider);
   if (!adapter.supportsOutput(input.outputProtocol)) throw new Response(`Adapter ${input.provider} does not support ${input.outputProtocol.toUpperCase()}`, { status: 409 });
   if (!isManagedSecretRef(input.secretRef)) throw new Response("Channel secret reference must use kms:// or secret://", { status: 400 });
+  const name = input.name.trim();
   if (!databasePool()) {
-    if (demoConnections(context).some((connection) => connection.name === input.name)) throw new Response("Channel connection name already exists", { status: 409 });
-    const connection: ChannelConnection = { id: `channel_${crypto.randomUUID()}`, tenantId: context.tenantId, status: "disabled", capability: adapter.capability, ...input };
+    if (demoConnections(context).some((connection) => connection.name === name)) throw new Response("Channel connection name already exists", { status: 409 });
+    const connection: ChannelConnection = { id: `channel_${crypto.randomUUID()}`, tenantId: context.tenantId, status: "disabled", capability: adapter.capability, ...input, name };
     channelStore().connections.set(connection.id, connection);
+    await recordAuditEvent(context, channelConnectionCreatedAudit(connection));
     return connection;
   }
   try {
+    // The connection and its channel_connection.created audit event commit
+    // together: a failed audit write rolls back the connection.
     return await withTenantTransaction(context.tenantId, async (client) => {
       const result = await client.query<PersistentConnectionRow>(
         "insert into channel_connections (tenant_id, name, provider, status, output_protocol, secret_ref, capabilities) values ($1, $2, $3, 'disabled', $4, $5, $6::jsonb) returning id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities, last_verified_at, verification_evidence_ref, verified_by",
-        [context.tenantId, input.name, input.provider, input.outputProtocol, input.secretRef, JSON.stringify(adapter.capability)]
+        [context.tenantId, name, input.provider, input.outputProtocol, input.secretRef, JSON.stringify(adapter.capability)]
       );
-      return persistentConnection(result.rows[0]);
+      const connection = persistentConnection(result.rows[0]);
+      await recordAuditEventInTransaction(client, context, channelConnectionCreatedAudit(connection));
+      return connection;
     });
   } catch (error) {
     if (databaseErrorCode(error) === "23505") throw new Response("Channel connection name already exists", { status: 409 });
@@ -173,6 +179,10 @@ function getChannelAdapter(provider: ChannelProvider) {
 }
 
 function isManagedSecretRef(value: string) { return /^(kms|secret):\/\/[A-Za-z0-9._/-]+$/.test(value); }
+
+function channelConnectionCreatedAudit(connection: ChannelConnection) {
+  return { type: "channel_connection.created", resource: "channel_connection", resourceId: connection.id, detail: { provider: connection.provider, protocol: connection.outputProtocol } };
+}
 
 export function isChannelCapability(value: unknown): value is ChannelCapability {
   if (!value || typeof value !== "object") return false;
