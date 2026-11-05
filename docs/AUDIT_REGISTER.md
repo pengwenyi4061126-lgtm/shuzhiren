@@ -381,13 +381,16 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
 修复:
   提交: 333f685994f3304862160511c9cd2bb8f71ddc2c
   回归测试: ["python3 scripts/test-runtime-gateway-concurrency.py", "npm run control-plane:integration"]
+  修复后通过: { run id: "42040219509" }
 说明: >-
   主修复提交 333f685：Command_Journal 改为 reserved、completed、failed_definite、uncertain 四个状态并由 SQLite 触发器约束，旧日志在一个事务中迁移，
   遗留的 reserved 变为 uncertain（legacy_reserved）；结果不确定的命令对重试答 409 command_outcome_uncertain，可经 GET /v1/ops/uncertain-commands 与
   POST /v1/ops/uncertain-commands/{id}/resolution 列出与处置。其余提交：fcacdbc（先校验请求再预留日志 id）、3e1858b（迁移 080，
   outbox_events.outcome_uncertain_at）、94b0329（worker 遇到 command_outcome_uncertain 不重试并开告警）、a3b5c25（worker 对 PostgreSQL 的测试）、
   4066902（failed_definite 的同载荷重试回放已记录的失败）。fcacdbc 的改动在 #499（run 42007377400）中由 python3 scripts/test-runtime-gateway-concurrency.py
-  执行并为 success，但它只是 H7 的一部分。缺修复前失败与修复后通过：修复提交只在本地 master 上，尚未推送，没有 CI 运行；提交说明没有记录本机运行回归测试的命令与结果，所以只写提交与回归测试，状态保持已确认（Requirement 7.13）。
+  执行并为 success，但它只是 H7 的一部分。修复后通过：两项回归测试在含全部 H7 提交的 CI 运行（#502，run 42040219509，提交 fd9179d，V-20261105-20）中
+  实际执行并为 success（python-gateway 第 10 步、postgres-integration 第 12 步）。缺修复前失败：CI 中没有该回归测试在不含修复的代码上失败的运行，
+  提交说明也没有记录在父提交上运行它的命令与结果，所以只写已有的部分，状态保持已确认（Requirement 7.13）。
 ```
 
 ## 中（审计报告 §4）
@@ -1848,9 +1851,13 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
 修复:
   提交: 211f3798e6397c73db0c3a0e528a981aa3e20b63
   回归测试: ["npm run runtime:images:licenses:test"]
+  修复后通过: { run id: "42040219509" }
 说明: >-
   主修复提交 211f379：标注被修改的 LiveTalking 文件，在镜像中附带修改声明，并检查镜像中的许可证文件。其余提交 0493135 增加第三方声明文档。
-  模型权重许可证的审查与 edge-tts 服务条款的评估是人工事项，不由测试证明。缺修复前失败与修复后通过：修复提交只在本地 master 上，尚未推送，没有 CI 运行；提交说明没有记录本机运行回归测试的命令与结果，所以只写提交与回归测试，状态保持已确认（Requirement 7.13）。
+  模型权重许可证的审查与 edge-tts 服务条款的评估是人工事项，不由测试证明。修复后通过：runtime:images:licenses:test 在含修复的 CI 运行（#502，
+  run 42040219509，提交 fd9179d，V-20261105-20）中实际执行并为 success（node-unit 第 8 步）；同一运行中 docker-build 第 15、18 步对 LiveTalking 与
+  CosyVoice 镜像的许可证检查也为 success。缺修复前失败：CI 中没有该回归测试在不含修复的代码上失败的运行，提交说明也没有记录在父提交 2109ab8 上运行它的
+  命令与结果，所以只写已有的部分，状态保持已确认（Requirement 7.13）。
 ```
 
 ## 新缺陷（本规格执行期间发现）
@@ -2042,12 +2049,15 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
 修复:
   提交: ac33f61228207d3a6927635d545622a89d04c2d4
   回归测试: ["npm run control-plane:integration", "npm run media:evidence:check", "npm run recording:evidence:check"]
+  修复后通过: { run id: "42040219509" }
 说明: >-
   commands 路由第 22 行的 issueCommand 在自己的事务中写入命令与 outbox 事件并提交；第 24、25 行再分别调用
   recordAuditEvent 写 live_command.accepted 与 media_command.enqueued，各自是独立的事务。审计写入失败时命令已经入队，
   接口却返回 500，审计链中也缺少这两条记录。第 5 部分发现，第 6 部分未处理；本计划不包含 N5 的修复任务。
   用户 2026-11-05 决定在本规格内修复 N5。核实为代码阅读（a3b5c25，即修复提交 ac33f61 的父提交）。ac33f61 让 issueCommand 在插入命令与 outbox 事件的
-  事务中写两条审计事件，并以同样方式改正其余控制台写路由的提交后审计；集成测试断言审计插入失败时不留下命令、outbox 事件与审计事件。缺修复前失败与修复后通过：修复提交只在本地 master 上，尚未推送，没有 CI 运行；提交说明没有记录本机运行回归测试的命令与结果，所以只写提交与回归测试，状态保持已确认（Requirement 7.13）。
+  事务中写两条审计事件，并以同样方式改正其余控制台写路由的提交后审计；集成测试断言审计插入失败时不留下命令、outbox 事件与审计事件。修复后通过：三项回归测试在含修复的 CI 运行（#502，run 42040219509，提交 fd9179d，
+  V-20261105-20）中实际执行并为 success（postgres-integration 第 12 步、static-gates 第 50、51 步）。缺修复前失败：CI 中没有该回归测试在不含修复的代码上
+  失败的运行，提交说明也没有记录在父提交 a3b5c25 上运行它的命令与结果，所以只写已有的部分，状态保持已确认（Requirement 7.13）。
 ```
 
 ### N6 CI checkout 中 LiveTalking 镜像构建因悬空的 /app/.git 文件在 git apply 处失败
@@ -2364,10 +2374,12 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
 修复:
   提交: 8aee413a1a79d1b273993f3588a4dc3f47333117
   回归测试: ["npm run preflight:check", "npm run control-plane:integration"]
+  修复后通过: { run id: "42040219509" }
 说明: >-
   修复让控制台连接池用池级的 TypeOverrides 把 date（OID 1082）解析为 YYYY-MM-DD 文本，相关列直接使用这些字符串；全局 pg.types 与其他类型不变，
   TZ=UTC 时所有值（包括发布清单哈希输入）不变。preflight:check 在 TZ=Asia/Shanghai 与 TZ=UTC 的子进程中断言 date 返回 2027-03-31，集成测试断言
-  保存的保留日期与到期日期。缺修复前失败与修复后通过：8aee413 只在本地 master 上，尚未推送，没有 CI 运行；提交说明称修复前在 Asia/Shanghai 下得到
-  2027-03-30 的 Date，但没有记录命令，状态保持已确认（Requirement 7.13）。部署配置不需要改变。优先级定为 P1：日期错位会使幂等重试失败并改变发布清单
+  保存的保留日期与到期日期。修复后通过：两项回归测试在含修复的 CI 运行（#502，run 42040219509，提交 fd9179d，V-20261105-20）中实际执行并为 success
+  （static-gates 第 36 步、postgres-integration 第 12 步）；CI 的 PostgreSQL 集成测试在 UTC 下运行。缺修复前失败：CI 中没有该回归测试在不含修复的代码上失败的
+  运行；提交说明称修复前在 Asia/Shanghai 下得到 2027-03-30 的 Date，但没有记录命令，状态保持已确认（Requirement 7.13）。部署配置不需要改变。优先级定为 P1：日期错位会使幂等重试失败并改变发布清单
   哈希的输入，属于需求文档优先级定义中的运行时加固。
 ```
