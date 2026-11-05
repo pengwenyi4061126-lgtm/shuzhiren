@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import pathlib
+import sqlite3
 import sys
 import tempfile
 from pydantic import ValidationError
@@ -44,6 +45,58 @@ async def main() -> None:
     after_restart = await gateway.media(gateway.MediaRequest(command_id="command_same", session_id="session_1", action="start_program"), authorization)
     assert after_restart["duplicate"] is True
     assert len(calls) == 2, "a completed command must survive an in-memory cache loss without replaying downstream actions"
+    stored = await gateway.reserve_runtime_command("command_same", "media", {"session_id": "session_1", "action": "start_program", "program_segment_id": None, "script_sha256": None})
+    assert stored is not None and stored["duplicate"] is True and stored["receipt"] == first["receipt"], "reserving a completed command id must return its stored result instead of allowing a second execution"
+
+    def journal_rows() -> list[tuple]:
+        connection = sqlite3.connect(gateway.RUNTIME_COMMAND_JOURNAL_PATH)
+        try:
+            return connection.execute("select * from runtime_command_journal order by command_id").fetchall()
+        finally:
+            connection.close()
+
+    synthesis_calls: list[tuple[str, str]] = []
+    audio_calls: list[tuple[str, bytes]] = []
+
+    async def cosyvoice_synthesize(text: str, speaker: str) -> bytes:
+        synthesis_calls.append((text, speaker))
+        return b"speech-audio"
+
+    async def livetalking_audio(session_id: str, audio: bytes) -> None:
+        audio_calls.append((session_id, audio))
+
+    gateway.cosyvoice_synthesize = cosyvoice_synthesize
+    gateway.livetalking_audio = livetalking_audio
+    rows_before_rejections = journal_rows()
+    calls_before_rejections = len(calls)
+    for invalid_voice in (None, ""):
+        try:
+            await gateway.speak(gateway.SpeakRequest(command_id="speech_after_rejection", session_id="session_1", text="Welcome to the show.", voice=invalid_voice, provider="cosyvoice"), authorization)
+        except gateway.HTTPException as error:
+            assert error.status_code == 400
+        else:
+            raise AssertionError("a CosyVoice speech command without a speaker id must be rejected")
+    try:
+        await gateway.speak(gateway.SpeakRequest(command_id="speech_after_rejection", session_id="session_1", text="Welcome to the show.", voice="speaker_1", provider="cosyvoice"), "Bearer wrong-token")
+    except gateway.HTTPException as error:
+        assert error.status_code == 401
+    else:
+        raise AssertionError("a speech command with the wrong token must be rejected")
+    assert journal_rows() == rows_before_rejections, "rejected speech requests must not reserve their command id"
+    accepted_speech = await gateway.speak(gateway.SpeakRequest(command_id="speech_after_rejection", session_id="session_1", text="Welcome to the show.", voice="speaker_1", provider="cosyvoice"), authorization)
+    assert accepted_speech["duplicate"] is False, "a valid command must run after an invalid request with the same command id"
+    assert synthesis_calls == [("Welcome to the show.", "speaker_1")]
+    assert audio_calls == [("session_1", b"speech-audio")]
+    repeated_speech = await gateway.speak(gateway.SpeakRequest(command_id="speech_after_rejection", session_id="session_1", text="Welcome to the show.", voice="speaker_1", provider="cosyvoice"), authorization)
+    assert repeated_speech["duplicate"] is True
+    assert len(synthesis_calls) == 1 and len(audio_calls) == 1 and len(calls) == calls_before_rejections, "a completed speech retry must not call downstream services"
+    try:
+        await gateway.speak(gateway.SpeakRequest(command_id="speech_after_rejection", session_id="session_1", text="A different line.", voice="speaker_1", provider="cosyvoice"), authorization)
+    except gateway.HTTPException as error:
+        assert error.status_code == 409
+        assert "different payload" in error.detail
+    else:
+        raise AssertionError("a completed command id reused for a different payload must be rejected")
 
     frozen_script = "This is an approved frozen program script."
     approved_segment_id = "10000000-0000-4000-8000-000000000001"
@@ -54,12 +107,18 @@ async def main() -> None:
     assert inserted["accepted"] is True
     assert inserted["receipt"]["program_segment_id"] == approved_segment_id
     assert any(path == "/human" and payload["text"] == frozen_script for path, payload in calls), "a governed insertion must deliver the frozen script to LiveTalking"
+    rows_before_rejection = journal_rows()
     try:
         await gateway.media(gateway.MediaRequest(command_id="command_bad_script", session_id="session_1", action="insert_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256="0" * 64), authorization)
     except gateway.HTTPException as error:
         assert error.status_code == 400
     else:
         raise AssertionError("a mismatched frozen script hash must be rejected")
+    assert journal_rows() == rows_before_rejection, "a rejected media request must not reserve its command id"
+    calls_before_valid_insert = len(calls)
+    corrected = await gateway.media(gateway.MediaRequest(command_id="command_bad_script", session_id="session_1", action="insert_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest()), authorization)
+    assert corrected["duplicate"] is False, "a valid media command must run after an invalid request with the same command id"
+    assert [path for path, _payload in calls[calls_before_valid_insert:]] == ["/interrupt_talk", "/set_audiotype", "/human"]
     try:
         gateway.MediaRequest(command_id="command_bad_segment", session_id="session_1", action="insert_program", program_segment_id="not-a-uuid", program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest())
     except ValidationError:

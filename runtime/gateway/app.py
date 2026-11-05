@@ -317,30 +317,34 @@ async def cached_runtime_command(command_id: str, kind: str, identity: dict) -> 
         finally:
             connection.close()
 
-async def reserve_runtime_command(command_id: str, kind: str, identity: dict) -> None:
+async def reserve_runtime_command(command_id: str, kind: str, identity: dict) -> dict | None:
+    """Reserve a new command id, or return the stored result of a completed command with the same payload."""
     identity_sha256 = command_identity_hash(identity)
     async with runtime_command_cache_lock:
         connection = require_runtime_command_journal()
         if connection is None:
-            return
+            return None
         try:
             now = time.time()
             existing = connection.execute(
-                "select kind, identity_sha256, state from runtime_command_journal where command_id = ?",
+                "select kind, identity_sha256, state, response_json from runtime_command_journal where command_id = ?",
                 (command_id,),
             ).fetchone()
             if existing:
-                stored_kind, stored_identity, state = existing
+                stored_kind, stored_identity, state, response_json = existing
                 if stored_kind != kind or stored_identity != identity_sha256:
                     raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
-                if state != "completed":
+                if state != "completed" or not response_json:
                     raise HTTPException(status_code=409, detail="Runtime command outcome is uncertain; verify the media session before issuing a new command")
-                return
+                return {**json.loads(response_json), "duplicate": True}
             connection.execute(
                 "insert into runtime_command_journal (command_id, kind, identity_sha256, state, created_at) values (?, ?, ?, 'reserved', ?)",
                 (command_id, kind, identity_sha256, now),
             )
             connection.commit()
+            return None
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=503, detail="Runtime command journal is unreadable") from error
         finally:
             connection.close()
 
@@ -475,35 +479,13 @@ async def preview(session_id: str, authorization: str | None = Header(default=No
 def numeric_metric(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
-@app.post("/v1/speak")
-async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
-    authorize(authorization)
-    identity = {"session_id": request.session_id, "text": request.text, "interrupt": request.interrupt, "voice": request.voice, "provider": request.provider}
-    lock = await acquire_runtime_command_lock(request.command_id)
-    try:
-        cached = await cached_runtime_command(request.command_id, "speech", identity)
-        if cached:
-            return cached
-        await reserve_runtime_command(request.command_id, "speech", identity)
-        if request.provider == "cosyvoice":
-            if not request.voice:
-                raise HTTPException(status_code=400, detail="CosyVoice speaker id is required")
-            if request.interrupt:
-                await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
-            await livetalking_audio(request.session_id, await cosyvoice_synthesize(request.text, request.voice))
-            result = {"accepted": True, "provider": "cosyvoice_to_livetalking", "mode": "audio", "command_id": request.command_id}
-        else:
-            tts = {"voice": request.voice} if request.voice else {}
-            await livetalking_post("/human", {"sessionid": request.session_id, "text": request.text, "type": "echo", "interrupt": request.interrupt, "tts": tts})
-            result = {"accepted": True, "provider": "livetalking", "mode": "echo", "command_id": request.command_id}
-        await cache_runtime_command(request.command_id, "speech", identity, result)
-        return {**result, "duplicate": False}
-    finally:
-        await release_runtime_command_lock(request.command_id, lock)
+def validate_speak_request(request: SpeakRequest) -> None:
+    # Every deterministic rejection happens before the command id is reserved,
+    # so an invalid request never consumes the id of the corrected retry.
+    if request.provider == "cosyvoice" and not request.voice:
+        raise HTTPException(status_code=400, detail="CosyVoice speaker id is required")
 
-@app.post("/v1/media")
-async def media(request: MediaRequest, authorization: str | None = Header(default=None)) -> dict:
-    authorize(authorization)
+def validate_media_request(request: MediaRequest) -> None:
     if request.action == "insert_program":
         if not request.program_segment_id or not request.program_script or not request.script_sha256:
             raise HTTPException(status_code=400, detail="Program insertion requires segment, script, and script hash")
@@ -526,13 +508,46 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
     elif request.program_segment_id or request.program_script or request.script_sha256:
         raise HTTPException(status_code=400, detail="Only program transition actions may carry a script")
 
+@app.post("/v1/speak")
+async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
+    authorize(authorization)
+    validate_speak_request(request)
+    identity = {"session_id": request.session_id, "text": request.text, "interrupt": request.interrupt, "voice": request.voice, "provider": request.provider}
+    lock = await acquire_runtime_command_lock(request.command_id)
+    try:
+        cached = await cached_runtime_command(request.command_id, "speech", identity)
+        if cached:
+            return cached
+        replay = await reserve_runtime_command(request.command_id, "speech", identity)
+        if replay:
+            return replay
+        if request.provider == "cosyvoice":
+            if request.interrupt:
+                await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
+            await livetalking_audio(request.session_id, await cosyvoice_synthesize(request.text, request.voice))
+            result = {"accepted": True, "provider": "cosyvoice_to_livetalking", "mode": "audio", "command_id": request.command_id}
+        else:
+            tts = {"voice": request.voice} if request.voice else {}
+            await livetalking_post("/human", {"sessionid": request.session_id, "text": request.text, "type": "echo", "interrupt": request.interrupt, "tts": tts})
+            result = {"accepted": True, "provider": "livetalking", "mode": "echo", "command_id": request.command_id}
+        await cache_runtime_command(request.command_id, "speech", identity, result)
+        return {**result, "duplicate": False}
+    finally:
+        await release_runtime_command_lock(request.command_id, lock)
+
+@app.post("/v1/media")
+async def media(request: MediaRequest, authorization: str | None = Header(default=None)) -> dict:
+    authorize(authorization)
+    validate_media_request(request)
     identity = {"session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "script_sha256": request.script_sha256}
     lock = await acquire_runtime_command_lock(request.command_id)
     try:
         cached = await cached_runtime_command(request.command_id, "media", identity)
         if cached:
             return cached
-        await reserve_runtime_command(request.command_id, "media", identity)
+        replay = await reserve_runtime_command(request.command_id, "media", identity)
+        if replay:
+            return replay
         downstream_actions: list[str] = []
         if request.action == "stop_program":
             await livetalking_post("/interrupt_talk", {"sessionid": request.session_id})
