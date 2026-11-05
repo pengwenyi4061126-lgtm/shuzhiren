@@ -1,6 +1,6 @@
 # 第三方组件声明
 
-本文件列出仓库以 Git 子模块引入、并由运行时镜像使用的开源组件，以及部署时挂载、但不在仓库中的模型权重和素材。内容只记录能从仓库文件确认的事实，依据截至提交 `dfb1296`。本文件不是许可证审查结论：每个组件、权重和素材能否用于商业直播，需部署方自行审查并确认。
+本文件列出仓库以 Git 子模块引入、并由运行时镜像使用的开源组件，以及部署时挂载、但不在仓库中的模型权重和素材。内容只记录能从当前仓库文件确认的事实；运行时代码、Compose 或补丁变更时须同步更新本文件。本文件不是许可证审查结论：每个组件、权重和素材能否用于商业直播，需部署方自行审查并确认。
 
 Shuzhiren 仓库根目录没有 `LICENSE` 文件，`package.json` 为 `"private": true`。仓库自有代码以何种许可证分发，需仓库所有者确认。
 
@@ -19,7 +19,7 @@ npm 依赖、Python 依赖（`requirements.txt` 安装的包）、CUDA 基础镜
 
 说明：
 
-- `runtime/open-source.lock.json` 目前只有 LiveTalking、CosyVoice、MuseTalk 三项，没有 Matcha-TTS 条目。
+- `runtime/open-source.lock.json`（`schemaVersion` 2）记录上表四个组件的路径、父仓库、锁定提交、许可证名称和使用它的镜像；MuseTalk 的 `images` 为空，只为源码审阅和权重来源追溯保留。`npm run deploy:check` 核对每个条目的源码 HEAD、父仓库记录的子模块提交和干净工作树。
 - 两个 Dockerfile 的构建上下文排除规则（`Dockerfile.dockerignore`）只排除 `.git`、模型、数据、密钥和日志类路径，不排除根目录 `LICENSE`。按此规则，镜像中应有 `/app/LICENSE`、`/opt/CosyVoice/CosyVoice/LICENSE` 和 `/opt/CosyVoice/CosyVoice/third_party/Matcha-TTS/LICENSE`。仓库中没有检查这三个文件确实存在于镜像中的门禁，发布时需部署方在镜像中确认。
 
 ## 2. LiveTalking 修改说明
@@ -30,12 +30,13 @@ Apache License 2.0 第 4 条要求再分发修改后的作品时附带许可证�
 | --- | --- | --- | --- |
 | 1 | `runtime/patches/livetalking-observability.patch` | `avatars/base_avatar.py`、`server/routes.py`、`streamout/rtmp.py` | 记录进程内推理 FPS、输出 FPS、RTMP 输出连接状态、配置码率、最后输出时间和最后输出错误类型，并新增只读接口 `GET /api/admin/runtime-metrics` 返回各会话的说话、录制状态和这些指标 |
 | 2 | `runtime/patches/livetalking-stream-secret.patch` | `app.py`、`config.py`、`server/routes.py`、`streamout/rtmp.py` | 增加 `--stream_key_file`，推流密钥从只读文件读取后在内存中拼接到 `--push_url`；选项日志、RTMP 日志、错误信息和 HTTP 响应中的推流地址与密钥被脱敏 |
+| 3 | `runtime/patches/livetalking-local-tts.patch` | `avatars/base_avatar.py`、`config.yaml`；新增 `tts/none_tts.py` | 注册不做任何合成的 `--tts none` 插件（发到 `/human` 的文本被丢弃，不会到达在线语音服务）；`--tts` 取未知值时启动失败；`config.yaml` 的 `tts` 改为 `none`。语音只以 CosyVoice 合成的音频经 `/humanaudio` 注入 |
 
 镜像另外复制仓库自有的 `runtime/livetalking/launcher.py` 和 `runtime/livetalking/shuzhiren_secrets.py` 到 `/opt/shuzhiren/`。它们是新文件，不是对 LiveTalking 文件的修改。
 
 锁定提交的 `vendor/LiveTalking` 根目录没有 NOTICE 文件，因此没有需要随镜像保留的 NOTICE 内容。
 
-截至 `dfb1296` 尚未完成的部分（属代码与 Dockerfile 范围，见 `docs/AUDIT_REGISTER.md` 的 L18 与 Requirement 39）：
+尚未完成的部分（属代码与 Dockerfile 范围，见 `docs/AUDIT_REGISTER.md` 的 L18 与 Requirement 39）：
 
 - 补丁只在部分改动处带有 `# Shuzhiren:` 注释，没有在每个被修改文件的开头写明"本文件已被 Shuzhiren 修改"。
 - 镜像 `/app` 下没有本修改说明的副本。
@@ -53,19 +54,22 @@ Apache License 2.0 第 4 条要求再分发修改后的作品时附带许可证�
 ## 4. 肖像与声线素材
 
 - **数字人形象**：LiveTalking 从 `AVATAR_VOLUME_PATH`（容器内 `/app/data/avatars`，只读）加载 `LIVETALKING_AVATAR_ID` 指定的 Avatar 数据。其中人物的肖像使用需取得本人书面授权。
-- **声线**：Runtime Gateway 调用 CosyVoice 的 `/inference_sft`，以请求中的 `voice` 作为 `spk_id`（`runtime/gateway/app.py` 的 `cosyvoice_synthesize`），即使用所加载模型目录中的说话人。若该说话人来自真人录音，需取得声音本人的书面授权；模型自带说话人的使用条件以权重许可证为准，需部署方确认。
+- **声线**：节目脚本和每条播报都由 Runtime Gateway 交给 CosyVoice 合成（`runtime/gateway/app.py` 的 `cosyvoice_chunk`、`cosyvoice_synthesize`），所用声线是命令中冻结的已批准 `runtime_voice_id`。声线来源取决于 Gateway 环境的 `COSYVOICE_MODEL_KIND`：
+  - `sft`：调用 `/inference_sft`，以 `runtime_voice_id` 作为 `spk_id`，使用所加载模型目录中自带的说话人。模型自带说话人的使用条件以权重许可证为准；若该说话人由真人录音训练而来，还需取得声音本人的书面授权。锁定的 `Fun-CosyVoice3-0.5B-2512` 没有自带的 SFT 说话人。
+  - `zero_shot`（模板默认）：调用 `/inference_zero_shot`，上传只读声线库（宿主机 `COSYVOICE_VOICE_LIBRARY_PATH`，容器内 `/run/shuzhiren/voices`）中 `<runtime_voice_id>/prompt.wav` 的参考音频和 `prompt.txt` 的文本，合成出与参考音频相同的声音。Gateway 只在 `prompt.wav` 的 SHA-256 等于命令携带的已批准声音素材校验和时才合成。参考音频是真人录音，使用前必须取得声音本人的书面授权，授权范围需覆盖以该录音合成直播语音的用途、平台和期限。
+  - 声线库、参考音频和授权文件都不在仓库中，由部署方准备和留存。
 
 ## 5. 在线语音合成服务（edge-tts）
 
-- `vendor/LiveTalking/requirements.txt` 包含 `edge_tts`，LiveTalking 镜像会安装它。`vendor/LiveTalking/tts/edge.py` 通过 `edge_tts.Communicate` 合成语音。
-- `vendor/LiveTalking/config.py` 中 `--tts` 的默认值为 `edgetts`。截至 `dfb1296`，`infra/compose/docker-compose.runtime.yml` 的 `livetalking` 命令没有传 `--tts`，而 Runtime Gateway 把节目脚本以文本发送到 LiveTalking 的 `/human`（`runtime/gateway/app.py` 的 `/v1/media` 中 `start_program`、`insert_program`、`resume_program` 分支，以及 `/v1/speak` 在 `provider` 不是 `cosyvoice` 时的分支）。这些文本因此由 edge-tts 合成，见 `docs/AUDIT_REGISTER.md` 的 H3。
-- edge-tts 调用的是外部在线语音服务。该服务的服务条款是否允许本系统的使用方式，以及 `edge_tts` 包本身的许可证，仓库中没有记录，需部署方评估确认。
+- edge-tts 已不在运行路径上。`infra/compose/docker-compose.runtime.yml` 以 `--tts none` 启动 LiveTalking，补丁 3 的 `none` 插件不做任何合成；Runtime Gateway 只向 LiveTalking 发送 `/interrupt_talk`、`/set_audiotype`、`/record` 和 `/humanaudio`（`runtime/gateway/app.py` 的 `LIVETALKING_POST_PATHS` 与 `/humanaudio` 上传），不再调用 `/human`。`npm run deploy:check` 与 `runtime:compose:check` 拒绝其他 `--tts` 取值。
+- `edge_tts` 包仍随镜像安装：`vendor/LiveTalking/requirements.txt` 包含 `edge_tts`，`runtime/livetalking/Dockerfile` 按该文件安装依赖，`vendor/LiveTalking/tts/edge.py` 也仍在镜像中。它会出现在 LiveTalking 镜像的 SBOM 中；`edge_tts` 包本身的许可证按 SBOM 依赖一并审查。
+- 若部署方改动 Compose 或补丁、重新启用 `edgetts`，节目文本会发往外部在线语音服务，需另行评估该服务条款；当前仓库配置不会这样做。
 
 ## 6. 部署方需要自行取得并留存的授权
 
 1. 第 3 节每组模型权重的来源记录、许可证文本和商业使用确认。
-2. 第 4 节数字人形象与声线的本人书面授权，以及授权范围（平台、期限、用途）。
-3. 第 5 节在线语音合成服务的使用许可；若不使用该服务，需确认运行配置不会调用它。
+2. 第 4 节数字人形象的本人书面授权；`zero_shot` 声线库中每段参考音频的声音本人书面授权；以及授权范围（平台、期限、用途）。
+3. 确认实际部署的 LiveTalking 以 `--tts none` 运行（第 5 节）；若改用在线语音服务，需另行取得其使用许可。
 4. 直播中使用的商品图片、音乐和脚本的授权（见 `docs/DEPLOYMENT_RUNBOOK.md` 开头的部署前提）。
 5. 第 1 节源码组件与 SBOM 所列依赖的许可证审查结论。
 

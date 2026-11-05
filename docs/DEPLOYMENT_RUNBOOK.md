@@ -76,7 +76,16 @@ npm run deploy:images:verify -- --manifest /srv/shuzhiren/release/deployment-rel
    - 受信任的 self-hosted signing runner，私钥仅以受限短生命周期文件挂载；不可导出 KMS/HSM 需要提供等价签名适配器，不能把密钥导出成 GitHub secret。
    - 一个经发布治理批准的 HTTPS `miniforge_url` 与对应 `miniforge_sha256`。CosyVoice Dockerfile 会拒绝空值、非 HTTPS 或校验和不匹配；模型权重只在部署时通过 `COSYVOICE_MODEL_PATH` 只读挂载，永不进入 release image。
 
-   workflow artifact 不是自动部署。值班人员必须将 `deployment-release-manifest.json`、`release-sbom-index.json`、`release-provenance-index.json` 和 `images.json` 一起放入同一个受控目录，例如 `/srv/shuzhiren/release/`；`deploy:check` 会重算两份 index 的 SHA-256，并要求 artifact 类型、完整提交、Buildx attestation 标记和十个 image digest 都与签名 manifest 精确一致。任一文件缺失、替换或与 manifest 不一致都必须阻断部署。实际 OCI attestation 访问路径同样必须保留供审计。完成签名/配置检查和 Docker `RepoDigest` 核验后才能运行 Compose。artifact 上传、registry attestation 和签名成功不代替漏洞策略、许可证审查或部署后真实 GPU/平台验收。
+   workflow artifact 不是自动部署。值班人员必须将 `deployment-release-manifest.json`、`release-sbom-index.json`、`release-provenance-index.json` 和 `images.json` 一起放入同一个受控目录，例如 `/srv/shuzhiren/release/`；`deploy:check` 会重算两份 index 的 SHA-256，并要求 artifact 类型、完整提交和十个 image digest 都与签名 manifest 精确一致。任一文件缺失、替换或与 manifest 不一致都必须阻断部署。
+
+   两份 index 的 `schemaVersion` 为 `2`。发布工作流的 assemble 步骤（`scripts/assemble-release-evidence.mjs`）以 `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` 只读访问已校验的 `registry` 输入，按 digest 从 registry 读取每张镜像的 attestation，而不是声明"已附着"：对每个镜像 index，取唯一的 `linux/amd64` 镜像 manifest、引用它的唯一 attestation manifest，以及其中唯一的 SPDX SBOM 层和唯一的 SLSA provenance 层，并核对 in-toto statement 的 `subject` 含该 `linux/amd64` digest。index 的 `attestations.<镜像键>` 记录 `platform`、`platformManifestDigest`、`attestationManifestDigest`、`predicateType` 和该层的 `digest`；`deploy:check` 拒绝缺少任一镜像摘要的 index，`schemaVersion` 1 的旧 index 也会被拒绝。需要复核时，以 `attestationManifestDigest` 从 registry 取回 attestation manifest，确认三件事：镜像 index 中该 digest 的条目带 `vnd.docker.reference.type=attestation-manifest` 且 `vnd.docker.reference.digest` 等于 `platformManifestDigest`；manifest 的 `layers` 中 `in-toto.io/predicate-type` 等于 `predicateType` 的层，其 digest 等于记录的 `digest`；取回该层（blob）后 statement 的 `subject` 含 `platformManifestDigest`。例如：
+
+```bash
+docker buildx imagetools inspect --raw <registry>/<namespace>/<repository>@<image index digest>
+docker buildx imagetools inspect --raw <registry>/<namespace>/<repository>@<attestationManifestDigest>
+```
+
+   这些摘要和 registry 中的 attestation 同样必须保留供审计。完成签名/配置检查和 Docker `RepoDigest` 核验后才能运行 Compose。artifact 上传、registry attestation 和签名成功不代替漏洞策略、许可证审查或部署后真实 GPU/平台验收。
 3. 控制面使用 `NODE_ENV=production`、`CONTROL_PLANE_DEMO_MODE=false`，不设置 `CONTROL_PLANE_DEV_HEADER_IDENTITY`，并配置 OIDC issuer、audience、JWKS 和 PostgreSQL；令牌 `exp` 要求与可选的 `OIDC_ALLOWED_ALGORITHMS`、`OIDC_EXPECTED_TYP` 见 2.4 节。`RELEASE_REVISION` 必须填写实际部署的 7 至 40 位 Git 提交；健康接口会返回该值，用于把运行实例、审计证据和发布记录对应到不可变源码。`DATABASE_QUERY_TIMEOUT_MS` 默认 5000，限制数据库连接与查询等待，不能配置为 100 ms 以下或 60 秒以上；它让容器就绪检查在私网数据库异常时及时失败。浏览器同源调用可以使用 `OIDC_ACCESS_TOKEN_COOKIE`（默认 `shuzhiren_access_token`）承载短期 access token；该 cookie 必须由登录网关以 `HttpOnly`、`Secure`、`SameSite=Lax` 或更严格的属性签发，令牌本身不得写入前端存储。生产 Proxy 会在进入 API handler 前校验令牌租户和角色，包含按动作区分的生命周期权限；无权令牌必须收到 `403 insufficient_permission`，不能依赖前端隐藏按钮。Cookie 身份的写操作还必须携带同源或 `OIDC_ALLOWED_ORIGINS` 白名单中的 `Origin`，否则返回 `403 csrf_origin_rejected`；部署在反向代理后时应显式填写公开控制台域名白名单。
 4. `control.env`、`runtime.env` 与 `gateway.env` 的 `RUNTIME_SHARED_TOKEN` 必须完全一致，且两个前者必须设置 `RUNTIME_GATEWAY_DEMO_MODE=false`；这是 Gateway 对控制面人工操作和 Worker durable outbox 投递的后端认证凭据，绝不能传给浏览器、渠道 Adapter、租户接入或其他服务。部署预检、Worker 和 Gateway 启动都会拒绝短于 32 个字符或包含空白的共享令牌。所有其余私网服务 token 和签名密钥必须至少 32 个字符、不含空白，且不能跨服务或租户复用；`OUTPUT_PROBE_SHARED_TOKEN` 必须独立。`RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS` 也必须在 `control.env` 与 `runtime.env` 中一致，范围为 100 至 60000；它会让人工会话验证、媒体接管、语音播报和后台 outbox 在 Gateway/网络故障时及时失败并进入既有重试或告警路径，而非无限等待。Node 服务与 Gateway 镜像均以非 root 用户运行，不能依靠容器内 root 权限写入配置或状态。`gateway.env` 中的 `RUNTIME_GATEWAY_STATE_PATH` 必须是主机上的绝对、加密、访问受限且纳入备份的目录；Gateway 以固定 UID `10001` 写入命令日志。启用下方计划备份时，先以运行 Docker 的部署账号创建 setgid 目录，例如 `sudo install -d -m 2750 -o 10001 -g shuzhiren-backup /srv/shuzhiren/runtime-gateway-state`，再启动 Compose。setgid 目录会让 SQLite 日志继承 `shuzhiren-backup` 组，Gateway 以 owner/group 可读、其他用户无权的权限创建日志，因此备份服务可读取它而不需 root 权限。它会挂载为 Gateway 的命令日志目录；不能改用匿名 Docker 卷或临时容器文件系统，否则 Gateway 重启后无法判定已完成命令，可能重复执行媒体动作。Gateway 启动还会验证必需命令日志可写，目录权限错误会直接使容器启动失败。Gateway 宿主机端口由 `RUNTIME_GATEWAY_HOST_BIND` 控制，模板默认 `127.0.0.1`；不得使用 `0.0.0.0` 或 IPv6 通配地址。控制台与 Gateway 分机部署时，只可填写经网络审批的私网地址，并在安全组/防火墙中仅放行控制台来源，不能把 Gateway 直接暴露到公网。控制面使用 `RUNTIME_TELEMETRY_TENANT_TOKENS`、`RUNTIME_RECORDING_TENANT_TOKENS`、`PIM_INGEST_TENANT_TOKENS`、`CHANNEL_INGEST_TENANT_TOKENS` 和 `CHANNEL_COMMERCE_TENANT_TOKENS` 五个 JSON 租户密钥映射；每个租户必须有不同的高熵 secret，且任一 token 不得跨服务或跨租户复用，运行时或渠道 Adapter 只能用自己租户的 token 上报。录制凭据只能由归档进程在完成受批准对象存储复制与 SHA-256 校验后使用，不能复用遥测、浏览器、前端 SDK 或平台网页的 token；录制登记只接受对象键，不接受 URL 或本地文件路径。PIM 凭据仅供完成来源、时间窗和签名校验的服务器端同步器使用，事实仍需审核。评论和交易凭据必须分离，不能共用。交易 Adapter 完成平台签名、时间戳、重放和限流验证后，只能提交不含买家 PII 的曝光、点击、加购、支付和退款事实；支付/退款会写入 append-only 审计。每次启动 `docker-compose.runtime.yml` 都要加载已通过 `deploy:check` 的 `runtime.env` 与 `gateway.env`；Compose 会在解析整个服务文件时读取两者，不能只传当前 profile 的环境文件。`RUNTIME_OBSERVER_TARGETS_DIR` 必须是生产主机上仅运行时部署账号可读写的绝对目录，目录内创建 `runtime-observer-targets.json`。其数组每项必须包含 `tenantId`、`runId`、`sessionId`、同租户的 `telemetryToken` 与 `outputProbeUrl`，其 token 必须与控制面该租户的遥测密钥对应，不能复用为其他租户或浏览器 token。使用仓库内 `output-probe` 时，每项还应填写 `outputProbeToken`，并与 `OUTPUT_PROBE_SHARED_TOKEN` 匹配；该 token 只用于私网 observer 到探针的读取授权，不能作为控制面或渠道凭据。部署编排把候选清单写入同目录的 `runtime-observer-targets.next.json` 后，执行 `npm run observer:targets:apply -- --candidate /srv/shuzhiren/observer-config/runtime-observer-targets.next.json --destination /srv/shuzhiren/observer-config/runtime-observer-targets.json --control-env /srv/shuzhiren/control.env --runtime-env /srv/shuzhiren/runtime.env --require-targets`。该命令会校验每个场次遥测 token 等于控制面同租户的 `RUNTIME_TELEMETRY_TENANT_TOKENS`，并校验每个探针令牌等于运行时的 `OUTPUT_PROBE_SHARED_TOKEN`，拒绝跨目录替换、收紧为 owner-only 权限后原子替换；observer 自动重载，配置缺失或格式错误时 `/healthz` 会失败。配置 `alert-notifier.example.env` 后，使用 `docker compose --profile alert-notifier --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env --env-file /srv/shuzhiren/alert-notifier.env -f infra/compose/docker-compose.runtime.yml up --build` 启动私网告警通知器；每个目标必须使用 HTTPS，按租户配置独立 HMAC 密钥。通知器只通知打开时的告警，持久化投递状态可重试和重领；其 `/healthz` 只有在数据库可查且最近一个轮询窗口成功完成时才返回成功。接收方必须按 `x-shuzhiren-event-id` 去重，不能将机器人成功响应理解为事故已恢复。
 
@@ -165,6 +174,50 @@ LiveTalking 镜像的启动器会在 LiveTalking 启动前再次校验该文件�
 - 签名算法只允许非对称算法。`OIDC_ALLOWED_ALGORITHMS` 是可选的逗号分隔白名单；不设置时接受 `RS256`、`RS384`、`RS512`、`PS256`、`PS384`、`PS512`、`ES256`、`ES384`、`ES512` 和 `EdDSA`。设置为空值或包含其他名称（例如 `HS256`、`none`）时，所有需要令牌的请求都返回 `503 oidc_algorithms_not_configured`。`/api/health` 不检查该变量，因此修改后须用真实令牌请求一次业务 API 确认。
 - `OIDC_EXPECTED_TYP` 可选；设置后，令牌 JWT 头部的 `typ` 必须等于该值（例如 `at+jwt`）。
 - 开发身份请求头（`x-tenant-id`、`x-actor-id`、`x-actor-name`、`x-actor-role`）只在 `CONTROL_PLANE_DEV_HEADER_IDENTITY` 恰好为 `true` 时生效，`NODE_ENV` 不再决定是否启用。本机 `npm run dev` 会自动设置它并绑定 `127.0.0.1`。该开关禁止用于任何部署：控制面在该值为 `true` 且 `NODE_ENV=production` 或监听地址不是回环地址时启动即退出；生产控制面 Compose 固定 `NODE_ENV=production`、`HOSTNAME=0.0.0.0`；`npm run deploy:check` 在控制面 env 文件把它设为 `true` 时报错，带 `--allow-placeholders` 也一样。`control.env` 中不要出现这个变量。
+
+### 2.5 CosyVoice 语音、模型类型与声线库
+
+节目脚本（`start_program`、`insert_program`、`resume_program`）和每条 `/v1/speak` 播报都由 Runtime Gateway 交给 CosyVoice 合成，合成结果封装为一个 WAV 后经 LiveTalking 的 `/humanaudio` 注入。LiveTalking 以 `--tts none` 启动，自身不合成语音，Gateway 也不再调用 `/human`。因此 CosyVoice 是必需依赖：Compose 中 `COSYVOICE_REQUIRED` 默认 `true`，必须启动 `cosyvoice` profile，生产预检使用 `--require-cosyvoice`。CosyVoice 不可用、超时或返回无效音频时，命令以明确的失败结果返回并释放预留，不会改用其他语音。
+
+`gateway.env` 中的相关变量（以 `config/runtime-gateway.example.env` 为准）：
+
+- `COSYVOICE_MODEL_KIND`：必填，只能是 `sft` 或 `zero_shot`，Compose 与 Gateway 都没有默认值。
+  - `sft`：Gateway 调用 `/inference_sft`，以命令冻结的 `runtime_voice_id` 作为 `spk_id`。只有所加载模型自带该说话人时才可选用。
+  - `zero_shot`：Gateway 调用 `/inference_zero_shot`，上传声线库中该 `runtime_voice_id` 的参考音频和文本。锁定的 `Fun-CosyVoice3-0.5B-2512` 没有自带 SFT 说话人，使用它时必须选 `zero_shot`（模板值）。
+- `COSYVOICE_VOICE_LIBRARY_PATH`：宿主机上的声线库目录，Compose 以只读方式挂载到 Gateway 的 `/run/shuzhiren/voices`。
+- `COSYVOICE_CHUNK_MAX_CHARS`：长脚本按句末切分后每段请求的最大字符数，范围 20 至 800，模板 120。
+- `RUNTIME_COMMAND_DEADLINE_SECONDS`：一条命令从预留起的上游总时限，范围 1 至 59 秒，模板 15；合成在时限前 `min(3 秒, 25%)` 停止，为 LiveTalking 注入留出时间。它须小于 `runtime.env` 的 `RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS`。
+
+准备 `zero_shot` 声线库：
+
+1. 在加密、访问受限的磁盘上创建声线库目录，例如 `/srv/shuzhiren/voices`，写入 `gateway.env` 的 `COSYVOICE_VOICE_LIBRARY_PATH`。目录对 Gateway 的 UID `10001` 可读即可，不需要可写。
+2. 为每个已批准的声线建立一个子目录，名称等于控制台中该声线的 `runtime_voice_id`（字母或数字开头，只含字母、数字、`_`、`-`，最长 128 个字符）。
+3. 子目录中放 `prompt.wav`：控制台已批准的声音素材本身，必须逐字节一致。Gateway 每次合成前计算它的 SHA-256，与命令携带的已批准校验和比较，不一致时拒绝合成；文件须是 RIFF/WAVE 格式，不超过 16 MiB。
+4. 子目录中放 `prompt.txt`：UTF-8 文本，1 至 1000 个字符，末尾换行会被去掉。使用 Fun-CosyVoice3 时，内容为 `You are a helpful assistant.<|endofprompt|>` 后接 `prompt.wav` 的逐字转写；CosyVoice3 在 prompt 文本中找不到 `<|endofprompt|>` 时会拒绝合成（`vendor/CosyVoice/cosyvoice/llm/llm.py`）。Gateway 不检查这个标记，须在试播中用每个声线实际合成一次确认。
+5. 参考音频是真人录音，放入前必须取得声音本人的书面授权，见第 7 节。声线库不进入 Git、镜像或备份以外的位置。
+
+`sft` 模式不读取声线库，但 Compose 仍要求设置 `COSYVOICE_VOICE_LIBRARY_PATH`，可指向一个空的只读目录。
+
+### 2.6 升级前排空旧的媒体与播报命令
+
+从使用 LiveTalking 内置 TTS 的版本升级到上述 CosyVoice 路径时，升级前写入 outbox 的 `media.dispatch` 和 `speech.dispatch` 事件没有完整的冻结声线绑定。新的 Gateway 会以 `400` 拒绝缺少 `runtime_voice_id`/`voice_checksum` 的带脚本媒体命令，在 `zero_shot` 模式下也拒绝缺少 `voice_checksum` 的播报；worker 会一直重试到 `OUTBOX_MAX_ATTEMPTS` 耗尽，进行中的节目会因此中断。升级前按以下步骤排空：
+
+1. 不再武装或开播新场次，让进行中的场次正常结束（`END` 经 Gateway 确认后场次才变为 `ENDED`）。
+2. 保持旧版本 worker 与 Gateway 运行，直到每个租户都没有未完成的旧事件。outbox 启用了 RLS，须按租户查询，例如以控制面运行时账号执行：
+
+```sql
+begin;
+select set_config('app.tenant_id', '<tenant uuid>', true);
+select event_type, state, count(*)
+from outbox_events
+where event_type in ('media.dispatch', 'speech.dispatch')
+  and (state in ('pending', 'delivering') or (state = 'failed' and attempts < <OUTBOX_MAX_ATTEMPTS>))
+group by event_type, state;
+commit;
+```
+
+3. 结果为空后再停止旧服务、升级镜像并启动新版本。仍有投递不出去的事件时，待启动命令可按第 2 节第 10 条在控制台取消，其他事件记录后等待其重试耗尽；不要直接改写 `outbox_events`。
+4. 升级后第一场开播前，用每个已批准声线做一次内部试播播报，确认 Gateway 日志出现 `cosyvoice_chunk` 记录、`/healthz` 中 `cosyvoice.model_kind` 与配置一致，并且输出流中能听到该声线。
 
 ## 3. 备份与恢复演练
 
@@ -329,7 +382,7 @@ docker compose --env-file /srv/shuzhiren/control-plane-compose.env -f infra/comp
 ```bash
 docker compose --env-file /srv/shuzhiren/control-plane-compose.env -f infra/compose/docker-compose.control-plane.yml up -d control-plane
 ```
-3. 数据库迁移完成后，由数据库管理员在密钥管理系统中创建 `shuzhiren_runtime_worker`、`shuzhiren_channel_adapter` 和 `shuzhiren_alert_notifier` 三个独立的 `LOGIN NOINHERIT` 账号，再以控制面 schema owner 执行 `psql "$DATABASE_URL" -f infra/postgres/service-principals.sql`。该脚本不创建密码、不授予成员、商品、节目、素材、策略或审批表访问；adapter 仅能持久化 webhook 重放，notifier 仅能投递告警，worker 仅能处理运行时 outbox、状态、额度、告警和审计。将三个独立 URL 分别写入 `runtime.env` 的 `RUNTIME_WORKER_DATABASE_URL`、`channel-adapter.env` 的 `CHANNEL_ADAPTER_DATABASE_URL` 与 `alert-notifier.env` 的 `ALERT_NOTIFIER_DATABASE_URL`；部署预检会拒绝它们与控制面复用数据库用户名。准备 `RUNTIME_OBSERVER_TARGETS_DIR/runtime-observer-targets.json` 的私网目标清单后，再启动 Gateway、LiveTalking、CosyVoice 和 runtime worker。Compose 会等待 LiveTalking 会话接口与 Gateway `/healthz` 健康后才拉起 worker；worker 的 `/healthz` 会同时检查数据库和轮询循环，observer 的 `/healthz` 检查观测循环及目标清单健康，两者都必须健康。先观察这些健康状态，不能仅以容器 `running` 作为可开播依据。Gateway 也需要以相同的 `NVIDIA_VISIBLE_DEVICES` 读取只读 NVML 指标。实时问答场次必须启动 Compose `cosyvoice` profile 并设置 `COSYVOICE_REQUIRED=true`，再用 `--require-cosyvoice` 使部署预检拒绝缺失语音依赖；仅预制内容试播才可明确省略该门禁。真实场次必须额外启用 `docker compose --profile output-probe ... up`，并在启动前用 `npm run deploy:check -- ... --require-output-probe --require-cosyvoice` 校验目标和独立密钥：`output-probe` 用 ffprobe 检查视频/音频流、帧率、宽高和码率，并要求独立 `avSyncProbeUrl` 提供音画同步数值；若 target 配置了预期帧率或宽高，实际不符也返回 `503`，不会伪造成健康。
+3. 数据库迁移完成后，由数据库管理员在密钥管理系统中创建 `shuzhiren_runtime_worker`、`shuzhiren_channel_adapter` 和 `shuzhiren_alert_notifier` 三个独立的 `LOGIN NOINHERIT` 账号，再以控制面 schema owner 执行 `psql "$DATABASE_URL" -f infra/postgres/service-principals.sql`。该脚本不创建密码、不授予成员、商品、节目、素材、策略或审批表访问；adapter 仅能持久化 webhook 重放，notifier 仅能投递告警，worker 仅能处理运行时 outbox、状态、额度、告警和审计。将三个独立 URL 分别写入 `runtime.env` 的 `RUNTIME_WORKER_DATABASE_URL`、`channel-adapter.env` 的 `CHANNEL_ADAPTER_DATABASE_URL` 与 `alert-notifier.env` 的 `ALERT_NOTIFIER_DATABASE_URL`；部署预检会拒绝它们与控制面复用数据库用户名。准备 `RUNTIME_OBSERVER_TARGETS_DIR/runtime-observer-targets.json` 的私网目标清单后，再启动 Gateway、LiveTalking、CosyVoice 和 runtime worker。Compose 会等待 LiveTalking 会话接口与 Gateway `/healthz` 健康后才拉起 worker；worker 的 `/healthz` 会同时检查数据库和轮询循环，observer 的 `/healthz` 检查观测循环及目标清单健康，两者都必须健康。先观察这些健康状态，不能仅以容器 `running` 作为可开播依据。Gateway 也需要以相同的 `NVIDIA_VISIBLE_DEVICES` 读取只读 NVML 指标。节目脚本和播报都由 CosyVoice 合成（见 2.5 节），所以任何会出声的场次都必须启动 Compose `cosyvoice` profile 并保持 `COSYVOICE_REQUIRED=true`（Compose 默认值），再用 `--require-cosyvoice` 使部署预检拒绝缺失语音依赖。真实场次必须额外启用 `docker compose --profile output-probe ... up`，并在启动前用 `npm run deploy:check -- ... --require-output-probe --require-cosyvoice` 校验目标和独立密钥：`output-probe` 用 ffprobe 检查视频/音频流、帧率、宽高和码率，并要求独立 `avSyncProbeUrl` 提供音画同步数值；若 target 配置了预期帧率或宽高，实际不符也返回 `503`，不会伪造成健康。
 4. 用非公开推流地址进行 30 分钟内部试播；确认遥测到达、媒体 outbox 可投递、录屏生成和人工接管成功。
 5. 执行 4 小时连续试播与断网、RTMP 拒绝、GPU OOM、TTS 超时、黑屏和静音演练后，才允许真实小规模场次。使用私网共享令牌调用 Gateway 的 `GET /v1/observations/{session_id}`，核验会话仍在、录制状态、进程内推理/输出 FPS 和 GPU 指标。该接口不能证明平台目的端接收、真实上行码率或音画同步；这些必须另行采集并人工核验，不能把 `/healthz` 或 writer 状态当作质量结论。
 6. 为每个真实场次启动 `runtime-observer` 前，必须部署同网段、只读且已验收的输出探针。它返回的 JSON 仅允许包含布尔 `outputConnected`/`fallbackReady` 和非负数 `outputFps`/`avSyncMs`/`bitrateMbps`。断开该探针、停止 Gateway、终止输出或让其返回无效数据，均应在一个观测轮询周期内看到控制台告警和受控 `DEGRADED`；默认 `RUNTIME_OBSERVER_FAIL_CLOSED=true`，不要为掩盖监控故障改成 fail-open。除此之外，worker 每 `RUNTIME_WATCHDOG_POLL_MS` 检查 LIVE 场次，若最后样本超过 `RUNTIME_TELEMETRY_MAX_AGE_SECONDS`（默认 60 秒），会原子写入 `runtime_telemetry_stale` 告警、降级场次并将备用节目或人工接管命令写入 outbox；它绝不自动恢复为 LIVE。监控页的 15 分钟 95% 健康采样质量目标要求至少 3 个样本，样本不足只能显示不可评估；它用于判断观测覆盖与阈值健康，不能替代平台目的端、CDN 或渠道侧的端到端可用性 SLA。场次预检的“推流与备用节目”同样只认可该阈值内的健康遥测；历史 `output_ready` 字段不再可手工放行或阻塞预检。
@@ -371,8 +424,8 @@ npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-
 
 1. **模型权重的许可证**：权重的许可证与代码许可证相互独立，仓库不含任何权重及其许可证文本。至少包括 LiveTalking 以 `--model musetalk` 运行时从 `MODEL_VOLUME_PATH` 加载的权重（`musetalkV15`、`sd-vae-ft-mse`、`whisper`、`face-parse-bisent` 等），以及 CosyVoice 从 `COSYVOICE_MODEL_PATH` 加载的模型（模板为 `Fun-CosyVoice3-0.5B-2512`）。每组权重的下载来源、许可证和商业使用条件需部署方确认。
 2. **肖像授权**：`AVATAR_VOLUME_PATH` 中 `LIVETALKING_AVATAR_ID` 对应的人物形象需取得本人书面授权。
-3. **声线授权**：Gateway 以 `spk_id` 调用 CosyVoice 的 `/inference_sft`，使用模型目录中的说话人。来自真人录音的说话人需取得声音本人的书面授权。
-4. **在线语音服务**：截至提交 `dfb1296`，运行时 Compose 没有给 LiveTalking 传 `--tts`，其默认值为 `edgetts`，节目脚本文本经 LiveTalking `/human` 由 edge-tts 调用外部在线语音服务合成（审计登记 H3）。该服务条款是否允许本系统的使用方式需部署方评估确认。
+3. **声线授权**：声线来源取决于 `COSYVOICE_MODEL_KIND`（见 2.5 节）。`sft` 使用模型自带的说话人，使用条件以权重许可证为准，由真人录音训练的说话人还需声音本人的书面授权。`zero_shot` 以声线库中的 `prompt.wav` 合成同一声音，每段参考音频都必须取得声音本人的书面授权，范围覆盖直播语音合成的用途、平台和期限。
+4. **在线语音服务**：运行时 Compose 以 `--tts none` 启动 LiveTalking，语音只由 CosyVoice 合成后经 `/humanaudio` 注入，不调用 edge-tts 的外部在线服务。`edge_tts` 包仍随 LiveTalking 镜像安装（来自上游 `requirements.txt`），其许可证随 SBOM 依赖一并审查；改动 Compose 或补丁重新启用在线 TTS 前，需另行评估该服务条款。
 5. 商品图片、音乐和脚本的授权，以及发布 SBOM 所列依赖的许可证审查结论。
 
 LiveTalking 以 Apache License 2.0 发布，本仓库通过 `runtime/patches/` 修改了它。再分发 LiveTalking 镜像时须随附其许可证与修改说明；锁定提交没有 NOTICE 文件。镜像中是否已包含这些文件，以及这些义务是否已满足，需部署方确认。

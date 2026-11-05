@@ -8,10 +8,10 @@ Console / Policy / Product Truth
              | approved media command
              v
       Runtime Gateway (token protected)
-        |                         |
-        | /humanaudio             | /human fallback
-        v                         v
-  CosyVoice FastAPI ------> LiveTalking ------> RTMP / WebRTC
+        |              ^          |
+        | script text  | PCM      | WAV via /humanaudio
+        v              |          v
+  CosyVoice FastAPI ---+     LiveTalking (--tts none) ------> RTMP / WebRTC
                                   |
                                   v
                              MuseTalk avatar
@@ -33,13 +33,8 @@ Console / Policy / Product Truth
 1. Ubuntu 主机安装 NVIDIA 驱动、Docker Engine 与 NVIDIA Container Toolkit。
 2. 将 `config/runtime.example.env` 和 `config/runtime-gateway.example.env` 分别复制为主机上的私密 `runtime.env` 与 `gateway.env`，填入 RTMP、模型和形象的绝对路径。每次 Docker Compose 启动都必须同时加载这两个文件；前者提供 worker、observer 和输出探针配置，后者提供 Gateway、Avatar、录屏和 CosyVoice 模型配置。Gateway 的宿主机端口默认只绑定 `127.0.0.1`；只有控制台分机部署时才可把 `RUNTIME_GATEWAY_HOST_BIND` 改为经审批的私网地址，并用防火墙限制来源，禁止使用 `0.0.0.0` 或公网暴露。
 3. 准备 LiveTalking/MuseTalk 所需权重到 `MODEL_VOLUME_PATH`，准备已授权 Avatar 到 `AVATAR_VOLUME_PATH`。
-4. 先启动画面和回退 TTS：
-
-```bash
-docker compose --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env -f infra/compose/docker-compose.runtime.yml up
-```
-
-5. 启用 CosyVoice 语音链路时使用 profile：
+4. 按 `docs/DEPLOYMENT_RUNBOOK.md` 2.5 节设置 `COSYVOICE_MODEL_KIND`（锁定的 Fun-CosyVoice3 用 `zero_shot`）并准备只读声线库 `COSYVOICE_VOICE_LIBRARY_PATH`。
+5. 节目脚本和播报都由 CosyVoice 合成，LiveTalking 以 `--tts none` 运行、自身不合成语音，因此启动时必须带 `cosyvoice` profile：
 
 ```bash
 docker compose --profile cosyvoice --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env -f infra/compose/docker-compose.runtime.yml up
@@ -47,7 +42,7 @@ docker compose --profile cosyvoice --env-file /srv/shuzhiren/runtime.env --env-f
 
 CosyVoice 与 MuseTalk 同占一张 4090 时必须做真实压测。首版只开一个 Avatar 会话；如果长时间直播中显存、帧率或首包延迟不稳定，优先将 CosyVoice 改为第二 GPU 或独立语音服务，不能牺牲画面稳定性。仓库锁定的 `Fun-CosyVoice3-0.5B-2512` 输出原始 16-bit PCM 为 24 kHz，因此 Gateway 默认 `COSYVOICE_SAMPLE_RATE=24000` 并将 PCM 封装为 WAV 后投给 LiveTalking；切换模型前必须按该模型实际采样率显式修改此值并试听验收，不能沿用 22,050 Hz 造成音高和时长异常。`COSYVOICE_MODEL_PATH` 是宿主机权重目录，Compose 将它只读挂载到容器 `/opt/CosyVoice/CosyVoice/pretrained_models`；`COSYVOICE_MODEL_DIR` 必须写成该容器内的绝对模型路径，不能写相对路径。
 
-Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/healthz`；只有二者健康后才启动 runtime worker。worker 的私网 `/healthz` 同时检查数据库连通性与轮询新鲜度，observer 的私网 `/healthz` 检查观测循环新鲜度；两者均使用 Compose 内部端口且带 `unless-stopped` 重启策略。首次载入模型时 LiveTalking 有 60 秒启动宽限，超过后仍不健康会保留失败状态而不是让 worker 盲目投递。CosyVoice 是可选 profile，只有显式设置 `COSYVOICE_REQUIRED=true` 才会把其不可用升级为 Gateway 健康失败。
+Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/healthz`；只有二者健康后才启动 runtime worker。worker 的私网 `/healthz` 同时检查数据库连通性与轮询新鲜度，observer 的私网 `/healthz` 检查观测循环新鲜度；两者均使用 Compose 内部端口且带 `unless-stopped` 重启策略。首次载入模型时 LiveTalking 有 60 秒启动宽限，超过后仍不健康会保留失败状态而不是让 worker 盲目投递。CosyVoice 仍是 Compose profile，但 Compose 中 `COSYVOICE_REQUIRED` 默认 `true`：CosyVoice 不可用时 Gateway `/healthz` 返回失败，worker 不会投递。
 
 `STREAM_FPS` 会实际传入 LiveTalking；当前锁定的 MuseTalk 路径要求 `25`，部署预检会拒绝其他值。画面分辨率由经过批准的 Avatar 源视频决定，当前开源运行时没有可安全覆盖它的通用启动参数，因此模板不提供看似有效但实际无效的 `STREAM_RESOLUTION` 开关。推流目的端的真实帧率、码率与分辨率仍必须由私网输出探针和试播验收测得。
 
@@ -59,8 +54,8 @@ Compose 会先探测 LiveTalking `/api/admin/sessions`，再探测 Gateway `/hea
 - `POST /api/v1/runtime/media`：仅允许对处于 `LIVE` 的场次发起受控的备用节目或人工接管；服务端只使用该场次已绑定的运行时会话，并将场次切至 `DEGRADED`。`START`、`RECOVER` 和 `END` 必须走场次命令接口，不能绕过预检、额度、状态机和 Gateway 确认。
 - `POST /api/v1/live-runs/{runId}/speech-dispatches`：只接收观众问题与幂等键，不接收自由播报文本。控制面仅在场次直播中、已绑定真实会话、冻结商品版本仍获批准且策略允许时，从已批准商品事实生成文案并写入 `speech.dispatch`；高风险问题仅返回人工接管结论，不会入队。
 - 每个声音授权资产还必须登记运行时声线标识。场次创建时冻结该资产，实际 `speech.dispatch` 只从冻结资产读取该标识；全局环境变量不能替换任何租户或场次的授权声线。声音资产撤销、到期或缺失标识时，播报会 fail-closed。
-- Gateway 的 `POST /v1/speak`：必须带 outbox 生成的 `command_id`；默认走 CosyVoice -> WAV -> LiveTalking `/humanaudio`，`provider: "livetalking"` 才允许使用 LiveTalking 的回读模式。与媒体命令共用有界幂等缓存，网络重试不会重复播报相同语音。
-- Gateway 的 `POST /v1/media`：只接受 `start_program`、`switch_to_fallback`、`switch_to_human`、`stop_program`。开播会选择 `PROGRAM_AUDIOTYPE` 并开始录制；回退和人工接管会先打断当前语音再切换到各自固定动作；结束会中断语音并结束录制。三个动作索引必须在已批准的 LiveTalking Avatar 包中配置。
+- Gateway 的 `POST /v1/speak`：必须带 outbox 生成的 `command_id` 和冻结的声线绑定；无论 `provider` 取值，都由 CosyVoice 按 `COSYVOICE_MODEL_KIND` 合成，封装为 WAV 后经 LiveTalking `/humanaudio` 注入，Gateway 不调用 LiveTalking 的 `/human`。与媒体命令共用有界幂等缓存，网络重试不会重复播报相同语音。
+- Gateway 的 `POST /v1/media`：只接受 `start_program`、`insert_program`、`resume_program`、`switch_to_fallback`、`switch_to_human`、`stop_program`；带节目脚本的命令先由 CosyVoice 合成并经 `/humanaudio` 注入。开播会选择 `PROGRAM_AUDIOTYPE` 并开始录制；回退和人工接管会先打断当前语音再切换到各自固定动作；结束会中断语音并结束录制。三个动作索引必须在已批准的 LiveTalking Avatar 包中配置。
 - Gateway 的 `GET /healthz` 会实际请求 LiveTalking 的 `/api/admin/sessions`，而不是只检查环境变量；CosyVoice 通过 `/openapi.json` 探测。若 `COSYVOICE_REQUIRED=true`，CosyVoice 不可用会让 Gateway 健康检查返回 `503`。
 - 该健康检查仅证明 Gateway 能连通已启动的开源服务，不证明 RTMP 目的端已收到视频、实际输出帧率/码率、音画同步或平台侧接收正常；这些必须由后续运行时观测器和试播验收分别证明，不能把 `200` 当作开播质量结论。
 - 镜像构建会以 `runtime/patches/livetalking-observability.patch` 为外置补丁向固定的 LiveTalking 源码增加只读 `/api/admin/runtime-metrics`。Gateway 的受保护接口 `GET /v1/observations/{session_id}` 据此返回会话存活、说话/录制状态、进程内推理 FPS、RTMP writer 接收帧状态、配置码率和 GPU 利用率/显存；`npm run deploy:check` 会验证该补丁可以应用。RTMP writer 接收帧并不等于平台目的端收到视频，配置码率也不等于实测上行码率。

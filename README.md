@@ -51,13 +51,14 @@
 - Linux 4090 服务器的 SSH 访问；建议 Ubuntu 22.04、NVIDIA 驱动和 Docker 已就绪。
 - 目标平台合法推流地址和 Stream Key。Stream Key 只写入 `STREAM_KEY_FILE` 指向的只读文件，不写入任何 env 文件（见 Runbook 2.3 节）。
 - 对真人肖像、声音、商品图片、音乐和脚本的书面授权。
-- 所用模型权重的许可证确认，以及在线语音服务（LiveTalking 默认的 edge-tts）的使用条款评估。
+- 所用模型权重的许可证确认。语音全部由 CosyVoice 合成后经 LiveTalking `/humanaudio` 注入，LiveTalking 以 `--tts none` 运行，不调用 edge-tts 等在线语音服务。
+- CosyVoice 模型类型 `COSYVOICE_MODEL_KIND`（`sft` 或 `zero_shot`；锁定的 Fun-CosyVoice3 只能用 `zero_shot`）和只读声线库 `COSYVOICE_VOICE_LIBRARY_PATH`：每个已批准声线一个 `<runtime_voice_id>/` 目录，含 `prompt.wav` 与 `prompt.txt`（Fun-CosyVoice3 的 prompt 文本须含 `<|endofprompt|>`）。准备步骤见 Runbook 2.5 节；从旧版本升级前须按 2.6 节排空旧的 `media.dispatch`/`speech.dispatch` 事件。
 
 ## 许可证与授权
 
 仓库根目录没有 `LICENSE` 文件，仓库自有代码的分发许可证需仓库所有者确认。第三方开源组件（LiveTalking、CosyVoice、Matcha-TTS、MuseTalk）的锁定提交、许可证、LiveTalking 修改说明，以及部署时挂载的模型权重见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-模型权重、数字人形象和声线素材都不在仓库中，部署方需自行取得：每组权重的许可证与商业使用确认、人物肖像与声音的本人书面授权、在线语音服务的使用许可。清单见 [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) 第 7 节。这些授权与审查结论由部署方在仓库之外留存。
+模型权重、数字人形象和声线素材都不在仓库中，部署方需自行取得：每组权重的许可证与商业使用确认、人物肖像的本人书面授权，以及 `zero_shot` 声线库中每段参考音频的声音本人书面授权。清单见 [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) 第 7 节。这些授权与审查结论由部署方在仓库之外留存。
 - SKU 主数据：价格、库存、规格、赠品、资质、售后、禁说项和 FAQ。
 - 场控负责人及高风险问题的人工接管规则。
 
