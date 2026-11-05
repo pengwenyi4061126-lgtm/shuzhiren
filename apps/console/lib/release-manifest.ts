@@ -100,7 +100,7 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
     models: models.rows.map((model) => ({ id: model.id, component: model.component, name: model.name, version: model.version, approval: model.approval_status, sourceCommit: model.source_commit, artifactHash: model.artifact_hash, evidenceRef: model.evidence_ref })),
     assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined, objectKey: asset.object_key, checksum: asset.checksum, runtimeVoiceId: asset.runtime_voice_id ?? undefined, rightsScope: asset.rights_scope, source: asset.source_ref }))
   });
-  const frozenSnapshotVerified = row.frozen_manifest_sha256 && isRecord(row.frozen_manifest) ? hashManifest(row.frozen_manifest) === row.frozen_manifest_sha256 : undefined;
+  const frozenSnapshotVerified = row.frozen_manifest_sha256 && isRecord(row.frozen_manifest) ? snapshotMatchesHash(row.frozen_manifest, row.frozen_manifest_sha256) : undefined;
   return { ...manifest, frozenSha256: row.frozen_manifest_sha256 ?? undefined, frozenSnapshotVerified };
 }
 
@@ -125,6 +125,13 @@ function hashedManifest(manifest: Omit<RunReleaseManifest, "sha256" | "frozenSha
 }
 
 function hashManifest(manifest: unknown) { return createHash("sha256").update(canonicalJson(manifest)).digest("hex"); }
+
+// A stored snapshot embeds the sha256 it was sealed with; that hash covers the
+// manifest content without the embedded sha256 field itself.
+function snapshotMatchesHash(snapshot: Record<string, unknown>, expectedSha256: string) {
+  const { sha256: embeddedSha256, ...content } = snapshot;
+  return (embeddedSha256 === undefined || embeddedSha256 === expectedSha256) && hashManifest(content) === expectedSha256;
+}
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
