@@ -90,7 +90,7 @@ export async function recordProgramOutputObservation(context: RequestContext, in
   }
 
   return withTenantTransaction(context.tenantId, async (client) => {
-    const existing = await client.query<PersistentObservationRow>("select id, tenant_id, live_run_id, outbox_event_id, runtime_session_id, command_id, program_segment_id, control_action, source, evidence_ref, content_sha256, confidence, media_time_ms, observed_at from program_output_observations where outbox_event_id = $1::uuid", [input.outboxEventId]);
+    const existing = await client.query<PersistentObservationRow>("select id, tenant_id, live_run_id, outbox_event_id, runtime_session_id, command_id, program_segment_id, control_action, source, evidence_ref, content_sha256, confidence, media_time_ms, observed_at, verifier_issuer, verifier_key_id, attested_at, attestation_expires_at, attestation_sha256 from program_output_observations where outbox_event_id = $1::uuid", [input.outboxEventId]);
     if (existing.rows[0]) {
       const observation = persistentObservation(existing.rows[0]);
       if (!sameObservation(observation, input)) throw new Response("Output observation conflicts with the existing command evidence", { status: 409 });
