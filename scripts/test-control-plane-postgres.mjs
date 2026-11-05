@@ -596,7 +596,7 @@ try {
   const recordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/recordings`, { headers: requestHeaders });
   assert.equal(recordings.status, 200);
   const recordingsBody = await recordings.json();
-  assert.equal(recordingsBody.data.length, 1);
+  assert.deepEqual(recordingsBody.data.map((recording) => recording.id).sort(), [scopeArtifacts.recoverRecordingId, scopeArtifacts.staleRecordingId, recordingRegisteredBody.data.id].sort(), "the recording list must contain the registered evidence exactly once alongside the scope fixtures");
   assert.equal(recordingsBody.data[0].objectKey, recordingInput.objectKey);
   const recordingAudit = await client.query("select event_type, detail from audit_events where resource_type = 'recording_evidence'");
   assert.deepEqual(recordingAudit.rows.map((row) => row.event_type), ["recording_evidence.registered"]);
