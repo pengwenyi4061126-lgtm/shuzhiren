@@ -79,16 +79,22 @@ async function claimDelivery(target) {
   try {
     await client.query("begin");
     await client.query("select set_config('app.tenant_id', $1::text, true)", [target.tenantId]);
+    // A delivery claimed for its final attempt is never claimed again. If that attempt ended without retry() writing
+    // the outcome (the process stopped or the update failed), fail it once the lease expires instead of leaving it delivering.
+    await client.query(`update alert_notification_deliveries
+      set state = 'failed', lease_expires_at = null, updated_at = now(), last_error = 'lease expired after final attempt'
+      where tenant_id = $1::uuid and target_id = $2::text and state = 'delivering'
+        and lease_expires_at <= now() and attempts >= $3::integer`, [target.tenantId, target.id, maxAttempts]);
     const selected = await client.query(`select d.id, d.runtime_alert_id as alert_id, a.live_run_id, a.severity, a.code, a.message, a.opened_at, d.attempts
       from alert_notification_deliveries d
-      join runtime_alerts a on a.id = d.runtime_alert_id
-      where d.target_id = $1::text
-        and d.attempts < $2::integer
+      join runtime_alerts a on a.id = d.runtime_alert_id and a.tenant_id = d.tenant_id
+      where d.tenant_id = $1::uuid and d.target_id = $2::text
+        and d.attempts < $3::integer
         and (d.state = 'pending' or (d.state = 'delivering' and d.lease_expires_at <= now()))
         and d.available_at <= now()
       order by d.created_at
       for update of d skip locked
-      limit 1`, [target.id, maxAttempts]);
+      limit 1`, [target.tenantId, target.id, maxAttempts]);
     const delivery = selected.rows[0];
     if (!delivery) { await client.query("commit"); return null; }
     await client.query("update alert_notification_deliveries set state = 'delivering', attempts = attempts + 1, lease_expires_at = now() + ($2::double precision * interval '1 second'), updated_at = now(), last_error = null where id = $1::uuid", [delivery.id, leaseSeconds]);

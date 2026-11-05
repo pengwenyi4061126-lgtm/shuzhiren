@@ -100,6 +100,43 @@ assert.equal(typeof lib.withDeadline, "function", "lib.mjs must export withDeadl
 }
 console.log("PASS  alert notifier bounds the whole /healthz connectivity check by DATABASE_QUERY_TIMEOUT_MS (N3)");
 
+// N4: claim only takes deliveries with attempts below ALERT_NOTIFIER_MAX_ATTEMPTS and sets them to delivering. When
+// the process stopped after claiming the final attempt, the delivery stayed delivering forever. The claim transaction
+// must first mark such deliveries failed once their lease has expired, and leave every other delivery alone.
+{
+  const otherTenantId = "0f0e0d0c-0b0a-4908-8706-050403020100";
+  const delivering = { tenant_id: tenantId, target_id: "oncall-critical", state: "delivering", attempts: 3, leaseOffsetMs: -60_000 };
+  const deliveries = [
+    { ...delivering, id: "final-attempt-lease-expired" },
+    { ...delivering, id: "final-attempt-lease-active", leaseOffsetMs: 60_000 },
+    { ...delivering, id: "earlier-attempt-lease-expired", attempts: 2 },
+    { ...delivering, id: "other-target", target_id: "oncall-other" },
+    { ...delivering, id: "other-tenant", tenant_id: otherTenantId }
+  ];
+  await withNotifier({ env: { ALERT_NOTIFIER_MAX_ATTEMPTS: "3" }, scenario: { deliveries } }, async (run) => {
+    // Every polling cycle commits the enqueue transaction and then the claim transaction.
+    await waitFor(() => readCommits(run.logFile).length >= 2, 5_000, () => "the first polling cycle to commit its claim transaction");
+    const statements = readStatements(run.logFile);
+    assert.deepEqual(statements.filter((statement) => statement.error), [], "no statement of a polling cycle may fail");
+    const rows = new Map(readCommits(run.logFile).at(-1).committed.map((row) => [row.id, row]));
+    const swept = rows.get("final-attempt-lease-expired");
+    assert.equal(swept.state, "failed", "a delivery whose final attempt's lease expired must not stay delivering");
+    assert.equal(swept.last_error, "lease expired after final attempt");
+    assert.equal(swept.lease_expires_at, null);
+    assert.equal(swept.attempts, 3);
+    for (const id of ["final-attempt-lease-active", "earlier-attempt-lease-expired", "other-target", "other-tenant"]) {
+      const row = rows.get(id);
+      const seeded = deliveries.find((delivery) => delivery.id === id);
+      assert.deepEqual({ state: row.state, attempts: row.attempts, last_error: row.last_error }, { state: "delivering", attempts: seeded.attempts, last_error: null }, `delivery ${id} must be left alone`);
+    }
+    const claim = statements.find((statement) => statement.sql.startsWith("select d.id,"));
+    const transaction = statements.filter((statement) => statement.client === claim.client);
+    assert.deepEqual(transaction.map((statement) => statement.sql.split(" ").slice(0, 2).join(" ")), ["begin", "select set_config('app.tenant_id',", "update alert_notification_deliveries", "select d.id,", "commit"], "the sweep must run inside the claim transaction, before the claim");
+    assert.deepEqual(transaction[2].values, [tenantId, "oncall-critical", 3]);
+  });
+}
+console.log("PASS  alert notifier fails deliveries whose final attempt's lease expired (N4)");
+
 async function withNotifier({ targetId = "oncall-critical", minimumSeverity = "critical", env = {}, scenario = {} }, body) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "alert-notifier-test-"));
   const logFile = path.join(directory, "statements.jsonl");
@@ -156,8 +193,17 @@ async function getHealth(port) {
   return { status: response.status, body: await response.json() };
 }
 
+// Entries of the fake pg log. The text after the last newline may be a line the notifier is still writing.
+function readLog(logFile) {
+  return readFileSync(logFile, "utf8").split("\n").slice(0, -1).map((line) => JSON.parse(line));
+}
+
 function readStatements(logFile) {
-  return readFileSync(logFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  return readLog(logFile).filter((entry) => "sql" in entry);
+}
+
+function readCommits(logFile) {
+  return readLog(logFile).filter((entry) => "committed" in entry);
 }
 
 async function availablePort() {
