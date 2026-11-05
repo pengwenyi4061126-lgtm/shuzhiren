@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { lexSql, splitStatements, substitutePsqlIdentifierVariable } from "./lib/sql-lexer.mjs";
 
 const [grants, backupGrants, migration, worker, compose, runtime, channel, notifier] = await Promise.all([
   readFile(new URL("../infra/postgres/service-principals.sql", import.meta.url), "utf8"),
@@ -36,6 +37,28 @@ for (const source of [
 for (const forbidden of ["grant select on media_assets", "grant select on show_revision_media_assets"]) if (grants.toLowerCase().includes(forbidden)) throw new Error(`Service principal grants must stay column-scoped: ${forbidden}`);
 for (const forbidden of ["grant all", "grant delete", " on memberships to shuzhiren_", " on users to shuzhiren_", " on products to shuzhiren_", " on show_revisions to shuzhiren_", " on audit_chain_heads to shuzhiren_"]) {
   if (grants.toLowerCase().includes(forbidden)) throw new Error(`Service principal grants must not include: ${forbidden}`);
+}
+// D4: the control-plane account owns nothing; control-plane-principal.sql grants it DML through the only psql
+// variable :"control_plane_role", starting with a full revoke so the file can be run again.
+{
+  const controlPlaneGrants = await readFile(new URL("../infra/postgres/control-plane-principal.sql", import.meta.url), "utf8");
+  // Throws unless :"control_plane_role" is the only psql variable and there is no meta-command.
+  const resolved = substitutePsqlIdentifierVariable(controlPlaneGrants, "control_plane_role", "shuzhiren_control_plane");
+  const statements = splitStatements(lexSql(resolved).tokens).map((statement) => resolved.slice(statement.start, statement.end).replace(/\s+/g, " ").trim().toLowerCase());
+  const role = "\"shuzhiren_control_plane\"";
+  const expected = [
+    `revoke all privileges on all tables in schema public from ${role}`,
+    `revoke all privileges on all sequences in schema public from ${role}`,
+    `grant usage on schema public to ${role}`,
+    `grant select, insert, update, delete on all tables in schema public to ${role}`,
+    `revoke insert, update, delete on schema_migrations from ${role}`,
+    `revoke insert, update, delete on audit_chain_heads from ${role}`,
+    `revoke all privileges on membership_admin_guards from ${role}`,
+    `grant usage, select on all sequences in schema public to ${role}`,
+    `alter default privileges in schema public grant select, insert, update, delete on tables to ${role}`,
+    `alter default privileges in schema public grant usage, select on sequences to ${role}`
+  ];
+  if (JSON.stringify(statements) !== JSON.stringify(expected)) throw new Error(`control-plane-principal.sql must contain exactly these statements in order:\n${expected.join(";\n")};\nfound:\n${statements.join(";\n")};`);
 }
 for (const [template, key] of [[runtime, "RUNTIME_WORKER_DATABASE_URL="], [channel, "CHANNEL_ADAPTER_DATABASE_URL="], [notifier, "ALERT_NOTIFIER_DATABASE_URL="]]) {
   if (!template.includes(key)) throw new Error(`Service template must supply ${key}`);

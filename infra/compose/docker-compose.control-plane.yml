@@ -21,6 +21,8 @@ services:
     profiles: ["migrate"]
     image: ${CONTROL_PLANE_MIGRATOR_IMAGE:?set-in-control-plane-compose-env}
     restart: "no"
+    # D4: the Migrator connects as the migration owner (MIGRATION_OWNER_DATABASE_URL), never with the
+    # application account in control.env, which this one-shot service deliberately does not load.
     env_file:
-      - ${CONTROL_PLANE_ENV_FILE:?set-in-control-plane-compose-env}
+      - ${MIGRATION_OWNER_ENV_FILE:?set-in-control-plane-compose-env}
     command: ["node", "scripts/migrate.mjs"]

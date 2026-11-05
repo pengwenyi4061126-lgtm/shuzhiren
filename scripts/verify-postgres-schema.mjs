@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { loadMigrations } from "../apps/console/scripts/migration-integrity.mjs";
+import { substitutePsqlIdentifierVariable } from "./lib/sql-lexer.mjs";
 
 const { Client } = pg;
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -143,6 +145,7 @@ try {
   if (allowPrivileged) {
     await verifyRlsPolicyWithUnprivilegedRole();
   }
+  await verifyControlPlanePrincipal(identity.rows[0]?.role);
   await verifyGovernedEvidenceImmutability();
 } catch (error) {
   errors.push(error instanceof Error ? error.message : "数据库结构检查失败");
@@ -339,6 +342,60 @@ async function verifyGovernedEvidenceImmutability() {
     }
   } catch (error) {
     errors.push(error instanceof Error ? `治理证据不可变性检查失败：${error.message}` : "治理证据不可变性检查失败");
+  } finally {
+    await client.query("rollback");
+  }
+}
+
+// D4: the control-plane account owns nothing, cannot bypass RLS, cannot write the migration ledger or chain heads,
+// and has DML on every other table (from infra/postgres/control-plane-principal.sql). The role checked is
+// --control-plane-role when given (a deployment checks its real account, for example as the migration owner with
+// --allow-privileged --control-plane-role shuzhiren_control_plane), else the connected account without
+// --allow-privileged. With --allow-privileged and no --control-plane-role (CI as superuser), a temporary role
+// receives the grants of control-plane-principal.sql in a rolled-back transaction, so the script itself is
+// verified against this database whatever roles other tests left in the cluster.
+async function verifyControlPlanePrincipal(currentRole) {
+  const explicit = option("--control-plane-role");
+  const probe = !explicit && allowPrivileged;
+  const requested = explicit ?? currentRole;
+  if (!probe && (await client.query("select 1 from pg_roles where rolname = $1", [requested])).rowCount !== 1) { errors.push(`控制面数据库账号不存在：${requested}`); return; }
+  await client.query("begin");
+  try {
+    let role = requested;
+    if (probe) {
+      role = `shuzhiren_control_plane_probe_${process.pid}`;
+      await client.query(`create role "${role}" nologin noinherit`);
+      const script = await readFile(path.join(root, "infra", "postgres", "control-plane-principal.sql"), "utf8");
+      await client.query(substitutePsqlIdentifierVariable(script, "control_plane_role", role));
+    }
+    const label = probe ? `${role}（按 control-plane-principal.sql 授权的临时账号）` : role;
+    const attributes = (await client.query("select rolsuper, rolbypassrls from pg_roles where rolname = $1", [role])).rows[0];
+    if (attributes?.rolsuper || attributes?.rolbypassrls) errors.push(`控制面数据库账号 ${label} 不得具备 SUPERUSER 或 BYPASSRLS`);
+    const owned = await client.query(`select c.relname as name from pg_class c where c.relnamespace = 'public'::regnamespace and c.relowner = (select oid from pg_roles where rolname = $1)
+      union all select p.proname from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proowner = (select oid from pg_roles where rolname = $1)
+      union all select t.typname from pg_type t where t.typnamespace = 'public'::regnamespace and t.typtype in ('e', 'd') and t.typowner = (select oid from pg_roles where rolname = $1)
+      order by 1`, [role]);
+    if (owned.rows.length) errors.push(`控制面数据库账号 ${label} 不得是 schema 对象的 owner（D4，应由 shuzhiren_migration_owner 拥有）：${owned.rows.map((row) => row.name).join(", ")}`);
+    const privileges = await client.query(`select c.relname as table_name,
+        has_table_privilege($1, c.oid, 'select') as can_select, has_table_privilege($1, c.oid, 'insert') as can_insert,
+        has_table_privilege($1, c.oid, 'update') as can_update, has_table_privilege($1, c.oid, 'delete') as can_delete,
+        has_table_privilege($1, c.oid, 'truncate') as can_truncate
+      from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') order by c.relname`, [role]);
+    const byTable = new Map(privileges.rows.map((row) => [row.table_name, row]));
+    for (const table of ["schema_migrations", "audit_chain_heads"]) {
+      const row = byTable.get(table);
+      if (row && (row.can_insert || row.can_update || row.can_delete || row.can_truncate)) errors.push(`控制面数据库账号 ${label} 不得写入 ${table}`);
+      if (row && !row.can_select) errors.push(`控制面数据库账号 ${label} 缺少 ${table} 的 SELECT 权限`);
+    }
+    for (const row of privileges.rows) {
+      if (["schema_migrations", "audit_chain_heads", "membership_admin_guards"].includes(row.table_name)) continue;
+      const missing = ["select", "insert", "update", "delete"].filter((privilege) => !row[`can_${privilege}`]);
+      if (missing.length) errors.push(`控制面数据库账号 ${label} 缺少 ${row.table_name} 的 ${missing.join("/").toUpperCase()} 权限（执行 control-plane-principal.sql）`);
+      if (row.can_truncate) errors.push(`控制面数据库账号 ${label} 不得 TRUNCATE ${row.table_name}`);
+    }
+    for (const table of ["channel_connections", "settlement_batches", "settlement_reconciliation_exceptions"]) if (!byTable.has(table)) errors.push(`控制面授权检查缺少表：${table}`);
+  } catch (error) {
+    errors.push(`控制面数据库账号检查失败：${error instanceof Error ? error.message : "unknown"}`);
   } finally {
     await client.query("rollback");
   }

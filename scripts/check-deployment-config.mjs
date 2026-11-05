@@ -40,6 +40,7 @@ const option = (name, fallback) => {
 const files = {
   control: option("--control", "config/control-plane.example.env"),
   controlCompose: option("--control-compose", "config/control-plane-compose.example.env"),
+  migrationOwner: option("--migration-owner", "config/control-plane-migration-owner.example.env"),
   runtime: option("--runtime", "config/runtime.example.env"),
   gateway: option("--gateway", "config/runtime-gateway.example.env"),
   channelAdapter: option("--channel-adapter", "config/channel-adapter.example.env"),
@@ -294,9 +295,30 @@ function databasePrincipal(values, fileName, key) {
   }
 }
 
-const [controlText, controlComposeText, runtimeText, gatewayText, channelAdapterText, alertNotifierText, lockText] = await Promise.all([files.control, files.controlCompose, files.runtime, files.gateway, files.channelAdapter, files.alertNotifier, files.lock].map((file) => readFile(file, "utf8").catch((error) => { errors.push(`无法读取 ${file}: ${error.message}`); return ""; })));
+// D4 (2026-11-05): the control-plane-migrate profile connects as the dedicated migration owner
+// (shuzhiren_migration_owner, BYPASSRLS, owner of every schema object), never as an application account. Its
+// connection string lives in its own env file (MIGRATION_OWNER_ENV_FILE) that only the migrate profile loads.
+function migrationOwnerPrincipal(applicationPrincipals) {
+  required(controlCompose, "控制面 Compose", ["MIGRATION_OWNER_ENV_FILE"]);
+  const ownerEnvFile = controlCompose.get("MIGRATION_OWNER_ENV_FILE");
+  if (ownerEnvFile && ownerEnvFile === controlCompose.get("CONTROL_PLANE_ENV_FILE")) errors.push("控制面 Compose 的 MIGRATION_OWNER_ENV_FILE 必须是独立于 CONTROL_PLANE_ENV_FILE 的迁移账号 env 文件");
+  required(migrationOwner, "迁移账号", ["MIGRATION_OWNER_DATABASE_URL"]);
+  if (migrationOwner.has("DATABASE_URL")) errors.push("迁移账号 env 文件只能用 MIGRATION_OWNER_DATABASE_URL 提供连接串，不得定义 DATABASE_URL");
+  const owner = databasePrincipal(migrationOwner, "迁移账号", "MIGRATION_OWNER_DATABASE_URL");
+  // Read again without reporting: an invalid control-plane DATABASE_URL is already reported once above.
+  const controlPrincipal = (() => { try { return decodeURIComponent(new URL(control.get("DATABASE_URL") ?? "").username) || undefined; } catch { return undefined; } })();
+  if (owner && applicationPrincipals.includes(owner)) errors.push("迁移账号必须是独立的 PostgreSQL 用户，不得与控制面、runtime worker、渠道适配器或告警通知器相同（D4）");
+  if (applicationPrincipals.includes("shuzhiren_migration_owner")) errors.push("应用与服务的连接串不得使用迁移 owner 账号 shuzhiren_migration_owner（D4）");
+  if (owner && controlPrincipal && owner !== controlPrincipal) {
+    const database = (value) => { try { return decodeURIComponent(new URL(value).pathname.replace(/^\//, "")); } catch { return undefined; } };
+    if (database(migrationOwner.get("MIGRATION_OWNER_DATABASE_URL")) !== database(control.get("DATABASE_URL"))) errors.push("MIGRATION_OWNER_DATABASE_URL 与控制面 DATABASE_URL 必须指向同一个数据库名");
+  }
+}
+
+const [controlText, controlComposeText, runtimeText, gatewayText, channelAdapterText, alertNotifierText, lockText, migrationOwnerText] = await Promise.all([files.control, files.controlCompose, files.runtime, files.gateway, files.channelAdapter, files.alertNotifier, files.lock, files.migrationOwner].map((file) => readFile(file, "utf8").catch((error) => { errors.push(`无法读取 ${file}: ${error.message}`); return ""; })));
 const control = parseEnv(controlText);
 const controlCompose = parseEnv(controlComposeText);
+const migrationOwner = parseEnv(migrationOwnerText);
 const runtime = parseEnv(runtimeText);
 const gateway = parseEnv(gatewayText);
 const channelAdapter = parseEnv(channelAdapterText);
@@ -323,6 +345,7 @@ const databasePrincipals = [
   databasePrincipal(alertNotifier, "告警通知器", "ALERT_NOTIFIER_DATABASE_URL")
 ].filter(Boolean);
 if (databasePrincipals.length === 4 && new Set(databasePrincipals).size !== databasePrincipals.length) errors.push("控制面、runtime worker、渠道适配器和告警通知器必须使用四个不同的 PostgreSQL 用户名");
+migrationOwnerPrincipal(databasePrincipals);
 outboundControlPlaneUrl(channelAdapter, "渠道适配器");
 positiveInteger(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_PORT");
 positiveInteger(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS");

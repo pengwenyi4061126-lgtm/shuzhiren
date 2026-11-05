@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import pg from "pg";
+import { substitutePsqlIdentifierVariable } from "./lib/sql-lexer.mjs";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
@@ -51,6 +52,7 @@ try {
   assert.deepEqual(backupSchema.rows, [{ allowed: true, can_connect: true }], "backup principal must retain only archive-read connectivity and schema usage");
   const backupMemberships = await client.query("select count(*)::int as count from pg_auth_members membership join pg_roles member_role on member_role.oid = membership.member where member_role.rolname = 'shuzhiren_backup'");
   assert.equal(backupMemberships.rows[0].count, 0, "backup principal must not inherit another role");
+  await assertControlPlanePrincipal();
 
   console.log("PASS  database service principals and the isolated backup reader retain only their required privileges");
 } finally {
@@ -166,6 +168,107 @@ async function assertWorkerVoiceBindingRead() {
     await client.query("rollback to savepoint voice_binding_column");
   } finally {
     await client.query("rollback to savepoint voice_binding_read");
+  }
+}
+// D4 (2026-11-05): a dedicated migration owner (BYPASSRLS) owns every schema object, and the control plane connects
+// as shuzhiren_control_plane, which owns nothing and gets its DML from control-plane-principal.sql. This replays the
+// Runbook path of an existing deployment whose application account owned the tables: REASSIGN OWNED moves the
+// objects to the migration owner, which then runs the principal scripts. Everything is rolled back afterwards.
+async function assertControlPlanePrincipal() {
+  const controlPlane = "shuzhiren_control_plane";
+  const owner = "shuzhiren_migration_owner";
+  const legacy = `shuzhiren_d4_legacy_${process.pid}`;
+  const objectsOwnedBy = async (role) => (await client.query(`select kind, name from (
+      select 'relation' as kind, c.oid::regclass::text as name, c.relowner as owner_oid, c.oid as oid, 'pg_class'::regclass as catalog
+        from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p', 'v', 'm', 'S')
+      union all
+      select 'function', p.oid::regprocedure::text, p.proowner, p.oid, 'pg_proc'::regclass from pg_proc p where p.pronamespace = 'public'::regnamespace
+      union all
+      select 'type', t.oid::regtype::text, t.typowner, t.oid, 'pg_type'::regclass from pg_type t where t.typnamespace = 'public'::regnamespace and t.typtype in ('e', 'd')
+    ) object
+    where object.owner_oid = (select oid from pg_roles where rolname = $1)
+      and not exists (select 1 from pg_depend d where d.classid = object.catalog and d.objid = object.oid and d.deptype = 'e')
+    order by kind, name`, [role])).rows;
+  await client.query("savepoint d4_principal");
+  try {
+    await client.query(`create role ${legacy} nologin`);
+    await client.query(`do $$ begin if not exists (select 1 from pg_roles where rolname = '${owner}') then create role ${owner} nologin noinherit bypassrls; end if; end $$;`);
+    await client.query(`do $$ begin if not exists (select 1 from pg_roles where rolname = '${controlPlane}') then create role ${controlPlane} nologin noinherit; end if; end $$;`);
+    // The legacy layout: the application account owns every migration object (extension members excluded).
+    const migrationObjects = await objectsOwnedBy((await client.query("select current_user as role")).rows[0].role);
+    assert.ok(migrationObjects.some((object) => object.name === "channel_connections"), "the probe must find the migration objects to hand over");
+    for (const object of migrationObjects) await client.query(`alter ${object.kind === "relation" ? "table" : object.kind} ${object.name} owner to ${legacy}`);
+    // Runbook steps for an existing deployment, run by a superuser inside the dedicated database: the migration
+    // owner also owns the database (so it may create objects in public and install trusted extensions), then
+    // REASSIGN OWNED hands it every object of the old owner.
+    await client.query(`do $$ begin execute format('alter database %I owner to ${owner}', current_database()); end $$;`);
+    await client.query(`reassign owned by ${legacy} to ${owner}`);
+    assert.deepEqual(await objectsOwnedBy(legacy), [], "REASSIGN OWNED must leave the old application account owning nothing");
+    assert.equal((await objectsOwnedBy(owner)).length, migrationObjects.length, "the migration owner must own every migration object");
+
+    // The migration owner runs the principal scripts; control-plane-principal.sql twice, so a rerun is a no-op.
+    const controlPlaneGrants = substitutePsqlIdentifierVariable(await readFile(new URL("../infra/postgres/control-plane-principal.sql", import.meta.url), "utf8"), "control_plane_role", controlPlane);
+    await client.query(`set local role ${owner}`);
+    await client.query(grants);
+    await client.query(controlPlaneGrants);
+    await client.query("reset role");
+    const aclSnapshot = async () => (await client.query("select c.relname, c.relacl::text as acl from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p', 'S') order by c.relname")).rows;
+    const firstRun = await aclSnapshot();
+    await client.query(`grant truncate, references on live_runs to ${controlPlane}`);
+    await client.query(`set local role ${owner}`);
+    await client.query(controlPlaneGrants);
+    await client.query("reset role");
+    assert.deepEqual(await aclSnapshot(), firstRun, "rerunning control-plane-principal.sql must restore exactly its own grants");
+
+    assert.deepEqual(await objectsOwnedBy(controlPlane), [], "the control-plane account must not own any table, sequence, function or type");
+    const attributes = (await client.query("select rolsuper, rolbypassrls from pg_roles where rolname = $1", [controlPlane])).rows[0];
+    assert.deepEqual(attributes, { rolsuper: false, rolbypassrls: false }, "the control-plane account must not bypass RLS");
+    const tables = (await client.query("select c.relname from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') order by c.relname")).rows.map((row) => row.relname);
+    const readOnly = new Set(["schema_migrations", "audit_chain_heads"]);
+    for (const table of tables) {
+      for (const privilege of ["select", "insert", "update", "delete"]) {
+        const expected = table === "membership_admin_guards" ? false : readOnly.has(table) ? privilege === "select" : true;
+        await expectTable(controlPlane, table, privilege, expected);
+      }
+      for (const privilege of ["truncate", "references", "trigger"]) await expectTable(controlPlane, table, privilege, false);
+    }
+    for (const table of ["channel_connections", "settlement_batches", "settlement_lines", "settlement_reconciliation_exceptions"]) assert.ok(tables.includes(table), `${table} must exist for the control-plane grant check`);
+
+    // Behavior under the control-plane role: governed DML works, the ledger and chain heads stay read-only.
+    const tenantId = randomUUID();
+    const channelId = randomUUID();
+    const asControlPlane = async (sql, params = []) => {
+      await client.query("savepoint d4_statement");
+      try {
+        await client.query(`set local role ${controlPlane}`);
+        await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+        const result = await client.query(sql, params);
+        await client.query("reset role");
+        await client.query("release savepoint d4_statement");
+        return { rowCount: result.rowCount, rows: result.rows };
+      } catch (error) {
+        // Rolling back to the savepoint also undoes SET LOCAL ROLE.
+        await client.query("rollback to savepoint d4_statement");
+        await client.query("release savepoint d4_statement");
+        return { code: error.code };
+      }
+    };
+    assert.equal((await asControlPlane("insert into tenants (id, slug, name) values ($1, $2, 'D4 control plane')", [tenantId, `d4-${tenantId}`])).rowCount, 1);
+    assert.equal((await asControlPlane("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities) values ($1, $2, 'D4 channel', 'generic-rtmp', 'disabled', 'rtmp', 'secret://d4/channel', '{}'::jsonb)", [channelId, tenantId])).rowCount, 1, "the control plane must insert channel connections");
+    assert.equal((await asControlPlane("update channel_connections set status = 'disabled' where id = $1", [channelId])).rowCount, 1, "the control plane must update channel connections");
+    assert.ok(Number((await asControlPlane("select count(*)::int as count from schema_migrations")).rows?.[0]?.count) > 0, "the control plane must read the migration ledger");
+    assert.equal((await asControlPlane("insert into schema_migrations (name, checksum) values ('999_forged.sql', repeat('0', 64))")).code, "42501", "the control plane must not record migrations");
+    assert.equal((await asControlPlane("delete from schema_migrations")).code, "42501", "the control plane must not delete migration records");
+    assert.equal((await asControlPlane("update audit_chain_heads set last_sequence = 0")).code, "42501", "the control plane must not write chain heads");
+    assert.equal((await asControlPlane("select * from membership_admin_guards")).code, "42501", "the control plane needs no access to the admin guard table");
+
+    // alter default privileges: a table the migration owner creates later is writable by the control plane at once.
+    await client.query(`set local role ${owner}`);
+    await client.query("create table d4_default_privilege_probe (id integer primary key)");
+    await client.query("reset role");
+    for (const privilege of ["select", "insert", "update", "delete"]) await expectTable(controlPlane, "d4_default_privilege_probe", privilege, true);
+  } finally {
+    await client.query("rollback to savepoint d4_principal");
   }
 }
 async function expectColumn(principal, table, column, expected) {

@@ -36,6 +36,29 @@ for (const source of ["control-plane:", "control-plane-migrate:", "profiles: [\"
   if (!compose.includes(source)) throw new Error(`Control-plane Compose must retain private deployment behavior: ${source}`);
 }
 if (compose.includes("build:")) throw new Error("Control-plane production Compose must not build mutable local images");
+// D4: the one-shot Migrator connects as the migration owner from its own env file and never loads the
+// application env file; the application service never sees the migration owner's connection string.
+{
+  const services = yaml.load(compose)?.services ?? {};
+  const envFiles = (service) => [].concat(service?.env_file ?? []).map((entry) => String(typeof entry === "object" && entry !== null ? entry.path : entry));
+  const migrateEnvFiles = envFiles(services["control-plane-migrate"]);
+  if (migrateEnvFiles.length !== 1 || migrateEnvFiles[0] !== "${MIGRATION_OWNER_ENV_FILE:?set-in-control-plane-compose-env}") throw new Error("control-plane-migrate must load only ${MIGRATION_OWNER_ENV_FILE:?set-in-control-plane-compose-env} (D4 migration owner)");
+  if (JSON.stringify(services["control-plane-migrate"]?.environment ?? {}).includes("DATABASE_URL")) throw new Error("control-plane-migrate must take its connection string only from the migration owner env file");
+  if (JSON.stringify(services["control-plane"] ?? {}).includes("MIGRATION_OWNER")) throw new Error("The control-plane service must not receive the migration owner env file or connection string");
+  const composeTemplate = parseEnvFile(environment, "config/control-plane-compose.example.env");
+  if (!composeTemplate.get("MIGRATION_OWNER_ENV_FILE")) throw new Error("Control-plane Compose environment template must document MIGRATION_OWNER_ENV_FILE");
+  if (composeTemplate.get("MIGRATION_OWNER_ENV_FILE") === composeTemplate.get("CONTROL_PLANE_ENV_FILE")) throw new Error("MIGRATION_OWNER_ENV_FILE must be a different file from CONTROL_PLANE_ENV_FILE");
+  const [ownerTemplateText, controlTemplateText] = await Promise.all([
+    readFile(new URL("../config/control-plane-migration-owner.example.env", import.meta.url), "utf8"),
+    readFile(new URL("../config/control-plane.example.env", import.meta.url), "utf8")
+  ]);
+  const ownerTemplate = parseEnvFile(ownerTemplateText, "config/control-plane-migration-owner.example.env");
+  const userOf = (value) => { try { return decodeURIComponent(new URL(value).username); } catch { return ""; } };
+  if (userOf(ownerTemplate.get("MIGRATION_OWNER_DATABASE_URL") ?? "") !== "shuzhiren_migration_owner") throw new Error("config/control-plane-migration-owner.example.env must define MIGRATION_OWNER_DATABASE_URL for shuzhiren_migration_owner");
+  if (ownerTemplate.has("DATABASE_URL")) throw new Error("config/control-plane-migration-owner.example.env must not define DATABASE_URL");
+  if (userOf(parseEnvFile(controlTemplateText, "config/control-plane.example.env").get("DATABASE_URL") ?? "") === "shuzhiren_migration_owner") throw new Error("The control-plane DATABASE_URL must not use the migration owner");
+  if (!migrator.includes("process.env.MIGRATION_OWNER_DATABASE_URL")) throw new Error("The Migrator must connect with MIGRATION_OWNER_DATABASE_URL when it is set");
+}
 for (const source of ["CONTROL_PLANE_ENV_FILE=/srv/shuzhiren/control.env", "CONSOLE_HOST_BIND=127.0.0.1", "CONSOLE_PORT=3000", "CONTROL_PLANE_IMAGE=", "CONTROL_PLANE_MIGRATOR_IMAGE="]) {
   if (!environment.includes(source)) throw new Error(`Control-plane Compose environment template must document ${source}`);
 }

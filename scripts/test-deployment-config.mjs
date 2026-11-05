@@ -138,11 +138,15 @@ const control = env({
 
 const controlCompose = env({
   CONTROL_PLANE_ENV_FILE: "/srv/shuzhiren/control.env",
+  MIGRATION_OWNER_ENV_FILE: "/srv/shuzhiren/migration-owner.env",
   CONSOLE_HOST_BIND: "127.0.0.1",
   CONSOLE_PORT: "3000",
   CONTROL_PLANE_IMAGE: images.controlPlane,
   CONTROL_PLANE_MIGRATOR_IMAGE: images.controlPlaneMigrator
 });
+
+// D4: the control-plane-migrate profile connects as the dedicated migration owner.
+const migrationOwner = env({ MIGRATION_OWNER_DATABASE_URL: "postgresql://shuzhiren_migration_owner:fixture-owner-password@postgres.internal:5432/shuzhiren" });
 
 function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_fixture", sessionId: "session_fixture", telemetryToken, programOutputToken, outputProbeUrl: "http://output-probe.internal:8081/v1/probes/fixture", outputProbeToken }]) {
   return env({
@@ -264,6 +268,7 @@ const files = {
   releaseSbom: path.join(fixtureDirectory, "release-sbom-index.json"),
   releaseProvenance: path.join(fixtureDirectory, "release-provenance-index.json"),
   controlCompose: path.join(fixtureDirectory, "control-compose.env"),
+  migrationOwner: path.join(fixtureDirectory, "migration-owner.env"),
   runtime: path.join(fixtureDirectory, "runtime.env"),
   gateway: path.join(fixtureDirectory, "gateway.env"),
   channel: path.join(fixtureDirectory, "channel.env"),
@@ -271,13 +276,13 @@ const files = {
 };
 
 function check(options = []) {
-  return spawnSync(process.execPath, [checker, "--control", files.control, "--control-compose", files.controlCompose, "--runtime", files.runtime, "--gateway", files.gateway, "--channel-adapter", files.channel, "--alert-notifier", files.alert, "--source-root", root, "--require-output-probe", ...options], { cwd: root, encoding: "utf8" });
+  return spawnSync(process.execPath, [checker, "--control", files.control, "--control-compose", files.controlCompose, "--migration-owner", files.migrationOwner, "--runtime", files.runtime, "--gateway", files.gateway, "--channel-adapter", files.channel, "--alert-notifier", files.alert, "--source-root", root, "--require-output-probe", ...options], { cwd: root, encoding: "utf8" });
 }
 
 try {
   const validProbeTarget = [{ id: "fixture", streamUrl: "rtmp://relay.internal/live/fixture", avSyncProbeUrl: "https://av-sync.internal/fixture", expectedFps: 25, expectedWidth: 1280, expectedHeight: 720 }];
   await writeFile(streamKeyPath, `${streamKey}\n`, { mode: 0o600 });
-  await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.releaseSbom, releaseEvidence.sbom), writeFile(files.releaseProvenance, releaseEvidence.provenance), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
+  await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.releaseSbom, releaseEvidence.sbom), writeFile(files.releaseProvenance, releaseEvidence.provenance), writeFile(files.controlCompose, controlCompose), writeFile(files.migrationOwner, migrationOwner), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
   // L17 (39.6, 39.8): image sources come from runtime/open-source.lock.json; a leftover *_REF only warns.
@@ -359,6 +364,25 @@ try {
   assert.notEqual(reusedDatabasePrincipal.status, 0, "service deployments must not reuse a database principal");
   assert.match(reusedDatabasePrincipal.stderr, /四个不同的 PostgreSQL 用户名/, "database-principal reuse must identify the least-privilege deployment gate");
   await writeFile(files.channel, channel);
+
+  // D4: the migration owner is its own PostgreSQL user in its own env file, and no application account uses it.
+  for (const [label, file, content, pattern] of [
+    ["a missing migration owner URL", files.migrationOwner, "MIGRATION_OWNER_DATABASE_URL=\n", /迁移账号 缺少 MIGRATION_OWNER_DATABASE_URL/],
+    ["a placeholder migration owner URL", files.migrationOwner, "MIGRATION_OWNER_DATABASE_URL=postgresql://shuzhiren_migration_owner:replace-me@postgres.internal:5432/shuzhiren\n", /迁移账号 的 MIGRATION_OWNER_DATABASE_URL 仍是占位符/],
+    ["the control-plane account as migration owner", files.migrationOwner, "MIGRATION_OWNER_DATABASE_URL=postgresql://app:fixture-password@postgres.internal:5432/shuzhiren\n", /迁移账号必须是独立的 PostgreSQL 用户/],
+    ["a DATABASE_URL in the migration owner file", files.migrationOwner, `${migrationOwner}DATABASE_URL=postgresql://app:fixture-password@postgres.internal:5432/shuzhiren\n`, /不得定义 DATABASE_URL/],
+    ["another database name", files.migrationOwner, "MIGRATION_OWNER_DATABASE_URL=postgresql://shuzhiren_migration_owner:fixture-owner-password@postgres.internal:5432/other\n", /必须指向同一个数据库名/],
+    ["an application account named shuzhiren_migration_owner", files.control, control.replace("postgresql://app:fixture-password", "postgresql://shuzhiren_migration_owner:fixture-password"), /不得使用迁移 owner 账号 shuzhiren_migration_owner/],
+    ["a compose env without MIGRATION_OWNER_ENV_FILE", files.controlCompose, controlCompose.replace("MIGRATION_OWNER_ENV_FILE=/srv/shuzhiren/migration-owner.env\n", ""), /控制面 Compose 缺少 MIGRATION_OWNER_ENV_FILE/],
+    ["the control env file as migration owner env file", files.controlCompose, controlCompose.replace("MIGRATION_OWNER_ENV_FILE=/srv/shuzhiren/migration-owner.env", "MIGRATION_OWNER_ENV_FILE=/srv/shuzhiren/control.env"), /独立于 CONTROL_PLANE_ENV_FILE/]
+  ]) {
+    await writeFile(file, content);
+    const rejected = check(["--require-cosyvoice"]);
+    assert.notEqual(rejected.status, 0, `${label} must be rejected`);
+    assert.match(rejected.stderr, pattern, label);
+    assert.ok(!rejected.stderr.includes("fixture-owner-password") && !rejected.stderr.includes("fixture-password"), `${label}: errors must not echo database passwords`);
+  }
+  await Promise.all([writeFile(files.migrationOwner, migrationOwner), writeFile(files.control, control), writeFile(files.controlCompose, controlCompose)]);
 
   await writeFile(files.control, control.replace("DATABASE_QUERY_TIMEOUT_MS=5000", "DATABASE_QUERY_TIMEOUT_MS=61000"));
   const excessiveDatabaseTimeout = check(["--require-cosyvoice"]);

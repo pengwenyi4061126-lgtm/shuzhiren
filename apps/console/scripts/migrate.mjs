@@ -4,8 +4,11 @@ import pg from "pg";
 import { assertGuardedDataFixes, assertKnownMigrationLedger, enforceMigrationLedgerIntegrity, ensureMigrationLedger, findOutOfOrderMigrations, loadMigrations, migrationFailure, migrationLockName, migrationTimeouts } from "./migration-integrity.mjs";
 
 const { Client } = pg;
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error("DATABASE_URL is required to run migrations");
+// D4: deployments run the Migrator as the migration owner (shuzhiren_migration_owner) through
+// MIGRATION_OWNER_DATABASE_URL; the control-plane-migrate Compose profile loads only that variable. DATABASE_URL
+// remains the fallback for local development and the test suites.
+const databaseUrl = process.env.MIGRATION_OWNER_DATABASE_URL || process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error("MIGRATION_OWNER_DATABASE_URL or DATABASE_URL is required to run migrations");
 // Validated before connecting, so an invalid value never takes the advisory lock.
 const timeouts = migrationTimeouts(process.env);
 
