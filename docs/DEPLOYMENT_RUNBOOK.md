@@ -44,7 +44,7 @@ REQUIRED_GPU_NAME='RTX 4090D' MIN_FREE_GIB=250 bash scripts/check-runtime-host.s
 ## 2. 部署前配置
 
 1. 使用 `git clone --recurse-submodules` 取得源码；既有工作目录执行 `git submodule update --init --recursive`。三套开源运行时必须保持为锁文件记录的提交，禁止在生产构建目录直接修改 vendor 源码。
-2. 从 `config/control-plane.example.env`、`runtime.example.env`、`runtime-gateway.example.env`、`channel-adapter.example.env` 和 `alert-notifier.example.env` 复制五份服务配置到服务器私有目录；再从 `config/control-plane-compose.example.env` 复制控制面 Compose 插值配置。后者只引用私有 `control.env` 并定义控制台绑定地址/端口，不得放入 OIDC、数据库或服务 token。`control-plane-compose.env` 的 `CONTROL_PLANE_IMAGE` 与 `CONTROL_PLANE_MIGRATOR_IMAGE`，以及 `runtime.env` 的八个 `*_IMAGE`，必须是发布系统生成并审核的 `registry/repository@sha256:<64位>` 引用；生产 Compose 没有 `build:`，不接受 tag、`latest`、本地 image ID 或发布机工作树构建。
+2. 从 `config/control-plane.example.env`、`runtime.example.env`、`runtime-gateway.example.env`、`channel-adapter.example.env` 和 `alert-notifier.example.env` 复制五份服务配置到服务器私有目录；再从 `config/control-plane-compose.example.env` 复制控制面 Compose 插值配置。后者只引用私有 `control.env` 并定义控制台绑定地址/端口，不得放入 OIDC、数据库或服务 token。推流密钥不写入任何 env 文件，按 2.3 节准备密钥文件。`control-plane-compose.env` 的 `CONTROL_PLANE_IMAGE` 与 `CONTROL_PLANE_MIGRATOR_IMAGE`，以及 `runtime.env` 的八个 `*_IMAGE`，必须是发布系统生成并审核的 `registry/repository@sha256:<64位>` 引用；生产 Compose 没有 `build:`，不接受 tag、`latest`、本地 image ID 或发布机工作树构建。
    发布系统还必须在 `DEPLOYMENT_RELEASE_MANIFEST` 写入只读的 JSON 信封，格式见 `config/deployment-release-manifest.example.json`。该信封由受控发布签名身份使用 Ed25519 签名，精确绑定 `RELEASE_REVISION`、上述十个镜像引用、SBOM SHA-256、provenance SHA-256 和最多 30 天的签发有效期；发布机只保存 `DEPLOYMENT_RELEASE_MANIFEST_TRUST` 公钥，绝不保存签名私钥。`npm run deploy:check` 会在拉取镜像前拒绝缺失、过期、未受信任、签名无效、提交不匹配或镜像不匹配的清单。SBOM/provenance 原件、签名私钥/KMS、镜像 registry 保留策略与漏洞扫描仍由外部发布系统负责。
 
    仓库提供 `npm run deploy:manifest:create -- ...` 作为发布系统的确定性 manifest 生产器。它只接受十个 push 后的不可变 image digest、聚合 SBOM/provenance 文件、完整 40 位提交 SHA 和受控 Ed25519 私钥文件路径，计算两个 artifact 的 SHA-256，canonicalize 后签名，并拒绝覆盖既有输出或复用任一镜像 digest。私钥必须由短生命周期的受控 runner 挂载，不能写入 GitHub secret 文本、环境文件、镜像层、日志或部署机；使用不可导出 KMS/HSM 时，发布系统需提供等价 Ed25519 签名适配器，不能将 KMS 密钥导出后再使用该 CLI。示例仅说明输入契约，路径和内容都必须由发布基础设施提供：
@@ -77,7 +77,7 @@ npm run deploy:images:verify -- --manifest /srv/shuzhiren/release/deployment-rel
    - 一个经发布治理批准的 HTTPS `miniforge_url` 与对应 `miniforge_sha256`。CosyVoice Dockerfile 会拒绝空值、非 HTTPS 或校验和不匹配；模型权重只在部署时通过 `COSYVOICE_MODEL_PATH` 只读挂载，永不进入 release image。
 
    workflow artifact 不是自动部署。值班人员必须将 `deployment-release-manifest.json`、`release-sbom-index.json`、`release-provenance-index.json` 和 `images.json` 一起放入同一个受控目录，例如 `/srv/shuzhiren/release/`；`deploy:check` 会重算两份 index 的 SHA-256，并要求 artifact 类型、完整提交、Buildx attestation 标记和十个 image digest 都与签名 manifest 精确一致。任一文件缺失、替换或与 manifest 不一致都必须阻断部署。实际 OCI attestation 访问路径同样必须保留供审计。完成签名/配置检查和 Docker `RepoDigest` 核验后才能运行 Compose。artifact 上传、registry attestation 和签名成功不代替漏洞策略、许可证审查或部署后真实 GPU/平台验收。
-3. 控制面使用 `NODE_ENV=production`、`CONTROL_PLANE_DEMO_MODE=false`，并配置 OIDC issuer、audience、JWKS 和 PostgreSQL。`RELEASE_REVISION` 必须填写实际部署的 7 至 40 位 Git 提交；健康接口会返回该值，用于把运行实例、审计证据和发布记录对应到不可变源码。`DATABASE_QUERY_TIMEOUT_MS` 默认 5000，限制数据库连接与查询等待，不能配置为 100 ms 以下或 60 秒以上；它让容器就绪检查在私网数据库异常时及时失败。浏览器同源调用可以使用 `OIDC_ACCESS_TOKEN_COOKIE`（默认 `shuzhiren_access_token`）承载短期 access token；该 cookie 必须由登录网关以 `HttpOnly`、`Secure`、`SameSite=Lax` 或更严格的属性签发，令牌本身不得写入前端存储。生产 Proxy 会在进入 API handler 前校验令牌租户和角色，包含按动作区分的生命周期权限；无权令牌必须收到 `403 insufficient_permission`，不能依赖前端隐藏按钮。Cookie 身份的写操作还必须携带同源或 `OIDC_ALLOWED_ORIGINS` 白名单中的 `Origin`，否则返回 `403 csrf_origin_rejected`；部署在反向代理后时应显式填写公开控制台域名白名单。
+3. 控制面使用 `NODE_ENV=production`、`CONTROL_PLANE_DEMO_MODE=false`，不设置 `CONTROL_PLANE_DEV_HEADER_IDENTITY`，并配置 OIDC issuer、audience、JWKS 和 PostgreSQL；令牌 `exp` 要求与可选的 `OIDC_ALLOWED_ALGORITHMS`、`OIDC_EXPECTED_TYP` 见 2.4 节。`RELEASE_REVISION` 必须填写实际部署的 7 至 40 位 Git 提交；健康接口会返回该值，用于把运行实例、审计证据和发布记录对应到不可变源码。`DATABASE_QUERY_TIMEOUT_MS` 默认 5000，限制数据库连接与查询等待，不能配置为 100 ms 以下或 60 秒以上；它让容器就绪检查在私网数据库异常时及时失败。浏览器同源调用可以使用 `OIDC_ACCESS_TOKEN_COOKIE`（默认 `shuzhiren_access_token`）承载短期 access token；该 cookie 必须由登录网关以 `HttpOnly`、`Secure`、`SameSite=Lax` 或更严格的属性签发，令牌本身不得写入前端存储。生产 Proxy 会在进入 API handler 前校验令牌租户和角色，包含按动作区分的生命周期权限；无权令牌必须收到 `403 insufficient_permission`，不能依赖前端隐藏按钮。Cookie 身份的写操作还必须携带同源或 `OIDC_ALLOWED_ORIGINS` 白名单中的 `Origin`，否则返回 `403 csrf_origin_rejected`；部署在反向代理后时应显式填写公开控制台域名白名单。
 4. `control.env`、`runtime.env` 与 `gateway.env` 的 `RUNTIME_SHARED_TOKEN` 必须完全一致，且两个前者必须设置 `RUNTIME_GATEWAY_DEMO_MODE=false`；这是 Gateway 对控制面人工操作和 Worker durable outbox 投递的后端认证凭据，绝不能传给浏览器、渠道 Adapter、租户接入或其他服务。部署预检、Worker 和 Gateway 启动都会拒绝短于 32 个字符或包含空白的共享令牌。所有其余私网服务 token 和签名密钥必须至少 32 个字符、不含空白，且不能跨服务或租户复用；`OUTPUT_PROBE_SHARED_TOKEN` 必须独立。`RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS` 也必须在 `control.env` 与 `runtime.env` 中一致，范围为 100 至 60000；它会让人工会话验证、媒体接管、语音播报和后台 outbox 在 Gateway/网络故障时及时失败并进入既有重试或告警路径，而非无限等待。Node 服务与 Gateway 镜像均以非 root 用户运行，不能依靠容器内 root 权限写入配置或状态。`gateway.env` 中的 `RUNTIME_GATEWAY_STATE_PATH` 必须是主机上的绝对、加密、访问受限且纳入备份的目录；Gateway 以固定 UID `10001` 写入命令日志。启用下方计划备份时，先以运行 Docker 的部署账号创建 setgid 目录，例如 `sudo install -d -m 2750 -o 10001 -g shuzhiren-backup /srv/shuzhiren/runtime-gateway-state`，再启动 Compose。setgid 目录会让 SQLite 日志继承 `shuzhiren-backup` 组，Gateway 以 owner/group 可读、其他用户无权的权限创建日志，因此备份服务可读取它而不需 root 权限。它会挂载为 Gateway 的命令日志目录；不能改用匿名 Docker 卷或临时容器文件系统，否则 Gateway 重启后无法判定已完成命令，可能重复执行媒体动作。Gateway 启动还会验证必需命令日志可写，目录权限错误会直接使容器启动失败。Gateway 宿主机端口由 `RUNTIME_GATEWAY_HOST_BIND` 控制，模板默认 `127.0.0.1`；不得使用 `0.0.0.0` 或 IPv6 通配地址。控制台与 Gateway 分机部署时，只可填写经网络审批的私网地址，并在安全组/防火墙中仅放行控制台来源，不能把 Gateway 直接暴露到公网。控制面使用 `RUNTIME_TELEMETRY_TENANT_TOKENS`、`RUNTIME_RECORDING_TENANT_TOKENS`、`PIM_INGEST_TENANT_TOKENS`、`CHANNEL_INGEST_TENANT_TOKENS` 和 `CHANNEL_COMMERCE_TENANT_TOKENS` 五个 JSON 租户密钥映射；每个租户必须有不同的高熵 secret，且任一 token 不得跨服务或跨租户复用，运行时或渠道 Adapter 只能用自己租户的 token 上报。录制凭据只能由归档进程在完成受批准对象存储复制与 SHA-256 校验后使用，不能复用遥测、浏览器、前端 SDK 或平台网页的 token；录制登记只接受对象键，不接受 URL 或本地文件路径。PIM 凭据仅供完成来源、时间窗和签名校验的服务器端同步器使用，事实仍需审核。评论和交易凭据必须分离，不能共用。交易 Adapter 完成平台签名、时间戳、重放和限流验证后，只能提交不含买家 PII 的曝光、点击、加购、支付和退款事实；支付/退款会写入 append-only 审计。每次启动 `docker-compose.runtime.yml` 都要加载已通过 `deploy:check` 的 `runtime.env` 与 `gateway.env`；Compose 会在解析整个服务文件时读取两者，不能只传当前 profile 的环境文件。`RUNTIME_OBSERVER_TARGETS_DIR` 必须是生产主机上仅运行时部署账号可读写的绝对目录，目录内创建 `runtime-observer-targets.json`。其数组每项必须包含 `tenantId`、`runId`、`sessionId`、同租户的 `telemetryToken` 与 `outputProbeUrl`，其 token 必须与控制面该租户的遥测密钥对应，不能复用为其他租户或浏览器 token。使用仓库内 `output-probe` 时，每项还应填写 `outputProbeToken`，并与 `OUTPUT_PROBE_SHARED_TOKEN` 匹配；该 token 只用于私网 observer 到探针的读取授权，不能作为控制面或渠道凭据。部署编排把候选清单写入同目录的 `runtime-observer-targets.next.json` 后，执行 `npm run observer:targets:apply -- --candidate /srv/shuzhiren/observer-config/runtime-observer-targets.next.json --destination /srv/shuzhiren/observer-config/runtime-observer-targets.json --control-env /srv/shuzhiren/control.env --runtime-env /srv/shuzhiren/runtime.env --require-targets`。该命令会校验每个场次遥测 token 等于控制面同租户的 `RUNTIME_TELEMETRY_TENANT_TOKENS`，并校验每个探针令牌等于运行时的 `OUTPUT_PROBE_SHARED_TOKEN`，拒绝跨目录替换、收紧为 owner-only 权限后原子替换；observer 自动重载，配置缺失或格式错误时 `/healthz` 会失败。配置 `alert-notifier.example.env` 后，使用 `docker compose --profile alert-notifier --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env --env-file /srv/shuzhiren/alert-notifier.env -f infra/compose/docker-compose.runtime.yml up --build` 启动私网告警通知器；每个目标必须使用 HTTPS，按租户配置独立 HMAC 密钥。通知器只通知打开时的告警，持久化投递状态可重试和重领；其 `/healthz` 只有在数据库可查且最近一个轮询窗口成功完成时才返回成功。接收方必须按 `x-shuzhiren-event-id` 去重，不能将机器人成功响应理解为事故已恢复。
 
 5. 录制归档进程只能在对象已复制到受批准的站外存储后，调用 `POST /api/v1/runtime/recordings`。请求必须使用该租户的 `RUNTIME_RECORDING_TENANT_TOKENS`，提交 `tenantId`、`runId`、对象键、64 位十六进制校验和、字节数、时长与稳定的 `idempotencyKey`。控制面会使用独立的 `RECORDING_EVIDENCE_VERIFIER_*` 私网凭据请求 verifier；verifier 必须绑定并回显租户、场次、对象键、不可变对象版本、实际 SHA-256、字节数、时间窗与留存期，再签发短时 `evidence://`/`urn:` 回执。控制面拒绝 verifier 不可用、内容不匹配、过期回执或空对象；同一幂等键仅可重试完全相同的证据。接口会拒绝 URL、绝对路径、反斜杠和 `..` 路径段；同一租户对象键不可重复。登记记录及 verifier 回执均为 append-only 证据，不会上传、删除或生成对象存储预签名下载链接。已存在但缺少 verifier 回执的历史登记会保留在数据库审计中，但不会出现在运营录制列表；必须重新完成对象存储验证后再登记新的受控证据。
@@ -88,12 +88,12 @@ npm run deploy:images:verify -- --manifest /srv/shuzhiren/release/deployment-rel
 
 策略包治理：上线前由运营登记策略包名称、版本、自定义关键词规则、验收证据引用和验收摘要；审核角色通过控制台批准。没有已批准策略包时，生产数据库拒绝创建新的直播场次。创建后系统将策略包绑定到场次修订，后续即使有更新版本也不改变已排期场次的互动、草稿和播报判定。审核角色撤销已批准版本时必须写明原因；被绑定场次的预检、自动互动和草稿会 fail-closed，值班人员必须重新建立并审批场次所需的新版本。策略包规则应只描述可审查的业务处置，不得写入密钥、买家 PII 或原始对话样本。
 6. 生产单卡保持 `LIVE_MAX_CONCURRENT_AVATARS=1`、`LIVE_ALLOW_LLM_FREEFORM=false`、高风险问题人工接管和 AI 标识开启。
-7. `runtime.example.env` 的 `LIVETALKING_REF`、`MUSETALK_REF`、`COSYVOICE_REF` 必须逐项等于 `runtime/open-source.lock.json`；`npm run deploy:check` 还会读取 `vendor/` 下真实 Git HEAD 并拒绝脏源码。模型权重的许可证、人物和声音授权另行登记。
+7. `runtime.example.env` 的 `LIVETALKING_REF`、`MUSETALK_REF`、`COSYVOICE_REF` 必须逐项等于 `runtime/open-source.lock.json`；`npm run deploy:check` 还会读取 `vendor/` 下真实 Git HEAD 并拒绝脏源码。模型权重的许可证、人物和声音授权另行登记，见第 7 节。
 8. 在 Gateway 环境中配置 `PROGRAM_AUDIOTYPE`、`FALLBACK_AUDIOTYPE` 与 `HUMAN_HANDOFF_AUDIOTYPE`，并在 LiveTalking 的已批准 Avatar 包中逐项验证动作含义；三者必须是不同的 `0` 至 `255` 整数，不能将默认索引当作真实人接管或备用节目。Gateway 启动时还会拒绝非 HTTP(S) 的内部服务地址、含嵌入式凭据的 URL、8-192 kHz 以外的 CosyVoice 采样率、超过 120 秒的下游请求超时，以及过短或无界的命令幂等缓存配置。
 9. LiveTalking 建立会话后，在“直播场次”中绑定返回的 `sessionid`；无论创建时填写还是后续绑定，都会先由 Gateway 查询会话存活状态，不能只填写任意字符串。当前 Compose 使用 RTMP 单会话模式，LiveTalking 启动时创建固定会话 ID `0`，因此应绑定 `0`。会话只可在武装前或预检中更换，场次进入 `ARMED` 后被锁定，避免直播中的命令被重定向到其他数字人。同一会话只允许被一个 `PREFLIGHT`、`ARMED`、`LIVE` 或 `DEGRADED` 场次占用；草稿和审核中的未来排期可以预先引用它，结束或归档后会自动释放占用。没有绑定运行时会话的场次不得接受媒体控制命令。启用锁定的 `Fun-CosyVoice3-0.5B-2512` 时，`COSYVOICE_SAMPLE_RATE` 必须保持 `24000`；其 FastAPI 服务返回无文件头的 16-bit PCM，Gateway 依此封装 WAV。更换模型必须同步变更此值并在发布包验收中留存试听结果。`COSYVOICE_MODEL_PATH` 是宿主机目录，`COSYVOICE_MODEL_DIR` 则必须是容器内绝对路径；当前 Compose 固定挂载到 `/opt/CosyVoice/CosyVoice/pretrained_models`，模板已指向该目录下的 `Fun-CosyVoice3-0.5B-2512`。
 10. runtime worker 会按 `SCHEDULER_POLL_MS` 独立轮询已到排期时间的 `ARMED` 场次。每个场次先在独立数据库事务中创建唯一的 `start_program` outbox 并绑定到场次；手动 `START` 和 `RECOVER` 同样先保留在 `ARMED` 或 `DEGRADED`，只有 Gateway 确认该命令成功后，worker（或场控的单条恢复投递）才将场次切换为 `LIVE`。待确认的 `START` 会以 `ARMED + scheduled_start_event_id` 保留一个并发名额，额度行锁会使手动与定时开播串行评估，避免两个请求同时穿透上限。场控发现排期不应继续时，可将尚未投递或失败的待启动 outbox 取消并把场次退回 `PREFLIGHT`，这会释放并发占用；`delivering` 状态的事件不可取消，必须等待当前 Gateway 调用完成。`END` 也不会在点击时伪造已结束：场次保留当前状态并锁定唯一停止 outbox，只有 Gateway 确认 `stop_program` 后才切为 `ENDED`。恢复还必须先通过 60 秒内的新鲜运行时健康校验。失败事件会保留为 `failed` 供重试，不会伪造“直播中”或“已结束”，也不会重复创建定时开播命令。每一轮最多领取 `SCHEDULER_BATCH_SIZE` 个，它不会自动武装场次，也不会跳过预检。若管理员配置了并发场次或当月直播分钟权益，手动和定时激活都会在进入 Gateway 前检查；`LIVE`、`DEGRADED` 和待确认启动都计入并发，降级是运行质量状态，不会释放通道、场次或时长资源。定时场次超额时保持 `ARMED`、记录告警与审计，不会无声开播。只有配置了当月分钟权益的租户才会由 worker 按 `USAGE_METER_POLL_MS` 为 `LIVE` 和 `DEGRADED` 场次写入幂等分钟桶；该账本用于额度门禁，正式结算仍需对接合同、账单与支付系统。
 11. 渠道连接只能使用服务端注册的 Adapter 和 `kms://` 或 `secret://` 密钥引用。每次标记为 `connected`、`degraded` 或 `disabled` 都必须记录验证报告/工单引用；开播预检拒绝超过 24 小时的渠道验证。`generic-rtmp` 只证明受控推流通道，不代表已经完成平台 OAuth、评论、商品挂车或 Webhook 集成。
-12. `audit_events` 在数据库层是 append-only：运行时账号不能更新或删除审计记录。用户注销、保留期或隐私请求必须走独立的合规数据处理流程，不能用普通业务 SQL 改写历史事件。
+12. `audit_events` 在数据库层是 append-only：运行时账号不能更新或删除审计记录。哈希链头 `audit_chain_heads` 只由封链触发器维护，任何角色都不能直接改写（见 2.2 节迁移 074）。用户注销、保留期或隐私请求必须走独立的合规数据处理流程，不能用普通业务 SQL 改写历史事件。
 13. 租户业务表均启用并强制 PostgreSQL RLS。即使部署时应用数据库账号是表所有者，也必须在每个事务内设置 `app.tenant_id`；禁止为应用账号授予 `BYPASSRLS`。runtime worker 只能无范围读取 `tenants.id`，随后对每个租户分别设置该上下文并领取/回写任务，不能对业务表执行无租户范围的扫描。
 
 > 更正：本手册中任何遗留的 `docker compose ... up --build` 写法均不适用于当前生产编排。生产 Compose 只拉取 `*_IMAGE` 指定的 digest；告警通知器应执行 `docker compose --profile alert-notifier --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env --env-file /srv/shuzhiren/alert-notifier.env -f infra/compose/docker-compose.runtime.yml up`，不得在发布机重新构建。
@@ -111,6 +111,60 @@ npm run db:migrate
 ```
 
 第一条命令只列出未校验的历史记录并以非零状态退出；第二条命令才会将已审核的当前文件哈希写入数据库。它绝不接受内容已漂移的记录，也不能用于跳过缺失迁移或把未知 SQL 标记为可信。不得让控制面运行时、worker、渠道 Adapter 或日常人工账号执行该基线命令。
+
+**乱序拒绝。** 若仓库中某个迁移文件未记录在 `schema_migrations`，而其文件名按字典序排在已记录的最新文件名之前，迁移器会在应用任何迁移之前以非零状态退出，错误信息 `out-of-order migrations not recorded in schema_migrations: ...` 列出这些文件（`apps/console/scripts/migration-integrity.mjs` 的 `findOutOfOrderMigrations`）。编号空缺不算缺失迁移：当前目录没有 050、068、071–073，这不会触发该检查。遇到乱序时须先查明该文件的来源，不得手工向 `schema_migrations` 插入记录来绕过。
+
+**锁等待与语句超时。** 迁移器在每个迁移事务开始后，以事务级设置写入 `lock_timeout` 与 `statement_timeout`，只作用于该迁移；迁移文件自身的 `SET LOCAL` 可以覆盖它们。两个值来自迁移器进程的环境变量，Compose 迁移 profile 从 `control.env` 读取：
+
+| 变量 | 默认值 | 允许范围 |
+| --- | --- | --- |
+| `MIGRATION_LOCK_TIMEOUT_MS` | `10000` | 1 至 86400000 的整数（毫秒） |
+| `MIGRATION_STATEMENT_TIMEOUT_MS` | `1800000` | 1 至 86400000 的整数（毫秒） |
+
+值非法时迁移器在连接数据库之前退出，不会占用迁移 advisory lock。某条语句因超时被取消时，迁移器回滚该迁移事务，不在 `schema_migrations` 记录它，也不执行后续迁移，随后释放 advisory lock 并以非零状态退出；错误信息写明文件名和 `(lock_timeout)` 或 `(statement_timeout)`。锁等待超时通常表示应用仍持有相关表的锁，应在业务低峰重试；只有确认迁移本身需要更长时间时，才为该次运行临时调大对应变量。
+
+### 2.2 迁移 074–078 的部署影响
+
+以下迁移随 `npm run db:migrate` 按顺序执行，均不需要额外参数：
+
+- **074 审计链头写保护**：`audit_chain_heads` 只能由插入审计事件时的封链触发器 `seal_audit_event()`（以函数属主身份运行）维护。任何角色（包括表属主）直接对它执行 INSERT、UPDATE、DELETE 或 TRUNCATE 都会被触发器以 `insufficient_privilege` 拒绝。`infra/postgres/service-principals.sql` 不再授予服务账号该表的任何权限；该脚本开头会撤销三个服务账号在 public 表上的全部权限，因此升级后由 schema owner 重新执行一次 `psql "$DATABASE_URL" -f infra/postgres/service-principals.sql`，即可清除旧版本授予的链头权限。`verify_audit_chain()` 改为空值安全比较：已入链记录的 `previous_hash` 或 `event_hash` 为空时，校验现在判为失败，而此前会被判为通过。升级后若某租户的链校验失败，应按审计事件处理。
+- **075 已批准行的插入证据**：直接以 `approved` 状态插入 `product_versions`、`show_revisions`、`model_releases`、`policy_profiles` 时必须带 `approved_by` 与 `approved_at`；`media_assets` 还必须带 `verified_object_version`、`verified_bytes`、`verified_content_type`、`verification_evidence_ref` 和 `verified_at`。缺任一列时插入以 `check_violation` 失败。已有行不受影响。
+- **076 `membership_admin_guards`**：新增按租户一行的保护表（启用并强制 RLS）。移除一个活跃管理员时，触发器先写该租户的保护行再检查是否仍有其他活跃管理员，因此同一租户并发移除最后两个管理员时，READ COMMITTED 下后一个事务会等待前一个提交后失败（`cannot remove the last active tenant admin`），REPEATABLE READ 或 SERIALIZABLE 下后一个事务以 `40001` 失败。应用账号不需要该表的权限。
+- **077 媒体指令顺序**：插入 `media.dispatch` 类型的 outbox 事件时会锁定对应直播场次行，并以当时的时钟写入 `created_at`。
+- **078 复合租户外键**：对每个两端都有 `tenant_id` 的租户表外键（引用 `tenants`、`users` 的除外），增加 `(tenant_id, <列>)` 的复合外键，并在被引用表上补充所需的 `(tenant_id, <列>)` 唯一约束；原单列外键及其 ON DELETE 行为保留。添加外键时会不经 RLS 校验全部现有行：已有跨租户引用时，迁移以 `23503` 失败并写明表和约束名，整个迁移回滚。此后修改被引用行的 `tenant_id` 会被拒绝。该迁移的执行时间随数据量增长，并受上面两个超时变量约束；大库升级前应先在演练环境用生产副本执行一次。
+
+### 2.3 推流密钥文件
+
+推流密钥只存放在 `runtime.env` 的 `STREAM_KEY_FILE` 所指的宿主机文件中，不再通过 `STREAM_KEY` 环境变量传递。`runtime.env`、`gateway.env`、`channel-adapter.env` 与 `alert-notifier.env` 中任何一个定义了非空的 `STREAM_KEY`，`npm run deploy:check` 都会报错。`STREAM_RTMP_URL` 只写不含密钥的推流基址；LiveTalking 在容器内存中把文件里的密钥拼接为 `${STREAM_RTMP_URL}/<密钥>`。
+
+以运行 `npm run deploy:check` 的部署账号执行以下命令。`read -rs` 不回显输入，密钥只在子 shell 中存在，不进入命令行参数和 shell 历史：
+
+```bash
+sudo install -d -m 0700 -o "$USER" /srv/shuzhiren/secrets
+(umask 077; read -rs key; printf '%s\n' "$key" > /srv/shuzhiren/secrets/stream-key)
+sudo chown "$USER:10002" /srv/shuzhiren/secrets/stream-key
+chmod 0440 /srv/shuzhiren/secrets/stream-key
+```
+
+文件属主为部署账号，属组为 LiveTalking 容器的 GID `10002`，权限 `0440`：部署账号与容器都能读，任何人都不能写，其他用户不能读。然后在 `runtime.env` 中写入该文件的绝对路径，例如 `STREAM_KEY_FILE=/srv/shuzhiren/secrets/stream-key`。运行时 Compose 将它作为 `stream_key` secret 只读挂载到容器内 `/run/secrets/stream-key`。
+
+`npm run deploy:check`（`scripts/check-deployment-config.mjs`）对该文件的检查：
+
+- `runtime.env` 必须设置 `STREAM_KEY_FILE`，且必须是绝对路径。`--allow-placeholders` 模式只检查这两点。
+- 不带 `--allow-placeholders` 时，脚本以部署账号身份读取文件：文件不存在、不是普通文件（符号链接同样被拒绝）或不可读时报错。
+- 去掉末尾一个换行（LF 或 CRLF）后，内容必须是 1 至 1024 个可打印 ASCII 字符，不含空白、双引号和反斜杠。
+- 在 Linux 上，同组或其他用户可写、其他用户可读时报错。脚本不检查属主和属组，属组 `10002` 是容器读取文件所需的条件。
+- `STREAM_RTMP_URL` 必须是 `rtmp://` 或 `rtmps://` 地址，不含用户名或口令、查询串和片段，也不以 `/` 结尾，并且必须与 `gateway.env` 中的值一致。
+- 报错信息只说明问题类型，不输出文件内容。
+
+LiveTalking 镜像的启动器会在 LiveTalking 启动前再次校验该文件；文件缺失、不可读、为空或格式非法时，容器以退出码 `78` 结束，不监听端口也不推流。密钥只在 LiveTalking 启动时读取一次，更换密钥后需按上述步骤重写文件并重启 `livetalking` 服务才会生效。
+
+### 2.4 OIDC 令牌与开发身份请求头
+
+- 控制面只接受带数值型、未过期 `exp` 声明的 OIDC 访问令牌，校验不留时钟容差；缺少 `exp` 的令牌会被拒绝（`apps/console/lib/control-plane/oidc.ts`）。
+- 签名算法只允许非对称算法。`OIDC_ALLOWED_ALGORITHMS` 是可选的逗号分隔白名单；不设置时接受 `RS256`、`RS384`、`RS512`、`PS256`、`PS384`、`PS512`、`ES256`、`ES384`、`ES512` 和 `EdDSA`。设置为空值或包含其他名称（例如 `HS256`、`none`）时，所有需要令牌的请求都返回 `503 oidc_algorithms_not_configured`。`/api/health` 不检查该变量，因此修改后须用真实令牌请求一次业务 API 确认。
+- `OIDC_EXPECTED_TYP` 可选；设置后，令牌 JWT 头部的 `typ` 必须等于该值（例如 `at+jwt`）。
+- 开发身份请求头（`x-tenant-id`、`x-actor-id`、`x-actor-name`、`x-actor-role`）只在 `CONTROL_PLANE_DEV_HEADER_IDENTITY` 恰好为 `true` 时生效，`NODE_ENV` 不再决定是否启用。本机 `npm run dev` 会自动设置它并绑定 `127.0.0.1`。该开关禁止用于任何部署：控制面在该值为 `true` 且 `NODE_ENV=production` 或监听地址不是回环地址时启动即退出；生产控制面 Compose 固定 `NODE_ENV=production`、`HOSTNAME=0.0.0.0`；`npm run deploy:check` 在控制面 env 文件把它设为 `true` 时报错，带 `--allow-placeholders` 也一样。`control.env` 中不要出现这个变量。
 
 ## 3. 备份与恢复演练
 
@@ -196,10 +250,25 @@ sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin shuzhiren-ba
 sudo install -d -m 0700 -o shuzhiren-backup -g shuzhiren-backup /srv/shuzhiren/backups/postgres
 sudo install -d -m 0700 -o shuzhiren-backup -g shuzhiren-backup /srv/shuzhiren/backups/runtime-gateway
 sudo install -d -m 2750 -o 10001 -g shuzhiren-backup /srv/shuzhiren/runtime-gateway-state
+sudo install -d -m 0755 -o root -g root /etc/shuzhiren
 sudo install -m 0600 -o root -g root config/backup.example.env /etc/shuzhiren/backup.env
+sudo install -m 0600 -o root -g root config/runtime-gateway-backup.example.env /etc/shuzhiren/runtime-gateway-backup.env
 ```
 
-将 `/etc/shuzhiren/backup.env` 的 `DATABASE_URL`、备份目录和 Gateway 状态目录替换为真实私网值；不要将该文件放入 Git、镜像或容器环境。然后安装并启用计时器：
+两个单元各自读取独立的环境文件（`EnvironmentFile=`），由 systemd 以 root 读取后再以 `shuzhiren-backup` 运行脚本：
+
+| 单元 | 环境文件 | 模板 | 必填变量 |
+| --- | --- | --- | --- |
+| `shuzhiren-postgres-backup.service` | `/etc/shuzhiren/backup.env` | `config/backup.example.env` | `DATABASE_URL`（备份主体）、`POSTGRES_BACKUP_DIR` |
+| `shuzhiren-runtime-gateway-backup.service` | `/etc/shuzhiren/runtime-gateway-backup.env` | `config/runtime-gateway-backup.example.env` | `RUNTIME_GATEWAY_STATE_PATH`、`GATEWAY_BACKUP_DIR`（或 `BACKUP_DIR`）；`PYTHON_BIN` 可选，默认 `python3` |
+
+将 `/etc/shuzhiren/backup.env` 的 `DATABASE_URL` 和备份目录替换为真实私网值。`runtime-gateway-backup.env` 不含数据库凭据，Gateway 备份单元也绝不加载 `backup.env`；其中的 `DRILL_*` 变量只在每月隔离恢复演练时使用，日常备份不读取。不要将这两个文件放入 Git、镜像或容器环境。
+
+两个单元的 `ReadWritePaths`（Gateway 单元还有 `ReadOnlyPaths`）写死为 `/srv/shuzhiren/backups/postgres`、`/srv/shuzhiren/backups/runtime-gateway` 和 `/srv/shuzhiren/runtime-gateway-state`，systemd 不会展开环境文件中的变量。环境文件中的目录必须与之一致；改用其他目录时，按单元文件注释中的示例用 drop-in 覆盖，然后执行 `sudo systemctl daemon-reload`。两个单元的 `ExecStart` 运行 `/srv/shuzhiren/scripts/` 下的备份脚本，该目录必须存在当前发布版本的仓库脚本。
+
+**缺少环境文件时单元会被静默跳过。** 两个单元都声明了 `ConditionPathExists=`，指向各自的环境文件。文件不存在时，计时器照常触发，但服务不会运行，也不会进入 failed 状态，`systemctl --failed` 看不到它。因此 `systemctl list-timers` 显示正常不能证明备份在运行。
+
+然后安装并启用计时器：
 
 在启用 PostgreSQL 定时任务前，DBA 必须创建专用数据库登录并以**迁移的 schema owner**运行授权脚本。此角色需要 `BYPASSRLS` 才能产生完整租户 archive，因此它是高信任的备份主体：不得授予应用、控制台、渠道 Adapter 或人工日常会话，也不得使用超级用户、角色管理、建库或复制权限。
 
@@ -222,6 +291,19 @@ sudo systemctl list-timers 'shuzhiren-*backup*'
 
 每次修改备份配置后先手动执行 `sudo systemctl start shuzhiren-postgres-backup.service` 和 `sudo systemctl start shuzhiren-runtime-gateway-backup.service`，检查 `journalctl -u` 的成功记录及每个备份旁的 manifest，再允许计时器承担 RPO。定时任务失败、延迟或站外复制失败必须进入值班告警，不能由下一次定时成功静默掩盖。
 
+确认 Gateway 备份确实在运行（PostgreSQL 单元同理，把单元名、环境文件和目录换成对应值）：
+
+```bash
+sudo test -f /etc/shuzhiren/runtime-gateway-backup.env && echo env-present
+systemctl status shuzhiren-runtime-gateway-backup.service
+journalctl -u shuzhiren-runtime-gateway-backup.service --since '-1h'
+sudo ls -l /srv/shuzhiren/backups/runtime-gateway/
+```
+
+- `systemctl status` 的 `Condition:` 一行若显示 start condition failed，并指出 `ConditionPathExists=/etc/shuzhiren/runtime-gateway-backup.env` 未满足，说明环境文件缺失、单元被跳过。此时 `journalctl` 只有"条件不满足、已跳过"的记录，没有脚本输出。
+- 成功的运行会在日志中留下脚本输出的 `PASS   Gateway command journal snapshot created and verified: ...` 和 `PASS   Manifest written: ...`。
+- 备份目录中应有成对的 `shuzhiren-runtime-gateway-state-<UTC 时间>.sqlite3` 与同名 `.manifest`，最新一对的时间不早于最近一次计时器触发（间隔 15 分钟）。再用 `scripts/verify-runtime-gateway-state-backup.sh` 校验最新快照（见本节前文）。只有日志和快照都存在，才能认为备份在运行。
+
 示例结构检查：
 
 ```powershell
@@ -236,7 +318,7 @@ npm run deploy:check -- --control /srv/shuzhiren/control.env --runtime /srv/shuz
 
 ## 4. 启动顺序
 
-1. 准备已批准的私网 PostgreSQL；开发用 `infra/compose/docker-compose.yml` 暴露的 PostgreSQL、Redis、MinIO 不是生产编排。生产应用账号不得为超级用户或拥有 `BYPASSRLS`。先用一次性迁移 profile 执行迁移；迁移器以数据库 advisory lock 串行化，同一数据库已有迁移运行时第二个实例会立即失败，必须等待前一个完成后再重试。随后以控制面运行时账号执行 `npm run db:verify`；验证脚本只读检查迁移、关键表、RLS、租户上下文与账号权限。仅在本地使用管理员账号进行排障时才可显式加 `-- --allow-privileged`。
+1. 准备已批准的私网 PostgreSQL；开发用 `infra/compose/docker-compose.yml` 暴露的 PostgreSQL、Redis、MinIO 不是生产编排（本机开发用法见第 8 节）。生产应用账号不得为超级用户或拥有 `BYPASSRLS`。先用一次性迁移 profile 执行迁移；迁移器以数据库 advisory lock 串行化，同一数据库已有迁移运行时第二个实例会立即失败，必须等待前一个完成后再重试。随后以控制面运行时账号执行 `npm run db:verify`；验证脚本只读检查迁移、关键表、RLS、租户上下文与账号权限。仅在本地使用管理员账号进行排障时才可显式加 `-- --allow-privileged`。
 
 ```bash
 docker compose --env-file /srv/shuzhiren/control-plane-compose.env -f infra/compose/docker-compose.control-plane.yml --profile migrate run --rm control-plane-migrate
@@ -282,3 +364,27 @@ npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-
 ### 已直播场次的模型/素材撤销
 
 对已冻结在直播场次中的模型发布包或授权素材执行撤销，不只是阻止下一次预检：生产控制面会立即将所有仍为 `LIVE` 的关联场次隔离到 `DEGRADED`。已绑定运行时会话的场次会写入受控 `switch_to_human` 指令；撤销结果页面显示隔离数和实际入队接管数。值班人员应从场次时间线确认 `live_run.governance_quarantined` 审计事件和 outbox 投递结果，再依照对应的人工接管处置手册完成现场处置。没有绑定运行时会话的场次仍会被降级并记录审计，但不能把“没有可投递会话”误报为已完成接管。
+
+## 7. 模型权重、素材与第三方许可证
+
+仓库引入的开源组件、锁定提交、许可证文件、LiveTalking 修改说明和需挂载的权重列在根目录 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。该文件只记录能从仓库确认的事实，不是许可证审查结论。上线前部署方需自行取得并留存：
+
+1. **模型权重的许可证**：权重的许可证与代码许可证相互独立，仓库不含任何权重及其许可证文本。至少包括 LiveTalking 以 `--model musetalk` 运行时从 `MODEL_VOLUME_PATH` 加载的权重（`musetalkV15`、`sd-vae-ft-mse`、`whisper`、`face-parse-bisent` 等），以及 CosyVoice 从 `COSYVOICE_MODEL_PATH` 加载的模型（模板为 `Fun-CosyVoice3-0.5B-2512`）。每组权重的下载来源、许可证和商业使用条件需部署方确认。
+2. **肖像授权**：`AVATAR_VOLUME_PATH` 中 `LIVETALKING_AVATAR_ID` 对应的人物形象需取得本人书面授权。
+3. **声线授权**：Gateway 以 `spk_id` 调用 CosyVoice 的 `/inference_sft`，使用模型目录中的说话人。来自真人录音的说话人需取得声音本人的书面授权。
+4. **在线语音服务**：截至提交 `dfb1296`，运行时 Compose 没有给 LiveTalking 传 `--tts`，其默认值为 `edgetts`，节目脚本文本经 LiveTalking `/human` 由 edge-tts 调用外部在线语音服务合成（审计登记 H3）。该服务条款是否允许本系统的使用方式需部署方评估确认。
+5. 商品图片、音乐和脚本的授权，以及发布 SBOM 所列依赖的许可证审查结论。
+
+LiveTalking 以 Apache License 2.0 发布，本仓库通过 `runtime/patches/` 修改了它。再分发 LiveTalking 镜像时须随附其许可证与修改说明；锁定提交没有 NOTICE 文件。镜像中是否已包含这些文件，以及这些义务是否已满足，需部署方确认。
+
+## 8. 本机开发环境
+
+开发用 `infra/compose/docker-compose.yml` 启动的 PostgreSQL、Redis、MinIO 没有默认口令。首次使用前，从模板复制插值文件并把每个值替换为本机随机生成的字符串：
+
+```bash
+cp config/dev-compose.example.env infra/compose/.env
+```
+
+`infra/compose/.env` 已被 `.gitignore` 忽略，不得提交，也不得在其他环境复用其中的值。以 `docker compose -f infra/compose/docker-compose.yml ...` 运行时，Compose 默认从该文件所在目录读取 `.env`；缺少 `DEV_POSTGRES_PASSWORD`、`DEV_REDIS_PASSWORD`、`DEV_MINIO_ROOT_USER` 或 `DEV_MINIO_ROOT_PASSWORD` 时，Compose 会报错并拒绝启动。
+
+本机 `npm run dev` 绑定 `127.0.0.1` 并自动启用开发身份请求头（`CONTROL_PLANE_DEV_HEADER_IDENTITY=true`）。若用 `-H` 绑定非回环地址，必须显式设置 `CONTROL_PLANE_DEV_HEADER_IDENTITY=false` 并配置 OIDC，否则控制面启动即退出。该开关不得出现在任何部署环境中（见 2.4 节）。

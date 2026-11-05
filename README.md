@@ -49,8 +49,15 @@
 ## 上线前的必备输入
 
 - Linux 4090 服务器的 SSH 访问；建议 Ubuntu 22.04、NVIDIA 驱动和 Docker 已就绪。
-- 目标平台合法推流地址和 Stream Key。
+- 目标平台合法推流地址和 Stream Key。Stream Key 只写入 `STREAM_KEY_FILE` 指向的只读文件，不写入任何 env 文件（见 Runbook 2.3 节）。
 - 对真人肖像、声音、商品图片、音乐和脚本的书面授权。
+- 所用模型权重的许可证确认，以及在线语音服务（LiveTalking 默认的 edge-tts）的使用条款评估。
+
+## 许可证与授权
+
+仓库根目录没有 `LICENSE` 文件，仓库自有代码的分发许可证需仓库所有者确认。第三方开源组件（LiveTalking、CosyVoice、Matcha-TTS、MuseTalk）的锁定提交、许可证、LiveTalking 修改说明，以及部署时挂载的模型权重见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+模型权重、数字人形象和声线素材都不在仓库中，部署方需自行取得：每组权重的许可证与商业使用确认、人物肖像与声音的本人书面授权、在线语音服务的使用许可。清单见 [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) 第 7 节。这些授权与审查结论由部署方在仓库之外留存。
 - SKU 主数据：价格、库存、规格、赠品、资质、售后、禁说项和 FAQ。
 - 场控负责人及高风险问题的人工接管规则。
 
@@ -72,6 +79,8 @@
 npm install
 npm run dev
 ```
+
+`npm run dev` 只绑定 `127.0.0.1`，并启用仅供本机开发的请求头身份。需要本地 PostgreSQL、Redis、MinIO 时，先把 `config/dev-compose.example.env` 复制为 `infra/compose/.env` 并替换其中的值，见 Runbook 第 8 节。
 
 数据库迁移仅在已配置 `DATABASE_URL` 的环境执行：
 
