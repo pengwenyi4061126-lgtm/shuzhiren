@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { assertKnownMigrationLedger, loadMigrations, migrationChecksum } from "../apps/console/scripts/migration-integrity.mjs";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required to test migration integrity");
@@ -10,11 +14,13 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required to test migration in
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrator = path.join(root, "apps", "console", "scripts", "migrate.mjs");
 const baseliner = path.join(root, "apps", "console", "scripts", "baseline-migration-checksums.mjs");
+const migrationsDirectory = path.join(root, "infra", "postgres", "migrations");
 const client = new pg.Client({ connectionString: databaseUrl });
 let selected;
 
 await client.connect();
 try {
+  await assertLineEndingIndependentChecksums();
   selected = (await client.query("select name, checksum from schema_migrations order by name limit 1")).rows[0];
   assert.ok(selected?.name && selected?.checksum, "test fixture requires a checksum-protected applied migration");
   await client.query("update schema_migrations set checksum = repeat('0', 64) where name = $1", [selected.name]);
@@ -39,4 +45,46 @@ try {
     await client.query("alter table schema_migrations alter column checksum set not null").catch(() => undefined);
   }
   await client.end().catch(() => undefined);
+}
+
+// M4: checksums were the SHA-256 of the file text as read, so a Windows checkout with core.autocrlf=true (CRLF
+// files) no longer matched the checksums recorded from LF checkouts and the Migrator refused to run.
+async function assertLineEndingIndependentChecksums() {
+  const appliedRows = (await client.query("select name, checksum from schema_migrations order by name")).rows;
+  const lf = await loadMigrations(migrationsDirectory);
+  assert.ok(lf.length > 0 && appliedRows.length === lf.length, "test fixture requires every migration file to be applied");
+  const crlfDirectory = await mkdtemp(path.join(os.tmpdir(), "migrations-crlf-"));
+  try {
+    for (const name of await readdir(migrationsDirectory)) {
+      if (!name.endsWith(".sql")) continue;
+      const raw = await readFile(path.join(migrationsDirectory, name));
+      assert.equal(raw.includes(0x0d), false, `${name} must be checked out with LF line endings`);
+      const crlf = Buffer.from(raw.toString("latin1").replaceAll("\n", "\r\n"), "latin1");
+      const rawSha256 = createHash("sha256").update(raw).digest("hex");
+      assert.equal(migrationChecksum(raw), rawSha256, `${name}: an LF file must keep the SHA-256 of its bytes as checksum`);
+      assert.equal(migrationChecksum(crlf), rawSha256, `${name}: CRLF line endings must not change the checksum`);
+      for (const [variant, bytes] of [["trailing space", Buffer.concat([raw, Buffer.from(" ")])], ["lone CR", Buffer.concat([raw, Buffer.from("\r")])], ["UTF-8 BOM", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), raw])]]) {
+        assert.notEqual(migrationChecksum(bytes), rawSha256, `${name}: a ${variant} is a content change and must change the checksum`);
+      }
+      await writeFile(path.join(crlfDirectory, name), crlf);
+    }
+    const crlfMigrations = await loadMigrations(crlfDirectory);
+    assert.deepEqual(crlfMigrations.map(({ name, checksum }) => ({ name, checksum })), lf.map(({ name, checksum }) => ({ name, checksum })));
+    assert.deepEqual(crlfMigrations.map((migration) => migration.sql), lf.map((migration) => migration.sql), "a CRLF checkout must execute the same SQL as an LF checkout");
+    assert.doesNotThrow(() => assertKnownMigrationLedger(appliedRows, crlfMigrations), "checksums recorded from an LF checkout must match a CRLF checkout");
+    const drifted = crlfMigrations.map((migration, index) => (index === 0 ? { ...migration, checksum: migrationChecksum(`${migration.sql} `) } : migration));
+    assert.throws(() => assertKnownMigrationLedger(appliedRows, drifted), /migration checksum drift detected/);
+  } finally {
+    await rm(crlfDirectory, { recursive: true, force: true });
+  }
+
+  // .gitattributes keeps migrations and shell scripts LF on every checkout, so the bytes above are what CI,
+  // production images and Windows clones all see.
+  const tracked = execFileSync("git", ["ls-files", "-z", "--", "infra/postgres/migrations/*.sql", "*.sh"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean);
+  assert.ok(tracked.some((file) => file.endsWith(".sql")) && tracked.some((file) => file.endsWith(".sh")), "git must list the tracked migrations and shell scripts");
+  const attributes = execFileSync("git", ["check-attr", "-z", "eol", "--", ...tracked], { cwd: root, encoding: "utf8" }).split("\0");
+  const notLf = [];
+  for (let index = 0; index + 2 < attributes.length; index += 3) if (attributes[index + 2] !== "lf") notLf.push(attributes[index]);
+  assert.deepEqual(notLf, [], "every tracked migration and shell script must have the eol=lf attribute");
+  console.log("PASS migration checksums are independent of CRLF checkouts and still match the recorded ledger (M4)");
 }

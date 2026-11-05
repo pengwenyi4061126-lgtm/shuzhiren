@@ -4,16 +4,38 @@ import path from "node:path";
 
 export const migrationLockName = "shuzhiren-schema-migrations";
 
+// Migration files are read as bytes and every CR LF pair is replaced with LF before hashing and executing, so a
+// Windows checkout with core.autocrlf=true and an LF checkout produce the same checksum and the same SQL. A file
+// without CR hashes to the SHA-256 of its exact bytes, which is what schema_migrations already records.
 export async function loadMigrations(directory) {
   const names = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
   return Promise.all(names.map(async (name) => {
-    const sql = await readFile(path.join(directory, name), "utf8");
-    return { name, sql, checksum: migrationChecksum(sql) };
+    const bytes = normalizeMigrationBytes(await readFile(path.join(directory, name)));
+    return { name, sql: bytes.toString("utf8"), checksum: sha256Hex(bytes) };
   }));
 }
 
-export function migrationChecksum(sql) {
-  return createHash("sha256").update(sql, "utf8").digest("hex");
+/** Replaces each CR LF pair with LF. A CR that is not followed by LF is kept, so it still changes the checksum. */
+export function normalizeMigrationBytes(bytes) {
+  const source = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (!source.includes(0x0d)) return source;
+  const result = Buffer.allocUnsafe(source.length);
+  let length = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === 0x0d && source[index + 1] === 0x0a) continue;
+    result[length] = source[index];
+    length += 1;
+  }
+  return result.subarray(0, length);
+}
+
+/** SHA-256 hex of the normalized migration content; a string is encoded as UTF-8 first. */
+export function migrationChecksum(content) {
+  return sha256Hex(normalizeMigrationBytes(typeof content === "string" ? Buffer.from(content, "utf8") : content));
+}
+
+function sha256Hex(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export async function ensureMigrationLedger(client) {

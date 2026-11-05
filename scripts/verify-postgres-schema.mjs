@@ -1,8 +1,8 @@
-import { readFile, readdir } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { loadMigrations } from "../apps/console/scripts/migration-integrity.mjs";
 
 const { Client } = pg;
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,8 +35,10 @@ rlsTables.add("settlement_batches", "settlement_lines", "settlement_reconciliati
 requiredPolicies.push("tenant_isolation_settlement_batches", "tenant_isolation_settlement_lines", "tenant_isolation_settlement_reconciliation_exceptions");
 const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only", "product_versions_governed_immutable", "show_revisions_append_only", "policy_profiles_governed_immutable", "model_releases_governed_immutable", "live_commands_append_only", "media_assets_governed_evidence_mutation", "recording_evidence_governed_mutation", "program_output_observations_append_only", "channel_connections_governed_verification", "channel_reply_drafts_governed_mutation", "settlement_batches_governed_mutation", "settlement_lines_governed_mutation", "settlement_exceptions_governed_mutation", "show_program_change_requests_governed_mutation", "live_runs_governed_show_revision_rebind", "show_revisions_require_runtime_scripts_for_approval", "show_program_change_requests_require_runtime_scripts", "live_runs_governed_program_cursor"];
 const requiredConstraints = new Map([["schema_migrations_checksum_format", true], ["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true], ["show_revision_segments_runtime_script_length", true]]);
-const expectedMigrations = (await readdir(migrationsDirectory)).filter((name) => name.endsWith(".sql")).sort();
-const expectedMigrationChecksums = new Map(await Promise.all(expectedMigrations.map(async (name) => [name, createHash("sha256").update(await readFile(path.join(migrationsDirectory, name), "utf8"), "utf8").digest("hex")] )));
+// The Migrator's own loader computes the checksums, so line endings are normalized the same way (M4).
+const migrationFiles = await loadMigrations(migrationsDirectory);
+const expectedMigrations = migrationFiles.map((migration) => migration.name);
+const expectedMigrationChecksums = new Map(migrationFiles.map((migration) => [migration.name, migration.checksum]));
 const errors = [];
 
 const client = new Client({ connectionString: databaseUrl });

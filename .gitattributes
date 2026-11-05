@@ -1,0 +1,4 @@
+# Byte-sensitive text files keep LF on every checkout, including Windows clones with core.autocrlf=true.
+# Migration checksums are recorded in schema_migrations, and shell scripts fail under bash with CR line endings.
+*.sql text eol=lf
+*.sh text eol=lf
