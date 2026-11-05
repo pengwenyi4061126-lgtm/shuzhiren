@@ -49,7 +49,17 @@ async def lifespan(_: FastAPI):
     validate_runtime_configuration()
     yield
 
-app = FastAPI(title="Shuzhiren Runtime Gateway", version="0.1.0", lifespan=lifespan)
+# The interactive docs and the OpenAPI schema are not registered: every
+# Gateway route except /healthz requires the shared runtime token.
+app = FastAPI(
+    title="Shuzhiren Runtime Gateway",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    swagger_ui_oauth2_redirect_url=None,
+)
 
 class SpeakRequest(BaseModel):
     command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -71,11 +81,41 @@ PROGRAM_AUDIOTYPE = int(os.environ.get("PROGRAM_AUDIOTYPE", "0"))
 FALLBACK_AUDIOTYPE = int(os.environ.get("FALLBACK_AUDIOTYPE", "1"))
 HUMAN_HANDOFF_AUDIOTYPE = int(os.environ.get("HUMAN_HANDOFF_AUDIOTYPE", "2"))
 
+def bearer_matches(authorization: str | None, token: str) -> bool:
+    if not authorization:
+        return False
+    try:
+        # Starlette decodes header bytes as latin-1; encoding back restores the raw bytes.
+        presented = authorization.encode("latin-1")
+    except UnicodeEncodeError:
+        return False
+    expected = f"Bearer {token}".encode("utf-8")
+    return hmac.compare_digest(hashlib.sha256(presented).digest(), hashlib.sha256(expected).digest())
+
 def authorize(authorization: str | None) -> None:
     if not RUNTIME_TOKEN:
         raise HTTPException(status_code=503, detail="Runtime gateway token is not configured")
-    if not authorization or not hmac.compare_digest(authorization, f"Bearer {RUNTIME_TOKEN}"):
+    if not bearer_matches(authorization, RUNTIME_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid runtime gateway token")
+
+def parse_upstream_json(response: httpx.Response, upstream: str) -> dict:
+    try:
+        data = response.json()
+    except ValueError as error:
+        logger.warning("%s returned an invalid response (status %s, %s)", upstream, response.status_code, type(error).__name__)
+        raise HTTPException(status_code=502, detail=f"{upstream} returned an invalid response") from error
+    if not isinstance(data, dict):
+        logger.warning("%s returned an invalid response (status %s, %s)", upstream, response.status_code, type(data).__name__)
+        raise HTTPException(status_code=502, detail=f"{upstream} returned an invalid response")
+    return data
+
+def livetalking_sessions(data: dict) -> list:
+    payload = data.get("data", {})
+    sessions = payload.get("sessions", []) if isinstance(payload, dict) else None
+    if not isinstance(sessions, list):
+        logger.warning("LiveTalking returned runtime metrics without a session list")
+        raise HTTPException(status_code=502, detail="LiveTalking returned an invalid response")
+    return sessions
 
 async def livetalking_post(path: str, payload: dict) -> dict:
     try:
@@ -85,7 +125,7 @@ async def livetalking_post(path: str, payload: dict) -> dict:
     except httpx.HTTPError as error:
         logger.warning("LiveTalking request failed for %s: %s", path, error)
         raise HTTPException(status_code=502, detail="LiveTalking request failed") from error
-    data = response.json()
+    data = parse_upstream_json(response, "LiveTalking")
     if data.get("code") != 0:
         logger.warning("LiveTalking rejected request for %s with code %r", path, data.get("code"))
         raise HTTPException(status_code=502, detail="LiveTalking rejected request")
@@ -99,7 +139,7 @@ async def livetalking_get(path: str) -> dict:
     except httpx.HTTPError as error:
         logger.warning("LiveTalking request failed for %s: %s", path, error)
         raise HTTPException(status_code=502, detail="LiveTalking request failed") from error
-    data = response.json()
+    data = parse_upstream_json(response, "LiveTalking")
     if data.get("code") != 0:
         logger.warning("LiveTalking rejected request for %s with code %r", path, data.get("code"))
         raise HTTPException(status_code=502, detail="LiveTalking rejected request")
@@ -116,7 +156,7 @@ async def preview_broker_get(session_id: str) -> dict:
     except httpx.HTTPError as error:
         logger.warning("Preview broker request failed for session %s: %s", session_id, error)
         raise HTTPException(status_code=502, detail="Preview broker request failed") from error
-    return validate_preview_grant(response.json())
+    return validate_preview_grant(parse_upstream_json(response, "Preview broker"))
 
 async def service_health(url: str, path: str, expected_code: int | None = None) -> dict:
     try:
@@ -125,7 +165,7 @@ async def service_health(url: str, path: str, expected_code: int | None = None) 
             response.raise_for_status()
         if expected_code is not None:
             data = response.json()
-            if data.get("code") != expected_code:
+            if not isinstance(data, dict) or data.get("code") != expected_code:
                 return {"available": False}
     except (httpx.HTTPError, ValueError):
         return {"available": False}
@@ -372,11 +412,12 @@ async def cache_runtime_command(command_id: str, kind: str, identity: dict, resp
 def gpu_observation() -> dict:
     try:
         from pynvml import nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates, nvmlInit, nvmlShutdown
-        visible = os.environ.get("NVIDIA_VISIBLE_DEVICES", "0").split(",", 1)[0]
-        device_index = int(visible) if visible.isdigit() else 0
         nvmlInit()
         try:
-            handle = nvmlDeviceGetHandleByIndex(device_index)
+            # The container runtime exposes only the GPUs selected by
+            # NVIDIA_VISIBLE_DEVICES, so NVML device 0 is the first selected GPU
+            # whatever host index or UUID the variable names.
+            handle = nvmlDeviceGetHandleByIndex(0)
             memory = nvmlDeviceGetMemoryInfo(handle)
             utilization = nvmlDeviceGetUtilizationRates(handle)
             return {"available": True, "utilization_percent": int(utilization.gpu), "memory_used_mib": int(memory.used // (1024 * 1024)), "memory_total_mib": int(memory.total // (1024 * 1024))}
@@ -403,7 +444,7 @@ async def livetalking_audio(session_id: str, audio: bytes) -> None:
     except httpx.HTTPError as error:
         logger.warning("LiveTalking audio request failed: %s", error)
         raise HTTPException(status_code=502, detail="LiveTalking audio request failed") from error
-    data = response.json()
+    data = parse_upstream_json(response, "LiveTalking")
     if data.get("code") != 0:
         logger.warning("LiveTalking rejected audio request with code %r", data.get("code"))
         raise HTTPException(status_code=502, detail="LiveTalking rejected audio request")
@@ -435,7 +476,7 @@ async def observation(session_id: str, authorization: str | None = Header(defaul
     if not SESSION_ID_PATTERN.fullmatch(session_id):
         raise HTTPException(status_code=400, detail="Invalid runtime session id")
     data = await livetalking_get("/api/admin/runtime-metrics")
-    sessions = data.get("data", {}).get("sessions", [])
+    sessions = livetalking_sessions(data)
     session = next((item for item in sessions if isinstance(item, dict) and item.get("sessionid") == session_id), None)
     if not session:
         return {
@@ -470,7 +511,7 @@ async def preview(session_id: str, authorization: str | None = Header(default=No
     if not PREVIEW_BROKER_URL:
         return {"available": False, "reason": "not_configured"}
     data = await livetalking_get("/api/admin/runtime-metrics")
-    sessions = data.get("data", {}).get("sessions", [])
+    sessions = livetalking_sessions(data)
     active = any(isinstance(item, dict) and item.get("sessionid") == session_id for item in sessions)
     if not active:
         return {"available": False, "reason": "session_inactive"}

@@ -40,11 +40,22 @@ class RejectingClient(FailingClient):
         return RejectedResponse()
 
 
+RealAsyncClient = httpx.AsyncClient
+
+
+def upstream_answering(status: int, body: bytes):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, content=body, headers={"content-type": "application/json"})
+
+    return lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(handler), **kwargs)
+
+
 async def expect_detail(operation, expected: str) -> None:
     try:
         await operation
     except HTTPException as error:
-        assert error.detail == expected
+        assert error.status_code == 502, error.status_code
+        assert error.detail == expected, error.detail
         assert "private-stream-key" not in error.detail
     else:
         raise AssertionError("Gateway downstream failure must return HTTPException")
@@ -54,6 +65,7 @@ async def main() -> None:
     original_client = gateway.httpx.AsyncClient
     original_preview_url = gateway.PREVIEW_BROKER_URL
     original_preview_token = gateway.PREVIEW_BROKER_TOKEN
+    gateway.RUNTIME_TOKEN = "e" * 32
     try:
         gateway.PREVIEW_BROKER_URL = "https://preview-broker.example"
         gateway.PREVIEW_BROKER_TOKEN = "p" * 32
@@ -67,6 +79,25 @@ async def main() -> None:
         gateway.httpx.AsyncClient = lambda **_kwargs: RejectingClient()
         await expect_detail(gateway.livetalking_post("/private", {}), "LiveTalking rejected request")
         await expect_detail(gateway.livetalking_audio("session", b"audio"), "LiveTalking rejected audio request")
+
+        for body in (b"not-json-private-stream-key", b"[1, 2]", b'"private-stream-key"', b"null"):
+            gateway.httpx.AsyncClient = upstream_answering(200, body)
+            await expect_detail(gateway.livetalking_post("/private", {}), "LiveTalking returned an invalid response")
+            await expect_detail(gateway.livetalking_get("/private"), "LiveTalking returned an invalid response")
+            await expect_detail(gateway.livetalking_audio("session", b"audio"), "LiveTalking returned an invalid response")
+            await expect_detail(gateway.preview_broker_get("session"), "Preview broker returned an invalid response")
+            assert await gateway.service_health("http://livetalking.internal", "/api/admin/sessions", expected_code=0) == {"available": False}
+            await expect_detail(gateway.observation("session", f"Bearer {gateway.RUNTIME_TOKEN}"), "LiveTalking returned an invalid response")
+            await expect_detail(gateway.preview("session", f"Bearer {gateway.RUNTIME_TOKEN}"), "LiveTalking returned an invalid response")
+
+        for metrics in (b'{"code": 0, "data": [1]}', b'{"code": 0, "data": null}', b'{"code": 0, "data": {"sessions": 5}}', b'{"code": 0, "data": {"sessions": {"private-stream-key": 1}}}'):
+            gateway.httpx.AsyncClient = upstream_answering(200, metrics)
+            await expect_detail(gateway.observation("session", f"Bearer {gateway.RUNTIME_TOKEN}"), "LiveTalking returned an invalid response")
+            await expect_detail(gateway.preview("session", f"Bearer {gateway.RUNTIME_TOKEN}"), "LiveTalking returned an invalid response")
+
+        gateway.httpx.AsyncClient = upstream_answering(200, b'{"code": 0}')
+        missing_metrics = await gateway.observation("session", f"Bearer {gateway.RUNTIME_TOKEN}")
+        assert missing_metrics["session"]["active"] is False, "LiveTalking metrics without a data object still mean no active session"
     finally:
         gateway.httpx.AsyncClient = original_client
         gateway.PREVIEW_BROKER_URL = original_preview_url
