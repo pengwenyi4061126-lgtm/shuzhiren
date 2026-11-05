@@ -1,12 +1,20 @@
+# Development-only data services. Never start this file on the 4090 runtime
+# host or any shared machine: production uses the private PostgreSQL and object
+# storage described in docs/DEPLOYMENT_RUNBOOK.md.
+#
+# Credentials have no defaults. Copy config/dev-compose.example.env to
+# infra/compose/.env (ignored by Git) and replace every value before running
+# `docker compose -f infra/compose/docker-compose.yml up`. Every published port
+# is bound to the loopback interface only.
 services:
   postgres:
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: shuzhiren
       POSTGRES_USER: shuzhiren
-      POSTGRES_PASSWORD: replace-in-local-env
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:?DEV_POSTGRES_PASSWORD must be set for the dev compose}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -17,20 +25,31 @@ services:
 
   redis:
     image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${DEV_REDIS_PASSWORD:?DEV_REDIS_PASSWORD must be set for the dev compose}
+    # The password reaches redis-server through the container environment, so
+    # the rendered Compose command never contains it.
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     ports:
-      - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes"]
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli -h 127.0.0.1 ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   minio:
-    image: minio/minio:latest
+    # Fixed release instead of a floating tag. minio/minio was withdrawn from
+    # Docker Hub; quay.io keeps this release.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     environment:
-      MINIO_ROOT_USER: replace-in-local-env
-      MINIO_ROOT_PASSWORD: replace-in-local-env
+      MINIO_ROOT_USER: ${DEV_MINIO_ROOT_USER:?DEV_MINIO_ROOT_USER must be set for the dev compose}
+      MINIO_ROOT_PASSWORD: ${DEV_MINIO_ROOT_PASSWORD:?DEV_MINIO_ROOT_PASSWORD must be set for the dev compose}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
