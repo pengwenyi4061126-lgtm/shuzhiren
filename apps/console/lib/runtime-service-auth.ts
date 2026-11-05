@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { devHeaderIdentityEnabled } from "@/lib/control-plane/dev-identity";
 
 type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS" | "RUNTIME_RECORDING_TENANT_TOKENS" | "PIM_INGEST_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS" | "CHANNEL_COMMERCE_TENANT_TOKENS" | "SETTLEMENT_INGEST_TENANT_TOKENS";
 
@@ -63,7 +64,9 @@ export function enforceTenantTokenEnvironment() {
 function configuredTenantTokens(variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
   const value = process.env[variable];
   if (!value) {
-    if (process.env.NODE_ENV === "production") throw new Response(`${label} tenant token map is not configured`, { status: 503 });
+    // The built-in development token exists only behind the development
+    // header-identity switch; otherwise an unconfigured map is unavailable.
+    if (!devHeaderIdentityEnabled()) throw new Response(`${label} tenant token map is not configured`, { status: 503 });
     return new Map([["tenant_demo", developmentToken]]);
   }
   const parsed = parseTenantTokenMap(value);

@@ -1,3 +1,5 @@
+import { devHeaderIdentityEnabled } from "@/lib/control-plane/dev-identity";
+
 export type ControlPlaneConfig = {
   databaseUrl?: string;
   demoMode: boolean;
@@ -21,17 +23,24 @@ export function controlPlaneConfig(): ControlPlaneConfig {
 }
 
 export function controlPlaneReadiness(): ControlPlaneReadiness {
-  const config = controlPlaneConfig();
-  if (process.env.NODE_ENV !== "production" || config.demoMode) return { authentication: "demo", releaseRevision: null };
+  controlPlaneConfig();
+  const releaseRevision = process.env.NODE_ENV === "production" ? productionReleaseRevision() : null;
+  // Authentication follows the explicit development header-identity switch,
+  // not NODE_ENV: without the switch every request needs OIDC.
+  if (devHeaderIdentityEnabled()) return { authentication: "demo", releaseRevision };
 
   for (const [name, value] of [["OIDC_ISSUER_URL", process.env.OIDC_ISSUER_URL], ["OIDC_JWKS_URL", process.env.OIDC_JWKS_URL]] as const) {
-    if (!value) throw new Error(`${name} is required in production`);
+    if (!value) throw new Error(`${name} is required unless CONTROL_PLANE_DEV_HEADER_IDENTITY=true`);
     const url = new URL(value);
     const loopbackHttp = url.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
     if (url.username || url.password || (url.protocol !== "https:" && !loopbackHttp)) throw new Error(`${name} must use HTTPS outside a loopback integration environment`);
   }
-  if (!process.env.OIDC_AUDIENCE?.trim()) throw new Error("OIDC_AUDIENCE is required in production");
+  if (!process.env.OIDC_AUDIENCE?.trim()) throw new Error("OIDC_AUDIENCE is required unless CONTROL_PLANE_DEV_HEADER_IDENTITY=true");
+  return { authentication: "oidc", releaseRevision };
+}
+
+function productionReleaseRevision() {
   const releaseRevision = process.env.RELEASE_REVISION?.trim() ?? "";
   if (!/^[0-9a-f]{7,40}$/i.test(releaseRevision)) throw new Error("RELEASE_REVISION must be a 7 to 40 character Git commit in production");
-  return { authentication: "oidc", releaseRevision };
+  return releaseRevision;
 }

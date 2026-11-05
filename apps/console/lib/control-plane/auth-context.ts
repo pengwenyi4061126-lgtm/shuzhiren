@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { assertDevIdentityPermitted, devHeaderIdentityEnabled } from "@/lib/control-plane/dev-identity";
 import { withTenantTransaction } from "@/lib/database";
 
 export type ActorRole = "admin" | "operator" | "reviewer" | "analyst";
@@ -24,9 +25,16 @@ export const demoRequestContext: RequestContext = {
   accessScope: "tenant"
 };
 
+// Bearer/OIDC identity is required unless CONTROL_PLANE_DEV_HEADER_IDENTITY is
+// exactly "true" (local `npm run dev` only); NODE_ENV alone never enables the
+// development request headers.
 export async function requestContextFrom(request: Request): Promise<RequestContext> {
-  if (process.env.NODE_ENV === "production") return contextFromBearerToken(request);
+  if (!devHeaderIdentityEnabled()) return contextFromBearerToken(request);
+  assertDevIdentityPermitted();
+  return devHeaderContext(request);
+}
 
+function devHeaderContext(request: Request): RequestContext {
   const tenantId = request.headers.get("x-tenant-id");
   const actorId = request.headers.get("x-actor-id");
   const actorName = request.headers.get("x-actor-name");
