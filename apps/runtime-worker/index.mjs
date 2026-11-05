@@ -457,7 +457,12 @@ function deliveryRequest(event) {
     if (command.type === "resume_program" && ((typeof runtimeScript === "string" && (!programSegmentIdValid(programSegmentId) || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) || (runtimeScript === undefined && (programSegmentId || scriptSha256)))) throw new Error("Invalid program resume command");
     if (typeof runtimeScript === "string" && createHash("sha256").update(runtimeScript).digest("hex") !== scriptSha256) throw new Error("Program script hash does not match frozen script");
     if (command.type !== "start_program" && command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Invalid media command payload");
-    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}) } };
+    // Gateway synthesizes the script with this frozen approved voice (CosyVoice) and rejects scripts without it.
+    const runtimeVoiceId = command.payload?.runtimeVoiceId;
+    const voiceChecksum = command.payload?.voiceChecksum;
+    if ((runtimeVoiceId !== undefined && !runtimeVoiceIdValid(runtimeVoiceId)) || (voiceChecksum !== undefined && !voiceChecksumValid(voiceChecksum))) throw new Error("Invalid program voice binding");
+    if (typeof runtimeScript !== "string" && (runtimeVoiceId !== undefined || voiceChecksum !== undefined)) throw new Error("Invalid media command payload");
+    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeVoiceId ? { runtime_voice_id: runtimeVoiceId } : {}), ...(voiceChecksum ? { voice_checksum: voiceChecksum } : {}) } };
   }
   if (event.event_type === "speech.dispatch") {
     const { sessionId, command } = event.payload;
@@ -465,7 +470,8 @@ function deliveryRequest(event) {
     if (!commandIdValid(command.id) || !sessionIdValid(command.runId) || typeof command.text !== "string" || command.text.length < 1 || command.text.length > 800) throw new Error("Invalid speech command");
     if (typeof command.voice !== "string" || command.voice.length < 1 || command.voice.length > 128 || typeof command.interrupt !== "boolean") throw new Error("Invalid speech options");
     if (!sessionIdValid(command.productVersionId) || !Number.isInteger(command.productRevision) || command.productRevision < 1) throw new Error("Invalid speech evidence");
-    return { target: "gateway", path: "/v1/speak", body: { command_id: command.id, session_id: sessionId, text: command.text, interrupt: command.interrupt, voice: command.voice, provider: "cosyvoice" } };
+    if (command.voiceChecksum !== undefined && !voiceChecksumValid(command.voiceChecksum)) throw new Error("Invalid speech voice binding");
+    return { target: "gateway", path: "/v1/speak", body: { command_id: command.id, session_id: sessionId, text: command.text, interrupt: command.interrupt, voice: command.voice, ...(command.voiceChecksum ? { voice_checksum: command.voiceChecksum } : {}), provider: "cosyvoice" } };
   }
   if (event.event_type === "channel.reply.dispatch") {
     const { replyId, runId, interactionId, channelConnectionId, body, bodySha256, idempotencyKey } = event.payload;
@@ -477,6 +483,8 @@ function deliveryRequest(event) {
 
 function commandIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function sessionIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+function runtimeVoiceIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+function voiceChecksumValid(value) { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/i.test(value); }
 function programSegmentIdValid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
 // The request may not outlive the claim's lease (minus a safety margin), even when the Gateway timeout is longer.
 function deliveryTimeoutMs(event) {
