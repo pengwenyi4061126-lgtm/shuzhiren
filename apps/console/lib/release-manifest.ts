@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { listAssets, requiredLiveAssetKinds, type AssetApproval, type AssetKind } from "@/lib/assets";
+import { CANONICAL_JSON_RULE_VERSION, CANONICAL_JSON_RULE_VERSIONS, CanonicalJsonError, canonicalJson, type CanonicalJsonRuleVersion } from "@/lib/canonical-json.mjs";
 import { findApprovedProductVersion, type ProductFacts } from "@/lib/catalog";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
@@ -100,7 +101,7 @@ async function persistentManifest(client: PoolClient, runId: string): Promise<Ru
     models: models.rows.map((model) => ({ id: model.id, component: model.component, name: model.name, version: model.version, approval: model.approval_status, sourceCommit: model.source_commit, artifactHash: model.artifact_hash, evidenceRef: model.evidence_ref })),
     assets: assets.rows.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval_status, expiresAt: asset.expires_at ? new Date(asset.expires_at).toISOString().slice(0, 10) : undefined, objectKey: asset.object_key, checksum: asset.checksum, runtimeVoiceId: asset.runtime_voice_id ?? undefined, rightsScope: asset.rights_scope, source: asset.source_ref }))
   });
-  const frozenSnapshotVerified = row.frozen_manifest_sha256 && isRecord(row.frozen_manifest) ? snapshotMatchesHash(row.frozen_manifest, row.frozen_manifest_sha256) : undefined;
+  const frozenSnapshotVerified = row.frozen_manifest_sha256 && isRecord(row.frozen_manifest) ? releaseManifestSnapshotMatches(row.frozen_manifest, row.frozen_manifest_sha256) : undefined;
   return { ...manifest, frozenSha256: row.frozen_manifest_sha256 ?? undefined, frozenSnapshotVerified };
 }
 
@@ -124,19 +125,22 @@ function hashedManifest(manifest: Omit<RunReleaseManifest, "sha256" | "frozenSha
   return { ...manifest, sha256: hashManifest(manifest) };
 }
 
-function hashManifest(manifest: unknown) { return createHash("sha256").update(canonicalJson(manifest)).digest("hex"); }
+// New hashes use the code-point Canonical_JSON rule, which does not depend on
+// the process locale and can be recomputed by other languages.
+function hashManifest(manifest: unknown, ruleVersion: CanonicalJsonRuleVersion = CANONICAL_JSON_RULE_VERSION) { return createHash("sha256").update(canonicalJson(manifest, { ruleVersion })).digest("hex"); }
 
 // A stored snapshot embeds the sha256 it was sealed with; that hash covers the
-// manifest content without the embedded sha256 field itself.
-function snapshotMatchesHash(snapshot: Record<string, unknown>, expectedSha256: string) {
+// manifest content without the embedded sha256 field itself. Snapshots sealed
+// before the code-point rule were hashed with the legacy localeCompare rule and
+// their rule version is not stored, so either rule may match. Both encode the
+// same content (only key order differs), so a match under either still proves
+// the content is unchanged.
+export function releaseManifestSnapshotMatches(snapshot: Record<string, unknown>, expectedSha256: string) {
   const { sha256: embeddedSha256, ...content } = snapshot;
-  return (embeddedSha256 === undefined || embeddedSha256 === expectedSha256) && hashManifest(content) === expectedSha256;
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (isRecord(value)) return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
-  return JSON.stringify(value) ?? "null";
+  if (embeddedSha256 !== undefined && embeddedSha256 !== expectedSha256) return false;
+  return [CANONICAL_JSON_RULE_VERSION, ...CANONICAL_JSON_RULE_VERSIONS.filter((version) => version !== CANONICAL_JSON_RULE_VERSION)].some((ruleVersion) => {
+    try { return hashManifest(content, ruleVersion) === expectedSha256; } catch (error) { if (error instanceof CanonicalJsonError) return false; throw error; }
+  });
 }
 
 function isProductFacts(value: unknown): value is ProductFacts {

@@ -1,4 +1,5 @@
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
+import { CanonicalJsonError, canonicalJson } from "@/lib/canonical-json.mjs";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
@@ -72,7 +73,7 @@ export function verifyProgramOutputAttestation(tenantId: string, input: ProgramO
 export function canonicalProgramOutputAttestationPayload(input: ProgramOutputObservationInput) {
   const attestation = input.attestation;
   const observation = { runId: input.runId, outboxEventId: input.outboxEventId, runtimeSessionId: input.runtimeSessionId, commandId: input.commandId, programSegmentId: input.programSegmentId, action: input.action, source: input.source, evidenceRef: input.evidenceRef, contentSha256: input.contentSha256, confidence: input.confidence, mediaTimeMs: input.mediaTimeMs, observedAt: new Date(input.observedAt).toISOString() };
-  return canonicalJson({ issuer: attestation.issuer, keyId: attestation.keyId, audience: attestation.audience, issuedAt: new Date(attestation.issuedAt).toISOString(), expiresAt: new Date(attestation.expiresAt).toISOString(), observation });
+  return canonicalAttestationJson({ issuer: attestation.issuer, keyId: attestation.keyId, audience: attestation.audience, issuedAt: new Date(attestation.issuedAt).toISOString(), expiresAt: new Date(attestation.expiresAt).toISOString(), observation });
 }
 
 export async function recordProgramOutputObservation(context: RequestContext, input: ProgramOutputObservationInput) {
@@ -190,9 +191,14 @@ function trustedProgramOutputVerifiers() {
 
 function attestationHash(input: ProgramOutputObservationInput) { return createHash("sha256").update(input.attestation.signature).digest("hex"); }
 function summarizedAttestation(input: ProgramOutputObservationInput): ProgramOutputAttestationSummary { return { issuer: input.attestation.issuer, keyId: input.attestation.keyId, audience: input.attestation.audience, issuedAt: new Date(input.attestation.issuedAt).toISOString(), expiresAt: new Date(input.attestation.expiresAt).toISOString(), signatureSha256: attestationHash(input) }; }
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (!value || typeof value !== "object") throw new Error("attestation payload is invalid");
-  return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`;
+// Attestations are only verified on receipt, so they always use the current
+// code-point rule; the attestation keys order identically under the previous
+// localeCompare rule, so existing verifiers keep producing valid signatures.
+function canonicalAttestationJson(value: unknown): string {
+  try {
+    return canonicalJson(value);
+  } catch (error) {
+    if (error instanceof CanonicalJsonError) throw new Error("attestation payload is invalid");
+    throw error;
+  }
 }
