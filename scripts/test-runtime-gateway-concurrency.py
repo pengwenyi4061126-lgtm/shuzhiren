@@ -4,6 +4,9 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
+import types
 from pydantic import ValidationError
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "runtime" / "gateway"))
@@ -153,7 +156,94 @@ async def main() -> None:
     )
     assert max_active_calls > 1, "different command IDs must not be serialized by a global lock"
     assert gateway.runtime_command_locks == {}, "completed commands must release their per-command locks"
+
+    await check_event_loop_stays_responsive(authorization, calls, journal_rows)
     journal_dir.cleanup()
+
+
+def hold_journal_write_lock(path: str, seconds: float, ready: threading.Event) -> None:
+    connection = sqlite3.connect(path, isolation_level=None)
+    try:
+        connection.execute("begin immediate")
+        ready.set()
+        time.sleep(seconds)
+        connection.execute("rollback")
+    finally:
+        connection.close()
+
+
+async def healthz_latency_during(operation) -> tuple[float, object]:
+    """Start operation, ask /healthz 100 ms later, and return how late /healthz answered."""
+    task = asyncio.create_task(operation)
+    due = time.monotonic() + 0.1
+    await asyncio.sleep(0.1)
+    health = await gateway.healthz()
+    latency = time.monotonic() - due
+    assert health.status_code == 200, health.body
+    return latency, await task
+
+
+async def check_event_loop_stays_responsive(authorization: str, calls: list, journal_rows) -> None:
+    async def available(_url: str, _path: str, expected_code: int | None = None) -> dict:
+        return {"available": True}
+
+    gateway.service_health = available
+
+    ready = threading.Event()
+    holder = threading.Thread(target=hold_journal_write_lock, args=(gateway.RUNTIME_COMMAND_JOURNAL_PATH, 1.5, ready))
+    holder.start()
+    ready.wait()
+    try:
+        latency, result = await healthz_latency_during(gateway.media(gateway.MediaRequest(command_id="command_while_journal_locked", session_id="session_1", action="stop_program"), authorization))
+    finally:
+        holder.join()
+    assert latency < 1.0, f"/healthz must answer while a command waits for the journal write lock (answered {latency:.2f}s late)"
+    assert result["duplicate"] is False, "a command must proceed once the journal write lock is released"
+
+    original_busy_timeout = getattr(gateway, "JOURNAL_BUSY_TIMEOUT_SECONDS", None)
+    gateway.JOURNAL_BUSY_TIMEOUT_SECONDS = 0.2
+    ready = threading.Event()
+    holder = threading.Thread(target=hold_journal_write_lock, args=(gateway.RUNTIME_COMMAND_JOURNAL_PATH, 1.0, ready))
+    holder.start()
+    ready.wait()
+    calls_before_busy = len(calls)
+    try:
+        await gateway.media(gateway.MediaRequest(command_id="command_journal_busy", session_id="session_1", action="stop_program"), authorization)
+    except gateway.HTTPException as error:
+        assert error.status_code == 503, error.status_code
+        assert error.detail == "Runtime command journal is unavailable"
+    else:
+        raise AssertionError("a command must be refused while the journal stays locked past the busy timeout")
+    finally:
+        holder.join()
+        gateway.JOURNAL_BUSY_TIMEOUT_SECONDS = original_busy_timeout
+    assert len(calls) == calls_before_busy, "a command that could not be reserved must not reach LiveTalking"
+    assert all(row[0] != "command_journal_busy" for row in journal_rows()), "a refused command must not leave a journal row"
+    retried = await gateway.media(gateway.MediaRequest(command_id="command_journal_busy", session_id="session_1", action="stop_program"), authorization)
+    assert retried["duplicate"] is False, "a command refused for a busy journal must run when retried"
+
+    slow_nvml = types.ModuleType("pynvml")
+    slow_nvml.nvmlInit = lambda: time.sleep(1.5)
+    slow_nvml.nvmlShutdown = lambda: None
+    slow_nvml.nvmlDeviceGetHandleByIndex = lambda _index: "device"
+    slow_nvml.nvmlDeviceGetMemoryInfo = lambda _handle: types.SimpleNamespace(used=0, total=1024 * 1024 * 1024)
+    slow_nvml.nvmlDeviceGetUtilizationRates = lambda _handle: types.SimpleNamespace(gpu=5)
+
+    async def runtime_metrics(_path: str) -> dict:
+        return {"code": 0, "data": {"sessions": [{"sessionid": "session_1", "metrics": {}}]}}
+
+    original_nvml = sys.modules.get("pynvml")
+    sys.modules["pynvml"] = slow_nvml
+    gateway.livetalking_get = runtime_metrics
+    try:
+        latency, observed = await healthz_latency_during(gateway.observation("session_1", authorization))
+    finally:
+        if original_nvml is None:
+            sys.modules.pop("pynvml", None)
+        else:
+            sys.modules["pynvml"] = original_nvml
+    assert latency < 1.0, f"/healthz must answer while NVML is slow to initialize (answered {latency:.2f}s late)"
+    assert observed["gpu"]["available"] is True and observed["gpu"]["utilization_percent"] == 5
 
 
 asyncio.run(main())

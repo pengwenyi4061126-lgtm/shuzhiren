@@ -36,6 +36,9 @@ MEDIA_COMMAND_CACHE_TTL_SECONDS = float(os.environ.get("MEDIA_COMMAND_CACHE_TTL_
 MEDIA_COMMAND_CACHE_MAX_ENTRIES = int(os.environ.get("MEDIA_COMMAND_CACHE_MAX_ENTRIES", "2048"))
 RUNTIME_COMMAND_JOURNAL_PATH = os.environ.get("RUNTIME_COMMAND_JOURNAL_PATH", "")
 RUNTIME_COMMAND_JOURNAL_REQUIRED = os.environ.get("RUNTIME_COMMAND_JOURNAL_REQUIRED", "false").lower() == "true"
+# SQLite waits this long for another connection's write lock. Journal calls run
+# in worker threads, so the wait never blocks the event loop.
+JOURNAL_BUSY_TIMEOUT_SECONDS = 5.0
 PREVIEW_BROKER_URL = os.environ.get("PREVIEW_BROKER_URL", "").rstrip("/")
 PREVIEW_BROKER_TOKEN = os.environ.get("PREVIEW_BROKER_TOKEN", "")
 PREVIEW_GRANT_MAX_SECONDS = int(os.environ.get("PREVIEW_GRANT_MAX_SECONDS", "600"))
@@ -188,20 +191,24 @@ def open_runtime_command_journal() -> sqlite3.Connection | None:
         return None
     path = Path(RUNTIME_COMMAND_JOURNAL_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=5)
-    connection.execute("pragma journal_mode = wal")
-    connection.execute("pragma synchronous = full")
-    connection.execute(
-        """create table if not exists runtime_command_journal (
-            command_id text primary key,
-            kind text not null,
-            identity_sha256 text not null,
-            state text not null check (state in ('reserved', 'completed')),
-            response_json text,
-            created_at real not null,
-            completed_at real
-        )"""
-    )
+    connection = sqlite3.connect(path, timeout=JOURNAL_BUSY_TIMEOUT_SECONDS)
+    try:
+        connection.execute("pragma journal_mode = wal")
+        connection.execute("pragma synchronous = full")
+        connection.execute(
+            """create table if not exists runtime_command_journal (
+                command_id text primary key,
+                kind text not null,
+                identity_sha256 text not null,
+                state text not null check (state in ('reserved', 'completed')),
+                response_json text,
+                created_at real not null,
+                completed_at real
+            )"""
+        )
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 def command_journal_status() -> dict:
@@ -323,91 +330,112 @@ async def release_runtime_command_lock(command_id: str, lock: asyncio.Lock) -> N
         if state["waiters"] == 0:
             runtime_command_locks.pop(command_id, None)
 
+JOURNAL_ENTRY_COLUMNS = "kind, identity_sha256, state, response_json"
+UNCERTAIN_COMMAND_DETAIL = "Runtime command outcome is uncertain; verify the media session before issuing a new command"
+
+# The read_/reserve_/complete_ journal functions are synchronous and run in a
+# worker thread through asyncio.to_thread. Each opens, uses, and closes its own
+# connection inside that thread, so SQLite lock waits never stall the event loop.
+def read_journal_entry(command_id: str) -> tuple | None:
+    connection = require_runtime_command_journal()
+    if connection is None:
+        return None
+    try:
+        return connection.execute(f"select {JOURNAL_ENTRY_COLUMNS} from runtime_command_journal where command_id = ?", (command_id,)).fetchone()
+    except sqlite3.Error as error:
+        raise HTTPException(status_code=503, detail="Runtime command journal is unavailable") from error
+    finally:
+        connection.close()
+
+def reserve_journal_entry(command_id: str, kind: str, identity_sha256: str, now: float) -> tuple | None:
+    """Insert a reservation and return None, or return the existing entry without changing it."""
+    connection = require_runtime_command_journal()
+    if connection is None:
+        return None
+    try:
+        existing = connection.execute(f"select {JOURNAL_ENTRY_COLUMNS} from runtime_command_journal where command_id = ?", (command_id,)).fetchone()
+        if existing:
+            return existing
+        connection.execute(
+            "insert into runtime_command_journal (command_id, kind, identity_sha256, state, created_at) values (?, ?, ?, 'reserved', ?)",
+            (command_id, kind, identity_sha256, now),
+        )
+        connection.commit()
+        return None
+    except sqlite3.Error as error:
+        # Nothing was sent downstream yet, so the caller may retry the same command id.
+        raise HTTPException(status_code=503, detail="Runtime command journal is unavailable") from error
+    finally:
+        connection.close()
+
+def complete_journal_entry(command_id: str, kind: str, identity_sha256: str, response_json: str, now: float) -> None:
+    connection = require_runtime_command_journal()
+    if connection is None:
+        return
+    try:
+        completed = connection.execute(
+            "update runtime_command_journal set state = 'completed', response_json = ?, completed_at = ? where command_id = ? and kind = ? and identity_sha256 = ? and state = 'reserved'",
+            (response_json, now, command_id, kind, identity_sha256),
+        )
+        if completed.rowcount != 1:
+            raise HTTPException(status_code=409, detail="Runtime command journal reservation is no longer valid")
+        prune_runtime_command_journal(connection, now)
+        connection.commit()
+    except sqlite3.Error as error:
+        # The downstream calls already ran; the reservation stays and retries report the outcome as uncertain.
+        raise HTTPException(status_code=503, detail=UNCERTAIN_COMMAND_DETAIL) from error
+    finally:
+        connection.close()
+
+def stored_command_response(entry: tuple, kind: str, identity_sha256: str) -> dict:
+    stored_kind, stored_identity, state, response_json = entry
+    if stored_kind != kind or stored_identity != identity_sha256:
+        raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
+    if state != "completed" or not response_json:
+        raise HTTPException(status_code=409, detail=UNCERTAIN_COMMAND_DETAIL)
+    try:
+        return json.loads(response_json)
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=503, detail="Runtime command journal is unreadable") from error
+
+def remember_completed_command(command_id: str, kind: str, identity_sha256: str, response: dict) -> None:
+    now = time.monotonic()
+    runtime_command_cache[command_id] = {"kind": kind, "identity_sha256": identity_sha256, "response": response, "completed_at": now}
+    prune_runtime_command_cache(now)
+
 async def cached_runtime_command(command_id: str, kind: str, identity: dict) -> dict | None:
     identity_sha256 = command_identity_hash(identity)
     async with runtime_command_cache_lock:
-        now = time.monotonic()
-        prune_runtime_command_cache(now)
+        prune_runtime_command_cache(time.monotonic())
         cached = runtime_command_cache.get(command_id)
         if cached:
             if cached["kind"] != kind or cached["identity_sha256"] != identity_sha256:
                 raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
             return {**cached["response"], "duplicate": True}
-        connection = require_runtime_command_journal()
-        if connection is None:
+        entry = await asyncio.to_thread(read_journal_entry, command_id)
+        if entry is None:
             return None
-        try:
-            row = connection.execute(
-                "select kind, identity_sha256, state, response_json from runtime_command_journal where command_id = ?",
-                (command_id,),
-            ).fetchone()
-            if not row:
-                return None
-            stored_kind, stored_identity, state, response_json = row
-            if stored_kind != kind or stored_identity != identity_sha256:
-                raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
-            if state != "completed" or not response_json:
-                raise HTTPException(status_code=409, detail="Runtime command outcome is uncertain; verify the media session before issuing a new command")
-            response = json.loads(response_json)
-            runtime_command_cache[command_id] = {"kind": kind, "identity_sha256": identity_sha256, "response": response, "completed_at": now}
-            prune_runtime_command_cache(now)
-            return {**response, "duplicate": True}
-        except json.JSONDecodeError as error:
-            raise HTTPException(status_code=503, detail="Runtime command journal is unreadable") from error
-        finally:
-            connection.close()
+        response = stored_command_response(entry, kind, identity_sha256)
+        remember_completed_command(command_id, kind, identity_sha256, response)
+        return {**response, "duplicate": True}
 
 async def reserve_runtime_command(command_id: str, kind: str, identity: dict) -> dict | None:
     """Reserve a new command id, or return the stored result of a completed command with the same payload."""
     identity_sha256 = command_identity_hash(identity)
     async with runtime_command_cache_lock:
-        connection = require_runtime_command_journal()
-        if connection is None:
+        existing = await asyncio.to_thread(reserve_journal_entry, command_id, kind, identity_sha256, time.time())
+        if existing is None:
             return None
-        try:
-            now = time.time()
-            existing = connection.execute(
-                "select kind, identity_sha256, state, response_json from runtime_command_journal where command_id = ?",
-                (command_id,),
-            ).fetchone()
-            if existing:
-                stored_kind, stored_identity, state, response_json = existing
-                if stored_kind != kind or stored_identity != identity_sha256:
-                    raise HTTPException(status_code=409, detail="Runtime command id was already used with a different payload")
-                if state != "completed" or not response_json:
-                    raise HTTPException(status_code=409, detail="Runtime command outcome is uncertain; verify the media session before issuing a new command")
-                return {**json.loads(response_json), "duplicate": True}
-            connection.execute(
-                "insert into runtime_command_journal (command_id, kind, identity_sha256, state, created_at) values (?, ?, ?, 'reserved', ?)",
-                (command_id, kind, identity_sha256, now),
-            )
-            connection.commit()
-            return None
-        except json.JSONDecodeError as error:
-            raise HTTPException(status_code=503, detail="Runtime command journal is unreadable") from error
-        finally:
-            connection.close()
+        response = stored_command_response(existing, kind, identity_sha256)
+        remember_completed_command(command_id, kind, identity_sha256, response)
+        return {**response, "duplicate": True}
 
 async def cache_runtime_command(command_id: str, kind: str, identity: dict, response: dict) -> None:
     identity_sha256 = command_identity_hash(identity)
+    response_json = json.dumps(response, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     async with runtime_command_cache_lock:
-        connection = require_runtime_command_journal()
-        if connection is not None:
-            try:
-                now = time.time()
-                completed = connection.execute(
-                    "update runtime_command_journal set state = 'completed', response_json = ?, completed_at = ? where command_id = ? and kind = ? and identity_sha256 = ? and state = 'reserved'",
-                    (json.dumps(response, ensure_ascii=False, separators=(",", ":"), sort_keys=True), now, command_id, kind, identity_sha256),
-                )
-                if completed.rowcount != 1:
-                    raise HTTPException(status_code=409, detail="Runtime command journal reservation is no longer valid")
-                prune_runtime_command_journal(connection, now)
-                connection.commit()
-            finally:
-                connection.close()
-        cache_now = time.monotonic()
-        runtime_command_cache[command_id] = {"kind": kind, "identity_sha256": identity_sha256, "response": response, "completed_at": cache_now}
-        prune_runtime_command_cache(cache_now)
+        await asyncio.to_thread(complete_journal_entry, command_id, kind, identity_sha256, response_json, time.time())
+        remember_completed_command(command_id, kind, identity_sha256, response)
 
 def gpu_observation() -> dict:
     try:
@@ -455,7 +483,7 @@ async def healthz() -> JSONResponse:
         service_health(LIVE_TALKING_URL, "/api/admin/sessions", expected_code=0),
         service_health(COSYVOICE_URL, "/openapi.json"),
     )
-    command_journal = command_journal_status()
+    command_journal = await asyncio.to_thread(command_journal_status)
     status = "ok" if livetalking["available"] and (not COSYVOICE_REQUIRED or cosyvoice["available"]) and (not RUNTIME_COMMAND_JOURNAL_REQUIRED or command_journal["available"]) else "degraded"
     return JSONResponse(
         status_code=200 if status == "ok" else 503,
@@ -481,14 +509,14 @@ async def observation(session_id: str, authorization: str | None = Header(defaul
     if not session:
         return {
             "session": {"id": session_id, "active": False, "speaking": False, "recording": False},
-            "gpu": gpu_observation(),
+            "gpu": await asyncio.to_thread(gpu_observation),
             "quality": {"writer_accepting_frames": False, "output_fps": None, "inference_fps": None, "configured_bitrate_mbps": None, "actual_bitrate_mbps": None, "av_sync_ms": None, "destination_receipt": None},
             "limitations": ["session_not_found", "destination_receipt_not_available", "actual_bitrate_not_available", "av_sync_not_available"],
         }
     metrics = session.get("metrics") if isinstance(session.get("metrics"), dict) else {}
     return {
         "session": {"id": session_id, "active": True, "speaking": bool(session.get("speaking")), "recording": bool(session.get("recording"))},
-        "gpu": gpu_observation(),
+        "gpu": await asyncio.to_thread(gpu_observation),
         "quality": {
             "writer_accepting_frames": bool(metrics.get("output_connected")),
             "output_fps": numeric_metric(metrics.get("output_fps")),
