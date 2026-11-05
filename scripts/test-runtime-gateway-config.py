@@ -98,6 +98,8 @@ def check_gpu_index() -> None:
 
 
 async def main() -> None:
+    gateway.COSYVOICE_MODEL_KIND = "zero_shot"
+    gateway.COSYVOICE_VOICE_LIBRARY_DIR = str(pathlib.Path(tempfile.gettempdir()).resolve() / "shuzhiren-voices-not-required-at-startup")
     await check_unauthenticated_surfaces()
     check_gpu_index()
     await reject("")
@@ -122,6 +124,18 @@ async def main() -> None:
     await reject_configuration("MEDIA_COMMAND_CACHE_MAX_ENTRIES", 0, "MEDIA_COMMAND_CACHE_MAX_ENTRIES")
     await reject_configuration("LIVE_TALKING_URL", "ftp://untrusted.example", "LIVETALKING_BASE_URL")
     await reject_configuration("FALLBACK_AUDIOTYPE", gateway.PROGRAM_AUDIOTYPE, "must be distinct")
+    for kind in ("", "SFT", "zeroshot", "livetalking"):
+        await reject_configuration("COSYVOICE_MODEL_KIND", kind, "COSYVOICE_MODEL_KIND must be sft or zero_shot")
+    await reject_configuration("COSYVOICE_VOICE_LIBRARY_DIR", "", "COSYVOICE_VOICE_LIBRARY_DIR")
+    await reject_configuration("COSYVOICE_CHUNK_MAX_CHARS", 19, "COSYVOICE_CHUNK_MAX_CHARS")
+    await reject_configuration("COSYVOICE_CHUNK_MAX_CHARS", 801, "COSYVOICE_CHUNK_MAX_CHARS")
+    await reject_configuration("RUNTIME_COMMAND_DEADLINE_SECONDS", 60, "RUNTIME_COMMAND_DEADLINE_SECONDS")
+    gateway.COSYVOICE_MODEL_KIND = "sft"
+    gateway.COSYVOICE_VOICE_LIBRARY_DIR = ""
+    async with gateway.lifespan(gateway.app):
+        pass
+    gateway.COSYVOICE_MODEL_KIND = "zero_shot"
+    gateway.COSYVOICE_VOICE_LIBRARY_DIR = str(pathlib.Path(tempfile.gettempdir()).resolve() / "shuzhiren-voices-not-required-at-startup")
 
     gateway.PREVIEW_BROKER_URL = "https://preview-broker.example"
     gateway.PREVIEW_BROKER_TOKEN = ""

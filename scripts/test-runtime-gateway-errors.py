@@ -1,6 +1,7 @@
 import asyncio
 import pathlib
 import sys
+import time
 
 import httpx
 from fastapi import HTTPException
@@ -22,6 +23,9 @@ class FailingClient:
 
     async def get(self, *_args, **_kwargs):
         raise httpx.ConnectError("failed to reach http://livetalking.internal/private-stream-key")
+
+    def stream(self, *_args, **_kwargs):
+        raise httpx.ConnectError("failed to reach http://cosyvoice.internal/private-stream-key")
 
 
 class RejectedResponse:
@@ -61,28 +65,46 @@ async def expect_detail(operation, expected: str) -> None:
         raise AssertionError("Gateway downstream failure must return HTTPException")
 
 
+async def expect_cosyvoice_failure(expected: str, reason: str) -> None:
+    try:
+        await gateway.cosyvoice_synthesize("hello", gateway.VoiceSpec("voice"), time.monotonic() + 5)
+    except gateway.CommandFailure as error:
+        body = error.body()
+        assert error.status_code == 502, error.status_code
+        assert body["detail"] == expected and "private" not in body["detail"], body
+        assert body["code"] == "command_failed_definite" and body["failure_source"] == "cosyvoice" and body["failure_reason"] == reason, body
+    else:
+        raise AssertionError("a CosyVoice failure must be reported as a definite command failure")
+
+
 async def main() -> None:
     original_client = gateway.httpx.AsyncClient
     original_preview_url = gateway.PREVIEW_BROKER_URL
     original_preview_token = gateway.PREVIEW_BROKER_TOKEN
     gateway.RUNTIME_TOKEN = "e" * 32
+    gateway.COSYVOICE_MODEL_KIND = "sft"
     try:
         gateway.PREVIEW_BROKER_URL = "https://preview-broker.example"
         gateway.PREVIEW_BROKER_TOKEN = "p" * 32
         gateway.httpx.AsyncClient = lambda **_kwargs: FailingClient()
-        await expect_detail(gateway.livetalking_post("/private", {}), "LiveTalking request failed")
+        await expect_detail(gateway.livetalking_post("/interrupt_talk", {}), "LiveTalking request failed")
         await expect_detail(gateway.livetalking_get("/private"), "LiveTalking request failed")
-        await expect_detail(gateway.cosyvoice_synthesize("hello", "voice"), "CosyVoice request failed")
+        await expect_cosyvoice_failure("CosyVoice request failed", "cosyvoice_unreachable")
         await expect_detail(gateway.livetalking_audio("session", b"audio"), "LiveTalking audio request failed")
         await expect_detail(gateway.preview_broker_get("session"), "Preview broker request failed")
 
+        gateway.httpx.AsyncClient = upstream_answering(500, b"private-stream-key traceback")
+        await expect_cosyvoice_failure("CosyVoice rejected the synthesis request", "cosyvoice_http_status")
+        gateway.httpx.AsyncClient = upstream_answering(200, b"\x01\x00\x02")
+        await expect_cosyvoice_failure("CosyVoice returned incomplete audio", "cosyvoice_odd_audio_length")
+
         gateway.httpx.AsyncClient = lambda **_kwargs: RejectingClient()
-        await expect_detail(gateway.livetalking_post("/private", {}), "LiveTalking rejected request")
+        await expect_detail(gateway.livetalking_post("/interrupt_talk", {}), "LiveTalking rejected request")
         await expect_detail(gateway.livetalking_audio("session", b"audio"), "LiveTalking rejected audio request")
 
         for body in (b"not-json-private-stream-key", b"[1, 2]", b'"private-stream-key"', b"null"):
             gateway.httpx.AsyncClient = upstream_answering(200, body)
-            await expect_detail(gateway.livetalking_post("/private", {}), "LiveTalking returned an invalid response")
+            await expect_detail(gateway.livetalking_post("/interrupt_talk", {}), "LiveTalking returned an invalid response")
             await expect_detail(gateway.livetalking_get("/private"), "LiveTalking returned an invalid response")
             await expect_detail(gateway.livetalking_audio("session", b"audio"), "LiveTalking returned an invalid response")
             await expect_detail(gateway.preview_broker_get("session"), "Preview broker returned an invalid response")

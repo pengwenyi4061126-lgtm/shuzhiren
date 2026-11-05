@@ -30,6 +30,7 @@ def run(script: pathlib.Path, environment: dict[str, str], check: bool = True) -
 async def main() -> None:
     gateway.RUNTIME_TOKEN = "test-runtime-token"
     gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = True
+    gateway.COSYVOICE_MODEL_KIND = "sft"
     gateway.runtime_command_cache.clear()
     gateway.runtime_command_locks.clear()
 
@@ -53,9 +54,9 @@ async def main() -> None:
             media_calls.append((path, payload))
             return {"code": 0}
 
-        async def cosyvoice_synthesize(text: str, speaker: str) -> bytes:
-            synthesis_calls.append((text, speaker))
-            return b"restored-drill-audio"
+        async def cosyvoice_synthesize(text: str, voice, deadline: float):
+            synthesis_calls.append((text, voice.runtime_voice_id))
+            return gateway.SynthesisResult(pcm=b"\x01\x00\x02\x00", chunks=1, synth_ms=0)
 
         async def livetalking_audio(session_id: str, audio: bytes) -> None:
             audio_calls.append((session_id, audio))
@@ -82,7 +83,7 @@ async def main() -> None:
         assert original_speech["duplicate"] is False
         assert len(media_calls) == 2
         assert synthesis_calls == [(speech_request.text, speech_request.voice)]
-        assert audio_calls == [(speech_request.session_id, b"restored-drill-audio")]
+        assert audio_calls == [(speech_request.session_id, gateway.pcm_s16le_to_wav(b"\x01\x00\x02\x00", gateway.COSYVOICE_SAMPLE_RATE))]
 
         backup_environment = {
             **os.environ,
@@ -132,7 +133,7 @@ async def main() -> None:
             replay_attempts.append("livetalking_post")
             raise AssertionError("a restored completed command must not call LiveTalking")
 
-        async def fail_on_synthesis(text: str, speaker: str) -> bytes:
+        async def fail_on_synthesis(text: str, voice, deadline: float):
             replay_attempts.append("cosyvoice_synthesize")
             raise AssertionError("a restored completed command must not call CosyVoice")
 
