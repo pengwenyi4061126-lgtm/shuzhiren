@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
 import { interpolate, parseEnvFile, parseInterpolations } from "./lib/compose-interpolation.mjs";
+import { consoleRunnerStage, NODE_LTS_MAJOR } from "./lib/node-runtime.mjs";
 
 const [nextConfig, dockerfile, dockerignore, compose, environment, migrator, integrity, baseliner, runtimeCompose, prometheus] = await Promise.all([
   readFile(new URL("../apps/console/next.config.ts", import.meta.url), "utf8"),
@@ -22,7 +23,10 @@ const [devCompose, devEnvironment] = await Promise.all([
 for (const source of ['output: "standalone"']) {
   if (!nextConfig.includes(source)) throw new Error(`Console build must retain ${source}`);
 }
-for (const source of ["FROM dependencies AS build", "FROM node:20-alpine AS runner", ".next/standalone", ".next/static", "USER console", 'CMD ["node", "server.js"]']) {
+if (!consoleRunnerStage(NODE_LTS_MAJOR).test(dockerfile)) {
+  throw new Error(`Console Dockerfile runner stage must be FROM node:${NODE_LTS_MAJOR}-alpine[@sha256:<digest>] AS runner`);
+}
+for (const source of ["FROM dependencies AS build", ".next/standalone", ".next/static", "USER console", 'CMD ["node", "server.js"]']) {
   if (!dockerfile.includes(source)) throw new Error(`Console Dockerfile must retain a production standalone runtime: ${source}`);
 }
 for (const source of ["node_modules", "vendor", "apps/*/.next", ".env", ".env.*", "secrets", "config", "models", "weights", "recordings", "exports", "cache", "logs"]) {

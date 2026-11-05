@@ -1,5 +1,39 @@
 import { readFile } from "node:fs/promises";
+import yaml from "js-yaml";
+import { nodeMajorViolations, releaseDockerfiles } from "./lib/dockerfile-refs.mjs";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
+import { engineMinVersion, NODE_LTS_MAJOR, versionMajor } from "./lib/node-runtime.mjs";
+const repoFile = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
+// Node.js runtime (Requirement 27): engines, the lock root and every node base image use NODE_LTS_MAJOR.
+const nodeProblems = [];
+const rootPackage = JSON.parse(await repoFile("package.json"));
+const lock = JSON.parse(await repoFile("package-lock.json"));
+try {
+  const minimum = engineMinVersion(rootPackage.engines?.node);
+  if (minimum.split(".")[0] !== String(NODE_LTS_MAJOR)) nodeProblems.push(`package.json engines.node ${rootPackage.engines.node} must start at Node.js ${NODE_LTS_MAJOR}`);
+} catch (error) {
+  nodeProblems.push(`package.json ${error.message}`);
+}
+if (lock.packages?.[""]?.engines?.node !== rootPackage.engines?.node) nodeProblems.push(`package-lock.json packages[""].engines.node ${JSON.stringify(lock.packages?.[""]?.engines?.node)} must equal package.json engines.node ${JSON.stringify(rootPackage.engines?.node)}`);
+for (const [key, entry] of Object.entries(lock.packages ?? {})) {
+  if (key.startsWith("apps/") && !key.includes("node_modules")) {
+    for (const field of ["dependencies", "devDependencies"]) {
+      const spec = entry?.[field]?.["@types/node"];
+      if (spec !== undefined && versionMajor(spec) !== String(NODE_LTS_MAJOR)) nodeProblems.push(`${key}/package.json ${field} @types/node ${spec} must be a Node.js ${NODE_LTS_MAJOR} version`);
+    }
+  } else if (key.endsWith("node_modules/@types/node") && versionMajor(entry?.version) !== String(NODE_LTS_MAJOR)) {
+    nodeProblems.push(`package-lock.json ${key} ${entry?.version} must be a Node.js ${NODE_LTS_MAJOR} version`);
+  }
+}
+const imageDockerfiles = releaseDockerfiles(yaml.load(await repoFile(".github/workflows/release.yml")));
+const dockerfileText = Object.fromEntries(await Promise.all(imageDockerfiles.map(async (file) => [file, await repoFile(file)])));
+for (const [file, text] of Object.entries(dockerfileText)) {
+  for (const problem of nodeMajorViolations(file, text, NODE_LTS_MAJOR)) nodeProblems.push(`${problem.file}:${problem.line} ${problem.ref} ${problem.reason}`);
+}
+if (nodeProblems.length > 0) {
+  for (const problem of nodeProblems) console.error(`ERROR  ${problem}`);
+  throw new Error(`Node.js runtime must be ${NODE_LTS_MAJOR} LTS everywhere (${nodeProblems.length} problem(s) above)`);
+}
 
 const files = {
   console: "../apps/console/Dockerfile",

@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 COPY --chown=node:node apps/runtime-observer/package.json ./package.json
