@@ -1070,7 +1070,8 @@ async function seedProgramTransitionRun({ state = "LIVE", scheduledAt } = {}) {
   const insertSegmentId = randomUUID();
   const primaryScript = "本段仅播报已批准的主节目商品事实。";
   const insertScript = "本段为已批准的限时插播，结束后回到主节目。";
-  const approver = await client.query("select id from users where tenant_id = $1 and external_subject = 'integration-operator'", [tenantId]);
+  // users has no tenant_id; tenant membership lives in memberships.
+  const approver = await client.query("select users.id from users join memberships on memberships.user_id = users.id where memberships.tenant_id = $1 and users.external_subject = 'integration-operator'", [tenantId]);
   if (!approver.rows[0]) throw new Error("integration admin must exist before seeding a program transition run");
   await client.query("insert into shows (id, tenant_id, name) values ($1, $2, $3)", [showId, tenantId, `Program transition show ${runId}`]);
   await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft')", [revisionId, tenantId, showId]);
