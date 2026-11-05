@@ -107,6 +107,9 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
       # Workflow inputs reach shell steps only through env: and are validated
       # here before docker/login-action, the image tags or the build arguments
       # use them (audit H1). Error messages name the input, never its value.
@@ -213,6 +216,9 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-image-*
@@ -250,14 +256,22 @@ jobs:
             status=1
           fi
           exit "$status"
-      - run: >-
+      # The assembler reads every image's SBOM and provenance attestation by
+      # digest from the validated release registry (audit M21); the registry
+      # and the read credentials reach it only through env: (audit H1).
+      - name: Assemble release evidence
+        env:
+          RELEASE_REGISTRY: ${{ inputs.registry }}
+          REGISTRY_READ_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_READ_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: >-
           node scripts/assemble-release-evidence.mjs
-          --input-dir "${{ runner.temp }}/release-image-results"
-          --revision "${{ github.sha }}"
-          --source "${{ github.server_url }}/${{ github.repository }}"
-          --images-output "${{ runner.temp }}/images.json"
-          --sbom-output "${{ runner.temp }}/release-sbom-index.json"
-          --provenance-output "${{ runner.temp }}/release-provenance-index.json"
+          --input-dir "$RUNNER_TEMP/release-image-results"
+          --revision "$GITHUB_SHA"
+          --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          --images-output "$RUNNER_TEMP/images.json"
+          --sbom-output "$RUNNER_TEMP/release-sbom-index.json"
+          --provenance-output "$RUNNER_TEMP/release-provenance-index.json"
       - name: Create signed release manifest
         env:
           RELEASE_SIGNING_KEY_PATH: ${{ inputs.signing_key_path }}
