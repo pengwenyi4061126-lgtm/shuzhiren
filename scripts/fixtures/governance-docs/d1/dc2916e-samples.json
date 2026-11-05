@@ -1,0 +1,10 @@
+{
+  "source": "git show dc2916e:<file>, one line each (design part 8 Requirement 40 §6.4)",
+  "samples": {
+    "README.md:65": "阶段 1 已完成；阶段 2 至 6 的控制面、治理、Gateway、观测、告警、渠道标准化接入、用量门禁和多租户框架已经落在仓库中。控制台代码位于 `apps/console`，开源运行时入口位于 `runtime/gateway` 与 `infra/compose`。真实 ERP/PIM、平台 OAuth/Webhook、OIDC 成员同步、对象存储、4090 试播和结算对账仍是部署方必须接入并留存证据的外部工作，不能用开发态或模拟服务替代。",
+    "docs/RESUME_HANDOFF.md:110": "- 平台无关的结算内核现已覆盖账单批次、来源 SHA-256、不可变账单行、订单级差异、独立私网导入 token 与证据化结案。仍待完成的仓库内工作是选定平台的 OAuth/Webhook/商品同步/账单 Adapter，以及该平台佣金、服务费、运费、优惠分摊、税费和跨期退款等结算语义映射。平台账号、应用审核和真实数据是外部前置条件，但 Adapter 实现本身不是。节目切换的仓库内观测关联已完成；仍需在目标平台部署水印/指纹、目的端回放或指标验证器，并以 GPU、平台账号、推流密钥和外部验收证据证明它可信，不能把 Gateway 接受回执误当作已播出证明。",
+    "docs/RESUME_HANDOFF.md:111": "- 渠道回复的 `providerReplyEndpoint` 只是受控标准化桥接契约；抖音、淘宝、视频号等实际 API、OAuth scope、应用审核和商家账号权限仍是外部平台前置条件。缺少回执时 worker 保持失败/可重试状态，不会把互动伪装成已处理。",
+    "docs/FRAMEWORK_STATUS.md:20": "不需要等待 4090 的工作：受控直播预览、对象/镜像证据的实际内容校验、SKU/场次审批、PostgreSQL Repository、策略测试、具体渠道 Adapter、审计和部署自动化。",
+    "docs/FRAMEWORK_STATUS.md:68": "当前仍不能把该能力作为真实直播质量结论：仓库已提供将外部输出观测与节目段落关联的取证入口，但部署验收必须实际运行同网段水印/指纹或目的端回放验证器，并覆盖 Gateway 重启、回执丢失、多 worker、RTMP 拒绝、黑屏和静音。GPU、平台账号、推流密钥、验证器、平台回放/指标和真实验收证据均是外部前置条件；仓库内仍需继续完成目标平台 Adapter。"
+  }
+}

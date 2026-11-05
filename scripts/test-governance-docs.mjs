@@ -1,10 +1,13 @@
 // Behavioral tests of the documentation governance gate: the VERIFICATION_LOG
 // rules of scripts/lib/verification-log.mjs, the Audit_Register rules of
-// scripts/lib/audit-register.mjs and the scripts/check-governance-docs.mjs CLI
-// (design part 1 §4.5, §7.5; Requirement 1.12, 1.14, 1.15, 4.1-4.8, 6.8,
-// 7.1-7.15, 36.13, 36.14). Labels are resolved against the real LOCAL_CHECKS,
-// CI_ONLY_STEPS and package.json; workflows are inline. Samples live in
-// scripts/fixtures/governance-docs/vlog/ and scripts/fixtures/governance-docs/audit/;
+// scripts/lib/audit-register.mjs, the Readiness_Matrix rules of
+// scripts/lib/readiness-matrix.mjs, the Handoff_Doc rules of
+// scripts/lib/handoff-docs.mjs and the scripts/check-governance-docs.mjs CLI
+// (design part 1 §4.5, §5.5, §6.5, §7.5; part 8 Requirement 40 §6.4;
+// Requirement 1.12, 1.14, 1.15, 4.1-4.8, 5.1-5.8, 6.1-6.8, 7.1-7.15, 32.10,
+// 32.11, 36.13, 36.14, 40.1-40.7). Labels are resolved against the real
+// LOCAL_CHECKS, CI_ONLY_STEPS and package.json; workflows are inline. Samples
+// live in scripts/fixtures/governance-docs/{vlog,audit,matrix,handoff,d1}/;
 // secret-like strings are assembled at run time so that no fixture contains one.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -47,6 +50,20 @@ import {
   validateAuditRegister,
   VERIFY_CONCLUSIONS
 } from "./lib/audit-register.mjs";
+import fc from "fast-check";
+import {
+  D1_ROWS,
+  d1Decision,
+  MATRIX_STATUSES,
+  parseReadinessMatrix,
+  REQUIRED_ENVIRONMENT_ROWS,
+  REQUIRED_EXTERNAL_ROWS,
+  rowCriterion,
+  RW_STATUSES,
+  splitTableRow,
+  validateReadinessMatrix
+} from "./lib/readiness-matrix.mjs";
+import { findClaimViolations, HANDOFF_FILES, isCiClaim, runReferenceProblem, splitUnits, SYNC_STATE, validateHandoffDocs } from "./lib/handoff-docs.mjs";
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptsDir, "..");
@@ -872,4 +889,384 @@ test("CLI: --register validates a register fixture; errors exit 1, a missing reg
   assert.equal(missing.status, 2);
   assert.match(missing.stderr, /^ERROR missing \S*AUDIT_REGISTER\.md/m);
   assert.equal(runGate(["--register"]).status, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Readiness_Matrix (design part 1 §6.5; part 8 Requirement 40 §6.4;
+// Requirement 6.1-6.8, 32.10, 32.11, 40.1, 40.5-40.7). The sample matrix has D1
+// pending and cites V-20261106-01; entries are built in memory.
+
+const matrixFixture = (name) => path.join(scriptsDir, "fixtures", "governance-docs", "matrix", name);
+const handoffFixture = (name) => path.join(scriptsDir, "fixtures", "governance-docs", "handoff", name);
+const d1Fixture = (name) => path.join(scriptsDir, "fixtures", "governance-docs", "d1", name);
+const MATRIX = readFileSync(matrixFixture("valid-matrix.md"), "utf8");
+const vlogEntry = (id, verdict, sources, overrides = {}) => ({ id, verdict, valid: true, data: { 编号: id, 依据来源: sources }, ...overrides });
+const matrixVlog = [
+  vlogEntry("V-20261106-01", "行为验证", [localSource({ 检查: [{ 名称: "docs:governance:test", 标签: "behavioral" }] })]),
+  vlogEntry("V-20261106-02", "静态检查", [localSource()]),
+  vlogEntry("V-20261106-03", "行为验证", [githubSource({ 步骤: [step({ 标签: "behavioral" })] })]),
+  vlogEntry("V-20261106-04", "行为验证", [linuxSource()]),
+  vlogEntry("V-20261106-05", "未验证", [externalSource()])
+];
+const matrixErrors = (text, vlog = matrixVlog) => validateReadinessMatrix(text, { vlog });
+const codesOf = (errors) => [...new Set(errors.map((error) => error.code))].sort();
+const describeRows = (errors) => errors.map((error) => `${error.code} ${error.line} ${error.message}`).join("\n");
+/** Replaces exactly one occurrence of `from`, so that every sample edits the line it means to. */
+function edit(text, from, to) {
+  const count = text.split(from).length - 1;
+  assert.equal(count, 1, `sample edit must match once: ${from}`);
+  return text.replace(from, to);
+}
+const rowLine = (text, id) => text.split("\n").find((line) => line.startsWith(`| ${id} |`));
+function setCell(text, id, column, value) {
+  const line = rowLine(text, id);
+  assert.ok(line, id);
+  const cells = splitTableRow(line);
+  cells[column] = value;
+  return edit(text, line, `| ${cells.join(" | ")} |`);
+}
+const withRow = (text, afterId, row) => edit(text, rowLine(text, afterId), `${rowLine(text, afterId)}\n${row}`);
+const withoutRow = (text, id) => edit(text, `${rowLine(text, id)}\n`, "");
+const decided = (text, { date = "2026-11-05", spec = "—", status = "代码未完成" } = {}) => {
+  let result = edit(text, "| D1 | 首个目标直播平台 | 待用户决策 | — | — | — |", `| D1 | 首个目标直播平台 | 已决定 | 抖音 | ${date} | ${spec} |`);
+  for (const id of D1_ROWS) result = setCell(result, id, 2, status);
+  return result;
+};
+const PEM_HEADER = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
+
+test("the sample matrix validates, and parseReadinessMatrix reads its sections, rows and decision", () => {
+  assert.equal(describeRows(matrixErrors(MATRIX)), "");
+  const parsed = parseReadinessMatrix(MATRIX);
+  assert.deepEqual([...parsed.sections.keys()], ["状态定义", "真实开播放行条件", "外部先决条件", "仓库交付项", "待决策事项", "发布判定"]);
+  assert.equal(parsed.rows.filter((row) => row.kind === "EP").length, 14);
+  assert.equal(parsed.rows.find((row) => row.id === "EP-12").condition, "已满足");
+  assert.equal(d1Decision(parsed).decision, "待用户决策");
+  assert.deepEqual(Object.keys(REQUIRED_EXTERNAL_ROWS), Array.from({ length: 14 }, (_, index) => `EP-${String(index + 1).padStart(2, "0")}`));
+  assert.equal(MATRIX_STATUSES.length, 6);
+  assert.deepEqual(splitTableRow("| a \\| b | c |"), ["a \\| b", "c"]);
+  assert.equal(rowCriterion("15.14(a)：试听"), "15.14(a)");
+  assert.equal(rowCriterion("14.1：推流"), "14.1");
+  assert.equal(rowCriterion("13.1–13.6：输入"), null);
+});
+
+test("RM-HEADER: table headers and cell counts are fixed", () => {
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "| 编号 | 事项 | 状态 | 外部条件 | 证据 | 对应需求 | 说明 |", "| 编号 | 事项 | 状态 | 证据 | 对应需求 | 说明 |"))), ["RM-HEADER"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 1, "失败 | 隔离"))), ["RM-HEADER"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 1, "失败 \\| 隔离"))), []);
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "## 发布判定", "## 发布"))), ["RM-HEADER"]);
+});
+
+test("RM-ID: id format, duplicates, table placement and the 对应需求 column", () => {
+  assert.match(describeRows(matrixErrors(setCell(MATRIX, "RW-002-01", 0, "RW-2-01"))), /^RM-ID \d+ 编号 RW-2-01 不符合 RW-NNN-MM$/m);
+  const duplicate = withRow(MATRIX, "RW-002-01", "| RW-002-01 | 重复 | 代码未完成 | — | 2 | 样例 |");
+  assert.match(describeRows(matrixErrors(duplicate)), /^RM-ID \d+ 编号 RW-002-01 重复/m);
+  assert.match(describeRows(matrixErrors(withRow(MATRIX, "RW-002-01", "| EP-15 | 外部 | External_Prerequisite | — | 6 | 样例 |"))), /^RM-ID \d+ EP-15 不能写在 仓库交付项 表中$/m);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 4, "无"))), ["RM-ID"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 4, "3"))), ["RM-ID"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-000-01", 4, "1"))), ["RM-ID"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 4, "2, 41"))), ["RM-ID"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 4, "2, 36"))), []);
+});
+
+test("RM-STATUS: statuses outside the six, and prefix-status mismatches (Property 21)", () => {
+  assert.match(describeRows(matrixErrors(setCell(MATRIX, "RW-002-01", 2, "已完成"))), /^RM-STATUS \d+ RW-002-01 的状态"已完成"不是六个状态之一$/m);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "EP-03", 2, "代码未完成"))), ["RM-STATUS"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 2, "External_Prerequisite"))), ["RM-STATUS"]);
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "- 代码未完成\n", ""))), ["RM-STATUS"]);
+  fc.assert(
+    fc.property(fc.constantFrom("EP-03", "RW-002-01"), fc.constantFrom(...MATRIX_STATUSES, "已完成", "代码完成", ""), (id, value) => {
+      const statusErrors = matrixErrors(setCell(MATRIX, id, 2, value)).filter((error) => error.code === "RM-STATUS");
+      const allowed = id.startsWith("EP-") ? value === "External_Prerequisite" : RW_STATUSES.includes(value);
+      return (statusErrors.length === 0) === allowed;
+    }),
+    { seed: 6021, numRuns: 100 }
+  );
+});
+
+test("RM-EP-REQUIRED: EP-01 to EP-14 exist with their frozen wording", () => {
+  assert.match(describeRows(matrixErrors(withoutRow(MATRIX, "EP-05"))), /^RM-EP-REQUIRED \d+ 缺少外部先决条件行 EP-05/m);
+  assert.match(describeRows(matrixErrors(setCell(MATRIX, "EP-03", 1, "OIDC 提供方"))), /^RM-EP-REQUIRED \d+ EP-03 的事项必须逐字为"OIDC 提供商"$/m);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "EP-03", 1, "  OIDC 提供商  "))), []);
+});
+
+test("RM-EP-EVIDENCE: 已满足 needs 位置, 日期 and 提供方; /healthz alone only passes as 未满足 (Property 22)", () => {
+  const healthz = setCell(MATRIX, "EP-01", 4, "/healthz 200");
+  assert.deepEqual(codesOf(matrixErrors(healthz)), []);
+  assert.deepEqual(codesOf(matrixErrors(setCell(healthz, "EP-01", 3, "已满足"))), ["RM-EP-EVIDENCE"]);
+  const satisfied = (evidence) => setCell(setCell(MATRIX, "EP-01", 3, "已满足"), "EP-01", 4, evidence);
+  assert.deepEqual(codesOf(matrixErrors(satisfied("位置=试播报告 R-1，日期=2026-11-20，提供方=运维负责人"))), []);
+  for (const bad of ["—", "位置=Gateway /healthz 响应，日期=2026-11-20，提供方=运维", "位置=开发 fixture，日期=2026-11-20，提供方=开发", "位置=试播报告，日期=2026/11/20，提供方=运维", "位置=试播报告，日期=2026-02-30，提供方=运维", "位置=试播报告，日期=2026-11-20"]) {
+    assert.deepEqual(codesOf(matrixErrors(satisfied(bad))), ["RM-EP-EVIDENCE"], bad);
+  }
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "EP-02", 3, "部分满足"))), ["RM-EP-EVIDENCE"]);
+  fc.assert(
+    fc.property(fc.constantFrom("/healthz 200", "容器 running", "口头确认", "开发 fixture"), fc.boolean(), (weak, mark) => {
+      const errors = matrixErrors(setCell(setCell(MATRIX, "EP-01", 4, weak), "EP-01", 3, mark ? "已满足" : "未满足"));
+      return mark ? codesOf(errors).includes("RM-EP-EVIDENCE") : errors.length === 0;
+    }),
+    { seed: 6022, numRuns: 100 }
+  );
+});
+
+test("RM-RW-EVIDENCE: 有验证证据 rows cite valid behavioral entries with a runnable source (Property 23)", () => {
+  assert.deepEqual(codesOf(matrixErrors(MATRIX)), []);
+  const cite = (evidence) => setCell(MATRIX, "RW-001-01", 3, evidence);
+  assert.match(describeRows(matrixErrors(cite("V-20261106-02"))), /^RM-RW-EVIDENCE \d+ RW-001-01 引用的 V-20261106-02 不合格：该条目的判定为 静态检查/m);
+  assert.deepEqual(codesOf(matrixErrors(cite("—"))), ["RM-RW-EVIDENCE"]);
+  assert.deepEqual(codesOf(matrixErrors(cite("V-20261106-09"))), ["RM-RW-EVIDENCE"]);
+  assert.deepEqual(codesOf(matrixErrors(cite("V-20261106-05"))), ["RM-RW-EVIDENCE"]);
+  assert.deepEqual(codesOf(matrixErrors(cite("run 42040219509"))), ["RM-RW-EVIDENCE"]);
+  assert.deepEqual(codesOf(matrixErrors(cite("V-20261106-01；V-20261106-03"))), []);
+  assert.deepEqual(codesOf(matrixErrors(MATRIX, [vlogEntry("V-20261106-01", "行为验证", [externalSource()])])), ["RM-RW-EVIDENCE"]);
+  assert.deepEqual(codesOf(matrixErrors(MATRIX, [{ ...matrixVlog[0], valid: false }])), ["RM-RW-EVIDENCE"]);
+  assert.match(describeRows(matrixErrors(MATRIX, null)), /^RM-RW-EVIDENCE \d+ RW-001-01 标为代码已完成且有验证证据，但 VERIFICATION_LOG 解析失败/m);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-002-01", 3, "V-20261106-09"))), ["RM-RW-EVIDENCE"]);
+  fc.assert(
+    fc.property(fc.constantFrom(...matrixVlog.map((item) => item.id)), (id) => {
+      const qualifies = ["V-20261106-01", "V-20261106-03", "V-20261106-04"].includes(id);
+      return (matrixErrors(cite(id)).length === 0) === qualifies;
+    }),
+    { seed: 6023, numRuns: 100 }
+  );
+});
+
+test("RM-GO-LIVE: the go-live section and its key texts are required (Requirement 6.5)", () => {
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "## 真实开播放行条件", "## 开播"))), ["RM-GO-LIVE"]);
+  assert.match(describeRows(matrixErrors(edit(MATRIX, "，缺任一项即不放行", ""))), /^RM-GO-LIVE \d+ 真实开播放行条件一节缺少关键文本"缺任一项即不放行"/m);
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "并以退出码 0 结束", "并结束"))), ["RM-GO-LIVE"]);
+});
+
+test("RM-ENV-ROW: each 4090, Linux and release criterion has one row with an allowed status (Requirement 32.10, 32.11)", () => {
+  assert.equal(REQUIRED_ENVIRONMENT_ROWS.length, 15);
+  assert.match(describeRows(matrixErrors(withoutRow(MATRIX, "RW-031-03"))), /^RM-ENV-ROW \d+ 缺少事项以 31\.5 开头的仓库交付行/m);
+  assert.match(describeRows(matrixErrors(withRow(MATRIX, "RW-032-04", "| RW-032-06 | 32.7：重复 | 代码已完成但待外部环境验证 | — | 32 | 样例 |"))), /^RM-ENV-ROW \d+ 32\.7 对应多行：RW-032-02、RW-032-06$/m);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-031-02", 2, "代码已完成但待 CI 或 Linux 验证"))), ["RM-ENV-ROW"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-032-04", 2, "代码已完成但待外部环境验证"))), ["RM-ENV-ROW"]);
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-031-02", 2, "代码未完成"))), []);
+  const verified = (id) => setCell(setCell(MATRIX, "RW-031-02", 2, "代码已完成且有验证证据"), "RW-031-02", 3, id);
+  assert.deepEqual(codesOf(matrixErrors(verified("V-20261106-03"))), ["RM-ENV-ROW"]);
+  assert.deepEqual(codesOf(matrixErrors(verified("V-20261106-04"))), []);
+});
+
+test("RM-D1: decision D1 and the four RW-040 rows stay consistent (Requirement 40.1, 40.5-40.7)", () => {
+  assert.deepEqual(codesOf(matrixErrors(setCell(MATRIX, "RW-040-02", 2, "代码未完成"))), ["RM-D1"]);
+  assert.match(describeRows(matrixErrors(withoutRow(MATRIX, "RW-040-03"))), /^RM-D1 \d+ 缺少 Requirement 40\.1 的行 RW-040-03$/m);
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "| D1 | 首个目标直播平台 | 待用户决策 | — | — | — |", "| D1 | 首个目标直播平台 | 待用户决策 | 抖音 | — | — |"))), ["RM-D1"]);
+  assert.deepEqual(codesOf(matrixErrors(decided(MATRIX))), []);
+  assert.deepEqual(codesOf(matrixErrors(decided(MATRIX, { spec: "e:\\.kiro\\specs\\douyin-adapter" }))), []);
+  assert.deepEqual(codesOf(matrixErrors(decided(MATRIX, { spec: "规格 待定" }))), ["RM-D1"]);
+  assert.match(describeRows(matrixErrors(decided(MATRIX, { date: "2026/11/05" }))), /^RM-D1 \d+ D1 的决策日期"2026\/11\/05"不是合法的 YYYY-MM-DD 日期/m);
+  assert.deepEqual(codesOf(matrixErrors(decided(MATRIX, { status: "External_Prerequisite" }))), ["RM-D1", "RM-STATUS"]);
+  assert.deepEqual(codesOf(matrixErrors(decided(MATRIX, { status: "待用户决策" }))), ["RM-D1"]);
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "| D1 | 首个目标直播平台 | 待用户决策 |", "| D1 | 首个目标直播平台 | 暂缓 |"))), ["RM-D1"]);
+});
+
+test("SECRET: the matrix is scanned for the secret patterns, reported by name only (Property 24)", () => {
+  const pem = withRow(MATRIX, "RW-002-01", `| RW-002-02 | ${PEM_HEADER} | 代码未完成 | — | 2 | 样例 |`);
+  const errors = matrixErrors(pem);
+  assert.deepEqual(codesOf(errors), ["SECRET"]);
+  assert.ok(!describeRows(errors).includes("BEGIN"), "the report names the pattern, not the text");
+  assert.deepEqual(codesOf(matrixErrors(edit(MATRIX, "1. 样例。", `1. 样例：STREAM${"_KEY"}=abc。`))), ["SECRET"]);
+  fc.assert(
+    fc.property(fc.constantFrom(...SECRET_PATTERNS.map((item) => item.id)), fc.stringMatching(/^[A-Za-z0-9]{36}$/), (id, tail) => {
+      const samples = {
+        "private-key": PEM_HEADER,
+        "stream-key": `STREAM${"_KEY"}=${tail}`,
+        "rtmp-url": `rtmp${"://"}live.example.invalid/app/${tail}`,
+        "registry-or-oauth-credential": `REGISTRY${"_PASSWORD"}=${tail}`,
+        "github-token": `gh${"p_"}${tail}`,
+        "github-fine-grained-token": `github${"_pat_"}${tail}`
+      };
+      return codesOf(matrixErrors(edit(MATRIX, "1. 样例。", `1. ${samples[id]}`))).includes("SECRET");
+    }),
+    { seed: 6024, numRuns: 100 }
+  );
+});
+
+test("the repository docs/DEPLOYMENT_READINESS.md has no errors and keeps D1 decided with the four rows 代码未完成", () => {
+  const text = readFileSync(path.join(repoRoot, "docs", "DEPLOYMENT_READINESS.md"), "utf8");
+  const log = repositoryLog();
+  assert.equal(describeRows(validateReadinessMatrix(text, { vlog: log.entries })), "");
+  const parsed = parseReadinessMatrix(text);
+  assert.deepEqual({ ...d1Decision(parsed), line: 0 }, { decision: "已决定", platform: "抖音", date: "2026-11-05", spec: "—", line: 0 });
+  for (const id of D1_ROWS) assert.equal(parsed.rows.find((row) => row.id === id).status, "代码未完成", id);
+  for (const row of parsed.rows.filter((item) => item.kind === "EP")) assert.equal(row.condition, row.id === "EP-12" ? "已满足" : "未满足", row.id);
+});
+
+// ---------------------------------------------------------------------------
+// Handoff_Doc and docs/*.md rules (design part 1 §4.4, §5.5; part 8
+// Requirement 40 §6.4; Requirement 4.1, 4.7, 5.1-5.8, 40.2-40.4).
+
+const RUN_LINK = "[run 41900000000 @ 0123456](VERIFICATION_LOG.md#v-20261106-03)";
+const handoffVlog = [
+  ...matrixVlog,
+  vlogEntry("V-20261106-06", "未验证", [githubSource({ "run id": "41900000001", 运行结论: "failure", 步骤: [step({ 结论: "failure" })] })]),
+  vlogEntry("V-20261106-07", "未验证", [githubSource({ "run id": "41900000002", 步骤: [step(), step({ 步骤: "Run npm run build", 结论: "skipped" })] })])
+];
+const auditSample = [{ id: "C2", status: "已确认" }, { id: "M18", status: "需环境验证" }, { id: "C1", status: "已修复" }];
+const RESUME_SAMPLE = [
+  "# 交接",
+  "",
+  "## 当前检查点",
+  "",
+  "- 核对日期：2026-11-06",
+  `- origin/master：${SHA}`,
+  "- 同步状态：一致",
+  `- 最新 CI 运行：run 41900000000，提交 ${SHA}，结论 success`,
+  "",
+  "## 审计问题状态",
+  "",
+  "- C2：已确认（[登记](AUDIT_REGISTER.md#c2)）",
+  "- M18：需环境验证（[登记](AUDIT_REGISTER.md#m18)）",
+  "",
+  "## 未完成边界",
+  "",
+  "- EP-01：4090 试播，为未满足。",
+  "- RW-001-01：代码已完成且有验证证据。",
+  ""
+].join("\n");
+const handoffFiles = (overrides = {}) => ({ "docs/RESUME_HANDOFF.md": RESUME_SAMPLE, "docs/FRAMEWORK_STATUS.md": "# 状态\n", "docs/IMPLEMENTATION_ROADMAP.md": "# 路线图\n", "README.md": "# 说明\n", ...overrides });
+const handoffErrors = (overrides = {}, context = {}) => validateHandoffDocs({ files: handoffFiles(overrides) }, { audit: auditSample, matrix: MATRIX, vlog: handoffVlog, ...context });
+const describeHandoff = (errors) => errors.map((error) => `${error.code} ${error.file}:${error.line} ${error.message}`).join("\n");
+const status = (text) => handoffErrors({ "docs/FRAMEWORK_STATUS.md": text });
+
+test("splitUnits cuts table cells, list items with continuation lines and sentences, with their start lines", () => {
+  const units = splitUnits(["# 标题", "", "| 甲 | 乙 |", "| --- | --- |", "| 一 | 二 |", "", "- 第一项", "  续行。", "  - 嵌套项", "", "第一句。第二", "句。", "", "```", "已验证", "```"].join("\n"));
+  assert.deepEqual(units.map((unit) => [unit.kind, unit.text, unit.line]), [
+    ["heading", "标题", 1],
+    ["cell", "甲", 3],
+    ["cell", "乙", 3],
+    ["cell", "一", 5],
+    ["cell", "二", 5],
+    ["item", "第一项续行。", 7],
+    ["item", "嵌套项", 9],
+    ["sentence", "第一句。", 11],
+    ["sentence", "第二\n句。", 11]
+  ]);
+});
+
+test("CLAIM: claim words need a VERIFICATION_LOG link or 未验证 in the same unit (Requirement 4.1, 4.7)", () => {
+  for (const word of ["已验证", "已覆盖", "已通过"]) {
+    const errors = findClaimViolations({ "docs/OPEN_SOURCE_RUNTIME.md": `# 运行时\n\n第一句。这项检查${word}。\n` }, { vlog: handoffVlog });
+    assert.match(describeHandoff(errors), new RegExp(`^CLAIM docs/OPEN_SOURCE_RUNTIME\\.md:3 缺少验证出处：「这项检查${word}。」`), word);
+  }
+  const clean = (text, file = "docs/OPEN_SOURCE_RUNTIME.md") => findClaimViolations({ [file]: text }, { vlog: handoffVlog });
+  assert.deepEqual(clean("- 门禁已覆盖（[V-20261106-01](VERIFICATION_LOG.md#v-20261106-01)）。\n"), []);
+  assert.deepEqual(clean("| 门禁已通过（未验证） |\n"), []);
+  assert.deepEqual(clean("门禁已覆盖（[V](docs/VERIFICATION_LOG.md#v-20261106-01)）。\n", "README.md"), []);
+  assert.equal(clean("门禁已覆盖（[V](VERIFICATION_LOG.md#v-20261106-01)）。\n", "README.md").length, 1, "README links need the docs/ prefix");
+  assert.equal(clean("门禁已覆盖（[V](VERIFICATION_LOG.md#v-20261106-05)）。\n").length, 1, "an entry judged 未验证 is no provenance");
+  assert.equal(clean("门禁已覆盖。见 [V](VERIFICATION_LOG.md#v-20261106-01)。\n").length, 1, "claim and link in two sentences");
+  assert.deepEqual(findClaimViolations({ "docs/VERIFICATION_LOG.md": "已验证。\n", "docs/AUDIT_REGISTER.md": "已覆盖。\n" }), []);
+});
+
+test("CI-CLAIM and RUN-REF: CI conclusions cite a qualifying run or say 未验证 (Requirement 5.1, 5.6)", () => {
+  assert.equal(isCiClaim("CI PostgreSQL 集成测试覆盖草稿改写"), true);
+  assert.equal(isCiClaim("CI 配置已实现并推送"), false);
+  assert.match(describeHandoff(status("- CI PostgreSQL 集成测试覆盖草稿改写。\n")), /^CI-CLAIM docs\/FRAMEWORK_STATUS\.md:1 CI 结论缺少合格的运行引用或"未验证"/m);
+  assert.deepEqual(codesOf(status("- CI PostgreSQL 集成测试覆盖草稿改写（未验证）。\n")), []);
+  assert.deepEqual(codesOf(status(`- CI PostgreSQL 集成测试覆盖草稿改写，见 ${RUN_LINK}。\n`)), []);
+  const bad = (link) => describeHandoff(status(`- CI PostgreSQL 集成测试覆盖草稿改写，见 ${link}。\n`));
+  assert.match(bad("[run 41900000001 @ 0123456](VERIFICATION_LOG.md#v-20261106-06)"), /^RUN-REF \S+ \[run 41900000001 @ 0123456\]\S+：run 41900000001 的运行结论为 failure/m);
+  assert.match(bad("[run 41900000002 @ 0123456](VERIFICATION_LOG.md#v-20261106-07)"), /^RUN-REF .*结论为 skipped，不是 success/m);
+  assert.match(bad("[run 41900000000 @ fedcba9](VERIFICATION_LOG.md#v-20261106-03)"), /^RUN-REF .*不以 fedcba9 开头/m);
+  assert.match(bad("[run 41900000000 @ 0123456](VERIFICATION_LOG.md#v-20261106-09)"), /^RUN-REF .*VERIFICATION_LOG 中没有 V-20261106-09/m);
+  assert.match(describeHandoff(handoffErrors({ "README.md": `- CI PostgreSQL 集成测试覆盖草稿改写，见 ${RUN_LINK}。\n` })), /^RUN-REF README\.md:1 .*链接路径必须是 docs\/VERIFICATION_LOG\.md/m);
+  assert.equal(runReferenceProblem({ runId: "41900000000", sha: "0123456", entryId: "V-20261106-03" }, handoffVlog), null);
+});
+
+test("AUDIT-LIST: the audit status section equals the register's 已确认 and 需环境验证 ids (Requirement 5.3)", () => {
+  assert.equal(describeHandoff(handoffErrors()), "");
+  const resume = (text) => handoffErrors({ "docs/RESUME_HANDOFF.md": text });
+  assert.match(describeHandoff(resume(edit(RESUME_SAMPLE, "- M18：需环境验证（[登记](AUDIT_REGISTER.md#m18)）\n", ""))), /^AUDIT-LIST \S+ 审计问题状态的编号集合与 Audit_Register .*缺少 M18；多出 无/m);
+  assert.match(describeHandoff(resume(edit(RESUME_SAMPLE, "- C2：已确认", "- C2：已修复"))), /^AUDIT-LIST \S+ C2 写的是 已修复，Audit_Register 中为 已确认$/m);
+  assert.deepEqual(codesOf(resume(`${RESUME_SAMPLE.replace("## 审计问题状态", "## 审计问题状态\n\n- C1：已修复（[登记](AUDIT_REGISTER.md#c1)）")}`)), ["AUDIT-LIST"]);
+  assert.deepEqual(codesOf(resume(edit(RESUME_SAMPLE, "(AUDIT_REGISTER.md#c2)", "(AUDIT_REGISTER.md#c3)"))), ["AUDIT-LIST"]);
+});
+
+test("CHECKPOINT and STALE-SYNC: fixed checkpoint fields; sync wording elsewhere is stale (Requirement 5.4, 5.7, 5.8; Property 18)", () => {
+  const resume = (text) => handoffErrors({ "docs/RESUME_HANDOFF.md": text });
+  for (const value of ["领先 0 个提交", "领先 -1 个提交", "领先 1 个提交 ", "分叉"]) {
+    assert.match(describeHandoff(resume(edit(RESUME_SAMPLE, "- 同步状态：一致", `- 同步状态：${value}`))), /^CHECKPOINT \S+:7 字段"同步状态"/m, JSON.stringify(value));
+  }
+  assert.deepEqual(codesOf(resume(edit(RESUME_SAMPLE, "- 同步状态：一致", "- 同步状态：领先 2 个提交"))), []);
+  assert.match(describeHandoff(resume(edit(RESUME_SAMPLE, "结论 success", "结论 failure"))), /^CHECKPOINT \S+:8 最新 CI 运行的结论不是 success 时必须写出首个失败 job 和失败步骤序号/m);
+  assert.deepEqual(codesOf(resume(edit(RESUME_SAMPLE, "结论 success", "结论 failure，首个失败 job console，失败步骤序号 31"))), []);
+  assert.match(describeHandoff(resume(edit(RESUME_SAMPLE, "- 核对日期：2026-11-06\n", ""))), /^CHECKPOINT \S+ 当前检查点缺少字段"核对日期"/m);
+  assert.deepEqual(codesOf(resume(edit(RESUME_SAMPLE, `- origin/master：${SHA}`, "- origin/master：a42b6c4"))), ["CHECKPOINT"]);
+  assert.match(describeHandoff(resume(`${RESUME_SAMPLE}\n- 远端检查点：a42b6c4\n- 本地 master 当前领先远端。\n`)), /^STALE-SYNC docs\/RESUME_HANDOFF\.md:\d+ 检查点字段以外出现同步状态描述"远端检查点"[\s\S]*^STALE-SYNC \S+ .*"领先远端"/m);
+  assert.deepEqual(codesOf(status("本地领先 3 个提交。\n")), ["STALE-SYNC"]);
+  fc.assert(
+    fc.property(fc.oneof(fc.constant("一致"), fc.integer({ min: -3, max: 50 }).map((n) => `领先 ${n} 个提交`), fc.integer({ min: -3, max: 50 }).map((n) => `落后 ${n} 个提交`), fc.string()), (value) => {
+      const accepted = value === "一致" || /^(领先|落后) [1-9]\d* 个提交$/.test(value);
+      return SYNC_STATE.test(value) === accepted;
+    }),
+    { seed: 6018, numRuns: 100 }
+  );
+});
+
+test("the dc2916e RESUME_HANDOFF.md reports CI-CLAIM and STALE-SYNC for the remote checkpoint and 领先远端", () => {
+  const text = readFileSync(handoffFixture("dc2916e-RESUME_HANDOFF.md"), "utf8");
+  const errors = validateHandoffDocs({ files: { "docs/RESUME_HANDOFF.md": text } }, { audit: auditSample, matrix: MATRIX, vlog: handoffVlog });
+  assert.ok(errors.some((error) => error.code === "CI-CLAIM"), "at least one CI-CLAIM");
+  const stale = errors.filter((error) => error.code === "STALE-SYNC").map((error) => error.message);
+  assert.ok(stale.some((message) => message.includes("远端检查点")) && stale.some((message) => message.includes("领先远端")), stale.join("\n"));
+  assert.ok(errors.some((error) => error.code === "CHECKPOINT"));
+});
+
+test("MATRIX-STATUS: statuses next to EP and RW ids equal the matrix (Requirement 5.5)", () => {
+  assert.deepEqual(codesOf(status("- RW-040-01 至 RW-040-04：待用户决策。\n")), []);
+  assert.match(describeHandoff(status("- RW-040-01 至 RW-040-04：代码未完成。\n")), /^MATRIX-STATUS docs\/FRAMEWORK_STATUS\.md:1 RW-040-01 写的是"代码未完成"，Readiness_Matrix 中为"待用户决策"/m);
+  assert.deepEqual(codesOf(status("- 代码已完成但待外部环境验证：RW-014-02 至 RW-014-05、RW-031-02。\n")), []);
+  assert.deepEqual(codesOf(status("- 代码未完成：RW-014-02。\n")), ["MATRIX-STATUS"]);
+  assert.deepEqual(codesOf(status("- EP-12 已满足；EP-01 未满足。\n")), []);
+  assert.deepEqual(codesOf(status("- EP-01 已满足。\n")), ["MATRIX-STATUS"]);
+  assert.match(describeHandoff(status("- RW-099-01：代码未完成。\n")), /RW-099-01 不在 Readiness_Matrix 中/);
+  assert.match(describeHandoff(status("- RW-001-01 的 CI 结论（未验证）。\n")), /RW-001-01 在矩阵中为代码已完成且有验证证据，同一单元不能标"未验证"/);
+});
+
+test("D1-MENTION, D1-STATUS, D1-DEFAULT apply only while D1 is 待用户决策 (Requirement 40.2-40.4)", () => {
+  const { samples } = JSON.parse(readFileSync(d1Fixture("dc2916e-samples.json"), "utf8"));
+  const check = (text, matrix = MATRIX) => validateHandoffDocs({ files: { "docs/FRAMEWORK_STATUS.md": `${text}\n` } }, { matrix, vlog: handoffVlog }).filter((error) => error.code.startsWith("D1-"));
+  for (const key of ["README.md:65", "docs/RESUME_HANDOFF.md:110", "docs/FRAMEWORK_STATUS.md:20", "docs/FRAMEWORK_STATUS.md:68"]) {
+    const codes = codesOf(check(samples[key]));
+    assert.ok(codes.includes("D1-MENTION") || codes.includes("D1-STATUS"), `${key}: ${codes.join(",")}`);
+    assert.deepEqual(check(samples[key], decided(MATRIX)), [], `${key} with D1 decided`);
+  }
+  assert.deepEqual(codesOf(check(samples["README.md:65"])), ["D1-MENTION", "D1-STATUS"]);
+  assert.deepEqual(check(samples["docs/RESUME_HANDOFF.md:111"]), []);
+  assert.deepEqual(check("- 选定平台的 OAuth/Webhook/商品同步/账单 Adapter：待用户决策（D1）。平台账号、应用审核和真实数据是外部前置条件。"), []);
+  const mention = check(samples["docs/FRAMEWORK_STATUS.md:68"]).find((error) => error.code === "D1-MENTION");
+  assert.ok(mention.message.length < 160 && /「[^」]{1,80}」/.test(mention.message), mention.message);
+  assert.deepEqual(codesOf(check("首个目标平台为抖音。")), ["D1-DEFAULT"]);
+  assert.deepEqual(codesOf(check("抖音作为首个平台。")), ["D1-DEFAULT"]);
+  assert.deepEqual(check("抖音、淘宝、视频号等实际 API 仍是外部平台前置条件。"), []);
+  assert.deepEqual(check("首个目标平台为抖音。", decided(MATRIX)), []);
+});
+
+test("the repository Handoff_Doc files and docs/*.md pass the claim and handoff rules", () => {
+  const log = repositoryLog();
+  const register = validateAuditRegister(readFileSync(path.join(repoRoot, "docs", "AUDIT_REGISTER.md"), "utf8"), { resolver, vlog: log.entries });
+  const matrix = readFileSync(path.join(repoRoot, "docs", "DEPLOYMENT_READINESS.md"), "utf8");
+  const files = Object.fromEntries(HANDOFF_FILES.map((file) => [file, readFileSync(path.join(repoRoot, file), "utf8")]));
+  for (const name of ["OPEN_SOURCE_RUNTIME.md", "DEPLOYMENT_READINESS.md", "ARCHITECTURE.md", "PRODUCT_BLUEPRINT.md"]) files[`docs/${name}`] = readFileSync(path.join(repoRoot, "docs", name), "utf8");
+  assert.equal(describeHandoff(validateHandoffDocs({ files }, { audit: register.records, matrix, vlog: log.entries })), "");
+});
+
+test("CLI: --docs-root checks a matrix and Handoff_Doc set; a broken log also voids matrix evidence; a missing file exits 2", () => {
+  const docsRoot = temporaryDirectory("handoff-docs-");
+  mkdirSync(path.join(docsRoot, "docs"));
+  const files = handoffFiles({ "docs/DEPLOYMENT_READINESS.md": MATRIX.replaceAll("V-20261106-01", "V-20261106-99"), "docs/RESUME_HANDOFF.md": RESUME_SAMPLE.replace(/## 审计问题状态[\s\S]*?## 未完成边界/, "## 审计问题状态\n\n## 未完成边界").replace("- RW-001-01：代码已完成且有验证证据。\n", "") });
+  for (const [file, text] of Object.entries(files)) writeFileSync(path.join(docsRoot, file), text);
+  const valid = runGate(["--log", fixture("valid-log.md"), "--register", auditFixture("valid-register.md"), "--docs-root", docsRoot]);
+  assert.match(valid.stderr, /^RM-RW-EVIDENCE docs\/DEPLOYMENT_READINESS\.md:\d+ RW-001-01 引用的 V-20261106-99 不合格：VERIFICATION_LOG 中没有该条目/m);
+  assert.match(valid.stderr, /^AUDIT-LIST docs\/RESUME_HANDOFF\.md:\d+ /m);
+  const broken = runGate(["--log", fixture("invalid-log.md"), "--register", auditFixture("valid-register.md"), "--docs-root", docsRoot]);
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /^VLOG V-20261107-01 /m);
+  assert.match(broken.stderr, /^RM-RW-EVIDENCE docs\/DEPLOYMENT_READINESS\.md:\d+ RW-001-01 标为代码已完成且有验证证据，但 VERIFICATION_LOG 解析失败/m);
+  rmSync(path.join(docsRoot, "docs", "FRAMEWORK_STATUS.md"));
+  const missing = runGate(["--log", fixture("valid-log.md"), "--register", auditFixture("valid-register.md"), "--docs-root", docsRoot]);
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /^ERROR missing docs\/FRAMEWORK_STATUS\.md/m);
 });
