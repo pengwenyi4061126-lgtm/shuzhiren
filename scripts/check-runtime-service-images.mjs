@@ -3,6 +3,7 @@ import yaml from "js-yaml";
 import { gatewayLockViolations, nodeMajorViolations, pinViolations, pythonLockViolations, releaseDockerfiles } from "./lib/dockerfile-refs.mjs";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
 import { engineMinVersion, NODE_LTS_MAJOR, versionMajor } from "./lib/node-runtime.mjs";
+import { npmCiCopyViolations, npmLockViolations } from "./lib/npm-lock.mjs";
 const repoFile = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
 // Node.js runtime (Requirement 27): engines, the lock root and every node base image use NODE_LTS_MAJOR.
 const nodeProblems = [];
@@ -39,6 +40,13 @@ const pinProblems = Object.entries(dockerfileText).flatMap(([file, text]) => pin
 pinProblems.push(...gatewayLockViolations("runtime/gateway/Dockerfile", dockerfileText["runtime/gateway/Dockerfile"] ?? ""));
 for (const message of pythonLockViolations(await repoFile("runtime/gateway/requirements.lock"), await repoFile("runtime/gateway/requirements.txt"))) {
   pinProblems.push({ file: "runtime/gateway/requirements.lock", line: 1, ref: "lock", reason: message });
+}
+// package-lock.json matches what the images install (L17).
+const workspaceDirs = Object.keys(lock.packages ?? {}).filter((key) => /^apps\/[^/]+$/.test(key)).sort();
+const workspacePackages = Object.fromEntries(await Promise.all(workspaceDirs.map(async (dir) => [dir, JSON.parse(await repoFile(`${dir}/package.json`))])));
+for (const message of npmLockViolations(lock, workspacePackages)) pinProblems.push({ file: "package-lock.json", line: 1, ref: "lock", reason: message });
+for (const [file, text] of Object.entries(dockerfileText)) {
+  for (const message of npmCiCopyViolations(file, text, workspaceDirs)) pinProblems.push({ file, line: 1, ref: "npm ci", reason: message });
 }
 if (pinProblems.length > 0) {
   for (const { file, line, ref, reason } of pinProblems) console.error(`ERROR  ${file}:${line} ${ref} ${reason}`);
@@ -95,4 +103,4 @@ const cosyvoiceContext = checkDockerignore(contents.cosyvoiceIgnore, {
 for (const file of cosyvoiceContext.leaked) throw new Error(`CosyVoice build context must exclude local artifacts: ${file}`);
 for (const file of cosyvoiceContext.missing) throw new Error(`CosyVoice build context must include the locked source: ${file}`);
 
-console.log(`PASS  runtime service images use deterministic, non-root production builds (${imageDockerfiles.length} release Dockerfiles on digest-pinned base images, Node.js ${NODE_LTS_MAJOR}, hashed Gateway lock)`);
+console.log(`PASS  runtime service images use deterministic, non-root production builds (${imageDockerfiles.length} release Dockerfiles on digest-pinned base images, Node.js ${NODE_LTS_MAJOR}, hashed Gateway lock, ${workspaceDirs.length} workspaces in a fully resolved package-lock.json)`);

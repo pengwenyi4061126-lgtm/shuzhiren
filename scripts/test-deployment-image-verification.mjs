@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
 import { gatewayLockViolations, imageRefs, nodeMajorViolations, pinViolations, pythonLockViolations, releaseDockerfiles } from "./lib/dockerfile-refs.mjs";
 import { consoleRunnerStage, engineMinVersion, NODE_LTS_MAJOR } from "./lib/node-runtime.mjs";
+import { npmCiCopyViolations, npmLockViolations } from "./lib/npm-lock.mjs";
 import { imageKeys, verifyReleaseImages } from "./verify-deployment-images.mjs";
 
 const revision = "a".repeat(40);
@@ -87,3 +88,47 @@ for (const [lock, label] of [
 assert.ok(pythonLockViolations(goodLock, "fastapi>=0.1.0\n").length > 0, "an unpinned top-level input is rejected");
 assert.deepEqual(pythonLockViolations(await repoText("runtime/gateway/requirements.lock"), await repoText("runtime/gateway/requirements.txt")), []);
 console.log("PASS  release Dockerfiles pin base images by digest and the Gateway installs only its hashed lock");
+
+// package-lock.json matches what npm ci installs in the Linux images (L17).
+const integrity = `sha512-${"A".repeat(86)}==`;
+const registryEntry = (name, version, extra = {}) => ({ version, resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, integrity, ...extra });
+const workspace = { "apps/web": { name: "@x/web", dependencies: { next: "1.0.0" } } };
+const sampleLock = () => ({
+  lockfileVersion: 3,
+  packages: {
+    "": { name: "x", workspaces: ["apps/*"] },
+    "apps/web": { name: "@x/web", dependencies: { next: "1.0.0" } },
+    "node_modules/@x/web": { resolved: "apps/web", link: true },
+    "node_modules/next": registryEntry("next", "1.0.0", { optionalDependencies: { "@next/swc-linux-x64-musl": "1.0.0", "@next/swc-win32-x64-msvc": "1.0.0" } }),
+    "node_modules/@next/swc-linux-x64-musl": registryEntry("@next/swc-linux-x64-musl", "1.0.0", { optional: true, os: ["linux"], cpu: ["x64"], libc: ["musl"] }),
+    "node_modules/@next/swc-win32-x64-msvc": registryEntry("@next/swc-win32-x64-msvc", "1.0.0", { optional: true, os: ["win32"], cpu: ["x64"] })
+  }
+});
+assert.deepEqual(npmLockViolations(sampleLock(), workspace), []);
+const lockCases = [
+  ["only the Windows binary is locked", (lock) => delete lock.packages["node_modules/@next/swc-linux-x64-musl"], /@next\/swc-linux-x64-musl has no lock entry/],
+  ["an entry without integrity", (lock) => delete lock.packages["node_modules/next"].integrity, /node_modules\/next must have a sha512 integrity/],
+  ["an entry without resolved", (lock) => delete lock.packages["node_modules/next"].resolved, /node_modules\/next must have a resolved/],
+  ["a non-registry tarball", (lock) => (lock.packages["node_modules/next"].resolved = "https://mirror.example.com/next-1.0.0.tgz"), /must have a resolved https:\/\/registry\.npmjs\.org\//],
+  ["workspace drift from package.json", (lock) => (lock.packages["apps/web"].dependencies.next = "0.9.0"), /apps\/web dependencies/],
+  ["a missing workspace dependency", (lock) => delete lock.packages["node_modules/next"], /apps\/web dependencies next has no lock entry/],
+  ["lockfileVersion 2", (lock) => (lock.lockfileVersion = 2), /lockfileVersion must be 3/]
+];
+for (const [label, edit, pattern] of lockCases) {
+  const lock = sampleLock();
+  edit(lock);
+  const problems = npmLockViolations(lock, workspace);
+  assert.ok(problems.some((problem) => pattern.test(problem)), `${label}: ${problems.join("; ")}`);
+}
+const npmCiDockerfile = `FROM ${pinned} AS deps\nCOPY package.json package-lock.json ./\nCOPY apps/web/package.json apps/web/package.json\nRUN npm ci\nFROM deps AS build\nRUN npm ci --omit=dev\n`;
+assert.deepEqual(npmCiCopyViolations("Dockerfile", npmCiDockerfile, ["apps/web"]), [], "a later stage inherits the copied manifests of its parent stage");
+assert.deepEqual(npmCiCopyViolations("Dockerfile", npmCiDockerfile, ["apps/web", "apps/api"]), ["Dockerfile:4 npm ci runs before COPY apps/api/package.json", "Dockerfile:6 npm ci runs before COPY apps/api/package.json"]);
+assert.deepEqual(npmCiCopyViolations("Dockerfile", `FROM ${pinned}\nCOPY package.json ./\nRUN npm ci\n`, []), ["Dockerfile:3 npm ci runs before COPY package-lock.json"]);
+const repoLock = JSON.parse(await repoText("package-lock.json"));
+const repoWorkspaces = Object.keys(repoLock.packages).filter((key) => /^apps\/[^/]+$/.test(key));
+assert.equal(repoWorkspaces.length, 6);
+const repoManifests = Object.fromEntries(await Promise.all(repoWorkspaces.map(async (dir) => [dir, JSON.parse(await repoText(`${dir}/package.json`))])));
+assert.deepEqual(npmLockViolations(repoLock, repoManifests), []);
+for (const binary of ["@next/swc-linux-x64-musl", "@next/swc-linux-x64-gnu", "@img/sharp-linuxmusl-x64", "@img/sharp-linux-x64"]) assert.ok(repoLock.packages[`node_modules/${binary}`], `package-lock.json locks ${binary} for the Linux images`);
+for (const file of releaseFiles) assert.deepEqual(npmCiCopyViolations(file, await repoText(file), repoWorkspaces), [], file);
+console.log("PASS  package-lock.json is fully resolved with integrity for every platform and matches the npm ci workspaces");
