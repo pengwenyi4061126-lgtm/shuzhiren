@@ -25,5 +25,7 @@ if (!repository.includes("/") || repository.includes("@") || imageName.includes(
 if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error("--digest must be sha256:<64 hexadecimal characters>");
 if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error("--revision must be a full 40-character lowercase git SHA");
 if (!path.isAbsolute(output)) throw new Error("--output must be an absolute path");
-await writeFile(output, `${JSON.stringify({ schemaVersion: 1, key, image: `${repository}@${digest}`, revision, sbom: "oci-buildx-attached", provenance: "oci-buildx-attached" })}\n`, { encoding: "utf8", flag: "wx", mode: 0o640 });
+// schemaVersion 2: the result only names the pushed digest; its attestations are read from the registry when the
+// release evidence is assembled (M21).
+await writeFile(output, `${JSON.stringify({ schemaVersion: 2, key, image: `${repository}@${digest}`, revision })}\n`, { encoding: "utf8", flag: "wx", mode: 0o640 });
 console.log(`PASS  release image result written: ${key}`);

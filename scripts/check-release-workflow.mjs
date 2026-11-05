@@ -86,6 +86,7 @@ const files = {
   cosyvoice: "runtime/cosyvoice/Dockerfile",
   cosyvoiceIgnore: "runtime/cosyvoice/Dockerfile.dockerignore",
   assembler: "scripts/assemble-release-evidence.mjs",
+  evidence: "scripts/lib/release-evidence.mjs",
   result: "scripts/write-release-image-result.mjs"
 };
 const contents = { workflow: workflow.rawText };
@@ -108,8 +109,9 @@ for (const key of ["CONTROL_PLANE_IMAGE", "CONTROL_PLANE_MIGRATOR_IMAGE", "RUNTI
 }
 requireText(contents.cosyvoice, ["COPY --chown=cosyvoice:cosyvoice vendor/CosyVoice /opt/CosyVoice/CosyVoice", "MINIFORGE_SHA256", "sha256sum -c", "USER cosyvoice", "org.opencontainers.image.revision"], "CosyVoice release image must retain controlled source and non-root execution");
 requireText(contents.cosyvoiceIgnore, ["vendor/*", "!vendor/CosyVoice", "vendor/CosyVoice/.git", "models", "weights", "secrets"], "CosyVoice build context must exclude unsafe local content");
-requireText(contents.assembler, ["oci-buildx-sbom-index", "oci-buildx-provenance-index", "release image results must contain exactly ten files"], "Release evidence assembly must bind all Buildx attestations");
-requireText(contents.result, ["oci-buildx-attached", "--digest", "--revision"], "Release image result must bind pushed digest and revision");
+requireText(contents.assembler, ["assembleReleaseEvidence(", "releaseImagesFromResults("], "Release evidence assembly must read the Buildx attestations from the registry");
+requireText(contents.evidence, ["oci-buildx-sbom-index", "oci-buildx-provenance-index", "release image results must contain exactly ten files", "attestation-manifest"], "Release evidence assembly must bind all Buildx attestations");
+requireText(contents.result, ["schemaVersion: 2", "--digest", "--revision"], "Release image result must bind pushed digest and revision");
 
 const refs = actionRefs(workflow);
 for (const name of REQUIRED_ACTIONS) {

@@ -87,8 +87,8 @@ function immutableImages(values, fileName, keys) {
 
 async function verifyReleaseEvidenceIndexes(manifest, manifestPath, imageKeys) {
   const evidence = [
-    { file: "release-sbom-index.json", digest: manifest.sbomSha256, artifactType: "oci-buildx-sbom-index" },
-    { file: "release-provenance-index.json", digest: manifest.provenanceSha256, artifactType: "oci-buildx-provenance-index", builder: "github-actions-buildx" }
+    { file: "release-sbom-index.json", digest: manifest.sbomSha256, artifactType: "oci-buildx-sbom-index", label: "SBOM" },
+    { file: "release-provenance-index.json", digest: manifest.provenanceSha256, artifactType: "oci-buildx-provenance-index", builder: "github-actions-buildx", label: "provenance" }
   ];
   for (const expected of evidence) {
     let source;
@@ -109,11 +109,15 @@ async function verifyReleaseEvidenceIndexes(manifest, manifestPath, imageKeys) {
       errors.push(`${expected.file} 必须是 JSON 对象`);
       continue;
     }
-    if (!index || typeof index !== "object" || Array.isArray(index) || index.schemaVersion !== 1 || index.artifactType !== expected.artifactType || index.releaseRevision !== manifest.releaseRevision || index.attestationTransport !== "oci-buildx-attached" || (expected.builder && index.builder !== expected.builder)) {
+    if (!index || typeof index !== "object" || Array.isArray(index) || index.schemaVersion !== 2 || index.artifactType !== expected.artifactType || index.releaseRevision !== manifest.releaseRevision || (expected.builder && index.builder !== expected.builder)) {
       errors.push(`${expected.file} 必须绑定 Buildx attestation、发布提交和 artifact 类型`);
       continue;
     }
     if (!index.images || typeof index.images !== "object" || Array.isArray(index.images) || Object.keys(index.images).length !== imageKeys.length || imageKeys.some((key) => index.images[key] !== manifest.images[key])) errors.push(`${expected.file} 的十个镜像必须精确匹配 DEPLOYMENT_RELEASE_MANIFEST`);
+    // M21: schemaVersion 2 records, per image, the attestation digest read from the registry; every missing or
+    // malformed entry is reported.
+    const attestations = index.attestations && typeof index.attestations === "object" && !Array.isArray(index.attestations) ? index.attestations : {};
+    for (const key of imageKeys) if (!/^sha256:[a-f0-9]{64}$/.test(attestations[key]?.digest ?? "")) errors.push(`${expected.file} 缺少 ${key} 的 ${expected.label} 摘要，或摘要不是 sha256:<64 位小写十六进制>`);
   }
 }
 

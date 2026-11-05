@@ -66,11 +66,15 @@ const releaseImages = {
   LIVETALKING_IMAGE: images.livetalking,
   COSYVOICE_IMAGE: images.cosyvoice
 };
-const releaseEvidence = {
-  sbom: `${JSON.stringify({ schemaVersion: 1, artifactType: "oci-buildx-sbom-index", releaseRevision, source: "https://github.com/shuzizhibo/shuzizhibo", images: releaseImages, attestationTransport: "oci-buildx-attached" })}\n`,
-  provenance: `${JSON.stringify({ schemaVersion: 1, artifactType: "oci-buildx-provenance-index", releaseRevision, source: "https://github.com/shuzizhibo/shuzizhibo", images: releaseImages, attestationTransport: "oci-buildx-attached", builder: "github-actions-buildx" })}\n`
+// schemaVersion 2 (M21): each index records, per image, the attestation read from the registry.
+const releaseAttestations = (predicateType, seed) => Object.fromEntries(Object.keys(releaseImages).map((key, index) => [key, { platform: "linux/amd64", platformManifestDigest: `sha256:${(index + 1).toString(16).repeat(64)}`, attestationManifestDigest: `sha256:${seed.repeat(64)}`, predicateType, digest: `sha256:${createHash("sha256").update(`${seed}:${key}`).digest("hex")}` }]));
+const releaseEvidenceIndexes = {
+  sbom: { schemaVersion: 2, artifactType: "oci-buildx-sbom-index", releaseRevision, source: "https://github.com/shuzizhibo/shuzizhibo", images: releaseImages, attestations: releaseAttestations("https://spdx.dev/Document", "b") },
+  provenance: { schemaVersion: 2, artifactType: "oci-buildx-provenance-index", releaseRevision, source: "https://github.com/shuzizhibo/shuzizhibo", images: releaseImages, builder: "github-actions-buildx", attestations: releaseAttestations("https://slsa.dev/provenance/v0.2", "c") }
 };
-const releaseEvidenceSha256 = Object.fromEntries(Object.entries(releaseEvidence).map(([name, value]) => [name, `sha256:${createHash("sha256").update(value).digest("hex")}`]));
+const releaseEvidence = Object.fromEntries(Object.entries(releaseEvidenceIndexes).map(([name, value]) => [name, `${JSON.stringify(value)}\n`]));
+const evidenceSha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const releaseEvidenceSha256 = Object.fromEntries(Object.entries(releaseEvidence).map(([name, value]) => [name, evidenceSha256(value)]));
 const commits = {
   MuseTalk: "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
   CosyVoice: "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
@@ -87,7 +91,7 @@ function canonicalJson(value) {
   return JSON.stringify(value) ?? "null";
 }
 
-function deploymentReleaseManifest({ releaseRevision: manifestRevision = releaseRevision, manifestImages = undefined, validityMs = 24 * 60 * 60 * 1000 } = {}) {
+function deploymentReleaseManifest({ releaseRevision: manifestRevision = releaseRevision, manifestImages = undefined, validityMs = 24 * 60 * 60 * 1000, sbomSha256 = releaseEvidenceSha256.sbom } = {}) {
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + validityMs);
   const unsigned = {
@@ -96,7 +100,7 @@ function deploymentReleaseManifest({ releaseRevision: manifestRevision = release
     issuedAt: issuedAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
     images: manifestImages ?? releaseImages,
-    sbomSha256: releaseEvidenceSha256.sbom,
+    sbomSha256,
     provenanceSha256: releaseEvidenceSha256.provenance
   };
   return JSON.stringify({ ...unsigned, signature: { issuer: releaseIssuer, keyId: releaseKeyId, value: sign(null, Buffer.from(canonicalJson(unsigned)), releaseSigner.privateKey).toString("base64") } });
@@ -290,6 +294,25 @@ try {
   assert.notEqual(invalidReleaseEvidence.status, 0, "deployment manifests must reject tampered release evidence indexes");
   assert.match(invalidReleaseEvidence.stderr, /release-sbom-index\.json SHA-256 不匹配/, "tampered release evidence must identify the signed artifact gate");
   await writeFile(files.releaseSbom, releaseEvidence.sbom);
+
+  // M21: a signed index must carry the attestation digests read from the registry. A schemaVersion 1 index (the
+  // constant "oci-buildx-attached" claim) is rejected, and every image without a valid SBOM digest is listed.
+  const legacySbom = `${JSON.stringify({ schemaVersion: 1, artifactType: "oci-buildx-sbom-index", releaseRevision, source: "https://github.com/shuzizhibo/shuzizhibo", images: releaseImages, attestationTransport: "oci-buildx-attached" })}\n`;
+  const withoutAttestations = structuredClone(releaseEvidenceIndexes.sbom);
+  delete withoutAttestations.attestations.RUNTIME_WORKER_IMAGE;
+  withoutAttestations.attestations.COSYVOICE_IMAGE.digest = "sha256:not-hex";
+  for (const [label, sbom, patterns] of [
+    ["schemaVersion 1", legacySbom, [/release-sbom-index\.json 必须绑定 Buildx attestation/]],
+    ["missing attestations", `${JSON.stringify(withoutAttestations)}\n`, [/release-sbom-index\.json 缺少 RUNTIME_WORKER_IMAGE 的 SBOM 摘要/, /release-sbom-index\.json 缺少 COSYVOICE_IMAGE 的 SBOM 摘要/]]
+  ]) {
+    await writeFile(files.releaseSbom, sbom);
+    await writeFile(files.releaseManifest, deploymentReleaseManifest({ sbomSha256: evidenceSha256(sbom) }));
+    const rejected = check(["--require-cosyvoice"]);
+    assert.notEqual(rejected.status, 0, `a signed SBOM index with ${label} must be rejected`);
+    for (const pattern of patterns) assert.match(rejected.stderr, pattern, `${label}: ${pattern}`);
+  }
+  await writeFile(files.releaseSbom, releaseEvidence.sbom);
+  await writeFile(files.releaseManifest, deploymentReleaseManifest());
 
   const tamperedManifest = JSON.parse(deploymentReleaseManifest());
   tamperedManifest.signature.value = "AA==";

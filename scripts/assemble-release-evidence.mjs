@@ -1,5 +1,6 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { assembleReleaseEvidence, ReleaseEvidenceError, releaseImagesFromResults } from "./lib/release-evidence.mjs";
 import { imageKeys } from "./verify-deployment-images.mjs";
 
 const options = new Map();
@@ -29,18 +30,35 @@ const files = (await readdir(inputDir)).filter((file) => file.endsWith(".json"))
 const results = [];
 for (const file of files) results.push(JSON.parse(await readFile(path.join(inputDir, file), "utf8")));
 if (results.length !== imageKeys.length) throw new Error("release image results must contain exactly ten files");
-const byKey = new Map();
-for (const result of results) {
-  if (!result || result.schemaVersion !== 1 || !imageKeys.includes(result.key) || typeof result.image !== "string" || result.revision !== revision || result.sbom !== "oci-buildx-attached" || result.provenance !== "oci-buildx-attached") throw new Error("release image result is invalid or was built from a different revision");
-  if (byKey.has(result.key)) throw new Error(`duplicate release image result: ${result.key}`);
-  byKey.set(result.key, result.image);
+const images = releaseImagesFromResults(results, imageKeys, revision);
+// M21: the indexes used to assert constant "oci-buildx-attached" fields without reading anything from the
+// registry. Every image's SBOM and provenance attestation is now read by digest from the registry and bound to
+// its linux/amd64 image; nothing is written unless all ten succeed.
+let evidence;
+try {
+  evidence = await assembleReleaseEvidence({
+    images,
+    revision,
+    source,
+    registry: process.env.RELEASE_REGISTRY || undefined,
+    credentials: { username: process.env.REGISTRY_READ_USERNAME, password: process.env.REGISTRY_READ_PASSWORD }
+  });
+} catch (error) {
+  if (!(error instanceof ReleaseEvidenceError)) throw error;
+  console.error(error.message);
+  process.exit(1);
 }
-if (imageKeys.some((key) => !byKey.has(key))) throw new Error("release image results are missing a required service");
-const images = Object.fromEntries(imageKeys.map((key) => [key, byKey.get(key)]));
-const index = { schemaVersion: 1, releaseRevision: revision, source, images, attestationTransport: "oci-buildx-attached" };
-await Promise.all([
-  writeFile(imagesOutput, `${JSON.stringify(images, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o640 }),
-  writeFile(sbomOutput, `${JSON.stringify({ ...index, artifactType: "oci-buildx-sbom-index" }, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o640 }),
-  writeFile(provenanceOutput, `${JSON.stringify({ ...index, artifactType: "oci-buildx-provenance-index", builder: "github-actions-buildx" }, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o640 })
-]);
-console.log("PASS  release evidence indexes bind ten Buildx-attested image digests to one revision");
+const documents = [
+  [imagesOutput, evidence.images],
+  [sbomOutput, evidence.sbomIndex],
+  [provenanceOutput, evidence.provenanceIndex]
+];
+const temporary = documents.map(([output]) => `${output}.${process.pid}.tmp`);
+try {
+  for (const [index, [, value]] of documents.entries()) await writeFile(temporary[index], `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o640 });
+  for (const [index, [output]] of documents.entries()) await rename(temporary[index], output);
+} catch (error) {
+  await Promise.all([...temporary, ...documents.map(([output]) => output)].map((file) => rm(file, { force: true })));
+  throw error;
+}
+console.log("PASS  release evidence indexes bind ten images to the SBOM and provenance attestations read from the registry");
