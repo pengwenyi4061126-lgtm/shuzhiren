@@ -1038,8 +1038,13 @@ async function seedRun(state, sessionId, sampledAt) {
   await client.query("insert into products (id, tenant_id, external_sku, name) values ($1, $2, $3, $4)", [productId, tenantId, `seed-${runId}`, "Seeded integration product"]);
   await client.query("insert into product_versions (id, tenant_id, product_id, revision, facts, approval_status, approved_at) values ($1, $2, $3, 1, $4::jsonb, 'approved', now())", [productVersionId, tenantId, productId, JSON.stringify(productFacts)]);
   await client.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [tenantId, revisionId, productVersionId]);
+  // model_releases is unique on (tenant_id, component, name, version) and every
+  // seeded run shares one tenant, so each run gets its own release version. The
+  // releases must stay per-run: revoking one run's release has to quarantine
+  // only that run (see the quarantinedLiveRunCount assertion).
+  const modelReleaseVersion = `integration-${runId}`;
   for (const [component, releaseId] of Object.entries(modelReleaseIds)) {
-    await client.query("insert into model_releases (id, tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, 'integration', $4::model_release_component, 'integration-commit', 'sha256:integration-image', 'sha256:integration-artifact', 'NVIDIA integration', 'Apache-2.0', 'Integration validation only', 'evidence://integration/model-release', 'Integration-bound approved release.', 'approved', now())", [releaseId, tenantId, `Integration ${component}`, component]);
+    await client.query("insert into model_releases (id, tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, approval_status, approved_at) values ($1, $2, $3, $5, $4::model_release_component, 'integration-commit', 'sha256:integration-image', 'sha256:integration-artifact', 'NVIDIA integration', 'Apache-2.0', 'Integration validation only', 'evidence://integration/model-release', 'Integration-bound approved release.', 'approved', now())", [releaseId, tenantId, `Integration ${component}`, component, modelReleaseVersion]);
     await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) values ($1, $2, $3, $4::model_release_component)", [tenantId, revisionId, releaseId, component]);
   }
   for (const [kind, assetId] of Object.entries(mediaAssetIds)) {
