@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     const connection = await createChannelConnection(context, body);
     return Response.json({ data: connection }, { status: 201 });
   } catch (error) {
-    if (error instanceof Response) return Response.json({ error: error.statusText }, { status: error.status });
+    if (error instanceof Response) return Response.json({ error: error.statusText || "channel_connection_rejected" }, { status: error.status });
     throw error;
   }
 }

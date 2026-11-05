@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
     if (!isReleaseInput(body)) return Response.json({ error: "invalid_model_release" }, { status: 400 });
     const release = await createModelRelease(context, body); await recordAuditEvent(context, { type: "model_release.created", resource: "model_release", resourceId: release.id, detail: { component: release.component, version: release.version, artifactHash: release.artifactHash } }); return Response.json({ data: release }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText }, { status: error.status }); throw error; }
+  } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "model_release_rejected" }, { status: error.status }); throw error; }
 }
 function isReleaseInput(value: unknown): value is CreateModelReleaseInput {
   if (!value || typeof value !== "object") return false;

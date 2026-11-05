@@ -7,5 +7,5 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/rele
   try {
     const actor = await requestContextFrom(request); requireRole(actor, ["admin", "reviewer"]); const { releaseId } = await context.params;
     const release = await approveModelRelease(actor, releaseId); await recordAuditEvent(actor, { type: "model_release.approved", resource: "model_release", resourceId: release.id, detail: { component: release.component, version: release.version } }); return Response.json({ data: release });
-  } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText }, { status: error.status }); throw error; }
+  } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "model_release_rejected" }, { status: error.status }); throw error; }
 }

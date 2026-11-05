@@ -16,6 +16,6 @@ export async function POST(request: Request) {
     catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
     if (!isProductInput(body)) return Response.json({ error: "invalid_product" }, { status: 400 });
     const product = await createProduct(context, body); await recordAuditEvent(context, { type: "product.created", resource: "product", resourceId: product.id, detail: { externalSku: product.externalSku } }); return Response.json({ data: product }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText }, { status: error.status }); throw error; }
+  } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "product_rejected" }, { status: error.status }); throw error; }
 }
 function isProductInput(value: unknown): value is { externalSku: string; name: string } { if (!value || typeof value !== "object") return false; const input = value as Record<string, unknown>; return typeof input.externalSku === "string" && input.externalSku.length > 0 && typeof input.name === "string" && input.name.length > 0; }

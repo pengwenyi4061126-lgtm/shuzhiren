@@ -18,7 +18,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/chan
     const connection = await recordChannelVerification(actor, connectionId, body);
     return Response.json({ data: connection });
   } catch (error) {
-    if (error instanceof Response) return Response.json({ error: error.statusText }, { status: error.status });
+    if (error instanceof Response) return Response.json({ error: error.statusText || "channel_verification_rejected" }, { status: error.status });
     throw error;
   }
 }

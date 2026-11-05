@@ -1,6 +1,8 @@
+import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
+import { register } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migration = await readFile(path.join(root, "infra/postgres/migrations/054_governed_membership_authorization.sql"), "utf8");
@@ -43,6 +45,38 @@ for (const file of routeFiles) {
 }
 
 console.log(`PASS  governed database memberships authorize ${routeFiles.length - exempt.size} human API routes; JWT roles cannot restore access`);
+
+// A thrown Response built as new Response(message, { status }) has an empty
+// statusText, so mapping it with { error: error.statusText } alone answers
+// 401/403 with an empty error code. Every mapping needs a non-empty fallback.
+for (const file of routeFiles) {
+  const source = await readFile(file, "utf8");
+  if (/\{\s*error:\s*error\.statusText\s*\}/.test(source)) throw new Error(`API error responses must fall back to a non-empty error code: ${path.relative(routesRoot, file).replaceAll("\\", "/")}`);
+}
+console.log(`PASS  ${routeFiles.length} API route files map thrown responses to non-empty error codes`);
+
+// Behavioral check: an analyst (dev header identity, no database) is refused by
+// the mutating handlers that used to answer { "error": "" }.
+register("./lib/console-ts-loader.mjs", import.meta.url);
+Object.assign(process.env, { CONTROL_PLANE_DEV_HEADER_IDENTITY: "true", NODE_ENV: "development", HOSTNAME: "127.0.0.1" });
+const analystHeaders = { "x-tenant-id": "tenant_demo", "x-actor-id": "analyst-check", "x-actor-name": "Analyst Check", "x-actor-role": "analyst", "content-type": "application/json" };
+const id = "00000000-0000-4000-8000-000000000001";
+for (const [route, params, expected] of [
+  ["channels/connections", {}, "channel_connection_rejected"],
+  ["channels/connections/[connectionId]/verify", { connectionId: id }, "channel_verification_rejected"],
+  ["assets/[assetId]/approve", { assetId: id }, "media_asset_rejected"],
+  ["products", {}, "product_rejected"],
+  ["products/[productId]/versions", { productId: id }, "product_version_rejected"],
+  ["products/[productId]/versions/[versionId]/approve", { productId: id, versionId: id }, "product_version_rejected"],
+  ["releases", {}, "model_release_rejected"],
+  ["releases/[releaseId]/approve", { releaseId: id }, "model_release_rejected"]
+]) {
+  const { POST } = await import(pathToFileURL(path.join(routesRoot, route, "route.ts")).href);
+  const response = await POST(new Request(`http://127.0.0.1/api/v1/${route}`, { method: "POST", headers: analystHeaders, body: "{}" }), { params: Promise.resolve(params) });
+  assert.equal(response.status, 403, `an analyst must be refused by POST /api/v1/${route}`);
+  assert.deepEqual(await response.json(), { error: expected }, `POST /api/v1/${route} must answer a non-empty error code`);
+}
+console.log("PASS  refused mutations answer 403 with a non-empty error code");
 
 async function collectRoutes(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
