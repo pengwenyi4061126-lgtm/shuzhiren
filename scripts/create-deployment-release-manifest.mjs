@@ -3,6 +3,7 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 // Release manifests are signed over Canonical_JSON rule 2 (keys in code-point order, no locale dependence).
 import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
+import { RELEASE_ISSUER_PATTERN, RELEASE_KEY_ID_PATTERN } from "./lib/release-identity.mjs";
 
 const imageKeys = [
   "CONTROL_PLANE_IMAGE",
@@ -75,8 +76,8 @@ const outputPath = absoluteFile("--output");
 const issuer = required("--issuer");
 const keyId = required("--key-id");
 const releaseRevision = required("--revision");
-if (!/^[a-z][a-z0-9_-]{1,63}$/.test(issuer)) fail("--issuer must contain 2-64 lowercase letters, digits, underscores, or hyphens");
-if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(keyId)) fail("--key-id is invalid");
+if (!RELEASE_ISSUER_PATTERN.test(issuer)) fail("--issuer must contain 2-64 lowercase letters, digits, underscores, or hyphens");
+if (!RELEASE_KEY_ID_PATTERN.test(keyId)) fail("--key-id is invalid");
 if (!/^[a-f0-9]{40}$/.test(releaseRevision)) fail("--revision must be a full 40-character lowercase git SHA");
 
 const issuedAt = timestamp("--issued-at", new Date());

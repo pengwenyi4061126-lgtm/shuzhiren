@@ -1,28 +1,17 @@
 # Release_Workflow_Gate fixture for scripts/test-release-workflow-gate.mjs.
-# A trimmed release workflow that satisfies every text check of
-# scripts/check-release-workflow.mjs. The action SHAs are syntactically valid
+# A trimmed release workflow that satisfies every rule of
+# scripts/lib/release-workflow-gate.mjs; each counter-example in the test
+# changes one place of this file. The action SHAs are syntactically valid
 # placeholders, not upstream commits: the gate checks the reference format only
 # (ci:workflow:check W5 compares real workflows with .github/action-pins.json).
 # Each required action is referenced exactly once so a test can remove it;
-# every `uses:` is the first key of its step. Workflow inputs appear only in
-# `with:` and step `env:`; the `run:` steps read them as "$NAME" (audit H1).
+# every `uses:` is the first key of its step. There are no workflow_dispatch
+# inputs; release values come from release-production variables (vars.*) and
+# reach `run:` only through env: as "$NAME" (audit H1).
 name: Release Images (gate fixture)
 
 on:
-  workflow_dispatch:
-    inputs:
-      registry:
-        description: OCI registry host
-        required: true
-        type: string
-      miniforge_url:
-        description: Pinned HTTPS Miniforge installer URL
-        required: true
-        type: string
-      release_issuer:
-        description: Trusted Ed25519 release-manifest issuer
-        required: true
-        type: string
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -31,6 +20,7 @@ jobs:
   build-and-push:
     if: github.ref_protected
     runs-on: ubuntu-24.04
+    environment: release-production
     strategy:
       matrix:
         include:
@@ -46,25 +36,44 @@ jobs:
           - key: COSYVOICE_IMAGE
     steps:
       - uses: actions/checkout@a0a1a2a3a4a5a6a7a8a9b0b1b2b3b4b5b6b7b8b9
+        with:
+          persist-credentials: false
+      - name: Validate release registry
+        id: validate-registry
+        env:
+          RELEASE_REGISTRY: ${{ vars.RELEASE_REGISTRY }}
+          RELEASE_IMAGE_NAMESPACE: ${{ vars.RELEASE_IMAGE_NAMESPACE }}
+        run: node scripts/release-environment.mjs registry --allowlist .github/release-registry-allowlist.json
       - uses: docker/setup-buildx-action@c0c1c2c3c4c5c6c7c8c9d0d1d2d3d4d5d6d7d8d9
       - uses: docker/login-action@e0e1e2e3e4e5e6e7e8e9f0f1f2f3f4f5f6f7f8f9
         with:
-          registry: ${{ inputs.registry }}
+          registry: ${{ vars.RELEASE_REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
       - id: build-args
-        shell: bash
         env:
-          MINIFORGE_URL: ${{ inputs.miniforge_url }}
-        run: |
-          echo "value=MINIFORGE_URL=$MINIFORGE_URL" >> "$GITHUB_OUTPUT"
+          MATRIX_KEY: ${{ matrix.key }}
+        run: node scripts/release-environment.mjs build-args --matrix-key "$MATRIX_KEY" --miniforge runtime/cosyvoice/miniforge.json
       - uses: docker/build-push-action@0102030405060708091011121314151617181920
         id: build
         with:
           platforms: linux/amd64
           push: true
+          tags: ${{ vars.RELEASE_REGISTRY }}/${{ vars.RELEASE_IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
+          build-args: ${{ steps.build-args.outputs.value }}
           sbom: true
           provenance: mode=max
+      - name: Write image result
+        env:
+          MATRIX_KEY: ${{ matrix.key }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: >-
+          node scripts/write-release-image-result.mjs
+          --key "$MATRIX_KEY"
+          --digest "$IMAGE_DIGEST"
+          --output "$RUNNER_TEMP/$MATRIX_KEY.json"
       - uses: actions/upload-artifact@2122232425262728293031323334353637383940
         with:
           name: release-image-${{ matrix.key }}
@@ -74,15 +83,44 @@ jobs:
     if: github.ref_protected
     needs: build-and-push
     runs-on: [self-hosted, linux, x64, shuzhiren-release]
+    environment: release-production
     steps:
       - uses: actions/checkout@a0a1a2a3a4a5a6a7a8a9b0b1b2b3b4b5b6b7b8b9
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@4142434445464748495051525354555657585960
         with:
           pattern: release-image-*
+      - name: Validate release registry
+        id: validate-registry
+        env:
+          RELEASE_REGISTRY: ${{ vars.RELEASE_REGISTRY }}
+          RELEASE_IMAGE_NAMESPACE: ${{ vars.RELEASE_IMAGE_NAMESPACE }}
+        run: node scripts/release-environment.mjs registry --allowlist .github/release-registry-allowlist.json
+      - name: Validate signing configuration
+        id: validate-signing
+        env:
+          RELEASE_SIGNING_KEY_PATH: ${{ vars.RELEASE_SIGNING_KEY_PATH }}
+          RELEASE_ISSUER: ${{ vars.RELEASE_ISSUER }}
+          RELEASE_KEY_ID: ${{ vars.RELEASE_KEY_ID }}
+        run: node scripts/release-environment.mjs signing
+      - name: Assemble release evidence
+        env:
+          RELEASE_REGISTRY: ${{ vars.RELEASE_REGISTRY }}
+          REGISTRY_READ_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_READ_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: >-
+          node scripts/assemble-release-evidence.mjs
+          --input-dir "$RUNNER_TEMP/release-image-results"
+          --revision "$GITHUB_SHA"
       - name: Create signed release manifest
         env:
-          RELEASE_ISSUER: ${{ inputs.release_issuer }}
+          RELEASE_SIGNING_KEY_PATH: ${{ vars.RELEASE_SIGNING_KEY_PATH }}
+          RELEASE_ISSUER: ${{ vars.RELEASE_ISSUER }}
+          RELEASE_KEY_ID: ${{ vars.RELEASE_KEY_ID }}
         run: >-
           node scripts/create-deployment-release-manifest.mjs
+          --private-key "$RELEASE_SIGNING_KEY_PATH"
           --issuer "$RELEASE_ISSUER"
+          --key-id "$RELEASE_KEY_ID"
           --revision "$GITHUB_SHA"
