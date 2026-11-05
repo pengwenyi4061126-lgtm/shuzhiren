@@ -147,6 +147,8 @@ test("regression-evidence classifies the three outcomes on a temporary repositor
     assert.equal(run.result.worktreeRemoved, false);
     assert.equal(existsSync(path.join(run.result.worktree, "test", "value.test.mjs")), true);
     git(fixture.repo, "worktree", "remove", "--force", run.result.worktree);
+    // The kept worktree lives in the runner's scratch directory (with events.jsonl and output.log).
+    rmSync(path.dirname(run.result.worktree), { recursive: true, force: true });
   });
 
   await t.test("argument and lookup errors exit with 2", () => {
