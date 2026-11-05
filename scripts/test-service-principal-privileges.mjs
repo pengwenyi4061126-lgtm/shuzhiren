@@ -155,7 +155,9 @@ async function assertWorkerVoiceBindingRead() {
         from show_revision_media_assets binding join media_assets asset on asset.id = binding.media_asset_id
         where binding.tenant_id = $1 and binding.show_revision_id = $2 and binding.kind = 'voice'
           and asset.approval_status = 'approved' and (asset.expires_at is null or asset.expires_at >= current_date)`;
-  const workerSource = await readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8");
+  // A template literal's line breaks are always LF, while a Windows checkout with core.autocrlf=true has CRLF in
+  // the worker source; compare both with LF line endings (the query text itself must still match verbatim).
+  const workerSource = (await readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   assert.ok(workerSource.includes(bindingQuery), "the probe must run the runtime worker's voice binding query verbatim");
   await client.query("savepoint voice_binding_read");
   try {
