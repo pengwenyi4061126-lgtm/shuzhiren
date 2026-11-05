@@ -1,0 +1,31 @@
+# 构造样例，不是从 GitHub 下载的内容：job 日志（/actions/jobs/{job_id}/logs）需要登录或带 actions:read 的 token 才能读取。
+# 按 GitHub 托管 runner "Set up job" 步骤日志的格式编写：每行以 UTC 时间戳开头，镜像名与版本位于 "##[group]Runner Image" 组内；
+# 之前的 "Runner Image Provisioner" 组另有一行 Version:。版本号与时间均为示例值。供 scripts/test-ci-run-evidence.mjs 使用。
+2026-11-05T02:10:41.4021733Z Current runner version: '2.329.0'
+2026-11-05T02:10:41.4047316Z ##[group]Runner Image Provisioner
+2026-11-05T02:10:41.4048208Z Hosted Compute Agent
+2026-11-05T02:10:41.4048851Z Version: 20260930.410
+2026-11-05T02:10:41.4050087Z Build Date: 2026-09-30T18:21:44Z
+2026-11-05T02:10:41.4050724Z ##[endgroup]
+2026-11-05T02:10:41.4051302Z ##[group]Operating System
+2026-11-05T02:10:41.4051914Z Ubuntu
+2026-11-05T02:10:41.4052409Z 24.04.3
+2026-11-05T02:10:41.4052897Z LTS
+2026-11-05T02:10:41.4053384Z ##[endgroup]
+2026-11-05T02:10:41.4053912Z ##[group]Runner Image
+2026-11-05T02:10:41.4054478Z Image: ubuntu-24.04
+2026-11-05T02:10:41.4054973Z Version: 20261020.1.0
+2026-11-05T02:10:41.4056021Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261020.1/images/ubuntu/Ubuntu2404-Readme.md
+2026-11-05T02:10:41.4057279Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261020.1
+2026-11-05T02:10:41.4057873Z ##[endgroup]
+2026-11-05T02:10:41.4059330Z ##[group]GITHUB_TOKEN Permissions
+2026-11-05T02:10:41.4061586Z Contents: read
+2026-11-05T02:10:41.4062167Z Metadata: read
+2026-11-05T02:10:41.4062718Z ##[endgroup]
+2026-11-05T02:10:41.4065015Z Secret source: Actions
+2026-11-05T02:10:41.4065792Z Prepare workflow directory
+2026-11-05T02:10:41.4451107Z Prepare all required actions
+2026-11-05T02:10:41.4489528Z Getting action download info
+2026-11-05T02:10:41.7943581Z Download action repository 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-11-05T02:10:41.9472205Z Download action repository 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1' (SHA:949feb2413d6458794dcd2491c4babbbce0c15c1)
+2026-11-05T02:10:42.1388016Z Complete job name: static-gates

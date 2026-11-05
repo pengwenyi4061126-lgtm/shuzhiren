@@ -89,6 +89,10 @@
     "ci:coverage:check": "node scripts/check-ci-coverage.mjs",
     "ci:workflow:check": "node scripts/check-ci-workflow.mjs",
     "ci:db-fail-closed:test": "node scripts/test-ci-database-fail-closed.mjs",
+    "ci:evidence:test": "node scripts/test-ci-run-evidence.mjs",
+    "ci:action-pins:verify": "node scripts/verify-action-pins.mjs",
+    "ci:evidence:collect": "node scripts/collect-ci-run-evidence.mjs",
+    "ci:steps:diff": "node scripts/diff-ci-steps.mjs",
     "control-plane:integration": "node scripts/test-control-plane-postgres.mjs"
   },
   "devDependencies": {

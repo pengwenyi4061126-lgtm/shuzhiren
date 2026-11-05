@@ -28,6 +28,7 @@ jobs:
       - run: npm ci
       - run: npm run ci:coverage:check
       - run: npm run ci:workflow:check
+      - run: npm run ci:action-pins:verify
       - run: bash -n scripts/check-runtime-host.sh
       - run: bash -n scripts/backup-postgres.sh
       - run: bash -n scripts/test-postgres-backup-direct.sh
@@ -119,6 +120,7 @@ jobs:
       - run: npm run alert-notifier:test
       - run: npm run ci:gates:test
       - run: npm run ci:db-fail-closed:test
+      - run: npm run ci:evidence:test
       - run: npm run release:workflow:gate:test
 
   python-gateway:
