@@ -40,7 +40,9 @@ function optionalHttpUrl(name) { const value = process.env[name]; if (!value) re
 function positiveInt(value, fallback) { const parsed = Number.parseInt(value ?? "", 10); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }
 function boundedPositiveInt(name, minimum, maximum, fallback) { const value = process.env[name]; if (value === undefined || value === "") return fallback; const parsed = Number.parseInt(value, 10); if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function log(event, fields = {}) { process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), service: "runtime-worker", event, ...fields })}\n`); }
-class DeliveryError extends Error { constructor(message, retryable) { super(message); this.retryable = retryable; } }
+// gatewayCode is the Gateway's machine-readable error code. outcomeUncertain: the Gateway cannot tell whether the
+// command took effect (command_outcome_uncertain); the event is failed without retrying and flagged for an operator.
+class DeliveryError extends Error { constructor(message, retryable, { gatewayCode, outcomeUncertain = false } = {}) { super(message); this.retryable = retryable; this.gatewayCode = gatewayCode; this.outcomeUncertain = outcomeUncertain; } }
 // The downstream accepted the command but its receipt cannot be applied (cursor or delivery state no longer
 // matches). Every retry would send the command again and fail the same way, so the event is exhausted at once.
 class ReceiptRejectedError extends DeliveryError { constructor(message) { super(message, false); } }
@@ -82,6 +84,9 @@ async function claimEvent() {
         from outbox_events o
         where o.tenant_id = $3::uuid and o.state in ('pending', 'failed', 'delivering') and o.available_at <= now()
           and o.attempts < $1
+          -- An event the Gateway answered command_outcome_uncertain waits for an operator, whatever its attempts.
+          -- A delivering event is still reclaimed: a manual redelivery may have been accepted without being recorded.
+          and (o.outcome_uncertain_at is null or o.state = 'delivering')
           and (o.event_type <> 'media.dispatch' or o.aggregate_id is null or not exists (
             select 1 from outbox_events prior
             where prior.tenant_id = o.tenant_id and prior.event_type = 'media.dispatch'
@@ -329,7 +334,7 @@ async function markDelivered(event, receipt = {}) {
   await inTenantTransaction(event.tenant_id, async (client) => {
     // Fenced by the claim: (id, attempts) identifies this worker's lease. If the lease expired and another worker
     // reclaimed the event, nothing is written and the new holder completes it.
-    const fenced = await client.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 and state = 'delivering' and attempts = $2", [event.id, event.attempts]);
+    const fenced = await client.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null, outcome_uncertain_at = null where id = $1 and state = 'delivering' and attempts = $2", [event.id, event.attempts]);
     if (fenced.rowCount !== 1) throw new LeaseLostError("outbox lease lost before the delivery was recorded");
     if (event.event_type === "channel.reply.dispatch") {
       const providerMessageId = receipt.providerMessageId;
@@ -392,20 +397,24 @@ async function applyActivationProgramReceipt(client, event, receipt) {
     values ($1, $2, 'live_program.activation_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, command.runId, JSON.stringify({ outboxEventId: event.id, commandId: command.id, action: payload.controlAction, programSegmentId: payload.programSegmentId, receipt })]);
 }
 
-async function markFailed(event, lastError, retryable = true) {
+// outcomeUncertain sets outcome_uncertain_at (kept if already set); definite (command_failed_definite) clears it.
+// Any other failure, for example a network error on a manual redelivery, leaves the flag as it was.
+async function markFailed(event, lastError, retryable = true, { outcomeUncertain = false, definite = false } = {}) {
   const retryAfterMs = retryDelayMs(event.attempts);
   const exhausted = !retryable || event.attempts >= maxAttempts;
   await inTenantTransaction(event.tenant_id, async (client) => {
     // Same lease fence as markDelivered: a reclaimed event belongs to its new holder.
-    const fenced = await client.query("update outbox_events set state = 'failed', attempts = case when $4 then $5 else attempts end, available_at = now() + ($3 * interval '1 millisecond'), last_error = $2 where id = $1 and state = 'delivering' and attempts = $6", [event.id, lastError, retryAfterMs, exhausted, maxAttempts, event.attempts]);
+    const fenced = await client.query(`update outbox_events set state = 'failed', attempts = case when $4 then $5 else attempts end, available_at = now() + ($3 * interval '1 millisecond'), last_error = $2,
+      outcome_uncertain_at = case when $7 then coalesce(outcome_uncertain_at, now()) when $8 then null else outcome_uncertain_at end
+      where id = $1 and state = 'delivering' and attempts = $6`, [event.id, lastError, retryAfterMs, exhausted, maxAttempts, event.attempts, outcomeUncertain, definite]);
     if (fenced.rowCount !== 1) throw new LeaseLostError("outbox lease lost before the failure was recorded");
     if (exhausted && event.event_type === "channel.reply.dispatch") await failChannelReply(client, event, lastError);
-    if (exhausted) await openDeliveryExhaustedAlert(client, event, lastError);
+    if (exhausted) await openDeliveryExhaustedAlert(client, event, lastError, { outcomeUncertain });
   });
   return { exhausted, retryAfterMs };
 }
 
-async function openDeliveryExhaustedAlert(client, event, lastError) {
+async function openDeliveryExhaustedAlert(client, event, lastError, { outcomeUncertain = false } = {}) {
   if (!event.aggregate_id || !["media.dispatch", "speech.dispatch", "channel.reply.dispatch"].includes(event.event_type)) return;
   const runId = event.event_type === "channel.reply.dispatch" ? event.payload?.runId : event.aggregate_id;
   if (typeof runId !== "string") return;
@@ -416,16 +425,20 @@ async function openDeliveryExhaustedAlert(client, event, lastError) {
   const existing = await client.query("select id from runtime_alerts where live_run_id = $1 and code = $2 and status = 'open' for update", [runId, code]);
   if (existing.rows[0]) return;
   const error = String(lastError).replace(/[\r\n\t]+/g, " ").slice(0, 500);
+  // An uncertain command may have reached the media session: the operator checks it instead of resending blindly.
+  const message = outcomeUncertain
+    ? `运行时 ${event.event_type} 指令结果不确定，需人工核对媒体会话后在 Gateway 处置并重新投递：${error}`
+    : `运行时 ${event.event_type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`;
   const opened = await client.query(
     "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id",
-    [event.tenant_id, runId, severity, code, `运行时 ${event.event_type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`]
+    [event.tenant_id, runId, severity, code, message]
   );
   if (!opened.rows[0]) return;
   const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
   await client.query(
     `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
      values ($1, $2, 'runtime_command.delivery_exhausted', 'runtime_alert', $3::uuid, $3, $4::jsonb)`,
-    [event.tenant_id, actor.rows[0].id, opened.rows[0].id, JSON.stringify({ runId, outboxEventId: event.id, eventType: event.event_type, attempts: event.attempts, severity })]
+    [event.tenant_id, actor.rows[0].id, opened.rows[0].id, JSON.stringify({ runId, outboxEventId: event.id, eventType: event.event_type, attempts: event.attempts, severity, ...(outcomeUncertain ? { outcomeUncertain: true } : {}) })]
   );
 }
 
@@ -449,7 +462,19 @@ async function deliver(event) {
     throw new DeliveryError("Outbox lease expired before the delivery request could be sent", true);
   }
   const response = await fetch(`${target}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(timeoutMs) });
-  if (!response.ok) throw new DeliveryError(`${request.target === "channel-adapter" ? "Channel adapter" : "Runtime gateway"} returned ${response.status}`, response.status === 429 || response.status >= 500);
+  if (!response.ok) {
+    if (request.target === "gateway") {
+      // The Gateway's error body carries a machine-readable code next to its fixed detail text (Requirement 19).
+      const errorBody = await response.json().catch(() => null);
+      const gatewayCode = typeof errorBody?.code === "string" ? errorBody.code : undefined;
+      // Retrying an uncertain command could run it twice; the Gateway also refuses it (409) until an operator resolves it.
+      if (gatewayCode === "command_outcome_uncertain") throw new DeliveryError(`Runtime gateway returned ${response.status} command_outcome_uncertain`, false, { gatewayCode, outcomeUncertain: true });
+      // Nothing took effect, but the cause (for example a missing session) does not go away by retrying.
+      if (gatewayCode === "command_failed_definite") throw new DeliveryError(`Runtime gateway returned ${response.status} command_failed_definite`, false, { gatewayCode });
+      throw new DeliveryError(`Runtime gateway returned ${response.status}${gatewayCode ? ` ${gatewayCode}` : ""}`, response.status === 429 || response.status >= 500, { gatewayCode });
+    }
+    throw new DeliveryError(`Channel adapter returned ${response.status}`, response.status === 429 || response.status >= 500);
+  }
   if (request.target === "gateway" && event.event_type === "media.dispatch") {
     const payload = await response.json().catch(() => null);
     return { mediaReceipt: assertMediaGatewayReceipt(payload, event.payload.command, event.payload.sessionId, event.created_at) };
@@ -556,11 +581,12 @@ async function tick() {
     const message = error instanceof Error ? error.message : "runtime_dispatch_failed";
     let retry;
     try {
-      retry = await markFailed(event, message, error instanceof DeliveryError ? error.retryable : true);
+      retry = await markFailed(event, message, error instanceof DeliveryError ? error.retryable : true, { outcomeUncertain: error instanceof DeliveryError && error.outcomeUncertain, definite: error instanceof DeliveryError && error.gatewayCode === "command_failed_definite" });
     } catch (markError) {
       if (markError instanceof LeaseLostError) return log("outbox.lease_lost", { eventId: event.id, attempts: event.attempts });
       throw markError;
     }
+    if (error instanceof DeliveryError && error.outcomeUncertain) log("outbox.outcome_uncertain", { eventId: event.id, attempts: event.attempts, error: message });
     log(retry.exhausted ? "outbox.exhausted" : "outbox.failed", { eventId: event.id, attempts: event.attempts, retryAfterMs: retry.retryAfterMs, error: message });
   }
 }
