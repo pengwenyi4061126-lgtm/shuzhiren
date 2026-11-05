@@ -190,6 +190,9 @@ async function verifyRlsPolicyWithUnprivilegedRole() {
     await client.query("delete from shows where id in ($1, $2)", [rlsProbeShowA, rlsProbeShowB]).catch(() => undefined);
     await client.query("delete from products where id in ($1, $2)", [rlsProbeProductA, rlsProbeProductB]).catch(() => undefined);
     await client.query("delete from tenants where id in ($1, $2)", [rlsProbeTenantA, rlsProbeTenantB]).catch(() => undefined);
+    // The grants above would make a plain drop role fail and leave the role behind for a later run to collide with.
+    await client.query(`revoke all on products, commerce_events from ${role}`).catch(() => undefined);
+    await client.query(`revoke usage on schema public from ${role}`).catch(() => undefined);
     await client.query(`drop role if exists ${role}`).catch(() => undefined);
   }
 }
