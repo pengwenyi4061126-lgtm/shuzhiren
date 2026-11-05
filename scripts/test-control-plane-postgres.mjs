@@ -1052,6 +1052,23 @@ try {
   assert.equal(crossTenantMembership.status, 201, "a second tenant should provision its own membership for an existing subject");
   assert.equal((await crossTenantMembership.json()).data.displayName, "Isolated tenant name", "the provisioning response must report the stored display name");
   assert.deepEqual((await client.query("select display_name from users where external_subject = $1", [sharedSubject])).rows, [{ display_name: "Isolated tenant name" }], "one tenant's administrator must not rename a user shared with another tenant");
+  // L3: pages carry a per-request nonce CSP without 'unsafe-inline' scripts, and responses carry HSTS.
+  const pageNonces = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const noncePage = await fetch(`http://127.0.0.1:${consolePort}/`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(noncePage.status, 200, "an authenticated console page must render");
+    const scriptSrc = (noncePage.headers.get("content-security-policy") ?? "").split(";").map((directive) => directive.trim()).find((directive) => directive.startsWith("script-src ")) ?? "";
+    const nonce = /'nonce-([^']+)'/.exec(scriptSrc)?.[1];
+    assert.ok(nonce && Buffer.from(nonce, "base64").length >= 16, "page script-src must carry a nonce of at least 128 bits");
+    assert.ok(!scriptSrc.includes("'unsafe-inline'"), "page script-src must not allow inline scripts");
+    const scriptTags = [...(await noncePage.text()).matchAll(/<script\b[^>]*>/g)].map((match) => match[0]);
+    assert.ok(scriptTags.length > 0 && scriptTags.every((tag) => tag.includes(`nonce="${nonce}"`)), "every rendered script must carry the request nonce");
+    assert.match(noncePage.headers.get("strict-transport-security") ?? "", /^max-age=31536000$/, "console pages must send HSTS");
+    pageNonces.push(nonce);
+  }
+  assert.notEqual(pageNonces[0], pageNonces[1], "each page response must use a fresh nonce");
+  assert.match((await fetch(`http://127.0.0.1:${consolePort}/api/health`)).headers.get("strict-transport-security") ?? "", /^max-age=31536000$/, "the health endpoint must send HSTS");
+  assert.match((await fetch(`http://127.0.0.1:${consolePort}/`)).headers.get("strict-transport-security") ?? "", /^max-age=31536000$/, "proxy rejections must send HSTS");
   // M3: PostgreSQL terminating an idle control-plane connection must be logged, not crash the process.
   let consoleStderr = "";
   next.stderr.setEncoding("utf8");

@@ -2,13 +2,23 @@ import { createRemoteJWKSet } from "jose";
 import { NextResponse, type NextRequest } from "next/server";
 import { devHeaderIdentityEnabled } from "@/lib/control-plane/dev-identity";
 import { oidcVerificationConfig, verifyOperatorToken } from "@/lib/control-plane/oidc";
+import { apiCsp, generateNonce, pageCsp, strictTransportSecurity } from "@/lib/csp";
 
 const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 export async function proxy(request: NextRequest) {
+  const security = securityFor(request);
+  const response = await authenticate(request, security.forward);
+  if (security.csp) response.headers.set("Content-Security-Policy", security.csp);
+  else if (!response.headers.has("x-middleware-next")) response.headers.set("Content-Security-Policy", apiCsp);
+  if (process.env.NODE_ENV === "production") response.headers.set("Strict-Transport-Security", strictTransportSecurity);
+  return response;
+}
+
+async function authenticate(request: NextRequest, forward: () => NextResponse) {
   // Only the explicit development header-identity switch (never NODE_ENV)
   // skips bearer verification; route handlers then enforce its loopback rule.
-  if (devHeaderIdentityEnabled() || request.nextUrl.pathname === "/api/v1/runtime/telemetry" || request.nextUrl.pathname === "/api/v1/runtime/program-output-observations" || request.nextUrl.pathname === "/api/v1/runtime/recordings" || request.nextUrl.pathname === "/api/v1/runtime/channel-interactions" || request.nextUrl.pathname === "/api/v1/runtime/channel-commerce" || request.nextUrl.pathname === "/api/v1/runtime/settlement-batches" || request.nextUrl.pathname === "/api/v1/integrations/product-facts") return NextResponse.next();
+  if (devHeaderIdentityEnabled() || request.nextUrl.pathname === "/api/v1/runtime/telemetry" || request.nextUrl.pathname === "/api/v1/runtime/program-output-observations" || request.nextUrl.pathname === "/api/v1/runtime/recordings" || request.nextUrl.pathname === "/api/v1/runtime/channel-interactions" || request.nextUrl.pathname === "/api/v1/runtime/channel-commerce" || request.nextUrl.pathname === "/api/v1/runtime/settlement-batches" || request.nextUrl.pathname === "/api/v1/integrations/product-facts") return forward();
   const token = accessTokenFrom(request);
   if (!token) return error("missing_bearer_token", 401);
   if (usesCookieAuth(request) && isUnsafeMethod(request.method) && !hasTrustedOrigin(request)) return error("csrf_origin_rejected", 403);
@@ -23,10 +33,24 @@ export async function proxy(request: NextRequest) {
     if (!isUuid(tenantId) || !subject) return error("invalid_tenant_subject", 403);
     // Role checks execute in route/page handlers against the active database
     // membership. JWT role claims are intentionally not authorization input.
-    return NextResponse.next();
+    return forward();
   } catch {
     return error("bearer_token_verification_failed", 401);
   }
+}
+
+// Pages get a fresh nonce-based CSP per request. The policy is also passed on
+// the forwarded request, where Next.js reads the nonce and applies it to its
+// framework, bundle and inline scripts. API responses take their CSP from
+// next.config.ts; only proxy-generated API errors set it here.
+function securityFor(request: NextRequest): { csp?: string; forward: () => NextResponse } {
+  if (request.nextUrl.pathname === "/api" || request.nextUrl.pathname.startsWith("/api/")) return { forward: () => NextResponse.next() };
+  const nonce = generateNonce();
+  const csp = pageCsp(nonce, { development: process.env.NODE_ENV === "development" });
+  const headers = new Headers(request.headers);
+  headers.set("x-nonce", nonce);
+  headers.set("Content-Security-Policy", csp);
+  return { csp, forward: () => NextResponse.next({ request: { headers } }) };
 }
 
 function jwksFor(url: string) {
