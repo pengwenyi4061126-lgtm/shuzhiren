@@ -12,6 +12,10 @@ const telemetryToken = "observer-tenant-token-at-least-16";
 const programOutputToken = "observer-program-output-token-at-least-32";
 const gatewayToken = "gateway-shared-token-at-least-16";
 const observerPort = 18084;
+// Every wait in this test is bounded so that a failure ends the test with a message instead of hanging the CI job.
+const requestTimeoutMs = 1000;
+const exitTimeoutMs = 10_000;
+const outputTailChars = 8000;
 
 async function startServer(probeMode) {
   const samples = [];
@@ -59,127 +63,156 @@ async function requestBody(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+function observerEnvironment(fixture, overrides) {
+  return { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort), ...overrides };
+}
+
+function targetsFor(fixture, runId = "run_demo") {
+  return [{ tenantId: "tenant_demo", runId, sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }];
+}
+
+// Starts the observer with its stdout and stderr drained into a bounded tail. An undrained pipe fills up after
+// enough log lines; on POSIX the observer then cannot finish exiting after SIGTERM, which hung the CI job.
+function spawnObserver(env) {
+  const child = spawn(process.execPath, [observer], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const observed = { child, output: "", exited: new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal }))) };
+  const keep = (chunk) => { observed.output = (observed.output + chunk.toString("utf8")).slice(-outputTailChars); };
+  child.stdout.on("data", keep);
+  child.stderr.on("data", keep);
+  return observed;
+}
+
+function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function describeObserver(observed) {
+  const state = hasExited(observed.child) ? `exited with code ${observed.child.exitCode} and signal ${observed.child.signalCode}` : "still running";
+  return `runtime observer ${state}; last output:\n${observed.output || "(none)"}`;
+}
+
+async function stopObserver(observed) {
+  if (!hasExited(observed.child)) observed.child.kill("SIGTERM");
+  let timer;
+  const exit = await Promise.race([observed.exited, new Promise((resolve) => { timer = setTimeout(() => resolve(null), exitTimeoutMs); })]);
+  clearTimeout(timer);
+  if (exit) return;
+  observed.child.kill("SIGKILL");
+  await observed.exited;
+  throw new Error(`runtime observer did not exit within ${exitTimeoutMs} ms after SIGTERM\n${describeObserver(observed)}`);
+}
+
+async function closeServer(server) {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+
+// Runs one scenario against a fresh observer process and always stops the observer and the fixture server.
+// A scenario failure keeps its own error; the observer's exit state and output tail go to stderr first.
+async function withObserver(fixture, env, scenario) {
+  const observed = spawnObserver(env);
+  let failed = false;
+  try {
+    return await scenario();
+  } catch (error) {
+    failed = true;
+    console.error(describeObserver(observed));
+    throw error;
+  } finally {
+    const stopError = await stopObserver(observed).then(() => null, (error) => error);
+    await closeServer(fixture.server);
+    if (stopError && !failed) throw stopError;
+  }
+}
+
+async function fetchHealth() {
+  const response = await fetch(`http://127.0.0.1:${observerPort}/healthz`, { signal: AbortSignal.timeout(requestTimeoutMs) });
+  return { response, health: await response.json() };
+}
+
 async function observeOnce(probeMode) {
   const fixture = await startServer(probeMode);
-  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
-  const child = spawn(process.execPath, [observer], {
-    cwd: root,
-    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  try {
+  return withObserver(fixture, observerEnvironment(fixture, { RUNTIME_OBSERVER_TARGETS: JSON.stringify(targetsFor(fixture)) }), async () => {
     await waitFor(async () => {
       try {
-        return (await fetch(`http://127.0.0.1:${observerPort}/healthz`)).ok;
+        return (await fetchHealth()).response.ok;
       } catch {
         return false;
       }
-    }, 5000);
-    await waitFor(() => fixture.samples.length === 1, 5000);
-    if (probeMode === "program_observation") await waitFor(() => fixture.programOutputObservations.length === 1, 5000);
+    }, 5000, "a healthy observer");
+    // The observer posts every 10 ms, so more than one sample may arrive before the check; the assertions use the first.
+    await waitFor(() => fixture.samples.length >= 1, 5000, "the first telemetry sample");
+    if (probeMode === "program_observation") await waitFor(() => fixture.programOutputObservations.length >= 1, 5000, "the first program output observation");
     return { telemetry: fixture.samples[0], programOutputObservation: fixture.programOutputObservations[0] };
-  } finally {
-    child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
-    await new Promise((resolve) => fixture.server.close(resolve));
-  }
+  });
 }
 
 async function observeReloadedTargets() {
   const fixture = await startServer("healthy");
   const directory = await mkdtemp(path.join(os.tmpdir(), "shuzhiren-observer-targets-"));
   const targetsFile = path.join(directory, "runtime-observer-targets.json");
-  const target = (runId) => [{ tenantId: "tenant_demo", runId, sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }];
-  await writeFile(targetsFile, JSON.stringify(target("run_file_before")));
-  const child = spawn(process.execPath, [observer], {
-    cwd: root,
-    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: "[]", RUNTIME_OBSERVER_TARGETS_FILE: targetsFile, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
   try {
-    await waitFor(() => fixture.samples.some((sample) => sample.runId === "run_file_before"), 5000);
-    await writeFile(targetsFile, "not-json");
-    await waitFor(async () => {
-      try {
-        const response = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
-        const health = await response.json();
-        return !response.ok && health.targetConfigHealthy === false;
-      } catch {
-        return false;
-      }
-    }, 5000);
-    await writeFile(targetsFile, JSON.stringify(target("run_file_after")));
-    await waitFor(() => fixture.samples.some((sample) => sample.runId === "run_file_after"), 5000);
-    const healthResponse = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
-    const health = await healthResponse.json();
-    assert.equal(healthResponse.ok, true);
-    assert.equal(health.targetConfigSource, "file");
-    assert.equal(health.targetConfigHealthy, true);
-    assert.equal(health.targetCount, 1);
+    await writeFile(targetsFile, JSON.stringify(targetsFor(fixture, "run_file_before")));
+    await withObserver(fixture, observerEnvironment(fixture, { RUNTIME_OBSERVER_TARGETS: "[]", RUNTIME_OBSERVER_TARGETS_FILE: targetsFile }), async () => {
+      await waitFor(() => fixture.samples.some((sample) => sample.runId === "run_file_before"), 5000, "a sample for run_file_before");
+      await writeFile(targetsFile, "not-json");
+      await waitFor(async () => {
+        try {
+          const { response, health } = await fetchHealth();
+          return !response.ok && health.targetConfigHealthy === false;
+        } catch {
+          return false;
+        }
+      }, 5000, "an unhealthy target configuration");
+      await writeFile(targetsFile, JSON.stringify(targetsFor(fixture, "run_file_after")));
+      await waitFor(() => fixture.samples.some((sample) => sample.runId === "run_file_after"), 5000, "a sample for run_file_after");
+      const { response: healthResponse, health } = await fetchHealth();
+      assert.equal(healthResponse.ok, true);
+      assert.equal(health.targetConfigSource, "file");
+      assert.equal(health.targetConfigHealthy, true);
+      assert.equal(health.targetCount, 1);
+    });
   } finally {
-    child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
-    await new Promise((resolve) => fixture.server.close(resolve));
+    if (fixture.server.listening) await closeServer(fixture.server);
     await rm(directory, { recursive: true, force: true });
   }
 }
 
 async function observeTelemetryDeliveryFailure() {
   const fixture = await startServer("telemetry_unavailable");
-  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
-  const child = spawn(process.execPath, [observer], {
-    cwd: root,
-    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  try {
+  await withObserver(fixture, observerEnvironment(fixture, { RUNTIME_OBSERVER_TARGETS: JSON.stringify(targetsFor(fixture)) }), async () => {
     await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
-        const health = await response.json();
+        const { response, health } = await fetchHealth();
         return !response.ok && health.lastError === "telemetry_delivery_failed";
       } catch {
         return false;
       }
-    }, 5000);
-  } finally {
-    child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
-    await new Promise((resolve) => fixture.server.close(resolve));
-  }
+    }, 5000, "an unhealthy observer reporting telemetry_delivery_failed");
+  });
 }
 
 async function observeStartupHealth() {
   const fixture = await startServer("slow");
-  const targets = JSON.stringify([{ tenantId: "tenant_demo", runId: "run_demo", sessionId: "session_demo", telemetryToken, programOutputToken, outputProbeUrl: `${fixture.baseUrl}/probe` }]);
-  const child = spawn(process.execPath, [observer], {
-    cwd: root,
-    env: { ...process.env, CONTROL_PLANE_URL: fixture.baseUrl, RUNTIME_GATEWAY_URL: fixture.baseUrl, RUNTIME_SHARED_TOKEN: gatewayToken, RUNTIME_OBSERVER_TARGETS: targets, RUNTIME_OBSERVER_POLL_MS: "10", RUNTIME_OBSERVER_TIMEOUT_MS: "1000", RUNTIME_OBSERVER_FAIL_CLOSED: "true", RUNTIME_OBSERVER_PORT: String(observerPort) },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  try {
+  await withObserver(fixture, observerEnvironment(fixture, { RUNTIME_OBSERVER_TARGETS: JSON.stringify(targetsFor(fixture)) }), async () => {
     let health;
     await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${observerPort}/healthz`);
-        health = await response.json();
-        return response.status === 503 && health.lastSuccessfulCycleAt === null;
+        const result = await fetchHealth();
+        health = result.health;
+        return result.response.status === 503 && health.lastSuccessfulCycleAt === null;
       } catch {
         return false;
       }
-    }, 5000);
+    }, 5000, "a 503 health response before the first successful cycle");
     assert.equal(health.lastSuccessfulCycleAt, null);
-  } finally {
-    child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
-    await new Promise((resolve) => fixture.server.close(resolve));
-  }
+  });
 }
 
-async function waitFor(predicate, timeoutMs) {
+async function waitFor(predicate, timeoutMs, description) {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error("timed out waiting for runtime observer telemetry");
+    if (Date.now() >= deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for ${description}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }

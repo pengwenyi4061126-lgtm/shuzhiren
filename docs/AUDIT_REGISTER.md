@@ -1253,3 +1253,65 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
   改写整个 dockerignore 与镜像路径检查仍由 Requirement 33 的任务完成，M23 的状态不因本修复改变。修复提交的 SHA 与修复后通过的
   run id 在新的 CI 运行结束后补入；补齐之前状态保持已确认（Requirement 7.13）。
 ```
+
+### N7 observer:runtime:test 的等待没有上限，失败时卡住直到 CI job 超时
+
+```yaml
+编号: N7
+标题: observer:runtime:test 的等待没有上限，失败时卡住直到 CI job 超时
+来源: 本规格执行期间新发现（CI 第 492 次运行，run 41965741382，node-unit 第 15 步）
+来源标记: 新发现
+优先级: P0
+位置:
+  - "scripts/test-runtime-observer.mjs:68,73,78-79,83,104,113,121,138,147,164,174"
+  - "apps/runtime-observer/index.mjs:52,176,198,215"
+状态: 已确认
+对应需求: ["1", "2"]
+证据:
+  - "CI #492（run 41965741382，提交 8226fa38502dbcfa068fa8940fb1850805962734）node-unit 第 15 步 Run npm run observer:runtime:test 运行约 29 分钟后结论为 cancelled，job 注解为 The job has exceeded the maximum execution time of 30m0s，其后 11 个验证步骤为 skipped"
+核实:
+  - 提交: 8226fa38502dbcfa068fa8940fb1850805962734
+    方法: CI_Pipeline 运行
+    结论: 已确认
+    证据:
+      run id: "41965741382"
+      步骤: ["Run npm run observer:runtime:test"]
+  - 提交: 8226fa38502dbcfa068fa8940fb1850805962734
+    方法: 代码阅读
+    结论: 已确认
+    证据:
+      文件: scripts/test-runtime-observer.mjs
+      行号范围: "68,73,78-79,83,104,113,121,138,147,164,174"
+      推理: >-
+        四个场景都用 stdio pipe 启动 observer 子进程（第 68 行等），但从不读取它的 stdout 与 stderr；observer 每个 10 ms
+        周期写一行日志（apps/runtime-observer/index.mjs 第 52 行）。场景结束时 finally 先 kill("SIGTERM")，再无超时地等待
+        child.once("exit")（第 83、121、147、174 行）：子进程在此之前已经退出时，exit 事件已经发出，这个等待永远不会结束；
+        Linux 上 SIGTERM 只把 stopping 置为真（index.mjs 第 176 行），子进程要等当前周期结束并关闭健康服务器（第 198、215 行）
+        才退出，而 Node.js 文档说明 POSIX 上写入管道是异步的，父进程不再读取、管道写满后子进程无法完成退出。/healthz 的
+        fetch 没有超时（第 73、104、113 行等），子进程不响应时 waitFor 不会检查截止时间。第 78、79 行等待样本数恰好等于 1，
+        而 observer 每 10 ms 投递一次，首次检查前已收到第二条时条件永远不成立。Windows 上 kill() 强制终止进程，所以本机只会
+        在子进程提前退出这一条路径上卡住。
+  - 提交: 43718f8a1b05027de98316d94394d199e86edf39
+    方法: 本机测试
+    结论: 已确认
+    证据:
+      测试名称: observer:runtime:test（observer 健康端口 0.0.0.0:18084 已被另一进程占用）
+      命令: node %TEMP%\observer-probe\old-test.mjs（43718f8 的 scripts/test-runtime-observer.mjs，只把 root 改为仓库路径）
+修复:
+  回归测试: ["npm run observer:runtime:test"]
+  修复前失败: { run id: "41965741382" }
+说明: >-
+  2026-11-05 在本机（Windows 11，Node.js v20.19.2）先用一个监听 0.0.0.0:18084 的进程占住端口，再运行 43718f8 中的测试
+  （与 8226fa3、dc2916e 中的文件相同，只把 root 改为仓库路径后从临时目录运行）：observer 子进程以 EADDRINUSE 退出，
+  测试 25 秒后仍未结束（卡住），被强制结束；同样条件下修复后的测试 5.1 秒后以退出码 1 结束，并在 stderr 输出
+  observer 的退出码与 EADDRINUSE 错误。正常条件下修复前后的测试在本机都在 2 秒内通过（各连续运行 6 至 8 次）。
+  另一个本机探针（与测试相同的 10 ms 轮询）在 12 次运行中有 2 次在首次看到健康响应时已经收到 2 条样本。该测试在
+  run 41571439672（提交 dc47566，runs-on: ubuntu-latest，Node.js 20）中 1 秒通过；此后测试与 observer 共有 6 个提交的改动，CI 改用
+  Node.js 24，现在的测试代码在 #492 之前没有在 Linux 上运行过（之后的运行都在 compose 步骤失败）。CI 中究竟是哪一条路径
+  触发了卡住，没有 job 日志与 Linux 环境无法确认。修复只改测试脚手架：持续读取子进程输出并保留最后 8000 个字符，场景失败时
+  先输出 observer 的退出状态与输出尾部；退出等待在启动时就挂上 exit 监听，SIGTERM 后最多等 10 秒，超时则 SIGKILL 并报错；
+  /healthz 请求设 1 秒超时并读完响应体；fixture 服务器关闭前先关闭全部连接；两处等待条件由"恰好 1 条"改为"至少 1 条"，
+  断言仍检查第一条样本与第一条节目观测的完整内容。断言没有删除或放宽。优先级定为 P0：它使 node-unit 验证组无法结束，
+  其后 11 个验证步骤被跳过，属于需求文档优先级定义中的 CI 恢复。修复提交的 SHA 与修复后通过的 run id 在新的 CI 运行结束后
+  补入；补齐之前状态保持已确认（Requirement 7.13）。
+```
