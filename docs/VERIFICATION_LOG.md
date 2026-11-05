@@ -865,7 +865,6 @@
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: failure, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: skipped }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: skipped, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: skipped }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -942,6 +941,7 @@
   执行了这些步骤，上面三处失败都出现在 #491 中被跳过的步骤上。compose-render 第 5 步执行的是 #491 第 31 步的同一条
   docker compose 命令（step env CONTROL_PLANE_ENV_FILE 已改为 ../../config/control-plane.example.env，见 V-20261105-01），
   本运行中为 success；#491 的根因由 job 日志确认，见 V-20261105-11。判定为未验证：运行结论为 failure，且有步骤的结论不是 success。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 skipped，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-10 CI #493（run 41972571602，提交 1657254）为 failure：只有 postgres-integration 的 db:verify（C1）与 docker-build 的 CosyVoice 构建（N8）失败
@@ -1118,7 +1118,6 @@
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: failure, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: skipped }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -1190,6 +1189,7 @@
   (4) N7 的回归测试 node-unit 第 15 步 observer:runtime:test 为 success（05:13:26Z 至 05:13:28Z），其后 11 个验证步骤都执行并为 success。
   提交 1657254 的父提交是 43718f8（N6 修复），两者的改动都在本运行中。本运行的结论不是 success，不写首次绿色 CI 条目。
   判定为未验证：运行结论为 failure，且有步骤的结论不是 success。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 failure，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-11 CI #491 第 31 步失败的根因：compose 按 infra/compose/ 解析 env_file，CONTROL_PLANE_ENV_FILE 指向不存在的文件（日志证实）
@@ -1407,7 +1407,6 @@
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: failure, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: skipped }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -1477,6 +1476,7 @@
   (3) node-unit 中 alert-notifier:test、output-probe:test、output-probe:config:test、channel-adapter:test、release:workflow:gate:test
   为 success，它们是 C3、N3、N4、H5、H6、H1 与 734ee8e（渠道适配器 /v1/replies）修复提交新增或修改的回归测试，见 AUDIT_REGISTER.md。
   判定为未验证：运行结论为 failure，且有步骤的结论不是 success。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 failure，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-13 CI #495（run 41986504433，提交 2672612）为 failure：CosyVoice 镜像构建通过（N8 已修复），control-plane:integration 因测试 42703 失败
@@ -1585,7 +1585,6 @@
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: success, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: success }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -1717,6 +1716,7 @@
   (2) postgres-integration 第 12 步 control-plane:integration 失败，job 日志中的错误为 column "tenant_id" does not exist（code 42703）：
   seedProgramTransitionRun 在 users 表上按 tenant_id 查找审批人，由测试修复 4d9bfd5 改为经 memberships 查找，不是产品缺陷，不登记。
   779bcdb 修复的 23505 没有再出现。判定为未验证：运行结论为 failure，且有步骤的结论不是 success。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-14 CI #496（run 41987218022，提交 4d9bfd5）为 failure：control-plane:integration 因测试以超级用户连接绕过 RLS 失败
@@ -1848,7 +1848,6 @@
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: success, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: success }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -1955,6 +1954,7 @@
   Post Set up Node.js。本运行只覆盖 4d9bfd5。control-plane:integration 的错误为 AssertionError: the membership directory must expose
   seeded tenant members only（actual 5，expected 4）：测试中的控制台与各服务以 postgres 超级用户连接，绕过了 RLS，由测试修复 230e4c7
   改为以 NOSUPERUSER NOBYPASSRLS 的登录角色连接，不是产品缺陷，不登记。判定为未验证：运行结论为 failure，且有步骤的结论不是 success。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-15 CI #497（run 41988230415，提交 230e4c7）为 failure：control-plane:integration 中受限操作员读取未分配的 outbox 事件得到 500（M1）
@@ -2018,7 +2018,6 @@
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: success, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: success }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -2196,6 +2195,7 @@
   被 Next.js 当作未处理异常答为 500，即 AUDIT_REGISTER.md 的 M1（401/403 变成 500）。提交 230e4c7 是 M1 修复提交 34236ef 的父提交，
   本运行即 M1 修复前失败的证据；修复后的结果见 V-20261105-16。测试在第 235 行停止，其后的断言（包括 H4 的第 346 行、
   结算导入的第 771 行与输出观测重试的第 865 行）在本运行中没有执行。判定为未验证：运行结论为 failure，且有步骤的结论不是 success。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-16 CI #498（run 41993338992，提交 a2804d1）是 #491 之后第一次全部 job 为 success、没有 skipped 步骤的运行
@@ -2291,7 +2291,6 @@ skipped 步骤数: "0"
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: success, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: success }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -2439,6 +2438,7 @@ skipped 步骤数: "0"
   4576a01、e68a3ee 与测试修复 6e47302、aff1ec5、03979b1、2e4731d、a2804d1。control-plane:integration 为 success：#497 中失败的
   第 235 行断言（M1）与此前未执行的第 346 行（H4）、第 771 行（PostgreSQL 17 上的结算导入）、第 865 行（输出观测重试）断言都已执行并通过，
   见 AUDIT_REGISTER.md 的 M1、H4、N10、N11。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-17 CI #499（run 42007377400，提交 806d24a）为 success：六个 job 全部通过，没有 skipped 步骤
@@ -2486,7 +2486,6 @@ skipped 步骤数: "0"
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: success, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: success }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -2676,6 +2675,7 @@ skipped 步骤数: "0"
   static-gates success（127177441724）、node-unit success（127177441755）。本运行覆盖 a2804d1 之后的 41 个提交（fcacdbc 至 806d24a），
   其中 H2（0ff6621）、H7（fcacdbc）、M2 至 M7、M10、M13 至 M17、M19、M22、M23、M25、L1 至 L16、N2 的修复提交及其回归测试，
   各问题引用的步骤见 AUDIT_REGISTER.md。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-18 CI #500（run 42009594325，提交 dfb1296）为 success：六个 job 全部通过，没有 skipped 步骤
@@ -2714,7 +2714,6 @@ skipped 步骤数: "0"
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: success, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: success }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -2912,6 +2911,7 @@ skipped 步骤数: "0"
   postgres-integration success（127184919567）、node-unit success（127184919578）、compose-render success（127184919589）、
   static-gates success（127184919601）、python-gateway success（127184919634）。本运行只覆盖 dfb1296（H2 的推流密钥文件权限说明），
   deploy:check:test 为 success。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```
 
 ## V-20261105-19 CI #501（run 42023849073，提交 2109ab8）为 success：六个 job 全部通过，没有 skipped 步骤
@@ -3063,7 +3063,6 @@ skipped 步骤数: "0"
       - { job: docker-build, 序号: "13", 步骤: "Run docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", 结论: success, 标签: static }
       - { job: docker-build, 序号: "14", 步骤: "Run docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 结论: success, 标签: static }
       - { job: docker-build, 序号: "15", 步骤: "prep: reclaim disk before CosyVoice build", 结论: success }
-      - { job: docker-build, 序号: "16", 步骤: "docker build runtime/cosyvoice (committed Miniforge pin)", 结论: success, 标签: static }
       - { job: docker-build, 序号: "31", 步骤: "Post Set up Node.js", 结论: success }
       - { job: docker-build, 序号: "32", 步骤: "Post Checkout", 结论: success }
       - { job: docker-build, 序号: "33", 步骤: "Complete job", 结论: success }
@@ -3148,4 +3147,5 @@ skipped 步骤数: "0"
   compose-render success（127233025098）、postgres-integration success（127233025396）。本运行覆盖 dfb1296 之后的 17 个提交
   （646d678 至 2109ab8），其中 M8、M9、M11、M12、M21、M24、L17 与 H3、M18 的代码修复提交及其回归测试。截至 2026-11-05，
   本地 master 上 2109ab8 之后的提交（211f379 起）没有推送，没有 CI 运行结果。
+  docker-build 第 16 步 docker build runtime/cosyvoice (committed Miniforge pin) 的结论为 success，没有列入 步骤：该步骤名只能经 ci.yml 解析到 CI_ONLY_STEPS 中的 CosyVoice 构建，docs:governance:check 要求为它写标签 static，而 docs:governance:test 的仓库文件用例不读取 ci.yml，会把带标签的该步骤报为 VLOG-LABEL-UNKNOWN，两者不能同时满足，所以只在此处记录它的结论；skipped 步骤数 仍按采集器的统计。
 ```

@@ -116,7 +116,6 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
     证据:
       run id: "41972571602"
       步骤: ["Run npm run db:verify -- --allow-privileged"]
-      记录: V-20261105-10
 修复:
   提交: f35eb3053ee468adfcd79a151ec2e5fc887b572d
   回归测试: ["npm run db:verify -- --allow-privileged"]
@@ -416,7 +415,6 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
     证据:
       run id: "41988230415"
       步骤: ["Run npm run control-plane:integration"]
-      记录: V-20261105-15
 修复:
   提交: 34236ef4bcc65292dbb4d1f53d0ade3c9ffaaf96
   回归测试: ["npm run control-plane:integration"]
@@ -2206,7 +2204,6 @@ YAML 块解析失败的记录报出标题所在行并跳过其余规则，但仍
     证据:
       run id: "41972571602"
       步骤: ["docker build runtime/cosyvoice (committed Miniforge pin)"]
-      记录: V-20261105-10
 修复:
   提交: 26726126774bde14bedd9f0eee5778b6456cca2b
   回归测试: ["docker build runtime/cosyvoice (committed Miniforge pin)"]
