@@ -107,6 +107,44 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+      # Workflow inputs reach shell steps only through env: and are validated
+      # here before docker/login-action, the image tags or the build arguments
+      # use them (audit H1). Error messages name the input, never its value.
+      - name: Validate release inputs
+        id: validate-inputs
+        shell: bash
+        env:
+          LC_ALL: C
+          RELEASE_REGISTRY: ${{ inputs.registry }}
+          RELEASE_IMAGE_NAMESPACE: ${{ inputs.image_namespace }}
+          MINIFORGE_URL: ${{ inputs.miniforge_url }}
+          MINIFORGE_SHA256: ${{ inputs.miniforge_sha256 }}
+        run: |
+          set -euo pipefail
+          status=0
+          registry_re='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$'
+          namespace_re='^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$'
+          url_re='^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'
+          sha256_re='^[a-f0-9]{64}$'
+          if [[ ! "$RELEASE_REGISTRY" =~ $registry_re ]]; then
+            echo "::error::input registry must be a lowercase host name with an optional :port, without scheme or path"
+            status=1
+          fi
+          if [[ ! "$RELEASE_IMAGE_NAMESPACE" =~ $namespace_re ]]; then
+            echo "::error::input image_namespace must be lowercase path components of letters and digits separated by '.', '_', '-' or '/'"
+            status=1
+          fi
+          authority="${MINIFORGE_URL#https://}"
+          authority="${authority%%[/?#]*}"
+          if [[ ! "$MINIFORGE_URL" =~ $url_re || -z "$authority" || "$authority" == *@* ]]; then
+            echo "::error::input miniforge_url must be an https:// URL without credentials, whitespace, quotes or backslashes"
+            status=1
+          fi
+          if [[ ! "$MINIFORGE_SHA256" =~ $sha256_re ]]; then
+            echo "::error::input miniforge_sha256 must be 64 lowercase hexadecimal characters"
+            status=1
+          fi
+          exit "$status"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
@@ -115,13 +153,17 @@ jobs:
           password: ${{ secrets.REGISTRY_PASSWORD }}
       - id: build-args
         shell: bash
+        env:
+          MATRIX_KEY: ${{ matrix.key }}
+          MINIFORGE_URL: ${{ inputs.miniforge_url }}
+          MINIFORGE_SHA256: ${{ inputs.miniforge_sha256 }}
         run: |
           {
             echo "value<<EOF"
             echo "RELEASE_REVISION=${GITHUB_SHA}"
-            if [[ "${{ matrix.key }}" == "COSYVOICE_IMAGE" ]]; then
-              echo "MINIFORGE_URL=${{ inputs.miniforge_url }}"
-              echo "MINIFORGE_SHA256=${{ inputs.miniforge_sha256 }}"
+            if [[ "$MATRIX_KEY" == "COSYVOICE_IMAGE" ]]; then
+              echo "MINIFORGE_URL=$MINIFORGE_URL"
+              echo "MINIFORGE_SHA256=$MINIFORGE_SHA256"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
@@ -140,13 +182,18 @@ jobs:
           build-args: ${{ steps.build-args.outputs.value }}
           sbom: true
           provenance: mode=max
-      - run: >-
+      - name: Write image result
+        env:
+          MATRIX_KEY: ${{ matrix.key }}
+          IMAGE_REPOSITORY: ${{ inputs.registry }}/${{ inputs.image_namespace }}/${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: >-
           node scripts/write-release-image-result.mjs
-          --key "${{ matrix.key }}"
-          --repository "${{ inputs.registry }}/${{ inputs.image_namespace }}/${{ matrix.image }}"
-          --digest "${{ steps.build.outputs.digest }}"
-          --revision "${{ github.sha }}"
-          --output "${{ runner.temp }}/${{ matrix.key }}.json"
+          --key "$MATRIX_KEY"
+          --repository "$IMAGE_REPOSITORY"
+          --digest "$IMAGE_DIGEST"
+          --revision "$GITHUB_SHA"
+          --output "$RUNNER_TEMP/$MATRIX_KEY.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-image-${{ matrix.key }}
@@ -171,6 +218,38 @@ jobs:
           pattern: release-image-*
           path: ${{ runner.temp }}/release-image-results
           merge-multiple: true
+      # Validates the signing inputs before evidence assembly and signing; they
+      # reach the shell only through env: (audit H1).
+      - name: Validate signing inputs
+        id: validate-signing
+        shell: bash
+        env:
+          LC_ALL: C
+          RELEASE_SIGNING_KEY_PATH: ${{ inputs.signing_key_path }}
+          RELEASE_ISSUER: ${{ inputs.release_issuer }}
+          RELEASE_KEY_ID: ${{ inputs.release_key_id }}
+        run: |
+          set -euo pipefail
+          status=0
+          key_path_re='^/[A-Za-z0-9._/-]+$'
+          issuer_re='^[a-z][a-z0-9_-]{1,63}$'
+          key_id_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+          if [[ ! "$RELEASE_SIGNING_KEY_PATH" =~ $key_path_re || "$RELEASE_SIGNING_KEY_PATH" == *..* ]]; then
+            echo "::error::input signing_key_path must be an absolute path of letters, digits, '.', '_', '-' and '/' without '..'"
+            status=1
+          elif [[ ! -f "$RELEASE_SIGNING_KEY_PATH" || ! -r "$RELEASE_SIGNING_KEY_PATH" ]]; then
+            echo "::error::input signing_key_path must name a readable regular file on the release runner"
+            status=1
+          fi
+          if [[ ! "$RELEASE_ISSUER" =~ $issuer_re ]]; then
+            echo "::error::input release_issuer must be 2-64 lowercase letters, digits, '_' or '-', starting with a letter"
+            status=1
+          fi
+          if [[ ! "$RELEASE_KEY_ID" =~ $key_id_re ]]; then
+            echo "::error::input release_key_id must be 1-128 letters, digits, '.', '_' or '-', starting with a letter or digit"
+            status=1
+          fi
+          exit "$status"
       - run: >-
           node scripts/assemble-release-evidence.mjs
           --input-dir "${{ runner.temp }}/release-image-results"
@@ -179,16 +258,21 @@ jobs:
           --images-output "${{ runner.temp }}/images.json"
           --sbom-output "${{ runner.temp }}/release-sbom-index.json"
           --provenance-output "${{ runner.temp }}/release-provenance-index.json"
-      - run: >-
+      - name: Create signed release manifest
+        env:
+          RELEASE_SIGNING_KEY_PATH: ${{ inputs.signing_key_path }}
+          RELEASE_ISSUER: ${{ inputs.release_issuer }}
+          RELEASE_KEY_ID: ${{ inputs.release_key_id }}
+        run: >-
           node scripts/create-deployment-release-manifest.mjs
-          --images "${{ runner.temp }}/images.json"
-          --sbom "${{ runner.temp }}/release-sbom-index.json"
-          --provenance "${{ runner.temp }}/release-provenance-index.json"
-          --private-key "${{ inputs.signing_key_path }}"
-          --issuer "${{ inputs.release_issuer }}"
-          --key-id "${{ inputs.release_key_id }}"
-          --revision "${{ github.sha }}"
-          --output "${{ runner.temp }}/deployment-release-manifest.json"
+          --images "$RUNNER_TEMP/images.json"
+          --sbom "$RUNNER_TEMP/release-sbom-index.json"
+          --provenance "$RUNNER_TEMP/release-provenance-index.json"
+          --private-key "$RELEASE_SIGNING_KEY_PATH"
+          --issuer "$RELEASE_ISSUER"
+          --key-id "$RELEASE_KEY_ID"
+          --revision "$GITHUB_SHA"
+          --output "$RUNNER_TEMP/deployment-release-manifest.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deployment-release-evidence-${{ github.sha }}

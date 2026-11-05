@@ -10,6 +10,14 @@
 //                          0-based position in the job's steps.
 // This gate checks the reference format only; ci:workflow:check (W5) compares
 // the SHAs and `# <tag>` comments with .github/action-pins.json.
+// Run checks read every step through steps() of the same module (audit H1):
+//   RUN_INPUT_INTERPOLATION job=<jobId> step=<name|index>
+//                          the step's `run:` text contains a `${{ … }}` expression
+//                          that reads `inputs` or `github.event` (workflow_dispatch
+//                          inputs and the rest of the event payload), in any
+//                          spacing or letter case. Such values must reach the shell
+//                          through the step's `env:` and be read as "$NAME".
+//                          One line per step.
 //
 // Usage: node scripts/check-release-workflow.mjs [--workflow <path>]
 //   --workflow  defaults to .github/workflows/release.yml; the other files are
@@ -19,7 +27,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { actionRefs, loadWorkflow, WorkflowLoadError } from "./lib/workflow-model.mjs";
+import { actionRefs, jobs, loadWorkflow, steps, WorkflowLoadError } from "./lib/workflow-model.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -31,6 +39,16 @@ const REQUIRED_ACTIONS = Object.freeze([
   "actions/download-artifact"
 ]);
 const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
+// The body of each `${{ … }}` expression; an unterminated `${{` runs to the end of the text.
+const EXPRESSION = /\$\{\{([\s\S]*?)(?:\}\}|$)/g;
+// `inputs.x`, `inputs['x']`, `github.event…`, `github['event']`. Expression
+// context names are case-insensitive in GitHub Actions.
+const INPUT_CONTEXT = /(?<![\w.-])(?:inputs\s*[.[]|github\s*(?:\.\s*event\b|\[\s*['"]event['"]\s*\]))/i;
+
+function readsInputContext(run) {
+  for (const match of run.matchAll(EXPRESSION)) if (INPUT_CONTEXT.test(match[1])) return true;
+  return false;
+}
 
 function fail(reason) {
   console.error(`ERROR ${reason}`);
@@ -103,9 +121,18 @@ for (const ref of thirdParty) {
   violations.push(`ACTION_REF job=${ref.jobId} step=${ref.name ?? ref.index ?? "(job)"} action=${ref.action} ref=${ref.ref ?? "(none)"}`);
 }
 
+let runSteps = 0;
+for (const job of jobs(workflow)) {
+  for (const step of steps(job)) {
+    if (step.run === undefined) continue;
+    runSteps += 1;
+    if (readsInputContext(step.run)) violations.push(`RUN_INPUT_INTERPOLATION job=${step.jobId} step=${step.name ?? step.index}`);
+  }
+}
+
 if (violations.length > 0) {
   for (const violation of violations) console.error(violation);
   console.error(`FAIL  release workflow gate: ${violations.length} violation(s) in ${display(workflowFile)}`);
   process.exit(1);
 }
-console.log(`PASS  protected release workflow publishes ten attested image targets and a signed release envelope (${thirdParty.length} third-party action references pinned to full commit SHAs in ${display(workflowFile)})`);
+console.log(`PASS  protected release workflow publishes ten attested image targets and a signed release envelope (${thirdParty.length} third-party action references pinned to full commit SHAs, ${runSteps} run: steps without inputs or github.event expressions in ${display(workflowFile)})`);

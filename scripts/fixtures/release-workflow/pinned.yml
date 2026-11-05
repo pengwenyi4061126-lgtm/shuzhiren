@@ -4,7 +4,8 @@
 # placeholders, not upstream commits: the gate checks the reference format only
 # (ci:workflow:check W5 compares real workflows with .github/action-pins.json).
 # Each required action is referenced exactly once so a test can remove it;
-# every `uses:` is the first key of its step.
+# every `uses:` is the first key of its step. Workflow inputs appear only in
+# `with:` and step `env:`; the `run:` steps read them as "$NAME" (audit H1).
 name: Release Images (gate fixture)
 
 on:
@@ -12,6 +13,14 @@ on:
     inputs:
       registry:
         description: OCI registry host
+        required: true
+        type: string
+      miniforge_url:
+        description: Pinned HTTPS Miniforge installer URL
+        required: true
+        type: string
+      release_issuer:
+        description: Trusted Ed25519 release-manifest issuer
         required: true
         type: string
 
@@ -40,7 +49,13 @@ jobs:
       - uses: docker/setup-buildx-action@c0c1c2c3c4c5c6c7c8c9d0d1d2d3d4d5d6d7d8d9
       - uses: docker/login-action@e0e1e2e3e4e5e6e7e8e9f0f1f2f3f4f5f6f7f8f9
         with:
-          registry: registry.example.invalid
+          registry: ${{ inputs.registry }}
+      - id: build-args
+        shell: bash
+        env:
+          MINIFORGE_URL: ${{ inputs.miniforge_url }}
+        run: |
+          echo "value=MINIFORGE_URL=$MINIFORGE_URL" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@0102030405060708091011121314151617181920
         id: build
         with:
@@ -64,4 +79,10 @@ jobs:
       - uses: actions/download-artifact@4142434445464748495051525354555657585960
         with:
           pattern: release-image-*
-      - run: node scripts/create-deployment-release-manifest.mjs
+      - name: Create signed release manifest
+        env:
+          RELEASE_ISSUER: ${{ inputs.release_issuer }}
+        run: >-
+          node scripts/create-deployment-release-manifest.mjs
+          --issuer "$RELEASE_ISSUER"
+          --revision "$GITHUB_SHA"
