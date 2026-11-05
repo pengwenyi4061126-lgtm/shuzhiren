@@ -46,6 +46,7 @@ let notifierProcess;
 try {
   await client.connect();
   await assertConcurrentLastAdminRemovalRejected();
+  await assertRuntimeWorkerDeliverySemantics();
   // The seeding client above may be a superuser, and superusers bypass RLS.
   // Production application accounts must not bypass RLS (DEPLOYMENT_RUNBOOK),
   // so the console and runtime services under test connect as a login role
@@ -1350,4 +1351,156 @@ async function assertConcurrentLastAdminRemovalRejected() {
     await restore().catch(() => undefined);
   }
   console.log("PASS  concurrent removals of a tenant's last two admins leave one active admin under every isolation level (M14)");
+}
+
+// M10: runtime-worker retry semantics. A Gateway retry receipt older than 5 minutes was rejected and the event
+// exhausted; an event whose final attempt crashed stayed delivering forever; media commands of one run could be
+// delivered out of order; a receipt that could not be applied was retried, sending the command again; and a
+// delivery request could outlive the claim's lease.
+async function assertRuntimeWorkerDeliverySemantics() {
+  const workerTenantId = randomUUID();
+  const showId = randomUUID();
+  const revisionId = randomUUID();
+  await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Runtime worker delivery')", [workerTenantId, `runtime-worker-delivery-${workerTenantId}`]);
+  await client.query("insert into shows (id, tenant_id, name) values ($1, $2, 'Runtime worker delivery')", [showId, workerTenantId]);
+  await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft')", [revisionId, workerTenantId, showId]);
+  const seedRunFor = async (name) => {
+    const runId = randomUUID();
+    // DRAFT keeps the worker's scheduler and watchdog away from these runs.
+    await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id) values ($1, $2, $3, 'DRAFT', $4, $5)", [runId, workerTenantId, revisionId, `trace_${name}_${runId}`, `session_${name}_${runId}`.slice(0, 120)]);
+    return { runId, sessionId: `session_${name}_${runId}`.slice(0, 120) };
+  };
+  const enqueue = async ({ runId, sessionId }, name, { type = "switch_to_fallback", payload = { controlAction: "M10_PROBE" } } = {}) => {
+    const command = { id: `media_${name}_${randomUUID()}`, runId, type, issuedAt: new Date().toISOString(), traceId: `trace_${name}`, payload };
+    const event = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id, created_at", [workerTenantId, runId, JSON.stringify({ sessionId, command })]);
+    return { id: event.rows[0].id, createdAt: event.rows[0].created_at, command, sessionId };
+  };
+  const eventState = async (id) => (await client.query("select state, attempts, last_error from outbox_events where id = $1", [id])).rows[0];
+
+  // Gateway stub: per command id a list of planned answers; every request and its end are recorded.
+  const plans = new Map();
+  const requests = [];
+  const gateway = http.createServer(async (request, response) => {
+    const body = await requestBody(request);
+    const record = { commandId: body.command_id, arrivedAt: Date.now(), endedAt: null, status: null };
+    requests.push(record);
+    request.socket.once("close", () => { record.endedAt ??= Date.now(); });
+    const plan = plans.get(body.command_id) ?? {};
+    const answer = (plan.answers ?? []).shift() ?? "ok";
+    if (answer === "hang") return;
+    if (answer === 503) { record.status = 503; record.endedAt = Date.now(); return json(response, 503, { detail: "unavailable" }); }
+    const acceptedAt = plan.acceptedAt ? plan.acceptedAt() : new Date().toISOString();
+    record.status = 200;
+    json(response, 200, { accepted: true, duplicate: Boolean(plan.acceptedAt), receipt: { command_id: body.command_id, session_id: body.session_id, action: body.action, program_segment_id: body.program_segment_id ?? null, accepted_at: acceptedAt } });
+    record.endedAt = Date.now();
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+
+  // (a) A retried command receives the cached receipt of its first acceptance, 10 minutes ago.
+  const staleRun = await seedRunFor("stale");
+  const stale = await enqueue(staleRun, "stale");
+  await client.query("update outbox_events set created_at = now() - interval '10 minutes', available_at = now() where id = $1", [stale.id]);
+  const staleCreatedAt = (await client.query("select created_at from outbox_events where id = $1", [stale.id])).rows[0].created_at;
+  plans.set(stale.command.id, { acceptedAt: () => new Date(new Date(staleCreatedAt).getTime() + 1_000).toISOString() });
+  const foreignRun = await seedRunFor("foreign");
+  const foreign = await enqueue(foreignRun, "foreign");
+  plans.set(foreign.command.id, { acceptedAt: () => new Date(Date.now() - 10 * 60_000).toISOString() });
+  // (b) The final attempt was claimed and the worker died: delivering, attempts = max, lease expired.
+  const crashedRun = await seedRunFor("crashed");
+  const crashed = await enqueue(crashedRun, "crashed");
+  await client.query("update outbox_events set state = 'delivering', attempts = 3, available_at = now() - interval '1 minute' where id = $1", [crashed.id]);
+  // (c) Two media commands of one run; the first is refused twice before the Gateway accepts it.
+  const orderedRun = await seedRunFor("ordered");
+  const first = await enqueue(orderedRun, "first");
+  const second = await enqueue(orderedRun, "second");
+  plans.set(first.command.id, { answers: [503, 503, "ok"] });
+  // (d) The Gateway accepts a program insertion whose transition is not pending on the run.
+  const script = "M10 receipt that cannot be applied";
+  const rejectedRun = await seedRunFor("rejected");
+  const rejected = await enqueue(rejectedRun, "rejected", { type: "insert_program", payload: { controlAction: "INSERT_PROGRAM", programSegmentId: randomUUID(), runtimeScript: script, scriptSha256: createHash("sha256").update(script).digest("hex") } });
+  // (e) The first request never gets an answer; it must end before the 2 s lease expires.
+  const hangingRun = await seedRunFor("hanging");
+  const hanging = await enqueue(hangingRun, "hanging");
+  plans.set(hanging.command.id, { answers: ["hang", "ok"] });
+
+  // (f) A transaction that started earlier but inserts later must not produce an event that sorts before one
+  // already committed for the same run (077): its insert waits for the run and takes a later created_at.
+  {
+    const raceRun = await seedRunFor("insert_race");
+    const early = new Client({ connectionString: databaseUrl });
+    const late = new Client({ connectionString: databaseUrl });
+    await early.connect();
+    await late.connect();
+    try {
+      await early.query("begin");
+      await early.query("select set_config('app.tenant_id', $1, true), now()", [workerTenantId]);
+      await late.query("begin");
+      await late.query("select set_config('app.tenant_id', $1, true)", [workerTenantId]);
+      const insertEvent = (connection, name) => connection.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id, created_at", [workerTenantId, raceRun.runId, JSON.stringify({ sessionId: raceRun.sessionId, command: { id: `media_${name}_${randomUUID()}`, runId: raceRun.runId, type: "switch_to_fallback", payload: {} } })]);
+      const committedFirst = (await insertEvent(late, "committed_first")).rows[0];
+      const earlyPid = (await early.query("select pg_backend_pid() as pid")).rows[0].pid;
+      const startedEarlier = insertEvent(early, "started_earlier");
+      const waitDeadline = Date.now() + 2_000;
+      while (Date.now() < waitDeadline && !(await client.query("select wait_event_type = 'Lock' as waiting from pg_stat_activity where pid = $1", [earlyPid])).rows[0]?.waiting) await new Promise((resolve) => setTimeout(resolve, 25));
+      await late.query("commit");
+      const insertedLater = (await startedEarlier).rows[0];
+      await early.query("commit");
+      assert.ok(new Date(insertedLater.created_at) > new Date(committedFirst.created_at), "a media.dispatch event inserted after another of the same run committed must sort after it");
+      await client.query("update outbox_events set state = 'cancelled' where id = any($1::uuid[])", [[committedFirst.id, insertedLater.id]]);
+    } finally {
+      for (const connection of [early, late]) { await connection.query("rollback").catch(() => undefined); await connection.end().catch(() => undefined); }
+    }
+  }
+
+  const worker = spawn(process.execPath, [path.join(root, "apps", "runtime-worker", "index.mjs")], {
+    cwd: root,
+    env: { ...process.env, DATABASE_URL: databaseUrl, RUNTIME_GATEWAY_URL: `http://127.0.0.1:${gateway.address().port}`, RUNTIME_SHARED_TOKEN: gatewayToken.padEnd(40, "-"), RUNTIME_WORKER_PORT: String(await availablePort()), OUTBOX_POLL_MS: "50", OUTBOX_MAX_ATTEMPTS: "3", OUTBOX_LEASE_SECONDS: "2", OUTBOX_RETRY_BASE_MS: "200", OUTBOX_RETRY_MAX_MS: "400", RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "10000", SCHEDULER_POLL_MS: "600000", RUNTIME_WATCHDOG_POLL_MS: "600000" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let output = "";
+  worker.stdout.on("data", (chunk) => { output += chunk; });
+  worker.stderr.on("data", (chunk) => { output += chunk; });
+  try {
+    const terminal = async () => {
+      if (worker.exitCode !== null) throw new Error(`runtime worker exited with ${worker.exitCode}`);
+      for (const event of [stale, foreign, crashed, first, second, rejected, hanging]) {
+        const row = await eventState(event.id);
+        if (!(row.state === "delivered" || (row.state === "failed" && row.attempts >= 3))) return false;
+      }
+      return true;
+    };
+    await waitFor(terminal, 30_000, "runtime worker delivery scenarios to finish").catch(async (error) => {
+      const states = [];
+      for (const event of [stale, foreign, crashed, first, second, rejected, hanging]) states.push({ command: event.command.id.slice(0, 20), ...(await eventState(event.id)) });
+      throw new Error(`${error.message}; events: ${JSON.stringify(states)}; worker output: ${output.slice(-3_000)}`);
+    });
+    const sent = (event) => requests.filter((request) => request.commandId === event.command.id);
+
+    assert.equal((await eventState(stale.id)).state, "delivered", "a receipt of the first acceptance must complete a retried event, however old");
+    assert.equal((await eventState(foreign.id)).state, "failed", "a receipt that predates its event must still be rejected");
+
+    assert.deepEqual(await eventState(crashed.id), { state: "failed", attempts: 3, last_error: "delivery lease expired after the final attempt" }, "an event whose final attempt never finished must be failed once its lease expires");
+    const crashedAlert = await client.query("select severity::text from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted' and status = 'open'", [crashedRun.runId]);
+    assert.deepEqual(crashedAlert.rows, [{ severity: "critical" }], "the swept event must open the exhausted-delivery alert");
+    assert.equal(sent(crashed).length, 0, "a swept event must not be sent again");
+
+    assert.equal((await eventState(first.id)).state, "delivered");
+    assert.equal((await eventState(second.id)).state, "delivered");
+    const firstAccepted = sent(first).find((request) => request.status === 200);
+    assert.ok(firstAccepted && sent(first).length === 3, "the first command must be retried until the Gateway accepts it");
+    assert.ok(sent(second).every((request) => request.arrivedAt >= firstAccepted.endedAt), "a later media command of the same run must wait until the earlier one is delivered");
+
+    assert.equal((await eventState(rejected.id)).state, "failed");
+    assert.equal(sent(rejected).length, 1, "an accepted command whose receipt cannot be applied must not be sent again");
+    const rejectedAlert = await client.query("select count(*)::int as count from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted' and status = 'open'", [rejectedRun.runId]);
+    assert.equal(rejectedAlert.rows[0].count, 1);
+
+    assert.equal((await eventState(hanging.id)).state, "delivered");
+    const [hungRequest] = sent(hanging);
+    assert.ok(hungRequest.endedAt !== null && hungRequest.endedAt - hungRequest.arrivedAt < 2_000, `a delivery request must end before its 2 s lease expires (lasted ${hungRequest.endedAt === null ? "until now" : `${hungRequest.endedAt - hungRequest.arrivedAt} ms`})`);
+  } finally {
+    await stop(worker);
+    await new Promise((resolve) => { gateway.closeAllConnections?.(); gateway.close(resolve); });
+  }
+  console.log("PASS  runtime worker accepts first-acceptance receipts, sweeps crashed final attempts, orders media commands per run, does not resend unappliable receipts and ends requests within the lease (M10)");
 }

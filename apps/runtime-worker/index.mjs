@@ -21,6 +21,16 @@ const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
 const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.OUTBOX_RETRY_MAX_MS, 60000));
 const healthPort = positiveInt(process.env.RUNTIME_WORKER_PORT, 8080);
+// Metering runs in its own loop at least every 30 s, so every minute a run stays LIVE or DEGRADED gets at least
+// one metering pass while that minute lasts; larger configured values are capped.
+const usageMeterIntervalMs = Math.min(usageMeterPollMs, 30_000);
+// Each claim takes a lease of OUTBOX_LEASE_SECONDS. A delivery request is aborted before the lease can expire,
+// so another worker that reclaims the event never overlaps with a request still in flight.
+const leaseMs = leaseSeconds * 1000;
+const leaseMarginMs = Math.min(2000, Math.floor(leaseMs / 10));
+// Gateway receipts are bound to the event, not to the time of this attempt: a retry receives the receipt of the
+// first acceptance. It must not predate the event (minus clock skew between Gateway and database).
+const RECEIPT_CLOCK_SKEW_MS = 30_000;
 const pool = createServicePool({ service: "runtime-worker", connectionString: databaseUrl, max: 4, timeoutMs: databaseTimeoutMs, log });
 
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
@@ -31,6 +41,11 @@ function positiveInt(value, fallback) { const parsed = Number.parseInt(value ?? 
 function boundedPositiveInt(name, minimum, maximum, fallback) { const value = process.env[name]; if (value === undefined || value === "") return fallback; const parsed = Number.parseInt(value, 10); if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function log(event, fields = {}) { process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), service: "runtime-worker", event, ...fields })}\n`); }
 class DeliveryError extends Error { constructor(message, retryable) { super(message); this.retryable = retryable; } }
+// The downstream accepted the command but its receipt cannot be applied (cursor or delivery state no longer
+// matches). Every retry would send the command again and fail the same way, so the event is exhausted at once.
+class ReceiptRejectedError extends DeliveryError { constructor(message) { super(message, false); } }
+// The event is no longer in the state this worker claimed (its lease expired and it was reclaimed): write nothing.
+class LeaseLostError extends Error {}
 
 async function tenantIds() {
   // tenants deliberately has no RLS policy. The worker reads only IDs here,
@@ -53,32 +68,72 @@ async function claimEvent() {
   const ids = await tenantIds();
   const ordered = tenantOrder(ids, nextOutboxTenantCursor);
   for (const tenantId of ordered) {
+    // The database's now() for the lease is not earlier than this moment, so the lease ends no earlier than
+    // claimStartedAt + leaseMs on this process's monotonic clock.
+    const claimStartedAt = performance.now();
     const event = await inTenantTransaction(tenantId, async (client) => {
+      await sweepExhaustedLeases(client, tenantId);
+      // The tenant filter repeats row-level security, so a privileged connection also stays in this tenant.
+      // A media.dispatch event waits until every earlier media.dispatch event of the same live run is delivered,
+      // cancelled or exhausted, so the commands of one run reach the runtime in the order they were issued.
       const result = await client.query(`
       with candidate as (
-        select id
-        from outbox_events
-        where ((state in ('pending', 'failed') and available_at <= now()) or (state = 'delivering' and available_at <= now()))
-          and attempts < $1
-        order by available_at, created_at
-        for update skip locked
+        select o.id
+        from outbox_events o
+        where o.tenant_id = $3::uuid and o.state in ('pending', 'failed', 'delivering') and o.available_at <= now()
+          and o.attempts < $1
+          and (o.event_type <> 'media.dispatch' or o.aggregate_id is null or not exists (
+            select 1 from outbox_events prior
+            where prior.tenant_id = o.tenant_id and prior.event_type = 'media.dispatch'
+              and prior.aggregate_id = o.aggregate_id
+              and (prior.created_at, prior.id) < (o.created_at, o.id)
+              and prior.state in ('pending', 'failed', 'delivering')
+              and not (prior.state = 'failed' and prior.attempts >= $1)))
+        order by o.available_at, o.created_at, o.id
+        for update of o skip locked
         limit 1
       )
       update outbox_events event
       set state = 'delivering', attempts = event.attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second')
       from candidate
       where event.id = candidate.id
-      returning event.id, event.tenant_id, event.event_type, event.aggregate_id, event.payload, event.attempts
-    `, [maxAttempts, leaseSeconds]);
+      returning event.id, event.tenant_id, event.event_type, event.aggregate_id, event.payload, event.attempts, event.created_at
+    `, [maxAttempts, leaseSeconds, tenantId]);
       return result.rows[0] ?? null;
     });
     if (event) {
       nextOutboxTenantCursor = (ids.indexOf(tenantId) + 1) % ids.length;
-      return event;
+      return { ...event, claimStartedAt };
     }
   }
   if (ids.length) nextOutboxTenantCursor = (nextOutboxTenantCursor + 1) % ids.length;
   return null;
+}
+
+// An event claimed for its final attempt is never claimed again. If that attempt ended without a recorded
+// outcome (the process crashed or was killed), fail it once its lease has expired and open the same exhausted
+// alert as markFailed, instead of leaving it delivering forever.
+async function sweepExhaustedLeases(client, tenantId) {
+  const lastError = "delivery lease expired after the final attempt";
+  const swept = await client.query(`
+    with stale as (
+      select id from outbox_events
+      where tenant_id = $3::uuid and state = 'delivering' and available_at <= now() and attempts >= $1
+      order by available_at
+      for update skip locked
+      limit 10
+    )
+    update outbox_events event
+    set state = 'failed', last_error = $2
+    from stale
+    where event.id = stale.id
+    returning event.id, event.tenant_id, event.event_type, event.aggregate_id, event.payload, event.attempts
+  `, [maxAttempts, lastError, tenantId]);
+  for (const event of swept.rows) {
+    if (event.event_type === "channel.reply.dispatch") await failChannelReply(client, event, lastError);
+    await openDeliveryExhaustedAlert(client, event, lastError);
+    log("outbox.exhausted", { eventId: event.id, attempts: event.attempts, error: lastError });
+  }
 }
 
 async function scheduleDueRun() {
@@ -165,10 +220,13 @@ async function meterLiveUsage() {
   let recorded = 0;
   for (const tenantId of ids) {
     recorded += await inTenantTransaction(tenantId, async (client) => {
-      const result = await client.query(`insert into usage_records (tenant_id, code, live_run_id, quantity, idempotency_key, metadata)
+      // occurred_at is the metered minute, the same minute as in the idempotency key, so a record written just
+      // after a month boundary still counts towards the month of its minute.
+      const result = await client.query(`insert into usage_records (tenant_id, code, live_run_id, quantity, idempotency_key, metadata, occurred_at)
         select $1, 'monthly_live_minutes', id, 1,
           'live-minute:' || id::text || ':' || to_char(date_trunc('minute', now() at time zone 'UTC'), 'YYYYMMDDHH24MI'),
-          jsonb_build_object('meter', 'runtime-worker', 'bucket', 'one_minute')
+          jsonb_build_object('meter', 'runtime-worker', 'bucket', 'one_minute'),
+          date_trunc('minute', now())
         from live_runs
         where state in ('LIVE', 'DEGRADED')
           and exists (select 1 from tenant_entitlements where code = 'monthly_live_minutes' and effective_from <= current_date and (effective_until is null or effective_until >= current_date))
@@ -252,12 +310,15 @@ function retryDelayMs(attempts) { return Math.min(retryMaxMs, retryBaseMs * (2 *
 
 async function markDelivered(event, receipt = {}) {
   await inTenantTransaction(event.tenant_id, async (client) => {
-    await client.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1", [event.id]);
+    // Fenced by the claim: (id, attempts) identifies this worker's lease. If the lease expired and another worker
+    // reclaimed the event, nothing is written and the new holder completes it.
+    const fenced = await client.query("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 and state = 'delivering' and attempts = $2", [event.id, event.attempts]);
+    if (fenced.rowCount !== 1) throw new LeaseLostError("outbox lease lost before the delivery was recorded");
     if (event.event_type === "channel.reply.dispatch") {
       const providerMessageId = receipt.providerMessageId;
-      if (typeof providerMessageId !== "string" || !providerMessageId || providerMessageId.length > 200) throw new Error("Channel adapter response omitted providerMessageId");
+      if (typeof providerMessageId !== "string" || !providerMessageId || providerMessageId.length > 200) throw new ReceiptRejectedError("Channel adapter response omitted providerMessageId");
       const delivered = await client.query("update channel_reply_drafts set status = 'sent', sent_at = now(), provider_message_id = $2, updated_at = now() where id = $1 and outbox_event_id = $3 and status = 'sending' returning id, interaction_id, live_run_id", [event.aggregate_id, providerMessageId, event.id]);
-      if (!delivered.rows[0]) throw new Error("Channel reply delivery state was not found");
+      if (!delivered.rows[0]) throw new ReceiptRejectedError("Channel reply delivery state was not found");
       const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
       await client.query("update live_interactions set status = 'handled', handled_by = $2, handled_at = now(), resolution_note = '渠道回复已送达' where id = $1 and status = 'queued'", [delivered.rows[0].interaction_id, actor.rows[0].id]);
       await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
@@ -285,19 +346,19 @@ async function markDelivered(event, receipt = {}) {
 async function applyProgramTransitionReceipt(client, event, receipt) {
   const command = event.payload?.command;
   const payload = command?.payload;
-  if (!command || !payload || !receipt) throw new Error("Program transition receipt is missing");
+  if (!command || !payload || !receipt) throw new ReceiptRejectedError("Program transition receipt is missing");
   const target = typeof payload.programSegmentId === "string" ? payload.programSegmentId : null;
   const source = typeof payload.sourceProgramSegmentId === "string" ? payload.sourceProgramSegmentId : null;
   const inserted = typeof payload.insertedProgramSegmentId === "string" ? payload.insertedProgramSegmentId : null;
   let updated;
   if (payload.controlAction === "INSERT_PROGRAM") {
-    if (!target) throw new Error("Program insertion target is missing");
+    if (!target) throw new ReceiptRejectedError("Program insertion target is missing");
     updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, active_insert_source_segment_id = $3::uuid, active_insert_program_segment_id = $2::uuid, pending_program_transition_event_id = null, updated_at = now() where id = $1 and pending_program_transition_event_id = $4::uuid returning id", [command.runId, target, source, event.id]);
   } else {
-    if (!inserted) throw new Error("Program rollback insertion reference is missing");
+    if (!inserted) throw new ReceiptRejectedError("Program rollback insertion reference is missing");
     updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, active_insert_source_segment_id = null, active_insert_program_segment_id = null, pending_program_transition_event_id = null, updated_at = now() where id = $1 and active_insert_program_segment_id = $3::uuid and pending_program_transition_event_id = $4::uuid returning id", [command.runId, target, inserted, event.id]);
   }
-  if (!updated.rows[0]) throw new Error("Program transition cursor was not pending for this receipt");
+  if (!updated.rows[0]) throw new ReceiptRejectedError("Program transition cursor was not pending for this receipt");
   const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
   await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
     values ($1, $2, 'live_program.transition_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, command.runId, JSON.stringify({ outboxEventId: event.id, commandId: command.id, action: payload.controlAction, programSegmentId: target, sourceProgramSegmentId: source, receipt })]);
@@ -306,9 +367,9 @@ async function applyProgramTransitionReceipt(client, event, receipt) {
 async function applyActivationProgramReceipt(client, event, receipt) {
   const command = event.payload?.command;
   const payload = command?.payload;
-  if (!command || !payload || !receipt || typeof payload.programSegmentId !== "string") throw new Error("Program activation receipt is missing");
+  if (!command || !payload || !receipt || typeof payload.programSegmentId !== "string") throw new ReceiptRejectedError("Program activation receipt is missing");
   const updated = await client.query("update live_runs set active_program_segment_id = $2::uuid, updated_at = now() where id = $1 and tenant_id = $3 and state = 'LIVE' returning id", [command.runId, payload.programSegmentId, event.tenant_id]);
-  if (!updated.rows[0]) throw new Error("Program activation cursor was not available for this receipt");
+  if (!updated.rows[0]) throw new ReceiptRejectedError("Program activation cursor was not available for this receipt");
   const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [event.tenant_id]);
   await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
     values ($1, $2, 'live_program.activation_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [event.tenant_id, actor.rows[0].id, command.runId, JSON.stringify({ outboxEventId: event.id, commandId: command.id, action: payload.controlAction, programSegmentId: payload.programSegmentId, receipt })]);
@@ -318,7 +379,9 @@ async function markFailed(event, lastError, retryable = true) {
   const retryAfterMs = retryDelayMs(event.attempts);
   const exhausted = !retryable || event.attempts >= maxAttempts;
   await inTenantTransaction(event.tenant_id, async (client) => {
-    await client.query("update outbox_events set state = 'failed', attempts = case when $4 then $5 else attempts end, available_at = now() + ($3 * interval '1 millisecond'), last_error = $2 where id = $1", [event.id, lastError, retryAfterMs, exhausted, maxAttempts]);
+    // Same lease fence as markDelivered: a reclaimed event belongs to its new holder.
+    const fenced = await client.query("update outbox_events set state = 'failed', attempts = case when $4 then $5 else attempts end, available_at = now() + ($3 * interval '1 millisecond'), last_error = $2 where id = $1 and state = 'delivering' and attempts = $6", [event.id, lastError, retryAfterMs, exhausted, maxAttempts, event.attempts]);
+    if (fenced.rowCount !== 1) throw new LeaseLostError("outbox lease lost before the failure was recorded");
     if (exhausted && event.event_type === "channel.reply.dispatch") await failChannelReply(client, event, lastError);
     if (exhausted) await openDeliveryExhaustedAlert(client, event, lastError);
   });
@@ -363,11 +426,16 @@ async function deliver(event) {
   const target = request.target === "channel-adapter" ? channelAdapterUrl : gatewayUrl;
   const token = request.target === "channel-adapter" ? channelAdapterToken : gatewayToken;
   if (!target || !token) throw new DeliveryError("Channel adapter dispatch is not configured", false);
-  const response = await fetch(`${target}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(gatewayRequestTimeoutMs) });
+  const timeoutMs = deliveryTimeoutMs(event);
+  if (timeoutMs < 100) {
+    log("outbox.lease_budget_exhausted", { eventId: event.id, attempts: event.attempts });
+    throw new DeliveryError("Outbox lease expired before the delivery request could be sent", true);
+  }
+  const response = await fetch(`${target}${request.path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new DeliveryError(`${request.target === "channel-adapter" ? "Channel adapter" : "Runtime gateway"} returned ${response.status}`, response.status === 429 || response.status >= 500);
   if (request.target === "gateway" && event.event_type === "media.dispatch") {
     const payload = await response.json().catch(() => null);
-    return { mediaReceipt: assertMediaGatewayReceipt(payload, event.payload.command, event.payload.sessionId) };
+    return { mediaReceipt: assertMediaGatewayReceipt(payload, event.payload.command, event.payload.sessionId, event.created_at) };
   }
   if (request.target !== "channel-adapter") return {};
   const payload = await response.json().catch(() => null);
@@ -410,11 +478,19 @@ function deliveryRequest(event) {
 function commandIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function sessionIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function programSegmentIdValid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
-function assertMediaGatewayReceipt(value, command, sessionId) {
+// The request may not outlive the claim's lease (minus a safety margin), even when the Gateway timeout is longer.
+function deliveryTimeoutMs(event) {
+  return Math.min(gatewayRequestTimeoutMs, Math.floor(event.claimStartedAt + leaseMs - leaseMarginMs - performance.now()));
+}
+
+// A retried command gets the Gateway's cached receipt of its first acceptance, which can be much older than this
+// attempt. It is accepted if it binds the command and was issued after the event was created.
+function assertMediaGatewayReceipt(value, command, sessionId, eventCreatedAt) {
   if (!value || typeof value !== "object" || value.accepted !== true || !value.receipt || typeof value.receipt !== "object") throw new DeliveryError("Runtime gateway returned an invalid media receipt", false);
   const receipt = value.receipt;
   const acceptedAt = typeof receipt.accepted_at === "string" ? Date.parse(receipt.accepted_at) : Number.NaN;
-  if (receipt.command_id !== command.id || receipt.session_id !== sessionId || receipt.action !== command.type || Number.isNaN(acceptedAt) || Math.abs(Date.now() - acceptedAt) > 5 * 60_000) throw new DeliveryError("Runtime gateway receipt does not bind the media command", false);
+  const notBefore = new Date(eventCreatedAt).getTime() - RECEIPT_CLOCK_SKEW_MS;
+  if (receipt.command_id !== command.id || receipt.session_id !== sessionId || receipt.action !== command.type || Number.isNaN(acceptedAt) || !(acceptedAt >= notBefore) || acceptedAt > Date.now() + RECEIPT_CLOCK_SKEW_MS) throw new DeliveryError("Runtime gateway receipt does not bind the media command", false);
   if (command.payload?.programSegmentId && receipt.program_segment_id !== command.payload.programSegmentId) throw new DeliveryError("Runtime gateway receipt does not bind the program segment", false);
   return receipt;
 }
@@ -441,11 +517,6 @@ async function tick() {
     }
     nextWatchdogPollAt = Date.now() + watchdogPollMs;
   }
-  if (now >= nextUsageMeterPollAt) {
-    const recorded = await meterLiveUsage();
-    if (recorded) log("usage.live_minutes_recorded", { records: recorded });
-    nextUsageMeterPollAt = Date.now() + usageMeterPollMs;
-  }
   const event = await claimEvent();
   if (!event) return;
   try {
@@ -453,9 +524,35 @@ async function tick() {
     await markDelivered(event, receipt);
     log("outbox.delivered", { eventId: event.id, attempts: event.attempts });
   } catch (error) {
+    if (error instanceof LeaseLostError) return log("outbox.lease_lost", { eventId: event.id, attempts: event.attempts });
+    // A transient failure after the downstream accepted the command (for example a database timeout while
+    // recording it) is retried with the same command id; the Gateway and the channel adapter answer the retry
+    // with the first result. A receipt that cannot be applied is not retried (ReceiptRejectedError).
     const message = error instanceof Error ? error.message : "runtime_dispatch_failed";
-    const retry = await markFailed(event, message, error instanceof DeliveryError ? error.retryable : true);
+    let retry;
+    try {
+      retry = await markFailed(event, message, error instanceof DeliveryError ? error.retryable : true);
+    } catch (markError) {
+      if (markError instanceof LeaseLostError) return log("outbox.lease_lost", { eventId: event.id, attempts: event.attempts });
+      throw markError;
+    }
     log(retry.exhausted ? "outbox.exhausted" : "outbox.failed", { eventId: event.id, attempts: event.attempts, retryAfterMs: retry.retryAfterMs, error: message });
+  }
+}
+
+// Independent of tick(): a delivery may block tick() for up to RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS, which used to
+// push metering past a whole minute. Records are idempotent per run and minute, so overlapping workers and
+// restarts do not double-count.
+async function usageMeterLoop() {
+  while (!stopping) {
+    const startedAt = Date.now();
+    try {
+      const recorded = await meterLiveUsage();
+      if (recorded) log("usage.live_minutes_recorded", { records: recorded });
+    } catch (error) {
+      log("usage.meter_failed", { error: error instanceof Error ? error.message : "unknown" });
+    }
+    await Promise.race([new Promise((resolve) => setTimeout(resolve, Math.max(1, usageMeterIntervalMs - (Date.now() - startedAt)))), stopped]);
   }
 }
 
@@ -465,7 +562,8 @@ let nextOutboxTenantCursor = 0;
 let nextSchedulerTenantCursor = 0;
 let nextWatchdogPollAt = 0;
 let nextWatchdogTenantCursor = 0;
-let nextUsageMeterPollAt = 0;
+let signalStopped;
+const stopped = new Promise((resolve) => { signalStopped = resolve; });
 let lastSuccessfulTickAt = null;
 let lastTickError = null;
 const healthServer = http.createServer(async (request, response) => {
@@ -479,15 +577,16 @@ const healthServer = http.createServer(async (request, response) => {
   }
 });
 healthServer.listen(healthPort, "0.0.0.0", () => log("worker.health_listening", { port: healthPort }));
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
-log("worker.started", { gatewayRequestTimeoutMs, databaseTimeoutMs, pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; signalStopped(); });
+log("worker.started", { gatewayRequestTimeoutMs, databaseTimeoutMs, pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs: usageMeterIntervalMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort });
+const metering = usageMeterLoop();
 while (!stopping) {
   try { await tick(); lastSuccessfulTickAt = Date.now(); lastTickError = null; } catch (error) { lastTickError = error instanceof Error ? error.message : "unknown"; log("worker.error", { error: lastTickError }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());
   const watchdogWaitMs = Math.max(1, nextWatchdogPollAt - Date.now());
-  const usageWaitMs = Math.max(1, nextUsageMeterPollAt - Date.now());
-  await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs, watchdogWaitMs, usageWaitMs)));
+  await Promise.race([new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs, watchdogWaitMs))), stopped]);
 }
+await metering;
 await new Promise((resolve) => healthServer.close(resolve));
 await pool.end();
 log("worker.stopped");
