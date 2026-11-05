@@ -8,11 +8,24 @@ ConditionPathExists=/etc/shuzhiren/backup.env
 Type=oneshot
 User=shuzhiren-backup
 Group=shuzhiren-backup
+# PostgreSQL-only environment (config/backup.example.env). It holds the backup
+# principal's DATABASE_URL, so no other unit loads it.
 EnvironmentFile=/etc/shuzhiren/backup.env
 WorkingDirectory=/srv/shuzhiren
 ExecStart=/usr/bin/env bash /srv/shuzhiren/scripts/backup-postgres.sh
+# Stops a pg_dump stuck on a lock wait or the network; the timer does not start
+# another run while this one is still activating, and flock rejects overlaps.
+TimeoutStartSec=1h
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+# Must equal POSTGRES_BACKUP_DIR (or BACKUP_DIR) in /etc/shuzhiren/backup.env;
+# systemd does not expand EnvironmentFile variables here. To use another
+# directory, override it with a drop-in instead of editing this file, then run
+# `systemctl daemon-reload`:
+#   # /etc/systemd/system/shuzhiren-postgres-backup.service.d/backup-paths.conf
+#   [Service]
+#   ReadWritePaths=
+#   ReadWritePaths=/data/shuzhiren/backups/postgres
 ReadWritePaths=/srv/shuzhiren/backups/postgres

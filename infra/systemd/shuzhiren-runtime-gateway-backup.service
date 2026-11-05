@@ -1,18 +1,32 @@
 [Unit]
 Description=Shuzhiren Runtime Gateway command journal snapshot
 After=network-online.target
-ConditionPathExists=/etc/shuzhiren/backup.env
+ConditionPathExists=/etc/shuzhiren/runtime-gateway-backup.env
 
 [Service]
 Type=oneshot
 User=shuzhiren-backup
 Group=shuzhiren-backup
-EnvironmentFile=/etc/shuzhiren/backup.env
+# Gateway-only environment (config/runtime-gateway-backup.example.env). It must
+# not contain the PostgreSQL DATABASE_URL loaded by the PostgreSQL backup unit.
+EnvironmentFile=/etc/shuzhiren/runtime-gateway-backup.env
 WorkingDirectory=/srv/shuzhiren
 ExecStart=/usr/bin/env bash /srv/shuzhiren/scripts/backup-runtime-gateway-state.sh
+# The SQLite online backup normally finishes in seconds.
+TimeoutStartSec=10min
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+# Must equal RUNTIME_GATEWAY_STATE_PATH and GATEWAY_BACKUP_DIR (or BACKUP_DIR)
+# in /etc/shuzhiren/runtime-gateway-backup.env; systemd does not expand
+# EnvironmentFile variables here. To use other directories, override both with
+# a drop-in instead of editing this file, then run `systemctl daemon-reload`:
+#   # /etc/systemd/system/shuzhiren-runtime-gateway-backup.service.d/backup-paths.conf
+#   [Service]
+#   ReadWritePaths=
+#   ReadWritePaths=/data/shuzhiren/backups/runtime-gateway
+#   ReadOnlyPaths=
+#   ReadOnlyPaths=/data/shuzhiren/runtime-gateway-state
 ReadOnlyPaths=/srv/shuzhiren/runtime-gateway-state
 ReadWritePaths=/srv/shuzhiren/backups/runtime-gateway

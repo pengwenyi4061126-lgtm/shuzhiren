@@ -12,6 +12,7 @@ const files = {
   gatewayRestoreDrill: "../scripts/restore-runtime-gateway-state-drill.sh",
   gatewayRestoreDrillTest: "../scripts/test-runtime-gateway-state-restore-drill.py",
   environment: "../config/backup.example.env",
+  gatewayEnvironment: "../config/runtime-gateway-backup.example.env",
   postgresService: "../infra/systemd/shuzhiren-postgres-backup.service",
   postgresTimer: "../infra/systemd/shuzhiren-postgres-backup.timer",
   gatewayService: "../infra/systemd/shuzhiren-runtime-gateway-backup.service",
@@ -56,9 +57,45 @@ for (const source of ["DRILL_GATEWAY_STATE_PATH", "DRILL_EVIDENCE_FILE", "DRILL_
 for (const source of ["fail_on_replay", "fail_on_synthesis", "fail_on_audio", "completed_command_rows=2", "must not call LiveTalking", "must not call CosyVoice", "must be empty"]) {
   if (!contents.gatewayRestoreDrillTest.includes(source)) throw new Error(`Gateway restore drill test must prove restored completed commands do not replay: ${source}`);
 }
-for (const source of ["POSTGRES_BACKUP_DIR", "GATEWAY_BACKUP_DIR", "RUNTIME_GATEWAY_STATE_PATH", "DRILL_GATEWAY_STATE_PATH", "DRILL_EVIDENCE_FILE"]) {
-  if (!contents.environment.includes(source)) throw new Error(`Backup environment template must document ${source}`);
+function envKeys(text) {
+  return new Map(text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#") && line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 }
+const postgresEnvironment = envKeys(contents.environment);
+const gatewayEnvironment = envKeys(contents.gatewayEnvironment);
+for (const key of ["DATABASE_URL", "POSTGRES_BACKUP_DIR"]) if (!postgresEnvironment.has(key)) throw new Error(`PostgreSQL backup environment template must document ${key}`);
+for (const key of ["GATEWAY_BACKUP_DIR", "RUNTIME_GATEWAY_STATE_PATH", "DRILL_GATEWAY_STATE_PATH", "DRILL_EVIDENCE_FILE"]) if (!gatewayEnvironment.has(key)) throw new Error(`Gateway backup environment template must document ${key}`);
+// L12: the Gateway backup unit must not load the PostgreSQL credential.
+for (const key of gatewayEnvironment.keys()) if (/DATABASE_URL|PGPASS|POSTGRES/.test(key)) throw new Error(`Gateway backup environment template must not carry PostgreSQL credentials: ${key}`);
+for (const key of postgresEnvironment.keys()) if (/GATEWAY|DRILL_/.test(key)) throw new Error(`PostgreSQL backup environment template must only configure the PostgreSQL unit: ${key}`);
+
+function unitDirectives(text) {
+  const directives = new Map();
+  for (const line of text.split(/\r?\n/).map((item) => item.trim())) {
+    if (!line || line.startsWith("#") || line.startsWith("[") || !line.includes("=")) continue;
+    const key = line.slice(0, line.indexOf("="));
+    directives.set(key, [...(directives.get(key) ?? []), line.slice(line.indexOf("=") + 1)]);
+  }
+  return directives;
+}
+const units = {
+  postgresService: { directives: unitDirectives(contents.postgresService), template: postgresEnvironment, writable: ["POSTGRES_BACKUP_DIR"], readonly: [] },
+  gatewayService: { directives: unitDirectives(contents.gatewayService), template: gatewayEnvironment, writable: ["GATEWAY_BACKUP_DIR"], readonly: ["RUNTIME_GATEWAY_STATE_PATH"] }
+};
+for (const [name, { directives, template, writable, readonly }] of Object.entries(units)) {
+  const only = (key) => {
+    const values = directives.get(key) ?? [];
+    if (values.length !== 1) throw new Error(`Scheduled backup ${name} must declare exactly one ${key}=`);
+    return values[0];
+  };
+  if (!/^[1-9]\d*(s|min|h)$/.test(only("TimeoutStartSec"))) throw new Error(`Scheduled backup ${name} must bound its run time with TimeoutStartSec=<n>s|min|h`);
+  if (only("EnvironmentFile") !== only("ConditionPathExists")) throw new Error(`Scheduled backup ${name} must condition on its own EnvironmentFile`);
+  if (!only("EnvironmentFile").startsWith("/etc/shuzhiren/")) throw new Error(`Scheduled backup ${name} must load its private environment from /etc/shuzhiren/`);
+  for (const [directive, keys] of [["ReadWritePaths", writable], ["ReadOnlyPaths", readonly]]) {
+    for (const key of keys) if (only(directive) !== template.get(key)) throw new Error(`Scheduled backup ${name} ${directive}= must equal ${key} of its environment template`);
+    if (keys.length && !contents[name].includes(`#   ${directive}=\n`) && !contents[name].includes(`#   ${directive}=\r\n`)) throw new Error(`Scheduled backup ${name} must document the ${directive}= drop-in reset for other directories`);
+  }
+}
+if (units.postgresService.directives.get("EnvironmentFile")[0] === units.gatewayService.directives.get("EnvironmentFile")[0]) throw new Error("PostgreSQL and Gateway backup units must not share an EnvironmentFile");
 for (const [name, source] of [["postgresService", contents.postgresService], ["gatewayService", contents.gatewayService]]) {
   for (const expected of ["User=shuzhiren-backup", "Group=shuzhiren-backup", "NoNewPrivileges=true", "ProtectSystem=strict"]) {
     if (!source.includes(expected)) throw new Error(`Scheduled backup ${name} must retain least-privilege controls: ${expected}`);
