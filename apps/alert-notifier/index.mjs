@@ -1,5 +1,5 @@
 import http from "node:http";
-import pg from "pg";
+import { createServicePool, inTenantTransaction } from "./db.mjs";
 import { alertPayload, matchingSeverities, parseTargets, retryDelayMs, signWebhook, withDeadline } from "./lib.mjs";
 
 const port = positiveInt(process.env.ALERT_NOTIFIER_PORT, 8083, "ALERT_NOTIFIER_PORT");
@@ -11,7 +11,7 @@ const maxAttempts = positiveInt(process.env.ALERT_NOTIFIER_MAX_ATTEMPTS, 6, "ALE
 const retryBaseMs = positiveInt(process.env.ALERT_NOTIFIER_RETRY_BASE_MS, 1_000, "ALERT_NOTIFIER_RETRY_BASE_MS");
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.ALERT_NOTIFIER_RETRY_MAX_MS, 60_000, "ALERT_NOTIFIER_RETRY_MAX_MS"));
 const databaseTimeoutMs = boundedPositiveInt(process.env.DATABASE_QUERY_TIMEOUT_MS, 5_000, "DATABASE_QUERY_TIMEOUT_MS", 100, 60_000);
-const pool = new pg.Pool({ connectionString: databaseUrl, max: 8, connectionTimeoutMillis: databaseTimeoutMs, query_timeout: databaseTimeoutMs });
+const pool = createServicePool({ service: "alert-notifier", connectionString: databaseUrl, max: 8, timeoutMs: databaseTimeoutMs, log });
 let stopping = false;
 let lastSuccessfulTickAt = null;
 let lastTickError = null;
@@ -59,10 +59,7 @@ async function tick() {
 }
 
 async function enqueueNewAlerts(target) {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    await client.query("select set_config('app.tenant_id', $1::text, true)", [target.tenantId]);
+  await withTenant(target.tenantId, async (client) => {
     // Every parameter is referenced and explicitly typed: an unreferenced bind value makes PostgreSQL fail with 42P18.
     // The tenant filter repeats what row-level security already enforces.
     await client.query(`insert into alert_notification_deliveries (tenant_id, runtime_alert_id, target_id)
@@ -70,15 +67,11 @@ async function enqueueNewAlerts(target) {
       from runtime_alerts a
       where a.tenant_id = $1::uuid and a.status = 'open' and a.severity = any($3::alert_severity[])
       on conflict (tenant_id, runtime_alert_id, target_id) do nothing`, [target.tenantId, target.id, matchingSeverities(target.minimumSeverity)]);
-    await client.query("commit");
-  } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
+  });
 }
 
-async function claimDelivery(target) {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    await client.query("select set_config('app.tenant_id', $1::text, true)", [target.tenantId]);
+function claimDelivery(target) {
+  return withTenant(target.tenantId, async (client) => {
     // A delivery claimed for its final attempt is never claimed again. If that attempt ended without retry() writing
     // the outcome (the process stopped or the update failed), fail it once the lease expires instead of leaving it delivering.
     await client.query(`update alert_notification_deliveries
@@ -96,11 +89,10 @@ async function claimDelivery(target) {
       for update of d skip locked
       limit 1`, [target.tenantId, target.id, maxAttempts]);
     const delivery = selected.rows[0];
-    if (!delivery) { await client.query("commit"); return null; }
+    if (!delivery) return null;
     await client.query("update alert_notification_deliveries set state = 'delivering', attempts = attempts + 1, lease_expires_at = now() + ($2::double precision * interval '1 second'), updated_at = now(), last_error = null where id = $1::uuid", [delivery.id, leaseSeconds]);
-    await client.query("commit");
     return { ...delivery, attempts: Number(delivery.attempts) + 1 };
-  } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
+  });
 }
 
 async function deliver(target, delivery) {
@@ -124,10 +116,8 @@ async function retry(tenantId, delivery, message) {
   const delay = retryDelayMs(delivery.attempts, retryBaseMs, retryMaxMs);
   await withTenant(tenantId, async (client) => { await client.query("update alert_notification_deliveries set state = $2::alert_notification_state, lease_expires_at = null, available_at = now() + ($3::double precision * interval '1 millisecond'), last_error = $4::text, updated_at = now() where id = $1::uuid", [delivery.id, exhausted ? "failed" : "pending", delay, message]); });
 }
-async function withTenant(tenantId, operation) {
-  const client = await pool.connect();
-  try { await client.query("begin"); await client.query("select set_config('app.tenant_id', $1::text, true)", [tenantId]); await operation(client); await client.query("commit"); } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { client.release(); }
-}
+function withTenant(tenantId, operation) { return inTenantTransaction(pool, tenantId, operation, { log }); }
+function log(event, fields = {}) { process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), service: "alert-notifier", event, ...fields })}\n`); }
 function positiveInt(value, fallback, name) { const parsed = Number(value ?? fallback); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`); return parsed; }
 function boundedPositiveInt(value, fallback, name, minimum, maximum) { const parsed = positiveInt(value, fallback, name); if (parsed < minimum || parsed > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`); return parsed; }
 function required(value, name) { if (!value) throw new Error(`${name} is required`); return value; }

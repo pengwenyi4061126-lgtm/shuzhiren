@@ -10,23 +10,13 @@
 //
 // All lease time comparisons use the database clock (`now()`), never the adapter clock.
 
-export function createPgReplayStore(pool, { leaseSeconds }) {
+import { inTenantTransaction as inPoolTenantTransaction } from "./db.mjs";
+
+export function createPgReplayStore(pool, { leaseSeconds, log }) {
   if (!Number.isInteger(leaseSeconds) || leaseSeconds <= 0) throw new Error("leaseSeconds must be a positive integer");
 
-  async function inTenantTransaction(tenantId, operation) {
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
-      const result = await operation(client);
-      await client.query("commit");
-      return result;
-    } catch (error) {
-      await client.query("rollback").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+  function inTenantTransaction(tenantId, operation) {
+    return inPoolTenantTransaction(pool, tenantId, operation, { log });
   }
 
   return {

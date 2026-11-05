@@ -1,6 +1,6 @@
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import pg from "pg";
+import { createServicePool } from "./db.mjs";
 import { parseControlPlaneUrl, parseNormalizedEvent, parseOutboundReply, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "./lib.mjs";
 import { createPgReplayStore } from "./replay-store.mjs";
 import { FORWARD_TIMEOUT_MS, controlPlaneRequest, createWebhookProcessor, forwardToControlPlane } from "./webhook.mjs";
@@ -17,10 +17,10 @@ const databaseTimeoutMs = boundedPositiveInt(process.env.DATABASE_QUERY_TIMEOUT_
 // A lease must outlive one forward plus the connect-and-query steps around it, otherwise another request can
 // reclaim the event while the first forward is still running and both get forwarded.
 if (replayLeaseSeconds * 1000 <= FORWARD_TIMEOUT_MS + 2 * databaseTimeoutMs) throw new Error(`CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS (${replayLeaseSeconds} s) must exceed the forward timeout (${FORWARD_TIMEOUT_MS} ms) plus twice DATABASE_QUERY_TIMEOUT_MS (${databaseTimeoutMs} ms)`);
-const pool = new pg.Pool({ connectionString: databaseUrl, max: 8, connectionTimeoutMillis: databaseTimeoutMs, query_timeout: databaseTimeoutMs });
+const pool = createServicePool({ service: "channel-adapter", connectionString: databaseUrl, max: 8, timeoutMs: databaseTimeoutMs, log });
 const rateWindows = new Map();
 const processWebhook = createWebhookProcessor({
-  store: createPgReplayStore(pool, { leaseSeconds: replayLeaseSeconds }),
+  store: createPgReplayStore(pool, { leaseSeconds: replayLeaseSeconds, log }),
   allowRequest,
   forward: ({ target, eventId, event }) => {
     const request = controlPlaneRequest({ target, eventId, event });
@@ -75,6 +75,7 @@ async function dispatchReply(request, response) {
   if (!receipt || typeof receipt !== "object" || typeof receipt.providerMessageId !== "string" || !receipt.providerMessageId || receipt.providerMessageId.length > 200) return json(response, 502, { error: "invalid_provider_reply_receipt" });
   return json(response, 200, { providerMessageId: receipt.providerMessageId });
 }
+function log(event, fields = {}) { process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), service: "channel-adapter", event, ...fields })}\n`); }
 function asHeader(value) { return typeof value === "string" ? value : ""; }
 function requiredSecret(name) { const value = process.env[name]; if (!value || value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`); return value; }
 function hasBearerToken(request, token) { const supplied = Buffer.from(asHeader(request.headers.authorization)); const expected = Buffer.from(`Bearer ${token}`); return supplied.length === expected.length && timingSafeEqual(supplied, expected); }

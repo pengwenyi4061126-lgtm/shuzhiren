@@ -137,6 +137,24 @@ console.log("PASS  alert notifier bounds the whole /healthz connectivity check b
 }
 console.log("PASS  alert notifier fails deliveries whose final attempt's lease expired (N4)");
 
+// M3: pg-pool emits "error" when an idle connection is terminated; without a listener the notifier exited.
+// This scenario runs the real `pg` package against a fake PostgreSQL server instead of fake-pg.mjs.
+{
+  const { assertSurvivesIdleConnectionTermination } = await import("./fixtures/pool-error-scenario.mjs");
+  await assertSurvivesIdleConnectionTermination({
+    name: "alert notifier",
+    entry: notifier,
+    cwd: root,
+    portVariable: "ALERT_NOTIFIER_PORT",
+    env: {
+      ALERT_NOTIFIER_POLL_MS: "60000",
+      DATABASE_QUERY_TIMEOUT_MS: "2000",
+      ALERT_NOTIFIER_TARGETS: JSON.stringify([{ id: "oncall-critical", tenantId, webhookUrl: "https://alerts.example.com/hook", signingSecret, minimumSeverity: "critical" }])
+    }
+  });
+}
+console.log("PASS  alert notifier survives the termination of idle database connections and logs the pool error (M3)");
+
 async function withNotifier({ targetId = "oncall-critical", minimumSeverity = "critical", env = {}, scenario = {} }, body) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "alert-notifier-test-"));
   const logFile = path.join(directory, "statements.jsonl");

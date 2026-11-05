@@ -1,8 +1,7 @@
 import http from "node:http";
 import { createHash } from "node:crypto";
-import pg from "pg";
+import { createServicePool, inTenantTransaction as inPoolTenantTransaction } from "./db.mjs";
 
-const { Pool } = pg;
 const databaseUrl = required("DATABASE_URL");
 const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
 const gatewayToken = requiredSecret("RUNTIME_SHARED_TOKEN");
@@ -22,7 +21,7 @@ const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
 const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.OUTBOX_RETRY_MAX_MS, 60000));
 const healthPort = positiveInt(process.env.RUNTIME_WORKER_PORT, 8080);
-const pool = new Pool({ connectionString: databaseUrl, max: 4, connectionTimeoutMillis: databaseTimeoutMs, query_timeout: databaseTimeoutMs });
+const pool = createServicePool({ service: "runtime-worker", connectionString: databaseUrl, max: 4, timeoutMs: databaseTimeoutMs, log });
 
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
 function requiredSecret(name) { const value = required(name); if (value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`); return value; }
@@ -46,18 +45,8 @@ function tenantOrder(ids, cursor) {
   return [...ids.slice(start), ...ids.slice(0, start)];
 }
 
-async function inTenantTransaction(tenantId, operation) {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
-    const result = await operation(client);
-    await client.query("commit");
-    return result;
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally { client.release(); }
+function inTenantTransaction(tenantId, operation) {
+  return inPoolTenantTransaction(pool, tenantId, operation, { log });
 }
 
 async function claimEvent() {

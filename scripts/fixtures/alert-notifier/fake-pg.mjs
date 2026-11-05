@@ -52,12 +52,19 @@ class Client {
   }
 
   release() {}
+
+  // The notifier listens for connection errors while a client is checked out; the fake never emits them.
+  on() { return this; }
+
+  removeListener() { return this; }
 }
 
 export class Pool {
   constructor(options = {}) {
     this.options = options;
   }
+
+  on() { return this; }
 
   async connect() {
     return new Client();

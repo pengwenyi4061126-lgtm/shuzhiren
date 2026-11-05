@@ -62,7 +62,7 @@ class Client {
       await this.query("begin");
       try { const value = await this.query(sql, params); await this.query("commit"); return value; } catch (error) { await this.query("rollback"); throw error; }
     }
-    const setConfig = normalized.match(/^select set_config\('app\.tenant_id', \$(\d+), true\)$/);
+    const setConfig = normalized.match(/^select set_config\('app\.tenant_id', \$(\d+)(?:::text)?, true\)$/);
     if (setConfig) { this.transaction.tenantId = param(params, setConfig[1]); return result([{ set_config: this.transaction.tenantId }]); }
     const context = { params, now: this.database.now(), xid: this.transaction.xid };
     const insert = normalized.match(new RegExp(`^insert into ${tableName} \\((.+?)\\) values \\((.+?)\\) on conflict \\(tenant_id, channel_connection_id, external_event_id\\) do nothing(?: returning (.+))?$`));
@@ -76,6 +76,9 @@ class Client {
   release() {
     if (this.transaction) { this.database.rows = this.transaction.snapshot; this.transaction.unlock(); this.transaction = null; }
   }
+  // The adapter listens for connection errors while a client is checked out; the fake never emits them.
+  on() { return this; }
+  removeListener() { return this; }
   visibleRows() { return [...this.database.rows.values()].filter((row) => this.transaction.tenantId === null || row.tenant_id === this.transaction.tenantId); }
   insert([, columnList, valueList, returning], context) {
     const names = splitTopLevel(columnList);

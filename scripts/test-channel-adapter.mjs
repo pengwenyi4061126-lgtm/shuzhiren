@@ -362,3 +362,15 @@ assert.deepEqual(await store.reserve(validTarget, "evt-store-3", hash), { kind: 
 assert.ok(database.statements.every((statement) => !statement.startsWith("select") || !statement.includes("channel_webhook_replays") || statement.includes("tenant_id = $1")), "replay lookups must be scoped by tenant, channel and event id");
 
 console.log("PASS  channel adapter lease handling releases only its own lease and reports forward failures as non-2xx");
+
+// M3: pg-pool emits "error" when an idle connection is terminated; without a listener the adapter exited.
+// This scenario runs the real `pg` package against a fake PostgreSQL server instead of the in-memory fake.
+const { assertSurvivesIdleConnectionTermination } = await import("./fixtures/pool-error-scenario.mjs");
+await assertSurvivesIdleConnectionTermination({
+  name: "channel adapter",
+  entry: adapterEntry,
+  cwd: root,
+  portVariable: "CHANNEL_ADAPTER_PORT",
+  env: { ...adapterEnvironment(), CONTROL_PLANE_URL: "http://127.0.0.1:9", CHANNEL_ADAPTER_TARGETS: JSON.stringify([adapterTarget]), DATABASE_QUERY_TIMEOUT_MS: "2000" }
+});
+console.log("PASS  channel adapter survives the termination of idle database connections and logs the pool error (M3)");

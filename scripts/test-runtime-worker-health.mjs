@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertSurvivesIdleConnectionTermination } from "./fixtures/pool-error-scenario.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = path.join(root, "apps", "runtime-worker", "index.mjs");
@@ -40,6 +43,30 @@ try {
 }
 
 console.log("PASS  runtime worker stays unhealthy until its first successful database tick");
+
+// M3: every pool-owning service creates its pool through its own copy of db.mjs (each image copies only its
+// service directory), and the copies must not drift apart.
+const dbModules = ["runtime-worker", "channel-adapter", "alert-notifier"].map((service) => path.join(root, "apps", service, "db.mjs"));
+const dbDigests = new Set(dbModules.map((file) => createHash("sha256").update(readFileSync(file)).digest("hex")));
+assert.equal(dbDigests.size, 1, `the db.mjs copies must be byte-identical: ${dbModules.join(", ")}`);
+
+// M3: pg-pool emits "error" when an idle connection is terminated; without a listener the worker exited.
+await assertSurvivesIdleConnectionTermination({
+  name: "runtime worker",
+  entry: worker,
+  cwd: root,
+  portVariable: "RUNTIME_WORKER_PORT",
+  env: {
+    DATABASE_QUERY_TIMEOUT_MS: "2000",
+    RUNTIME_GATEWAY_URL: "http://127.0.0.1:8090",
+    RUNTIME_SHARED_TOKEN: "runtime-worker-token-at-least-32-bytes",
+    OUTBOX_POLL_MS: "60000",
+    SCHEDULER_POLL_MS: "60000",
+    RUNTIME_WATCHDOG_POLL_MS: "60000",
+    USAGE_METER_POLL_MS: "60000"
+  }
+});
+console.log("PASS  runtime worker survives the termination of idle database connections and logs the pool error (M3)");
 
 async function availablePort() {
   const server = http.createServer();
