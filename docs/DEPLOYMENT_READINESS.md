@@ -29,9 +29,9 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 真实开播须同时满足以下两项，缺任一项即不放行：
 
 1. 以 4090 验收证据文件运行 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json`，并以退出码 0 结束。
-2. 全部 External_Prerequisite 行（EP-01 至 EP-14）均标为"已满足"。
+2. 全部 External_Prerequisite 行（EP-01 至 EP-17）均标为"已满足"。
 
-截至核对日，EP-12 之外的 13 行都为"未满足"，所以不放行。任何缺失的外部项都是上线阻断，不能通过开发态 fixture、Gateway `/healthz`、容器 `running` 状态或口头确认绕过。
+截至核对日，EP-12 之外的 16 行都为"未满足"，所以不放行。任何缺失的外部项都是上线阻断，不能通过开发态 fixture、Gateway `/healthz`、容器 `running` 状态或口头确认绕过。
 
 ## 外部先决条件
 
@@ -51,6 +51,9 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | EP-12 | `release-production` environment 的 GitHub 设置：部署分支仅限受保护分支；至少一名必需审核人；`REGISTRY_USERNAME`、`REGISTRY_PASSWORD` 和五个签名与构建变量只定义在该 environment（Requirement 13.9） | External_Prerequisite | 已满足 | 位置=GitHub 仓库设置（2026-11-05，仓库所有者配置，API 核对 secret 名称与 environment 规则），日期=2026-11-05，提供方=仓库所有者 | 13 | 2026-11-05 由仓库所有者配置 `release-production` environment、两个 registry secret 与 `master` 分支保护。2026-11-06 以公开接口复核：该 environment 存在，规则为 required_reviewers（1 名审核人）与 branch_policy（protected_branches 为 true），`master` 的 protected 为 true；secret 与变量的名称和所在层级需要仓库权限才能读取，本次未复核。截至 2026-11-06，`RELEASE_REGISTRY`、`RELEASE_IMAGE_NAMESPACE`、`RELEASE_SIGNING_KEY_PATH`、`RELEASE_ISSUER`、`RELEASE_KEY_ID` 五个 environment variables 尚未设置，设置前 Release_Workflow 会在校验步骤失败（格式见 Runbook 2.11 节）。registry 白名单初始值 `ghcr.io` 是依据现有 `packages: write` 权限的假设，使用其他 registry 时提交 PR 修改 `.github/release-registry-allowlist.json` |
 | EP-13 | 模型权重许可证审查：LiveTalking_Runtime `--model musetalk` 从 `MODEL_VOLUME_PATH` 加载的权重（Requirement 39.16） | External_Prerequisite | 未满足 | — | 39 | 权重目录变量 `MODEL_VOLUME_PATH`；仓库中做准备的产物：`runtime/open-source.lock.json`、`scripts/check-runtime-image-licenses.mjs`；审查结论由部署方在仓库外取得 |
 | EP-14 | 模型权重许可证审查：CosyVoice_Service 从 `COSYVOICE_MODEL_PATH` 加载的模型（当前模板为 Fun-CosyVoice3-0.5B-2512）（Requirement 39.16） | External_Prerequisite | 未满足 | — | 39 | 权重目录变量 `COSYVOICE_MODEL_PATH`；其余同 EP-13 |
+| EP-15 | AIGC 标识合规确认：法务对显式标识文字、尺寸、位置和隐式标识元数据是否满足《人工智能生成合成内容标识办法》与 GB 45438-2025 的结论，以及抖音平台对数字人直播 AIGC 标识的审核要求 | External_Prerequisite | 未满足 | — | 6, 40 | 仓库中做准备的产物：`livetalking-aigc-label.patch`、开播前检查 `aigc_label`、`deploy:check` 的 `AIGC_LABEL_*` 规则、迁移 083 与 release manifest 的 `aigc` 字段（`docs/DEPLOYMENT_RUNBOOK.md` 第 2.13 节）。隐式标识目前只写入控制面数据库和 release manifest，没有写入推流或录制文件的元数据 |
+| EP-16 | 默认声音和形象素材的商用授权核实：`runtime_presets` 的 `preset-zh-female`、`preset-zh-male`（sft 说话人“中文女”“中文男”所在权重的许可证）与 `preset-avatar-default`（形象素材的肖像授权） | External_Prerequisite | 未满足 | — | 6, 15 | 仓库中做准备的产物：迁移 082 的平台级预设目录（三条种子均为 `unverified`）、`/api/v1/presets` 与采用接口、资产页“商用授权未核实”提示（`docs/DEPLOYMENT_RUNBOOK.md` 第 2.12 节）。仓库不附带任何声音或形象素材；核实后以新迁移把对应预设改为 `verified` 并填写许可来源 |
+| EP-17 | 抖音开放平台直播互动事件接入：观众进场、关注、礼物和评论事件的数据权限（应用审核、主播授权与事件推送） | External_Prerequisite | 未满足 | — | 6, 14, 40 | 仓库中做准备的产物：Channel_Adapter 归一化 Webhook 的 `kind: "viewer_event"`、`/api/v1/runtime/channel-interactions` 的观众事件字段与互动规则引擎（`docs/DEPLOYMENT_RUNBOOK.md` 第 2.14 节）。抖音原生事件的对接代码是 RW-040-02；在取得权限之前只能用归一化 Webhook 模拟 |
 
 ## 仓库交付项
 
@@ -157,6 +160,10 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-000-09 | Gateway 命令日志 snapshot 隔离恢复后，媒体与 CosyVoice 已完成命令不重放 | 代码已完成且有验证证据 | V-20261105-20 | 无 | 来源同 RW-000-01。相关检查：`test-runtime-gateway-state-restore-drill.py`。真实 Linux 演练与站外存储依赖 EP-06 |
 | RW-000-10 | 部署 release manifest 生产器、Ed25519 验签与部署前 `RepoDigest` 核验 | 代码已完成且有验证证据 | V-20261105-20 | 无 | 来源同 RW-000-01。相关检查：`deploy:manifest:test`、`deploy:images:test`；签名私钥与 registry 依赖 EP-05、EP-10 |
 | RW-000-11 | 策略红队、observer、输出探针活动音频与 4090 验收证据门禁的无 GPU 测试 | 代码已完成且有验证证据 | V-20261105-20 | 无 | 来源同 RW-000-01。相关检查：`policy:red-team`、`observer:runtime:test`、`output-probe:test`、`runtime:acceptance:test` |
+| RW-000-12 | 4090 实机画面标识核验：`livetalking-aigc-label.patch` 叠加的 AIGC 显式标识出现在推流画面（抖音观看端）和录制文件的每一帧上，文字、位置与清晰度符合 `AIGC_LABEL_TEXT`、`AIGC_LABEL_POSITION` | 代码已完成但待外部环境验证 | — | 无 | 环境：4090 与抖音观看端。验收入口：`docs/DEPLOYMENT_RUNBOOK.md` 第 2.13 节的实机核验步骤；尚无记录。`apps/output-probe` 只用 ffprobe/ffmpeg 读取流参数和音频活动，不读取画面内容，不能代替本项 |
+| RW-000-13 | AIGC 标识开播前检查（`aigc_label`）、`deploy:check` 的标识配置规则与录制留证、release manifest 中的隐式标识元数据（迁移 083） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 相关检查：`deploy:check:test`（node-unit 安装 numpy、Pillow 与 `fonts-noto-cjk` 并设 `AIGC_LABEL_REQUIRE_IMAGING=true`，`runtime/livetalking/tests/test_aigc_label.py` 的绘制用例不允许 SKIP）、`runtime:images:licenses:test`、`control-plane:integration`、python-gateway 的 `scripts/test-runtime-gateway-aigc-label.py`；`preflight:check` 为 static；尚无 VERIFICATION_LOG 条目。画面标识的实机核验是 RW-000-12，合规结论是 EP-15 |
+| RW-000-14 | 默认预设库：平台级 `runtime_presets`（迁移 082）、`/api/v1/presets` 与 `/api/v1/presets/{presetCode}/adopt`、资产页“从默认库添加”、Gateway `COSYVOICE_SFT_SPEAKER_MAP` | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 相关检查：`scripts/integration/runtime-presets.test.mjs`（`postgres:integration`）、python-gateway 的 `scripts/test-runtime-gateway-sft-speakers.py`；`presets:test` 为 static；尚无 VERIFICATION_LOG 条目。素材商用授权是 EP-16 |
+| RW-000-15 | 互动规则引擎：迁移 084、runtime-worker 评估循环、`/api/v1/interaction-rules/**` 与 `/interaction-rules` 页面、场次触发记录、Channel_Adapter `viewer_event` | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 相关检查：`interaction-rules:test`（含 console 与 worker 策略引擎的一致性）、`scripts/integration/interaction-rules.test.mjs` 与 `trigger-cases/interaction-rules.mjs`（`postgres:integration`）、`channel-adapter:test`；尚无 VERIFICATION_LOG 条目。抖音真实事件接入是 EP-17 与 RW-040-02 |
 
 ## 待决策事项
 
@@ -170,5 +177,5 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 
 1. 在任意开发机先运行 `npm run verify:local`。它执行可在本地完成的配置契约、策略红队、observer、探针、渠道、告警模拟、所有常驻 Node 服务入口解析、控制台类型检查、lint 和生产构建；它不连接 PostgreSQL、不启动 Docker，也不代表 Python 运行时、GPU 或平台验收。若本机已用同一解释器安装 `runtime/gateway/requirements.lock`，再运行 `npm run verify:local -- --with-gateway --python /absolute/path/to/python`。每次运行按 VERIFICATION_LOG 的格式登记后，才能作为 RW 行的证据。
 2. 再运行生产配置检查：`npm run deploy:check -- --control /srv/shuzhiren/control.env --control-compose /srv/shuzhiren/control-plane-compose.env --migration-owner /srv/shuzhiren/migration-owner.env --runtime /srv/shuzhiren/runtime.env --gateway /srv/shuzhiren/gateway.env --channel-adapter /srv/shuzhiren/channel-adapter.env --alert-notifier /srv/shuzhiren/alert-notifier.env --require-output-probe --require-cosyvoice`。它拒绝没有 digest、带 tag 或跨服务复用的生产镜像引用，并验证受信 Ed25519 签名的部署 release manifest（RW-000-10、RW-034-01 至 RW-034-03；签名私钥与 registry 是 EP-05、EP-10）。镜像拉取后再运行 `npm run deploy:images:verify -- --manifest /srv/shuzhiren/release/deployment-release-manifest.json`。实时问答语音链路依赖 CosyVoice（RW-015-01，4090 上的结论见 RW-015-02 至 RW-015-05）；仅预制内容试播才可省略 `--require-cosyvoice`。
-3. 主机、权重、账号和密钥就绪（EP-01 至 EP-08、EP-13、EP-14）后，执行内部试播、故障演练与独立输出探针验证；至少由水印、指纹、目的端回放或指标验证器（EP-09）产生一条 Ed25519 签名的输出观测，绑定同租户场次、节目命令、冻结段落、内容 SHA-256、受众和短时有效期（RW-000-04）。控制面只接受专用输出证明凭据，不能复用遥测凭据。4090 上的 RW-014-02 至 RW-014-05、RW-031-02 至 RW-031-04、RW-032-02、RW-032-03 在此阶段取得记录。
+3. 主机、权重、账号和密钥就绪（EP-01 至 EP-08、EP-13 至 EP-17）后，执行内部试播、故障演练与独立输出探针验证；至少由水印、指纹、目的端回放或指标验证器（EP-09）产生一条 Ed25519 签名的输出观测，绑定同租户场次、节目命令、冻结段落、内容 SHA-256、受众和短时有效期（RW-000-04）。控制面只接受专用输出证明凭据，不能复用遥测凭据。4090 上的 RW-014-02 至 RW-014-05、RW-031-02 至 RW-031-04、RW-032-02、RW-032-03 在此阶段取得记录。
 4. 只有满足"真实开播放行条件"一节的两项（EP-11 的 4 小时验收证据以 `npm run runtime:acceptance:verify` 校验，且全部 EP 行为已满足，包括 PostgreSQL 与 Gateway 命令日志的隔离恢复及不重放验证），才允许真实小规模开播。

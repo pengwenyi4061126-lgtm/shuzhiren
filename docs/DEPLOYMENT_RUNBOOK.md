@@ -132,7 +132,7 @@ npm run db:migrate
 
 值非法时迁移器在连接数据库之前退出，不会占用迁移 advisory lock。某条语句因超时被取消时，迁移器回滚该迁移事务，不在 `schema_migrations` 记录它，也不执行后续迁移，随后释放 advisory lock 并以非零状态退出；错误信息写明文件名和 `(lock_timeout)` 或 `(statement_timeout)`。锁等待超时通常表示应用仍持有相关表的锁，应在业务低峰重试；只有确认迁移本身需要更长时间时，才为该次运行临时调大对应变量。
 
-### 2.2 迁移 074–081 的部署影响
+### 2.2 迁移 074–084 的部署影响
 
 以下迁移随 `npm run db:migrate` 按顺序执行，均不需要额外参数：
 
@@ -144,6 +144,9 @@ npm run db:migrate
 - **079 数据修复守卫**：新增 `migration_unfiltered_count`、`migration_assert_row_count`、`migration_fix_update`、`migration_fix_delete` 与 `migration_fix_insert` 五个函数，本身不改动任何已有数据。这些函数先在临时解除 FORCE RLS、关闭 `row_security` 的情况下统计目标行数，再在正常 RLS 下执行数据修复语句；两个数字不同时以 `data-fix row count mismatch on <表>: expected N rows, affected M` 报错，迁移回滚且不写入 `schema_migrations`。同时，迁移器在应用任何文件之前，拒绝编号为 079 及以后、含有未经这些函数的顶层 `UPDATE`、`DELETE`、`MERGE`、`INSERT ... SELECT` 或修改数据的 `WITH`（包括 `DO` 块内）的待执行迁移，报出文件名与行号，不应用任何文件。已应用的 048 与 061 不变。运维上不需要额外操作；收到这两类错误时不要手工改写迁移记录，应交回开发修正迁移文件。
 - **080 `outbox_events.outcome_uncertain_at`**：新增一个可空的时间列，记录 Runtime Gateway 对该事件答复 `command_outcome_uncertain` 的时间；已有行为空，不加触发器；worker 现有的表级 SELECT、UPDATE 授权包含这一列，不需要新的授权。设置了该列的事件不会再被 worker 自动领取（处于 `delivering` 的除外），处理方法见 2.7 节。
 - **081 `sync_control_plane_actor` 不再改写显示名（L8）**：`users` 由所有租户共享。054 版本的函数在每次请求时用请求方提供的名字覆盖 `users.display_name`，任一租户的请求都会改掉同一个人在其他租户中显示的名字。081 改为 `ON CONFLICT DO NOTHING` 后再读回：已有的 `external_subject` 保留原来的 id 和显示名；第一次出现的 subject 用去掉首尾空白的请求名字，名字为空时用 subject 本身；另一个事务正在插入同一 subject 而本事务看不到该行时（REPEATABLE READ 或 SERIALIZABLE），函数以 `40001` 失败，调用方重试即可。迁移只替换函数，不改动已有数据，已经被改写的显示名不会恢复。同一提交中 `npm run membership:bootstrap-admin` 也不再改写已有 subject 的显示名（`--display-name` 只用于第一次出现的 subject），并按目标租户统计活跃管理员，因此以超级用户或 BYPASSRLS 的迁移 owner 运行时，可以为新租户创建第一个管理员。不需要新的环境变量或授权。
+- **082 默认预设目录**：新建平台级只读表 `runtime_presets` 并写入三条 `unverified` 种子；迁移后按 2.9 节重新执行三个授权脚本，`control-plane-principal.sql` 才会撤销默认授予控制面的写权限。同一版本的运行时 Compose 把 `COSYVOICE_SFT_SPEAKER_MAP` 传给 Gateway，升级时在主机的 `gateway.env` 中加入 `COSYVOICE_SFT_SPEAKER_MAP=`（空值即内置映射），否则 `deploy:check` 以 `RC-UNDEFINED` 失败。详见 2.12 节。
+- **083 录制的 AIGC 标识留证**：`recording_evidence` 增加四个可空列和一条检查约束，不改写已有行；同一版本要求运行时和控制面 env 配置 `AIGC_LABEL_*` 与 `AIGC_CONTENT_PRODUCER`。详见 2.13 节。
+- **084 互动规则**：`live_interactions` 增加观众事件列，新建 `interaction_rules`、`interaction_rule_firings` 与函数 `interaction_rule_product_context`；迁移后按 2.9 节重新执行三个授权脚本，runtime-worker 才有规则所需的权限。运行时 Compose 把 `INTERACTION_RULES_ENABLED` 与六个 `INTERACTION_RULE_*` 变量传给 runtime-worker，它们都有默认值，但 `deploy:check` 要求运行时 env 文件定义 Compose 引用的每个变量（`RC-UNDEFINED`），升级时从 `config/runtime.example.env` 把这七行复制到主机的 `runtime.env`。详见 2.14 节。
 
 ### 2.3 推流密钥文件
 
@@ -400,6 +403,103 @@ Runtime Gateway 接受两个令牌，作用范围不同（`runtime/gateway/app.p
 `REGISTRY_USERNAME` 与 `REGISTRY_PASSWORD` 是同一 environment 的 secrets。任一变量未定义、为空或格式不符时，对应步骤以 `::error::` 写出变量名和失败类别（不写取值）后失败：registry 校验在登录 registry 之前，签名校验在汇总证据与签名之前，因此不会生成 Release_Manifest。使用其他 registry 时，先提交 PR 修改 `.github/release-registry-allowlist.json`。CosyVoice 镜像的 `MINIFORGE_URL` 与 `MINIFORGE_SHA256` 由 `release-environment.mjs build-args` 从 `runtime/cosyvoice/miniforge.json` 读取，其余镜像只得到 `RELEASE_REVISION`（等于触发提交的 SHA）。
 
 截至 2026-11-06，`release-production` environment 已配置审核规则与两个 registry secret，五个变量尚未设置（见就绪矩阵 EP-12），设置之前 Release_Workflow 会在校验步骤失败。产物的下载与部署前核验见第 2 节第 2 条。
+
+### 2.12 默认预设（迁移 082）
+
+迁移 `082_runtime_presets.sql` 新建平台级目录表 `runtime_presets`（没有 `tenant_id`，所有租户看到同一份目录），并写入三条种子：
+
+| `preset_code` | 类型 | 运行时引用 `runtime_ref` | sft 说话人 | 商用授权状态 |
+| --- | --- | --- | --- | --- |
+| `preset-zh-female` | 声音（女） | `preset-zh-female` | `中文女` | `unverified` |
+| `preset-zh-male` | 声音（男） | `preset-zh-male` | `中文男` | `unverified` |
+| `preset-avatar-default` | 形象槽位 | `preset-avatar-default`（LiveTalking `avatar_id`） | 无 | `unverified` |
+
+目录只记录运行时引用和许可信息，仓库不附带任何声音或形象素材。控制面账号对该表只读（`control-plane-principal.sql` 末尾撤销 INSERT、UPDATE、DELETE），三个服务账号没有任何权限；目录内容只能由迁移所有者通过新迁移修改，例如把某条预设设为 `enabled = false`。
+
+**控制台流程。** 资产页的“从默认库添加”区块列出 `GET /api/v1/presets` 返回的启用预设，`unverified` 的预设标红显示“商用授权未核实”。管理员或场控先把已授权素材上传到本租户对象存储，再提交 `POST /api/v1/presets/{presetCode}/adopt`，正文为 `{ objectKey, checksum, expiresAt? }`（`checksum` 为 `sha256:<64 位十六进制>`）。控制面像 `POST /api/v1/assets` 一样调用媒体证据校验服务核对对象内容，然后在本租户 `media_assets` 中写入一条 `pending` 记录：声音为 `kind = voice` 且 `runtime_voice_id` 等于预设的 `runtime_ref`，形象为 `kind = portrait`；`rights_scope` 和 `source_ref` 写明来源预设、许可名称和授权状态。同一事务写入 `media_asset.created` 和 `runtime_preset.adopted` 两条审计事件。之后仍须审核员通过 `POST /api/v1/assets/{assetId}/approve` 批准，批准时会再次核对内容；采用预设不会跳过任何审批或内容校验。
+
+**sft 模式（`COSYVOICE_MODEL_KIND=sft`）。**
+
+1. CosyVoice 加载自带“中文女”“中文男”说话人的权重（例如 CosyVoice-300M-SFT，见 `vendor/CosyVoice/README.md` 的下载说明）。锁定的 `Fun-CosyVoice3-0.5B-2512` 没有自带说话人，不能用于 sft。
+2. Gateway 用 `COSYVOICE_SFT_SPEAKER_MAP` 把 ASCII 的 `runtime_voice_id` 换成 `spk_id`。不设或设为空时使用内置默认 `{"preset-zh-female":"中文女","preset-zh-male":"中文男"}`；设了值就整体替换默认值，`{}` 表示不做映射；没有映射项的 `runtime_voice_id` 原样作为 `spk_id`。值必须是 JSON 对象，键符合 `runtime_voice_id` 格式，值为 1 至 64 个无首尾空白、无控制字符的说话人名，最多 256 项，键不得重复；任何一项不合法时 Gateway 拒绝启动（两种模型类型都检查）。启动后若该值失效，带语音的命令在预留前以 `voice_material_unavailable`（`failure_reason=sft_speaker_map_invalid`）失败，不会改用其他说话人。`infra/compose/docker-compose.runtime.yml` 以 `${COSYVOICE_SFT_SPEAKER_MAP:-}` 把它传给 Gateway，模板 `config/runtime-gateway.example.env` 中为空值；使用内置默认值时保持为空，自定义映射时在主机的 `gateway.env` 中填写。
+3. sft 合成时 Gateway 不读取声音库，也不比对音频校验和，但控制台审批仍要求一个经内容校验的音频对象。运营方须上传一段可留存的音频素材（例如用该说话人试合成并经审核的样音）作为审批证据。
+
+**zero_shot 模式（模板默认，Fun-CosyVoice3）。** 运营方在声音库 `COSYVOICE_VOICE_LIBRARY_PATH` 下建立 `preset-zh-female/`、`preset-zh-male/` 目录，各放入已取得声音本人书面授权的 `prompt.wav` 和 `prompt.txt`（`You are a helpful assistant.<|endofprompt|>` 后接逐字转写，要求同 2.5 节）。上传到租户对象存储、用于采用预设的必须是同一份 `prompt.wav`：`checksum` 等于它的 SHA-256，Gateway 合成前会比对，不一致时拒绝合成。
+
+**默认形象。** 运营方把已取得肖像授权的 LiveTalking Avatar 数据放到 `AVATAR_VOLUME_PATH/preset-avatar-default`，在 `gateway.env` 设置 `LIVETALKING_AVATAR_ID=preset-avatar-default`，并把形象视频上传到租户对象存储后采用 `preset-avatar-default`。LiveTalking 在启动时固定加载这个 `avatar_id`，控制台的形象素材记录的是授权与审批证据，不会在运行中切换形象。
+
+**许可核实是仓库之外的工作。** 仓库中没有 CosyVoice-300M-SFT 权重及其内置说话人的许可证文本，种子中的 `license_source_url` 只是模型卡地址，许可条款未经核实。`vendor/CosyVoice/asset/` 下的示例音频受上游 README Disclaimer 约束（仅供学术演示，部分来自网络），不得作为默认声音使用。因此三条种子的 `commercial_use_status` 都是 `unverified`。部署方核实许可、取得素材授权后，应以新迁移通过 079 的 `migration_fix_update` 把对应预设改为 `verified` 并填写 `license_source_url`（表约束要求 `verified` 必须带来源地址）；在此之前，控制台始终提示“商用授权未核实”。
+
+### 2.13 AIGC 标识（迁移 083）
+
+《人工智能生成合成内容标识办法》自 2025-09-01 起施行，要求 AI 生成合成内容带显式标识（画面或语音提示）和隐式标识（元数据）。本节说明仓库对数字人直播做了哪些标识、怎样配置和核对，以及哪些仍需在仓库之外确认。
+
+**显式画面标识。** 补丁 `runtime/patches/livetalking-aigc-label.patch`（序列第 4 个）让 LiveTalking 在每一帧推流和录制画面上叠加标识文字，绘制函数是 `runtime/livetalking/shuzhiren_aigc_label.py` 中的纯函数 `apply_aigc_label(frame, config)`（输入 numpy 帧，返回新帧，不改动输入帧），镜像中位于 `/opt/shuzhiren/`。标识为半透明深色底框上的白字，文字高度取画面短边的 5%（至少 12 像素，画面过小时缩小或裁切，不会失败），距画面边缘 2% 短边。中文字形来自镜像安装的 `fonts-noto-cjk`（SIL Open Font License 1.1，见 `THIRD_PARTY_NOTICES.md` 第 7 节）的 `NotoSansCJK-Bold.ttc`，用 Pillow 绘制；OpenCV 自带字体没有中文字形。字体缺少文字中任一字符的字形时拒绝绘制，不会画出方框。
+
+运行时 env（`config/runtime.example.env`，Compose 以 `${…:?set-in-runtime-env}` 传给 `livetalking` 服务）：
+
+| 变量 | 取值 | 说明 |
+| --- | --- | --- |
+| `AIGC_LABEL_ENABLED` | 只能为 `true` | 标识没有关闭开关；其他取值时镜像启动器以退出码 78 拒绝启动 LiveTalking，`deploy:check` 失败 |
+| `AIGC_LABEL_TEXT` | 默认 `本直播由AI数字人生成` | 最多 32 个字符，不含控制字符，必须包含“AI”或“人工智能”；LiveTalking 侧留空时回退到默认文字（不会不显示），`deploy:check` 要求生产配置显式填写 |
+| `AIGC_LABEL_POSITION` | `top-left`、`top-right`（默认）、`bottom-left`、`bottom-right` | 画面四角之一；抖音观看端的界面元素可能遮挡角落，位置以实机核验为准 |
+
+控制面 env（`config/control-plane.example.env`）：`AIGC_LABEL_TEXT` 必须与运行时相同（开播前检查用它核对运行时报告的文字）；`AIGC_CONTENT_PRODUCER` 填写服务提供者名称，写入隐式标识。
+
+失败处理（fail closed）：
+
+1. 启动器（PID 1）在启动 `app.py` 前读取上述变量、加载字体、在一帧测试画面上绘制标识，任何一步失败都以退出码 78 退出，标准错误输出 `ERROR AIGC label <类别>: …`（类别为 `disabled`、`text_invalid`、`position_invalid`、`font_missing`、`font_unreadable`、`glyph_missing`、`dependency_missing`、`render_failed`）；成功时标准输出 `INFO AIGC label enabled: text='…' position=… font=…`。
+2. LiveTalking 会话初始化时再次构建标识，失败则会话无法创建，不会推流。
+3. 单帧绘制失败时该帧连同其音频块被丢弃，不会无标识推出或写入录制；状态接口报告 `enabled=false` 和 `last_error`，直到下一帧绘制成功。
+
+**状态通路与开播前检查。** LiveTalking 新增只读接口 `GET /api/admin/aigc-label`（`/api/admin/runtime-metrics` 另带 `aigc_label`），返回 `enabled`、`text`、`position`、`font`、`frames_labelled`、`frames_dropped`、`last_error`。Runtime Gateway 的 `/healthz` 读取该接口，透传为 `dependencies.livetalking.aigc_label`（`enabled`、`reported`、`text`、`position`、`frames_labelled`、`last_error`）；只有 LiveTalking 明确返回 `enabled: true` 时才为 true，接口不存在（未打补丁的镜像）、不可达或返回其他内容时为 false。该字段不改变 Gateway 健康状态的判定。
+
+控制台的开播前检查新增一项“AIGC 标识已启用”（`id: aigc_label`）。`arm` 和 `START` 在事务内先完成数据库读取，再以至多 5 秒的超时读取 Gateway `/healthz`（503 降级应答的正文也会读取），只有同时满足以下条件才放行：Gateway 报告 `enabled: true`；报告的文字等于该场次 release manifest 快照中封存的标识文字（快照早于本功能时用控制面的 `AIGC_LABEL_TEXT`）；控制面配置了 `AIGC_CONTENT_PRODUCER`。Gateway 不可达、超时、返回其他状态码、没有 `aigc_label` 字段时一律阻止开播。没有 Gateway 的开发演示模式下该项放行并注明“未经运行时核验”；生产配置不允许演示模式。runtime-worker 的定时开播不重新运行开播前检查，依赖 `arm` 时的这一项（与其他检查项相同）。
+
+**隐式标识（元数据）。** 场次创建时封存的 release manifest 快照新增 `aigc` 字段：`{ standard: "GB 45438-2025", explicitLabel: { enabled, text }, contentProducer, contentId }`，内容编号为 `live-run:<场次 ID>`（一个场次即一项内容）。之后读取的 manifest 从快照取回该字段，场次保持创建时的标识；本功能之前封存的快照没有该字段，其哈希不变。迁移 `083_recording_aigc_label.sql` 为 `recording_evidence` 增加 `aigc_label_enabled`、`aigc_label_text`、`aigc_content_producer`、`aigc_content_id` 四列，录制登记时从场次快照复制（快照缺 `contentProducer` 时用当前 `AIGC_CONTENT_PRODUCER`）；083 之前登记的录制和快照早于本功能的场次四列均为空，表示未记录，不做补写。约束要求四列同时为空或同时有值，063 的触发器使其登记后不可改写。迁移只新增可空列和检查约束，不改写已有行，可在线执行。
+
+目前隐式标识只保存在控制面数据库和 release manifest 中，没有写入 RTMP 流或录制 MP4 文件的元数据：`python_rtmpstream` 推流库是否支持写入流元数据未经核实，需要另行实现并在 4090 上验证。
+
+**语音提示。** 定时播报“我是AI数字人主播”由互动规则引擎负责（2.14 节的“AI 身份提示”规则），不属于本节；画面标识不依赖它，也不代替它。
+
+**输出探针。** `apps/output-probe` 只用 ffprobe/ffmpeg 读取目的端流的分辨率、帧率、码率和音频活动，不解码画面内容，也读不到画面标识；仓库没有为它加入标识检查，避免给出没有依据的结果。画面中的标识须在 4090 上实机核验（`docs/DEPLOYMENT_READINESS.md` 的 RW-000-12）。
+
+**部署检查。** `npm run deploy:check` 在以下情况失败（加 `--allow-placeholders` 也失败）：运行时缺少 `AIGC_LABEL_ENABLED` 或其值不是 `true`；`AIGC_LABEL_TEXT` 缺失、为空、超长、含控制字符或没有写明 AI；`AIGC_LABEL_POSITION` 不是四个角之一；运行时 env 定义了 `AIGC_LABEL_FONT_FILE`；控制面的 `AIGC_LABEL_TEXT` 缺失或与运行时不同；控制面缺少 `AIGC_CONTENT_PRODUCER`（不加 `--allow-placeholders` 时占位符也算缺失）；Compose 没有把三个变量以 `${…:?set-in-runtime-env}` 传给 `livetalking`；补丁序列缺少 `livetalking-aigc-label.patch` 或补丁缺少挂接点；LiveTalking Dockerfile 没有复制 `shuzhiren_aigc_label.py` 或没有安装 `fonts-noto-cjk`。`npm run runtime:images:licenses:check` 另外核对字体包已在 `THIRD_PARTY_NOTICES.md` 登记许可证。
+
+**4090 实机核验步骤**（RW-000-12，结果按 VERIFICATION_LOG 格式登记）：
+
+1. 用当前提交构建 LiveTalking 镜像，运行 `node scripts/check-runtime-image-licenses.mjs --livetalking-image <镜像>`，确认镜像内有 `/usr/share/doc/fonts-noto-cjk/copyright`。
+2. 启动运行时，在 `docker compose logs livetalking` 中找到 `INFO AIGC label enabled` 一行，文字和位置与 env 一致。
+3. 在 Gateway 主机上读取 `/healthz`，确认 `dependencies.livetalking.aigc_label.enabled` 为 `true` 且 `frames_labelled` 随时间增长、`frames_dropped` 不增长。
+4. 在抖音观看端（竖屏与横屏各一次）和目的端拉流截图，确认标识完整可见、不被平台界面遮挡、字迹清晰；必要时调整 `AIGC_LABEL_POSITION` 并同步重新部署。
+5. 从录制文件 `RECORDINGS_VOLUME_PATH` 中抽取首帧、中间帧和末帧，确认每帧都有标识。
+6. 把 `AIGC_LABEL_ENABLED` 改为 `false` 后重启 LiveTalking，确认容器以 78 退出且场次 `arm` 被“AIGC 标识已启用”一项阻止；恢复为 `true`。
+
+标识文字、尺寸和位置是否满足法规与 GB 45438-2025，以及抖音平台对数字人直播的审核要求，需要法务和平台确认（`docs/DEPLOYMENT_READINESS.md` 的 EP-15），本仓库不作结论。
+
+### 2.14 互动规则（迁移 084）
+
+互动规则按观众进场（`viewer_enter`）、关注（`follow`）、礼物（`gift`）、评论关键词（`keyword`）、定时（`timed`）和冷场（`idle_comment`）自动生成话术，用于欢迎、答谢、定时商品口播和固定间隔的互动提示。控制台页面为 `/interaction-rules`，接口为 `/api/v1/interaction-rules`（列表、创建）、`/api/v1/interaction-rules/{ruleId}`（读取、`PATCH` 更新、`DELETE` 停用）、`/api/v1/interaction-rules/{ruleId}/approve`、`/api/v1/interaction-rules/defaults`（一键创建默认规则）和 `/api/v1/live-runs/{runId}/rule-firings`（场次触发记录）。
+
+**审批与生效。** 规则创建时为待审批。审批（admin、reviewer）把每条模板用示例值（昵称“这位朋友”、商品“示例商品”、价格“99.00”）渲染后交给策略引擎，并带上租户最新批准的策略包规则；任一模板的判定不是“可回答”，审批即被拒绝。修改触发方式、匹配条件、模板、动作或作用范围会让规则回到待审批；修改冷却、间隔、优先级和启停不需要重新审批。规则不能删除（触发记录引用它），只能停用。
+
+**AI 身份提示。** 默认规则包含“AI 身份提示”（每 600 秒播报一次“温馨提示：我是AI数字人主播……”，优先级 1000），这是 AIGC 标识的语音部分。数据库触发器禁止停用它、修改它的话术、冷却和优先级，只允许在 60 到 1800 秒之间调整间隔；每个租户至多一条。默认规则只在点击“一键创建默认规则”时按租户写入（代码中的模板，不是全局种子数据），同样需要审批后才播报。上线前确认该规则已批准；预检目前不检查它（见下文“未覆盖项”）。
+
+**执行位置。** 规则由 `apps/runtime-worker` 评估（`interaction-rules.mjs`，与投递循环独立的循环，默认每 2 秒一轮）。理由：Worker 已是唯一在无人操作时排队运行时命令的长驻进程（定时开播、遥测看门狗、计量），并持有 `speech.dispatch` 的写入与投递；Channel_Adapter 只做验签和转发，不带定时器，也不持有场次数据权限。每轮只处理状态为 `LIVE`、已绑定运行时会话、且有已批准启用规则的场次，并对场次行加 `for no key update skip locked` 锁，多个 Worker 同时运行时同一场次只由一个评估。
+
+**输出与校验。** 语音规则写入与控制台语音插播相同结构的 `speech.dispatch` 事件：场次冻结的已批准声线（`runtime_voice_id` 与 `checksum`）、冻结的主商品版本与修订号、`interrupt: false`。回复草稿规则写入 `channel_reply_drafts` 的 `draft`，仍需人工提交、审批和发送。`{nickname}` 先去除控制、格式、私用字符、组合符号、表情和括号类字符，截断为 12 个字符（`INTERACTION_RULE_NICKNAME_MAX_LENGTH`），含链接或联系方式、冒充官方或主播、或命中策略引擎（含场次策略包）时改用“这位朋友”。`{product_name}`、`{price}` 只取场次冻结且已批准、来源与有效期仍有效的商品版本，Worker 通过 `interaction_rule_product_context` 读取，不直接读商品表。最终文本再交给策略引擎（内置规则加场次绑定的策略包规则），判定不是“可回答”就不播并记为 `policy_blocked`。场次策略包未生效、冻结声线或商品版本不可用时记为 `unavailable`。`apps/runtime-worker/policy-engine.mjs` 是 `apps/console/lib/policy-engine.ts` 的副本，两者必须一起修改；`npm run interaction-rules:test` 比对两者的判定。
+
+**限流。** 每个场次每轮至多排队一条自动语音；场次有待确认的节目切换或开播/结束命令、有未送达的 `media.dispatch` 或 `speech.dispatch`（含人工插播）、或距该场次上一次 `speech.dispatch` 不足 `INTERACTION_RULE_MIN_SPEECH_INTERVAL_SECONDS`（默认 30 秒）时不播。同一观众在 `INTERACTION_RULE_VIEWER_COOLDOWN_SECONDS`（默认 600 秒）内只被自动回应一次；每条规则按自己的冷却（定时与冷场规则至少半个间隔）。只评估 `INTERACTION_RULE_MAX_EVENT_AGE_SECONDS`（默认 60 秒）以内的互动，更早的不再回应。被限流的互动记为 `suppressed` 并写明原因；定时规则在本时间槽内等待，不记录。`INTERACTION_RULES_ENABLED=false` 关闭整个评估循环。
+
+**记录与审计。** 每次决定在 `interaction_rule_firings` 中写一行（规则、场次、互动 id 或时间槽、模板序号、渲染文本的 SHA-256、结果与原因、outbox 事件与商品版本），表只允许追加。唯一键 `(tenant_id, live_run_id, rule_id, trigger_key)` 保证同一触发只处理一次；部分唯一索引保证一条规则在同一冷却窗口内至多成功一次。排队播报、生成草稿和策略拦截另写审计事件（`interaction_rule.speech_queued`、`channel_reply.draft_created`、`interaction_rule.policy_blocked`），规则的创建、修改、停用、审批和默认规则创建写 `interaction_rule.*` 审计事件。观众进场事件数量大，不逐条写审计事件，以 `live_interactions` 行和触发记录为准。
+
+**渠道事件。** 归一化 Webhook 新增 `kind: "viewer_event"`（`eventType` 为 `viewer_enter`、`follow` 或 `gift`，可选 `viewerId`、`viewerNickname`，礼物必须带 `giftValueCents`），评论（`kind: "interaction"`）也可带 `viewerId` 和 `viewerNickname`。Channel_Adapter 把它们转发到既有的 `/api/v1/runtime/channel-interactions`；控制面只保存 `viewerId` 按渠道连接计算的 SHA-256（`viewer_ref`），观众事件以“已处理”写入 `live_interactions`，不进入场控待办。
+
+**数据库权限。** `infra/postgres/service-principals.sql` 为 `shuzhiren_runtime_worker` 追加：`interaction_rules` 的读取列、`interaction_rule_firings` 的读写、`live_interactions` 中规则需要的列、场次策略包绑定与策略包规则的读取列、`channel_reply_drafts` 的按列插入，以及 `interaction_rule_product_context(uuid, uuid)` 的执行权。迁移 084 之后重新运行该文件（见 2.9 节）。
+
+**外部工作（未完成）。** 真实接入抖音的进场、关注、礼物和评论事件需要抖音开放平台的直播互动数据权限（应用审核、主播授权和事件推送），这是外部工作，本仓库没有实现，也不能声称已接通。当前用既有的归一化 Webhook 模拟通道测试：按 `CHANNEL_ADAPTER_TARGETS` 的签名密钥对 `{"kind":"viewer_event","runId":"…","eventType":"viewer_enter","viewerId":"u1","viewerNickname":"小明"}` 签名后发送到 `/v1/webhooks/{channelConnectionId}`。
+
+**未覆盖项。** 预检不检查 AI 身份提示规则是否已批准。与控制台人工插播不同，Worker 不逐条重新检查冻结的肖像、商品视频、音乐授权和模型发布包（与定时开播相同，只检查声线绑定）；撤销这些授权时，控制面把关联的 `LIVE` 场次隔离到 `DEGRADED`（第 6 节），规则只在 `LIVE` 场次评估，因此随之停止。
 
 ## 3. 备份与恢复演练
 

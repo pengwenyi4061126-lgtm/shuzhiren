@@ -55,6 +55,14 @@ npm run membership:bootstrap-admin -- --tenant-id <tenant-uuid> --subject <oidc-
 
 仓库内 `output-probe` 已实现对受控输出流的 `ffmpeg silencedetect` 活动音频采样；`runtime-observer` 从只读受管目标目录热重载当前场次的会话、租户遥测密钥和输出探针绑定，错误配置会使其健康检查失败而不是要求重启媒体栈。租机后仍需提供合法的中继或回放流，且音画同步继续由独立探针事实证明。
 
+### 默认预设、AIGC 标识与互动规则（P0）
+
+**默认预设库。** `082_runtime_presets.sql` 建立平台级只读目录 `runtime_presets`，种子为默认女声 `preset-zh-female`、默认男声 `preset-zh-male` 和形象槽位 `preset-avatar-default`，商用授权状态都是 `unverified`。资产页“从默认库添加”调用 `/api/v1/presets/{presetCode}/adopt`，把运营方上传的授权素材登记为本租户的待审核资产，仍经内容校验和独立审批；Gateway 以 `COSYVOICE_SFT_SPEAKER_MAP`（空值时用内置映射）把预设声音换成 sft 说话人。仓库不附带素材，许可与肖像、声音授权见 EP-16；sft 默认声音需要自带说话人的 CosyVoice 权重和 4090 主机。
+
+**AIGC 标识。** `livetalking-aigc-label.patch` 与 `runtime/livetalking/shuzhiren_aigc_label.py` 在每一帧推流和录制画面上绘制显式标识（镜像安装 `fonts-noto-cjk`），标识不能关闭，绘制失败时丢帧而不是推出无标识画面。Gateway `/healthz` 透传 `aigc_label`，开播前检查项 `aigc_label` 要求运行时报告的文字与场次 release manifest 封存的文字一致；`083_recording_aigc_label.sql` 与 manifest 的 `aigc` 字段保存隐式标识元数据，`deploy:check` 拒绝关闭或不一致的标识配置。隐式标识尚未写入 RTMP 流或录制文件元数据。4090 与抖音观看端的画面核验见 RW-000-12，法务与平台的合规结论见 EP-15。
+
+**互动规则引擎。** `084_interaction_rules.sql` 建立受审批的 `interaction_rules` 与只追加的 `interaction_rule_firings`。runtime-worker 的独立循环对 `LIVE` 场次评估观众进场、关注、礼物、评论关键词、定时和冷场六类触发，渲染后的话术经策略引擎（与控制台同一份规则的 JS 副本）判定，再写入绑定冻结声线与商品版本的 `speech.dispatch` outbox，或生成仍需人工审批的渠道回复草稿；每次决定在触发记录中只写一行，表的唯一键使多个 worker 同时运行时同一触发只处理一次。控制台提供 `/interaction-rules` 页面、规则审批和场次触发记录，Channel_Adapter 归一化 Webhook 新增 `viewer_event`。接入真实抖音事件需要抖音开放平台权限（EP-17）与仓库中尚未编写的抖音 Webhook Adapter（RW-040-02）。
+
 ## 最近治理闭环
 
 ### 冻结运行脚本与受控节目切换
