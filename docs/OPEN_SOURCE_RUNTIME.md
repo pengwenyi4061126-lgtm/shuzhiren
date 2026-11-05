@@ -19,11 +19,12 @@ Console / Policy / Product Truth
 
 ## 已固定的源码
 
-源码快照以 Git submodule 存放在 `vendor/`，精确提交和许可证在 `runtime/open-source.lock.json`。部署主机必须使用 `git clone --recurse-submodules` 或执行 `git submodule update --init --recursive`；`npm run deploy:check` 会比对环境变量、锁文件和三个实际源码 HEAD，并拒绝未提交的 vendor 修改。当前锁定版本为：
+源码快照以 Git submodule 存放在 `vendor/`，精确提交、父仓库、许可证和使用它的镜像记录在 `runtime/open-source.lock.json`（`schemaVersion` 2）。部署主机必须使用 `git clone --recurse-submodules` 或执行 `git submodule update --init --recursive`，嵌套的 Matcha-TTS 子模块也必须初始化。`npm run deploy:check` 对锁文件中的每个条目核对源码 HEAD、父仓库记录的子模块提交和工作树是否干净，并要求 `runtime/*/Dockerfile` 复制的每个子模块（含嵌套子模块）都有列出该镜像的条目。镜像源码不由运行时 env 的 `*_REF` 变量指定；env 中残留这些变量时 `deploy:check` 只输出 WARN。当前锁定版本为：
 
-- MuseTalk: `0a89dec45a0192b824e3cf4daf96c239440c5ed8`，MIT。
-- CosyVoice: `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`，Apache-2.0。
-- LiveTalking: `c7269433a2b6ecebcd9342445d2ecc882c98b0da`，Apache-2.0。
+- LiveTalking: `c7269433a2b6ecebcd9342445d2ecc882c98b0da`，Apache-2.0，复制进 `livetalking` 镜像。
+- CosyVoice: `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`，Apache-2.0，复制进 `cosyvoice` 镜像。
+- Matcha-TTS（`vendor/CosyVoice/third_party/Matcha-TTS`，父仓库 `vendor/CosyVoice`）: `dd9105b34bf2be2230f4aa1e4769fb586a3c824e`，MIT，随 CosyVoice 复制进 `cosyvoice` 镜像。
+- MuseTalk: `0a89dec45a0192b824e3cf4daf96c239440c5ed8`，MIT，只作源码审阅和权重来源追溯，不复制进任何镜像。
 
 模型权重、真人形象和声音样本不进入 Git，也不会随源码下载。只在取得肖像、声音和模型许可证确认后放入服务器的受限目录。每个候选 runtime、口型驱动和语音发布包还必须登记可复查的验收证据引用和验收摘要；没有证据的发布包不能批准，也不能通过开播预检。
 

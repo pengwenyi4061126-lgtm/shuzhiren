@@ -1,7 +1,9 @@
 {
+  "schemaVersion": "2",
   "components": [
-    { "name": "MuseTalk", "repository": "https://github.com/TMElyralab/MuseTalk.git", "commit": "0a89dec45a0192b824e3cf4daf96c239440c5ed8", "license": "MIT", "role": "authorized portrait lip-sync inference" },
-    { "name": "CosyVoice", "repository": "https://github.com/FunAudioLLM/CosyVoice.git", "commit": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc", "license": "Apache-2.0", "role": "streaming text-to-speech service" },
-    { "name": "LiveTalking", "repository": "https://github.com/lipku/LiveTalking.git", "commit": "c7269433a2b6ecebcd9342445d2ecc882c98b0da", "license": "Apache-2.0", "role": "avatar session, WebRTC and RTMP output adapter" }
+    { "name": "LiveTalking", "path": "vendor/LiveTalking", "parent": ".", "repository": "https://github.com/lipku/LiveTalking.git", "commit": "c7269433a2b6ecebcd9342445d2ecc882c98b0da", "license": "Apache-2.0", "images": ["livetalking"], "role": "avatar session, WebRTC and RTMP output adapter; --model musetalk uses vendor/LiveTalking/avatars/musetalk" },
+    { "name": "CosyVoice", "path": "vendor/CosyVoice", "parent": ".", "repository": "https://github.com/FunAudioLLM/CosyVoice.git", "commit": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc", "license": "Apache-2.0", "images": ["cosyvoice"], "role": "streaming text-to-speech service" },
+    { "name": "Matcha-TTS", "path": "vendor/CosyVoice/third_party/Matcha-TTS", "parent": "vendor/CosyVoice", "repository": "https://github.com/shivammehta25/Matcha-TTS.git", "commit": "dd9105b34bf2be2230f4aa1e4769fb586a3c824e", "license": "MIT", "images": ["cosyvoice"], "role": "CosyVoice flow-matching dependency loaded via PYTHONPATH" },
+    { "name": "MuseTalk", "path": "vendor/MuseTalk", "parent": ".", "repository": "https://github.com/TMElyralab/MuseTalk.git", "commit": "0a89dec45a0192b824e3cf4daf96c239440c5ed8", "license": "MIT", "images": [], "role": "reference source only; not copied into any image", "retainedFor": "源码审阅与权重来源追溯；LiveTalking 的 musetalk 模式不使用本目录" }
   ]
 }

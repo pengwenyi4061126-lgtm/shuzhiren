@@ -75,11 +75,6 @@ const releaseEvidenceIndexes = {
 const releaseEvidence = Object.fromEntries(Object.entries(releaseEvidenceIndexes).map(([name, value]) => [name, `${JSON.stringify(value)}\n`]));
 const evidenceSha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const releaseEvidenceSha256 = Object.fromEntries(Object.entries(releaseEvidence).map(([name, value]) => [name, evidenceSha256(value)]));
-const commits = {
-  MuseTalk: "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
-  CosyVoice: "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
-  LiveTalking: "c7269433a2b6ecebcd9342445d2ecc882c98b0da"
-};
 
 function env(values) {
   return `${Object.entries(values).map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n")}\n`;
@@ -164,9 +159,6 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     STREAM_RTMP_URL: "rtmp://ingest.internal/live",
     STREAM_KEY_FILE: streamKeyPath,
     STREAM_FPS: "25",
-    LIVETALKING_REF: commits.LiveTalking,
-    MUSETALK_REF: commits.MuseTalk,
-    COSYVOICE_REF: commits.CosyVoice,
     RUNTIME_GATEWAY_URL: "http://runtime-gateway:8090",
     RUNTIME_SHARED_TOKEN: runtimeToken,
     RUNTIME_GATEWAY_DEMO_MODE: "false",
@@ -288,6 +280,17 @@ try {
   await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.releaseSbom, releaseEvidence.sbom), writeFile(files.releaseProvenance, releaseEvidence.provenance), writeFile(files.controlCompose, controlCompose), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+  // L17 (39.6, 39.8): image sources come from runtime/open-source.lock.json; a leftover *_REF only warns.
+  assert.doesNotMatch(valid.stderr, /_REF/, "a runtime env without *_REF variables must not mention them");
+  await writeFile(files.runtime, `${runtime(validProbeTarget)}LIVETALKING_REF=c7269433a2b6ecebcd9342445d2ecc882c98b0da\n`);
+  const deprecatedRef = check(["--require-cosyvoice"]);
+  assert.equal(deprecatedRef.status, 0, `a deprecated LIVETALKING_REF must not fail the check:\n${deprecatedRef.stderr}`);
+  assert.match(deprecatedRef.stderr, /WARN  LIVETALKING_REF 已废弃，镜像源码以 runtime\/open-source\.lock\.json 与子模块提交为准/, "a deprecated LIVETALKING_REF must be reported as a warning");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  // L17 (39.1-39.5, 39.7): lock entries against Git fixtures, nested submodules and *_REF template rules.
+  const openSourceLock = spawnSync(process.execPath, [path.join(root, "scripts", "test-open-source-lock.mjs")], { cwd: root, encoding: "utf8" });
+  assert.equal(openSourceLock.status, 0, `open-source lock tests failed:\n${openSourceLock.stdout}\n${openSourceLock.stderr}`);
+  process.stdout.write(openSourceLock.stdout);
 
   await writeFile(files.releaseSbom, "tampered\n");
   const invalidReleaseEvidence = check(["--require-cosyvoice"]);
