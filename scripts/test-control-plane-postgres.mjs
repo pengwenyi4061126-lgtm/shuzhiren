@@ -48,6 +48,7 @@ try {
   await client.connect();
   await assertConcurrentLastAdminRemovalRejected();
   await assertRuntimeWorkerDeliverySemantics();
+  await assertRuntimeWorkerUncertainOutcome();
   // The seeding client above may be a superuser, and superusers bypass RLS.
   // Production application accounts must not bypass RLS (DEPLOYMENT_RUNBOOK),
   // so the console and runtime services under test connect as a login role
@@ -1626,4 +1627,127 @@ async function assertRuntimeWorkerDeliverySemantics() {
     await new Promise((resolve) => { gateway.closeAllConnections?.(); gateway.close(resolve); });
   }
   console.log("PASS  runtime worker accepts first-acceptance receipts, sweeps crashed final attempts, orders media commands per run, does not resend unappliable receipts and ends requests within the lease (M10)");
+}
+
+// H7 (Requirement 19.12, migration 080): the worker treated a Gateway answer "outcome uncertain" as an ordinary
+// failure. A 504 was retried, sending a command that may already have run partly, and nothing told an operator
+// that the event needed checking. A definite failure (502 command_failed_definite) was also retried.
+async function assertRuntimeWorkerUncertainOutcome() {
+  const workerTenantId = randomUUID();
+  const showId = randomUUID();
+  const revisionId = randomUUID();
+  await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Runtime worker uncertain outcome')", [workerTenantId, `runtime-worker-uncertain-${workerTenantId}`]);
+  await client.query("insert into shows (id, tenant_id, name) values ($1, $2, 'Runtime worker uncertain outcome')", [showId, workerTenantId]);
+  await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft')", [revisionId, workerTenantId, showId]);
+  const seedRunFor = async (name) => {
+    const runId = randomUUID();
+    const sessionId = `session_h7_${name}_${runId}`.slice(0, 120);
+    // DRAFT keeps the worker's scheduler and watchdog away from these runs.
+    await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id) values ($1, $2, $3, 'DRAFT', $4, $5)", [runId, workerTenantId, revisionId, `trace_h7_${name}_${runId}`, sessionId]);
+    return { runId, sessionId };
+  };
+  const enqueue = async ({ runId, sessionId }, name) => {
+    const command = { id: `media_h7_${name}_${randomUUID()}`, runId, type: "switch_to_fallback", issuedAt: new Date().toISOString(), traceId: `trace_h7_${name}`, payload: { controlAction: "H7_PROBE" } };
+    const event = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb) returning id", [workerTenantId, runId, JSON.stringify({ sessionId, command })]);
+    return { id: event.rows[0].id, command, runId };
+  };
+  const eventState = async (id) => (await client.query("select state, attempts, last_error, outcome_uncertain_at is not null as flagged from outbox_events where id = $1", [id])).rows[0];
+
+  const plans = new Map();
+  const requests = [];
+  const gateway = http.createServer(async (request, response) => {
+    const body = await requestBody(request);
+    requests.push(body.command_id);
+    const planned = (plans.get(body.command_id) ?? []).shift();
+    if (planned) return json(response, planned.status, planned.body);
+    json(response, 200, { accepted: true, duplicate: false, receipt: { command_id: body.command_id, session_id: body.session_id, action: body.action, program_segment_id: body.program_segment_id ?? null, accepted_at: new Date().toISOString() } });
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+
+  // (a) The Gateway timed out on LiveTalking (504) and (b) refuses the retry of an uncertain command (409).
+  const timeoutRun = await seedRunFor("timeout");
+  const timedOut = await enqueue(timeoutRun, "timeout");
+  plans.set(timedOut.command.id, [{ status: 504, body: { detail: "LiveTalking request failed", code: "command_outcome_uncertain", reason: "livetalking_timeout", failed_step: "interrupt_talk" } }]);
+  const laterOfTimeoutRun = await enqueue(timeoutRun, "after_timeout");
+  const conflictRun = await seedRunFor("refused_retry");
+  const refusedRetry = await enqueue(conflictRun, "refused_retry");
+  plans.set(refusedRetry.command.id, [{ status: 409, body: { detail: "Runtime command outcome is uncertain; verify the media session before issuing a new command", code: "command_outcome_uncertain", reason: "livetalking_timeout", duplicate: true } }]);
+  // (c) A definite failure is not retried and clears a flag left by an earlier uncertain answer: the event was
+  // redelivered by hand, the attempt was not recorded, and its lease has expired.
+  const definiteRun = await seedRunFor("definite");
+  const definite = await enqueue(definiteRun, "definite");
+  plans.set(definite.command.id, [{ status: 502, body: { detail: "LiveTalking request failed", code: "command_failed_definite", reason: "livetalking_client_error" } }]);
+  await client.query("update outbox_events set state = 'delivering', attempts = 1, available_at = now() - interval '1 minute', outcome_uncertain_at = now() where id = $1", [definite.id]);
+  // (d) A flagged event left delivering by an unrecorded manual redelivery is reclaimed; delivery clears the flag.
+  const redeliveredRun = await seedRunFor("redelivered");
+  const redelivered = await enqueue(redeliveredRun, "redelivered");
+  await client.query("update outbox_events set state = 'delivering', attempts = 1, available_at = now() - interval '1 minute', outcome_uncertain_at = now() where id = $1", [redelivered.id]);
+  // (e) A flagged failed event with attempts left is never claimed: the flag, not the attempt count, holds it.
+  const heldRun = await seedRunFor("held");
+  const held = await enqueue(heldRun, "held");
+  await client.query("update outbox_events set state = 'failed', attempts = 1, available_at = now() - interval '1 minute', outcome_uncertain_at = now() where id = $1", [held.id]);
+  // (f) An ordinary 503 without a Gateway code is still retried.
+  const transientRun = await seedRunFor("transient");
+  const transient = await enqueue(transientRun, "transient");
+  plans.set(transient.command.id, [{ status: 503, body: { detail: "Runtime command journal is unavailable", code: "command_journal_unavailable" } }]);
+
+  const worker = spawn(process.execPath, [path.join(root, "apps", "runtime-worker", "index.mjs")], {
+    cwd: root,
+    env: { ...process.env, DATABASE_URL: databaseUrl, RUNTIME_GATEWAY_URL: `http://127.0.0.1:${gateway.address().port}`, RUNTIME_SHARED_TOKEN: gatewayToken.padEnd(40, "-"), RUNTIME_WORKER_PORT: String(await availablePort()), OUTBOX_POLL_MS: "50", OUTBOX_MAX_ATTEMPTS: "3", OUTBOX_LEASE_SECONDS: "5", OUTBOX_RETRY_BASE_MS: "100", OUTBOX_RETRY_MAX_MS: "200", RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "4000", SCHEDULER_POLL_MS: "600000", RUNTIME_WATCHDOG_POLL_MS: "600000" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let output = "";
+  worker.stdout.on("data", (chunk) => { output += chunk; });
+  worker.stderr.on("data", (chunk) => { output += chunk; });
+  const watched = [timedOut, laterOfTimeoutRun, refusedRetry, definite, redelivered, transient];
+  try {
+    await waitFor(async () => {
+      if (worker.exitCode !== null) throw new Error(`runtime worker exited with ${worker.exitCode}`);
+      for (const event of watched) {
+        const row = await eventState(event.id);
+        if (!(row.state === "delivered" || (row.state === "failed" && row.attempts >= 3))) return false;
+      }
+      return true;
+    }, 30_000, "runtime worker uncertain-outcome scenarios to finish").catch(async (error) => {
+      const states = [];
+      for (const event of watched) states.push({ command: event.command.id.slice(0, 30), ...(await eventState(event.id)) });
+      throw new Error(`${error.message}; events: ${JSON.stringify(states)}; worker output: ${output.slice(-3_000)}`);
+    });
+    // Several more poll cycles: nothing flagged may be claimed again.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const sent = (event) => requests.filter((commandId) => commandId === event.command.id).length;
+
+    for (const event of [timedOut, refusedRetry]) {
+      const row = await eventState(event.id);
+      assert.deepEqual({ state: row.state, attempts: row.attempts, flagged: row.flagged }, { state: "failed", attempts: 3, flagged: true }, "an uncertain answer must fail the event without retries and flag it");
+      assert.match(row.last_error, /command_outcome_uncertain/);
+      assert.equal(sent(event), 1, "a command whose outcome is uncertain must not be sent again automatically");
+      const alert = await client.query("select id, severity::text, message from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted' and status = 'open'", [event.runId]);
+      assert.equal(alert.rows.length, 1, "an uncertain command must open an alert for the operator");
+      assert.equal(alert.rows[0].severity, "critical");
+      assert.match(alert.rows[0].message, /结果不确定/, "the alert must say that the outcome is uncertain");
+      const audit = await client.query("select detail from audit_events where event_type = 'runtime_command.delivery_exhausted' and resource_key = $1", [alert.rows[0].id]);
+      assert.equal(audit.rows[0]?.detail.outcomeUncertain, true);
+    }
+    assert.equal((await eventState(laterOfTimeoutRun.id)).state, "delivered", "an uncertain event is terminal and must not hold back later media commands of its run");
+
+    assert.deepEqual(await eventState(definite.id), { state: "failed", attempts: 3, last_error: "Runtime gateway returned 502 command_failed_definite", flagged: false }, "a definite failure must not be retried and must clear the uncertain flag");
+    assert.equal(sent(definite), 1);
+    const definiteAlert = await client.query("select message from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted' and status = 'open'", [definite.runId]);
+    assert.ok(definiteAlert.rows[0] && !definiteAlert.rows[0].message.includes("结果不确定"));
+
+    assert.deepEqual(await eventState(redelivered.id), { state: "delivered", attempts: 2, last_error: null, flagged: false }, "a reclaimed redelivery must be delivered and its flag cleared");
+
+    assert.deepEqual(await eventState(held.id), { state: "failed", attempts: 1, last_error: null, flagged: true }, "a flagged event must not be claimed while its flag is set");
+    assert.equal(sent(held), 0);
+
+    assert.equal((await eventState(transient.id)).state, "delivered");
+    assert.equal(sent(transient), 2, "a 503 without an outcome code must still be retried");
+  } finally {
+    await stop(worker);
+    await new Promise((resolve) => { gateway.closeAllConnections?.(); gateway.close(resolve); });
+    // The held event stays flagged; cancel it so later sections see a quiet queue.
+    await client.query("update outbox_events set state = 'cancelled' where id = $1 and state = 'failed'", [held.id]);
+  }
+  console.log("PASS  runtime worker fails uncertain Gateway outcomes without retrying, flags and alerts them, skips flagged events and clears the flag on delivery or a definite answer (H7)");
 }
