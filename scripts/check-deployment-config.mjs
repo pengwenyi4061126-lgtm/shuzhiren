@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { validateTarget as validateOutputProbeTarget } from "../apps/output-probe/lib.mjs";
 import { parseObserverTargets } from "../apps/runtime-observer/targets.mjs";
 import yaml from "js-yaml";
+// Release manifests are signed over Canonical_JSON rule 2 (keys in code-point order, no locale dependence).
+import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
 import { checkRuntimeComposeConsistency, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
@@ -81,12 +83,6 @@ function immutableImages(values, fileName, keys) {
       errors.push(`${fileName} 的 ${key} 必须是无 tag 的 registry/repository@sha256:<64位十六进制> 不可变镜像引用`);
     }
   }
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
-  return JSON.stringify(value) ?? "null";
 }
 
 async function verifyReleaseEvidenceIndexes(manifest, manifestPath, imageKeys) {

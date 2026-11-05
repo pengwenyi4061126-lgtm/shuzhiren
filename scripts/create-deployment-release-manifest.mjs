@@ -1,6 +1,8 @@
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+// Release manifests are signed over Canonical_JSON rule 2 (keys in code-point order, no locale dependence).
+import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
 
 const imageKeys = [
   "CONTROL_PLANE_IMAGE",
@@ -38,12 +40,6 @@ function absoluteFile(name) {
   const value = required(name);
   if (!path.isAbsolute(value)) fail(`${name} must be an absolute path`);
   return value;
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
-  return JSON.stringify(value) ?? "null";
 }
 
 async function jsonFile(file, name) {
