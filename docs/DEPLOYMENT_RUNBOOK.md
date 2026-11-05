@@ -132,7 +132,7 @@ npm run db:migrate
 
 值非法时迁移器在连接数据库之前退出，不会占用迁移 advisory lock。某条语句因超时被取消时，迁移器回滚该迁移事务，不在 `schema_migrations` 记录它，也不执行后续迁移，随后释放 advisory lock 并以非零状态退出；错误信息写明文件名和 `(lock_timeout)` 或 `(statement_timeout)`。锁等待超时通常表示应用仍持有相关表的锁，应在业务低峰重试；只有确认迁移本身需要更长时间时，才为该次运行临时调大对应变量。
 
-### 2.2 迁移 074–078 的部署影响
+### 2.2 迁移 074–080 的部署影响
 
 以下迁移随 `npm run db:migrate` 按顺序执行，均不需要额外参数：
 
@@ -141,6 +141,8 @@ npm run db:migrate
 - **076 `membership_admin_guards`**：新增按租户一行的保护表（启用并强制 RLS）。移除一个活跃管理员时，触发器先写该租户的保护行再检查是否仍有其他活跃管理员，因此同一租户并发移除最后两个管理员时，READ COMMITTED 下后一个事务会等待前一个提交后失败（`cannot remove the last active tenant admin`），REPEATABLE READ 或 SERIALIZABLE 下后一个事务以 `40001` 失败。应用账号不需要该表的权限。
 - **077 媒体指令顺序**：插入 `media.dispatch` 类型的 outbox 事件时会锁定对应直播场次行，并以当时的时钟写入 `created_at`。
 - **078 复合租户外键**：对每个两端都有 `tenant_id` 的租户表外键（引用 `tenants`、`users` 的除外），增加 `(tenant_id, <列>)` 的复合外键，并在被引用表上补充所需的 `(tenant_id, <列>)` 唯一约束；原单列外键及其 ON DELETE 行为保留。添加外键时会不经 RLS 校验全部现有行：已有跨租户引用时，迁移以 `23503` 失败并写明表和约束名，整个迁移回滚。此后修改被引用行的 `tenant_id` 会被拒绝。该迁移的执行时间随数据量增长，并受上面两个超时变量约束；大库升级前应先在演练环境用生产副本执行一次。
+- **079 数据修复守卫**：新增 `migration_unfiltered_count`、`migration_assert_row_count`、`migration_fix_update`、`migration_fix_delete` 与 `migration_fix_insert` 五个函数，本身不改动任何已有数据。这些函数先在临时解除 FORCE RLS、关闭 `row_security` 的情况下统计目标行数，再在正常 RLS 下执行数据修复语句；两个数字不同时以 `data-fix row count mismatch on <表>: expected N rows, affected M` 报错，迁移回滚且不写入 `schema_migrations`。同时，迁移器在应用任何文件之前，拒绝编号为 079 及以后、含有未经这些函数的顶层 `UPDATE`、`DELETE`、`MERGE`、`INSERT ... SELECT` 或修改数据的 `WITH`（包括 `DO` 块内）的待执行迁移，报出文件名与行号，不应用任何文件。已应用的 048 与 061 不变。运维上不需要额外操作；收到这两类错误时不要手工改写迁移记录，应交回开发修正迁移文件。
+- **080 `outbox_events.outcome_uncertain_at`**：新增一个可空的时间列，记录 Runtime Gateway 对该事件答复 `command_outcome_uncertain` 的时间；已有行为空，不加触发器，worker 现有的表级 SELECT、UPDATE 权限已覆盖它。设置了该列的事件不会再被 worker 自动领取（处于 `delivering` 的除外），处理方法见 2.7 节。
 
 ### 2.3 推流密钥文件
 
@@ -218,6 +220,76 @@ commit;
 
 3. 结果为空后再停止旧服务、升级镜像并启动新版本。仍有投递不出去的事件时，待启动命令可按第 2 节第 10 条在控制台取消，其他事件记录后等待其重试耗尽；不要直接改写 `outbox_events`。
 4. 升级后第一场开播前，用每个已批准声线做一次内部试播播报，确认 Gateway 日志出现 `cosyvoice_chunk` 记录、`/healthz` 中 `cosyvoice.model_kind` 与配置一致，并且输出流中能听到该声线。
+
+### 2.7 结果不确定命令的核对与处置
+
+Runtime Gateway 把每条媒体命令（`/v1/media`）与播报命令（`/v1/speak`）记在命令日志（`RUNTIME_COMMAND_JOURNAL_PATH`，Compose 中为 `/var/lib/shuzhiren-runtime/commands.sqlite3`）中。每条记录只有四个状态之一，由 SQLite 触发器限制转换：
+
+- `reserved`：命令 id 已预留，正在执行。之后只能变为下面三种之一。
+- `completed`：命令已生效。同一 id、同一载荷的重试直接返回记录的结果，不再执行。
+- `failed_definite`：确定没有生效，例如 CosyVoice 合成失败，或在向 LiveTalking 发出请求之前命令时限已经用完。同一 id、同一载荷的重试返回记录的失败响应（`duplicate: true`），不再调用 CosyVoice 或 LiveTalking。
+- `uncertain`：命令可能已部分生效，或无法判断结果，例如 LiveTalking 请求本身失败，或本命令已有一次 LiveTalking 调用成功之后又出现任何失败（原因 `partial_execution`）。重试一律以 `409 command_outcome_uncertain` 拒绝。只有运维处置能把它改为 `completed` 或 `failed_definite`。
+
+`reserved` 与 `uncertain` 的记录不会被清理，Gateway 重启后仍然保留。Gateway 启动时把所有 `reserved` 记录转为 `uncertain`（原因 `gateway_restarted_during_execution`）；运行中遇到已经没有执行的 `reserved` 记录（例如结果写不进日志）时也转为 `uncertain`（原因 `execution_interrupted`）。从旧的两状态日志升级时，遗留的 `reserved` 记录在同一事务中转为 `uncertain`，原因记为 `legacy_reserved`。每次调用 LiveTalking 都受 `RUNTIME_COMMAND_DEADLINE_SECONDS` 限制。
+
+Gateway 在 stderr 中为这些事件各写一行 JSON，可以这样查看：
+
+```bash
+docker compose --env-file /srv/shuzhiren/runtime.env --env-file /srv/shuzhiren/gateway.env -f infra/compose/docker-compose.runtime.yml logs runtime-gateway | grep 'runtime_command\.'
+```
+
+- `runtime_command.uncertain`：命令变为 `uncertain`，含 `command_id`、`kind`、`reason`、`failed_step` 与时间。
+- `runtime_command.resolved`：处置完成，含原状态、新状态、原因、处置时间与处置说明。
+- `runtime_command.resolution_rejected`：处置请求被拒绝，`reason` 为 `unauthorized`、`not_found`、`invalid_request`、`not_uncertain` 或 `identity_unavailable`。
+
+Runtime worker 收到 `command_outcome_uncertain` 时不重试：该 outbox 事件立即置为 `failed`（attempts 记为 `OUTBOX_MAX_ATTEMPTS`），写入 `outbox_events.outcome_uncertain_at`（迁移 080），并为该场次打开 `runtime_command_delivery_exhausted` 告警，同时写审计事件 `runtime_command.delivery_exhausted`（detail 含 `outcomeUncertain: true`）。`media.dispatch` 的告警级别为 `critical`，`speech.dispatch` 为 `warning`；告警文字说明需要人工核对媒体会话后处置并重新投递。带有该标记的事件不会再被 worker 自动领取。收到 `command_failed_definite` 时，worker 同样不重试，直接置为 `failed` 并清除标记；普通的 `503` 仍按退避重试。
+
+处置步骤：
+
+1. 从告警取得场次与 outbox 事件 id。outbox 启用了 RLS，须按租户查询带标记的事件，例如以控制面运行时账号执行：
+
+   ```sql
+   begin;
+   select set_config('app.tenant_id', '<tenant uuid>', true);
+   select id, event_type, aggregate_id, state, attempts, outcome_uncertain_at, last_error
+   from outbox_events
+   where outcome_uncertain_at is not null
+   order by outcome_uncertain_at;
+   commit;
+   ```
+
+   事件 payload 中 `command.id` 就是 Gateway 的 `command_id`。
+
+2. 列出 Gateway 中结果不确定的命令。控制台正在增加处置页面与对应 API；该改动提交后以控制台为首选入口，路径以提交后的代码为准。在此之前，在运行时主机上直接调用 Gateway。这两个接口需要 `RUNTIME_SHARED_TOKEN`，只能在运行时主机或内网调用，不得经公网反向代理暴露。下面的写法让令牌只经过请求头文件，不出现在命令行参数和 shell 历史中：
+
+   ```bash
+   auth_header() { printf 'Authorization: Bearer %s\n' "$(sed -n 's/^RUNTIME_SHARED_TOKEN=//p' /srv/shuzhiren/gateway.env)"; }
+   curl -sS --fail-with-body -H @<(auth_header) http://127.0.0.1:8090/v1/ops/uncertain-commands
+   ```
+
+   返回 `count` 与 `commands`。每项含 `command_id`、`kind`（`media` 或 `speech`）、`reserved_at`、`uncertain_at`、`reason`、`session_id`、媒体命令的 `action` 与 `program_segment_id`、`succeeded_steps`、`failed_step` 和 `identity_available`；不返回播报文本。
+
+3. 核对媒体会话：结合 `succeeded_steps` 与 `failed_step`，用控制室画面、输出探针和录像判断这条命令是否已在直播输出中生效，例如节目段是否已切换、播报是否已播出。无法判断时不要处置；事件保持 `failed` 并带标记，worker 不会盲目重发，应升级给值班负责人。
+
+4. 记录处置。`resolution` 只能是 `completed`（已确认生效）或 `failed_definite`（已确认没有生效），`note` 为 1 至 500 个字符的核对结论：
+
+   ```bash
+   curl -sS --fail-with-body -H @<(auth_header) -H 'Content-Type: application/json' \
+     --data '{"resolution":"failed_definite","note":"<核对结论>"}' \
+     http://127.0.0.1:8090/v1/ops/uncertain-commands/<command_id>/resolution
+   ```
+
+   成功时返回 `command_id`、`previous_state`、`state` 与 `resolved_at`。其余结果：`404 command_not_found`；`409 command_not_uncertain`（命令已不是 `uncertain`，响应含当前状态）；`409 command_identity_unavailable`（旧日志中缺少命令身份的记录只能处置为 `failed_definite`）；`422 request_invalid`（`resolution` 或 `note` 不合规）。每次被拒绝的请求都会写一行 `runtime_command.resolution_rejected`。
+
+5. 处置后在控制台 outbox 页面对该事件执行一次手工投递（`POST /api/v1/runtime/outbox/{eventId}/deliver`）。Gateway 不会再次执行这条命令，只返回处置后的结果：处置为 `completed` 时事件记为已投递，并按回执更新场次；处置为 `failed_definite` 时事件以确定失败结束。需要的动作若确实没有生效，应在控制台重新下发一条新命令（新的命令 id），不要改写 `outbox_events` 或命令日志。
+
+6. 处置与重新投递完成后，在控制台确认并关闭对应告警，并把核对依据记入值班记录。
+
+### 2.8 控制台审计写入与日期列（无配置变化）
+
+- 控制台的命令下发与其余写操作（素材、策略、商品、模型发布、场次、运行时会话绑定、互动处理、录像证据、告警确认、手工投递等）现在把业务变更与审计事件写在同一个事务中。审计事件写入失败时，整个请求回滚并返回 5xx，不会再留下没有审计记录、却已进入 outbox 的命令。排查这类失败时先看控制台日志中的数据库错误，不要绕过控制台直接写库。
+- 控制台连接池把 PostgreSQL 的 `date` 列按 `YYYY-MM-DD` 文本读取，不再受进程时区影响。以往在 UTC 以东时区（例如 `TZ=Asia/Shanghai`）运行的控制台，会把素材到期日、录像保留日期和权益生效日期读成前一天，录像证据的幂等重试也会因此得到 409；升级后读取的就是数据库中的日期。容器以 UTC 运行时，所有值（包括发布清单的哈希输入）不变。
+- 这两项都不需要新的环境变量、迁移或 `TZ` 设置。
 
 ## 3. 备份与恢复演练
 
