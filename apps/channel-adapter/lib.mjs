@@ -1,6 +1,22 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export const eventTypes = new Set(["view", "product_click", "add_to_cart", "order_paid", "refund"]);
+export const viewerEventTypes = new Set(["viewer_enter", "follow", "gift"]);
+
+// Optional viewer identity of an interaction or viewer event: the platform's opaque viewer id (the Control_Plane
+// stores only its hash) and display name. Absent fields stay absent so existing payloads are unchanged.
+function parseViewer(event) {
+  const viewer = {};
+  if (event.viewerId !== undefined) {
+    if (typeof event.viewerId !== "string" || !event.viewerId.trim() || event.viewerId.length > 200) throw new Error("Invalid viewerId");
+    viewer.viewerId = event.viewerId;
+  }
+  if (event.viewerNickname !== undefined) {
+    if (typeof event.viewerNickname !== "string" || !event.viewerNickname.trim() || event.viewerNickname.length > 64) throw new Error("Invalid viewerNickname");
+    viewer.viewerNickname = event.viewerNickname;
+  }
+  return viewer;
+}
 
 export function parseControlPlaneUrl(value) {
   if (!value) throw new Error("CONTROL_PLANE_URL is required");
@@ -80,7 +96,18 @@ export function parseNormalizedEvent(value) {
   if (typeof event.runId !== "string" || !event.runId || event.runId.length > 200) throw new Error("runId is required");
   if (event.kind === "interaction") {
     if (typeof event.question !== "string" || !event.question.trim() || event.question.length > 1000) throw new Error("interaction question is required");
-    return { kind: "interaction", runId: event.runId, question: event.question.trim() };
+    return { kind: "interaction", runId: event.runId, question: event.question.trim(), ...parseViewer(event) };
+  }
+  // Viewer events for the interaction rules (migration 084): entering the room, following, sending a gift.
+  if (event.kind === "viewer_event") {
+    if (!viewerEventTypes.has(event.eventType)) throw new Error("Unsupported viewer event type");
+    const viewer = parseViewer(event);
+    if (event.eventType !== "gift") {
+      if (event.giftValueCents !== undefined) throw new Error("Invalid giftValueCents for a non-gift viewer event");
+      return { kind: "viewer_event", runId: event.runId, eventType: event.eventType, ...viewer };
+    }
+    if (!Number.isSafeInteger(event.giftValueCents) || event.giftValueCents < 0 || event.giftValueCents > 1_000_000_000_000) throw new Error("Invalid giftValueCents");
+    return { kind: "viewer_event", runId: event.runId, eventType: event.eventType, ...viewer, giftValueCents: event.giftValueCents };
   }
   if (event.kind === "commerce") {
     if (!eventTypes.has(event.eventType)) throw new Error("Unsupported commerce event type");

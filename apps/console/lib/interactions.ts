@@ -21,7 +21,12 @@ export type LiveInteraction = LiveQuestion & {
   handledAt?: string;
   handledBy?: string;
   resolutionNote?: string;
+  // Channel viewer events for the interaction rules (migration 084); absent means a comment.
+  interactionKind?: InteractionKind;
+  viewerNickname?: string;
+  giftValueCents?: number;
 };
+export type InteractionKind = "comment" | "viewer_enter" | "follow" | "gift";
 
 type InteractionStore = { interactions: Map<string, LiveInteraction>; externalEvents: Map<string, string> };
 type PersistentInteractionRow = {
@@ -29,9 +34,12 @@ type PersistentInteractionRow = {
   risk_level: LiveInteraction["risk"]; policy_action: LiveInteraction["decision"]; policy_reasons: unknown;
   required_evidence: unknown; evidence_ids: unknown; status: LiveInteraction["status"]; created_at: Date | string;
   handled_at: Date | string | null; handled_by_name: string | null; resolution_note: string | null;
+  interaction_kind?: InteractionKind; viewer_nickname?: string | null; gift_value_cents?: string | number | null;
 };
 
-type CreateInteractionInput = { runId: string; question: string; source?: string; channelConnectionId?: string; externalEventId?: string; evidenceIds: string[] };
+// viewerRef is the SHA-256 the channel ingest route derives from the platform viewer id; the raw id is not stored.
+type ViewerEventInput = { interactionKind?: InteractionKind; viewerRef?: string; viewerNickname?: string; giftValueCents?: number };
+type CreateInteractionInput = { runId: string; question: string; source?: string; channelConnectionId?: string; externalEventId?: string; evidenceIds: string[] } & ViewerEventInput;
 
 declare global { var shuzhirenInteractionStore: InteractionStore | undefined; }
 
@@ -54,7 +62,7 @@ export async function listInteractions(context: RequestContext, runId: string, s
     const result = await client.query<PersistentInteractionRow>(
        `select i.id, i.tenant_id, i.live_run_id, i.source, i.channel_connection_id, i.external_event_id, i.question_text, i.risk_level, i.policy_action,
         i.policy_reasons, i.required_evidence, i.evidence_ids, i.status, i.created_at, i.handled_at,
-        u.display_name as handled_by_name, i.resolution_note
+        u.display_name as handled_by_name, i.resolution_note, i.interaction_kind, i.viewer_nickname, i.gift_value_cents
        from live_interactions i left join users u on u.id = i.handled_by
        where i.live_run_id = $1 and ($2::interaction_status is null or i.status = $2)
        order by i.created_at desc limit 200`,
@@ -85,7 +93,8 @@ async function insertInteraction(context: RequestContext, input: CreateInteracti
         return { ...existing, duplicate: true };
       }
     }
-    const interaction: LiveInteraction = { id: `interaction_${crypto.randomUUID()}`, tenantId: context.tenantId, runId: input.runId, source, channelConnectionId: input.channelConnectionId, externalEventId: input.externalEventId, text: input.question, detail, risk: decision.riskLevel, status: "queued", decision: decision.action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: input.evidenceIds, submittedAt: new Date().toISOString() };
+    const viewerEvent = isViewerEvent(input);
+    const interaction: LiveInteraction = { id: `interaction_${crypto.randomUUID()}`, tenantId: context.tenantId, runId: input.runId, source, channelConnectionId: input.channelConnectionId, externalEventId: input.externalEventId, text: input.question, detail, risk: decision.riskLevel, status: viewerEvent ? "handled" : "queued", decision: decision.action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: input.evidenceIds, submittedAt: new Date().toISOString(), ...(viewerEvent ? { handledAt: new Date().toISOString(), resolutionNote: viewerEventResolutionNote } : {}), ...(input.interactionKind ? { interactionKind: input.interactionKind } : {}), ...(input.viewerNickname ? { viewerNickname: input.viewerNickname } : {}), ...(input.giftValueCents !== undefined ? { giftValueCents: input.giftValueCents } : {}) };
     interactionStore().interactions.set(interaction.id, interaction);
     if (eventKey) interactionStore().externalEvents.set(eventKey, interaction.id);
     if (operatorAudit) await recordOperatorInteractionAudit(context, input.runId, interaction);
@@ -100,27 +109,36 @@ async function insertInteraction(context: RequestContext, input: CreateInteracti
 
 export async function createChannelInteraction(context: RequestContext, input: CreateInteractionInput & { channelConnectionId: string }): Promise<LiveInteraction & { duplicate?: boolean }> {
   if (!isControlledPolicyQuestion(input.question)) throw new Response("Interaction question must be between 1 and 1000 characters", { status: 400 });
+  // Entering the room carries no content and arrives in bulk; its record is the live_interactions row (and an
+  // interaction_rule_firings row when a rule answers it), not an audit event per viewer.
+  const audited = input.interactionKind !== "viewer_enter";
   if (!databasePool()) {
     const interaction = await insertInteraction(context, input, false);
-    if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId);
+    if (!interaction.duplicate && audited) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId);
     return interaction;
   }
   const decision = evaluatePolicy(input.question, input.evidenceIds, await policyRulesForRun(context, input.runId));
   return withTenantTransaction(context.tenantId, async (client) => {
     const interaction = await createPersistentInteraction(client, context, input, decision);
-    if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId, client);
+    if (!interaction.duplicate && audited) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId, client);
     return interaction;
   });
 }
 
 async function createPersistentInteraction(client: import("pg").PoolClient, context: RequestContext, input: CreateInteractionInput, decision: PolicyDecision): Promise<LiveInteraction & { duplicate?: boolean }> {
+  // A viewer event (entering, following, a gift) is not a question for the operator queue: it is stored as
+  // handled and only the interaction rules of the runtime worker answer it.
+  const viewerEvent = isViewerEvent(input);
   const result = await client.query<PersistentInteractionRow>(
-      `insert into live_interactions (tenant_id, live_run_id, source, channel_connection_id, external_event_id, question_text, risk_level, policy_action, policy_reasons, required_evidence, evidence_ids)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb)
+      `insert into live_interactions (tenant_id, live_run_id, source, channel_connection_id, external_event_id, question_text, risk_level, policy_action, policy_reasons, required_evidence, evidence_ids,
+         interaction_kind, viewer_ref, viewer_nickname, gift_value_cents, status, handled_at, resolution_note)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15,
+         case when $16::boolean then 'handled'::interaction_status else 'queued'::interaction_status end, case when $16::boolean then now() end, case when $16::boolean then $17 end)
        on conflict (tenant_id, live_run_id, source, external_event_id) where external_event_id is not null do nothing
        returning id, tenant_id, live_run_id, source, channel_connection_id, external_event_id, question_text, risk_level, policy_action, policy_reasons,
-         required_evidence, evidence_ids, status, created_at, handled_at, null::text as handled_by_name, resolution_note`,
-      [context.tenantId, input.runId, input.source ?? "viewer", input.channelConnectionId ?? null, input.externalEventId ?? null, input.question, decision.riskLevel, decision.action, JSON.stringify(decision.reasons), JSON.stringify(decision.requiredEvidence), JSON.stringify(input.evidenceIds)]
+         required_evidence, evidence_ids, status, created_at, handled_at, null::text as handled_by_name, resolution_note, interaction_kind, viewer_nickname, gift_value_cents`,
+      [context.tenantId, input.runId, input.source ?? "viewer", input.channelConnectionId ?? null, input.externalEventId ?? null, input.question, decision.riskLevel, decision.action, JSON.stringify(decision.reasons), JSON.stringify(decision.requiredEvidence), JSON.stringify(input.evidenceIds),
+        input.interactionKind ?? "comment", input.viewerRef ?? null, input.viewerNickname ?? null, input.giftValueCents ?? null, viewerEvent, viewerEventResolutionNote]
     );
   if (result.rows[0]) return persistentInteraction(result.rows[0]);
   const existing = await client.query<PersistentInteractionRow>(
@@ -193,5 +211,8 @@ function asStringArray(value: unknown) { return Array.isArray(value) ? value.fil
 
 function persistentInteraction(row: PersistentInteractionRow): LiveInteraction {
   const decision = { action: row.policy_action, riskLevel: row.risk_level, reasons: asStringArray(row.policy_reasons), requiredEvidence: asStringArray(row.required_evidence) } as PolicyDecision;
-  return { id: row.id, tenantId: row.tenant_id, runId: row.live_run_id, source: row.source, channelConnectionId: row.channel_connection_id ?? undefined, externalEventId: row.external_event_id ?? undefined, text: row.question_text, detail: interactionDetail(decision), risk: row.risk_level, status: row.status, decision: row.policy_action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: asStringArray(row.evidence_ids), submittedAt: new Date(row.created_at).toISOString(), handledAt: row.handled_at ? new Date(row.handled_at).toISOString() : undefined, handledBy: row.handled_by_name ?? undefined, resolutionNote: row.resolution_note ?? undefined };
+  return { id: row.id, tenantId: row.tenant_id, runId: row.live_run_id, source: row.source, channelConnectionId: row.channel_connection_id ?? undefined, externalEventId: row.external_event_id ?? undefined, text: row.question_text, detail: interactionDetail(decision), risk: row.risk_level, status: row.status, decision: row.policy_action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: asStringArray(row.evidence_ids), submittedAt: new Date(row.created_at).toISOString(), handledAt: row.handled_at ? new Date(row.handled_at).toISOString() : undefined, handledBy: row.handled_by_name ?? undefined, resolutionNote: row.resolution_note ?? undefined, ...(row.interaction_kind ? { interactionKind: row.interaction_kind } : {}), ...(row.viewer_nickname ? { viewerNickname: row.viewer_nickname } : {}), ...(row.gift_value_cents !== null && row.gift_value_cents !== undefined ? { giftValueCents: Number(row.gift_value_cents) } : {}) };
 }
+
+const viewerEventResolutionNote = "观众事件，由互动规则处理";
+function isViewerEvent(input: ViewerEventInput) { return Boolean(input.interactionKind && input.interactionKind !== "comment"); }

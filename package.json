@@ -32,6 +32,7 @@
     "output-probe:config:test": "node scripts/test-output-probe-config.mjs",
     "output-probe:response:check": "node scripts/check-output-probe-response.mjs",
     "channel-adapter:test": "node scripts/test-channel-adapter.mjs",
+    "interaction-rules:test": "node --test scripts/test-interaction-rules.mjs",
     "channel:verification:check": "node scripts/check-channel-verification-governance.mjs",
     "settlement:reconciliation:check": "node scripts/check-settlement-reconciliation.mjs",
     "alert-notifier:test": "node scripts/test-alert-notifier.mjs",

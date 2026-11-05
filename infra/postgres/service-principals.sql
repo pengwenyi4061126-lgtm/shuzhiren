@@ -56,3 +56,15 @@ grant select (id, status) on live_interactions to shuzhiren_runtime_worker;
 -- chain heads directly.
 grant insert on audit_events to shuzhiren_runtime_worker;
 grant execute on function runtime_worker_actor(uuid, text) to shuzhiren_runtime_worker;
+-- Interaction rules (084, apps/runtime-worker/interaction-rules.mjs): the worker reads approved rules and the
+-- channel interactions they answer, records every firing, and queues speech.dispatch events (insert on
+-- outbox_events above) or channel reply drafts that still need human approval. It reads the run's bound policy
+-- profile rules to check the rendered text, and gets the product name and price only through
+-- interaction_rule_product_context, never from products or product facts.
+grant select (id, tenant_id, live_run_id, name, trigger_type, match_config, templates, action, cooldown_seconds, interval_seconds, priority, enabled, default_key, approval_status) on interaction_rules to shuzhiren_runtime_worker;
+grant select, insert on interaction_rule_firings to shuzhiren_runtime_worker;
+grant select (live_run_id, interaction_kind, question_text, policy_action, viewer_ref, viewer_nickname, gift_value_cents, channel_connection_id, rules_evaluated_at, created_at) on live_interactions to shuzhiren_runtime_worker;
+grant select (show_revision_id, policy_profile_id) on show_revision_policy_profiles to shuzhiren_runtime_worker;
+grant select (id, rules, evidence_ref, validation_summary, approval_status) on policy_profiles to shuzhiren_runtime_worker;
+grant insert (tenant_id, live_run_id, interaction_id, channel_connection_id, body, body_sha256, policy_action, evidence_snapshot, product_version_id, product_revision, created_by) on channel_reply_drafts to shuzhiren_runtime_worker;
+grant execute on function interaction_rule_product_context(uuid, uuid) to shuzhiren_runtime_worker;

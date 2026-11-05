@@ -50,6 +50,15 @@ const requiredConstraints = new Map([["schema_migrations_checksum_format", true]
 // 083: recording evidence keeps the AIGC label metadata (explicit label state and text, content producer, content id).
 requiredColumns.recording_evidence = [...(requiredColumns.recording_evidence ?? []), "aigc_label_enabled", "aigc_label_text", "aigc_content_producer", "aigc_content_id"];
 requiredConstraints.set("recording_evidence_aigc_label_check", true);
+// 084: live interaction rules, their append-only firings, and the channel viewer-event columns they read.
+requiredTables.push("interaction_rules", "interaction_rule_firings");
+requiredColumns.interaction_rules = ["live_run_id", "trigger_type", "match_config", "templates", "action", "cooldown_seconds", "interval_seconds", "priority", "enabled", "default_key", "approval_status", "approved_by", "approved_at"];
+requiredColumns.interaction_rule_firings = ["rule_id", "live_run_id", "interaction_id", "trigger_key", "template_index", "rendered_text_sha256", "outcome", "cooldown_bucket", "outbox_event_id"];
+requiredColumns.live_interactions.push("interaction_kind", "viewer_ref", "viewer_nickname", "gift_value_cents", "rules_evaluated_at");
+requiredIndexes.push("interaction_rules_tenant_default_key_idx", "interaction_rule_firings_cooldown_idx", "live_interactions_rule_queue_idx", "outbox_events_speech_run_created_idx");
+requiredPolicies.push("tenant_isolation_interaction_rules", "tenant_isolation_interaction_rule_firings");
+requiredTriggers.push("interaction_rules_governed_mutation", "interaction_rule_firings_append_only");
+requiredSecurityDefinerFunctions.push("interaction_rule_product_context");
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.

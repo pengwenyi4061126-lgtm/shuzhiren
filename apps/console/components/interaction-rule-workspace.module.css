@@ -1,0 +1,40 @@
+.page { max-width: 1120px; margin: 0 auto 44px; padding: 24px; }
+.top { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+.top p { margin: 0 0 5px; color: var(--muted); font-size: 13px; }
+.top h1 { margin: 0; font-size: 22px; }
+.top span { display: block; max-width: 760px; margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.toolbar { display: flex; gap: 8px; flex: 0 0 auto; }
+.primary, .secondary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; border-radius: 4px; padding: 0 10px; font-size: 12px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.primary { border: 0; background: var(--green); color: #fff; }
+.secondary { border: 1px solid var(--line); background: var(--surface); color: var(--green); }
+.primary:disabled, .secondary:disabled { opacity: .55; cursor: default; }
+.notice { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--green); background: var(--surface); color: var(--ink); font-size: 13px; }
+.form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.formHead { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
+.form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.form input, .form select, .form textarea { width: 100%; min-height: 34px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; }
+.form textarea { min-height: 110px; resize: vertical; line-height: 1.5; }
+.wide { grid-column: 1 / -1; }
+.slots { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.slots button { border: 1px dashed var(--line); border-radius: 4px; padding: 3px 7px; background: transparent; color: var(--green); font: 12px Consolas, "Microsoft YaHei", monospace; cursor: pointer; }
+.list { overflow: hidden; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.rule { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.rule:last-child { border-bottom: 0; }
+.rule strong { font-size: 13px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.templates { grid-column: 1 / -1; margin: 0; padding-left: 18px; color: var(--ink); font-size: 12px; line-height: 1.6; }
+.actions { display: flex; align-items: center; gap: 8px; }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--orange); white-space: nowrap; }
+.approved { color: var(--green); }
+.disabled { color: var(--muted); }
+.locked { color: var(--green); font-size: 11px; }
+.empty { min-height: 110px; display: grid; place-items: center; color: var(--muted); font-size: 13px; text-align: center; padding: 0 16px; }
+.firings { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.firingsHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.firingsHead h2 { margin: 0; font-size: 15px; }
+.firingsHead select { min-height: 32px; border: 1px solid var(--line); border-radius: 4px; padding: 0 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th, .table td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.table th { color: var(--muted); font-weight: 600; }
+.table code { font: 11px Consolas, monospace; color: var(--muted); }
+@media (max-width: 760px) { .page { padding: 14px; } .top { display: grid; } .form { grid-template-columns: 1fr; } .rule { grid-template-columns: 1fr; } }

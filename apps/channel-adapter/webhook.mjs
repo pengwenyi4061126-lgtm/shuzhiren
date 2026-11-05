@@ -6,7 +6,11 @@ export const FORWARD_TIMEOUT_MS = 8_000;
 /** Builds the downstream path, bearer token and explicit request body for a verified, parsed event. */
 export function controlPlaneRequest({ target, eventId, event }) {
   if (event.kind === "interaction") {
-    return { path: "/api/v1/runtime/channel-interactions", token: target.interactionToken, body: { tenantId: target.tenantId, channelConnectionId: target.channelConnectionId, eventId, runId: event.runId, question: event.question } };
+    return { path: "/api/v1/runtime/channel-interactions", token: target.interactionToken, body: { tenantId: target.tenantId, channelConnectionId: target.channelConnectionId, eventId, runId: event.runId, question: event.question, ...viewerFields(event) } };
+  }
+  // Viewer events use the interaction ingest path with interactionKind (migration 084 interaction rules).
+  if (event.kind === "viewer_event") {
+    return { path: "/api/v1/runtime/channel-interactions", token: target.interactionToken, body: { tenantId: target.tenantId, channelConnectionId: target.channelConnectionId, eventId, runId: event.runId, interactionKind: event.eventType, ...viewerFields(event), ...(event.giftValueCents !== undefined ? { giftValueCents: event.giftValueCents } : {}) } };
   }
   return { path: "/api/v1/runtime/channel-commerce", token: target.commerceToken, body: { tenantId: target.tenantId, channelConnectionId: target.channelConnectionId, eventId, runId: event.runId, eventType: event.eventType, occurredAt: event.occurredAt, orderReference: event.orderReference, amountCents: event.amountCents, quantity: event.quantity } };
 }
@@ -74,5 +78,8 @@ export function createWebhookProcessor({ store, forward, allowRequest, log = def
   };
 }
 
+function viewerFields(event) {
+  return { ...(event.viewerId !== undefined ? { viewerId: event.viewerId } : {}), ...(event.viewerNickname !== undefined ? { viewerNickname: event.viewerNickname } : {}) };
+}
 function errorName(error) { return error instanceof Error ? error.name : "unknown_error"; }
 function defaultLog(event, fields) { console.error(event, fields); }

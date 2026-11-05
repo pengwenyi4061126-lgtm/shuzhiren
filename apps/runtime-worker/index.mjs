@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { createServicePool, inTenantTransaction as inPoolTenantTransaction } from "./db.mjs";
+import { createInteractionRuleEvaluator, interactionRuleConfig } from "./interaction-rules.mjs";
 
 const databaseUrl = required("DATABASE_URL");
 const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
@@ -21,6 +22,8 @@ const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
 const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.OUTBOX_RETRY_MAX_MS, 60000));
 const healthPort = positiveInt(process.env.RUNTIME_WORKER_PORT, 8080);
+// Live interaction rules (apps/runtime-worker/interaction-rules.mjs, migration 084).
+const interactionRules = interactionRuleConfig(process.env);
 // Metering runs in its own loop at least every 30 s, so every minute a run stays LIVE or DEGRADED gets at least
 // one metering pass while that minute lasts; larger configured values are capped.
 const usageMeterIntervalMs = Math.min(usageMeterPollMs, 30_000);
@@ -607,6 +610,22 @@ async function usageMeterLoop() {
   }
 }
 
+// Independent of tick() for the same reason as metering: a slow Gateway delivery must not delay welcomes and timed
+// lines. Firings are idempotent per run, rule and trigger, so overlapping workers do not speak twice.
+const ruleEvaluator = createInteractionRuleEvaluator({ tenantIds, inTenantTransaction, log, config: interactionRules, maxOutboxAttempts: maxAttempts });
+async function interactionRuleLoop() {
+  while (!stopping) {
+    const startedAt = Date.now();
+    try {
+      const summary = await ruleEvaluator.runOnce();
+      if (summary.recorded) log("interaction_rules.evaluated", summary);
+    } catch (error) {
+      log("interaction_rules.evaluation_failed", { error: error instanceof Error ? error.message : "unknown" });
+    }
+    await Promise.race([new Promise((resolve) => setTimeout(resolve, Math.max(1, interactionRules.pollMs - (Date.now() - startedAt)))), stopped]);
+  }
+}
+
 let stopping = false;
 let nextSchedulerPollAt = 0;
 let nextOutboxTenantCursor = 0;
@@ -629,8 +648,9 @@ const healthServer = http.createServer(async (request, response) => {
 });
 healthServer.listen(healthPort, "0.0.0.0", () => log("worker.health_listening", { port: healthPort }));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; signalStopped(); });
-log("worker.started", { gatewayRequestTimeoutMs, databaseTimeoutMs, pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs: usageMeterIntervalMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort });
+log("worker.started", { gatewayRequestTimeoutMs, databaseTimeoutMs, pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs: usageMeterIntervalMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort, interactionRules });
 const metering = usageMeterLoop();
+const ruleEvaluation = interactionRules.enabled ? interactionRuleLoop() : Promise.resolve();
 while (!stopping) {
   try { await tick(); lastSuccessfulTickAt = Date.now(); lastTickError = null; } catch (error) { lastTickError = error instanceof Error ? error.message : "unknown"; log("worker.error", { error: lastTickError }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());
@@ -638,6 +658,7 @@ while (!stopping) {
   await Promise.race([new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, schedulerWaitMs, watchdogWaitMs))), stopped]);
 }
 await metering;
+await ruleEvaluation;
 await new Promise((resolve) => healthServer.close(resolve));
 await pool.end();
 log("worker.stopped");
