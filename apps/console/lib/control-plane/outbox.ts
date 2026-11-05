@@ -2,20 +2,23 @@ import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import { createSpeechCommand, type SpeechCommand } from "@/lib/speech-protocol";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess, hasRestrictedMembership } from "@/lib/control-plane/run-access";
-import { dispatchMediaCommand, dispatchSpeechCommand } from "@/lib/runtime-gateway";
+import { dispatchMediaCommand, dispatchSpeechCommand, RuntimeGatewayError } from "@/lib/runtime-gateway";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import type { PoolClient } from "pg";
 
 export type OutboxState = "pending" | "delivering" | "delivered" | "failed" | "cancelled";
-export type MediaOutboxEvent = { id: string; tenantId: string; type: "media.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: MediaCommand; createdAt: string; deliveredAt?: string; lastError?: string };
-export type SpeechOutboxEvent = { id: string; tenantId: string; type: "speech.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: SpeechCommand; createdAt: string; deliveredAt?: string; lastError?: string };
-export type ChannelReplyOutboxEvent = { id: string; tenantId: string; type: "channel.reply.dispatch"; state: OutboxState; attempts: number; replyId: string; runId: string; interactionId: string; channelConnectionId: string; bodySha256: string; createdAt: string; deliveredAt?: string; lastError?: string };
+// outcomeUncertainAt (outbox_events.outcome_uncertain_at, migration 080): the Gateway answered
+// command_outcome_uncertain, so the command may have run partly. The event is failed, is not retried
+// automatically, and waits for an operator to check the media session.
+export type MediaOutboxEvent = { id: string; tenantId: string; type: "media.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: MediaCommand; createdAt: string; deliveredAt?: string; lastError?: string; outcomeUncertainAt?: string };
+export type SpeechOutboxEvent = { id: string; tenantId: string; type: "speech.dispatch"; state: OutboxState; attempts: number; sessionId: string; command: SpeechCommand; createdAt: string; deliveredAt?: string; lastError?: string; outcomeUncertainAt?: string };
+export type ChannelReplyOutboxEvent = { id: string; tenantId: string; type: "channel.reply.dispatch"; state: OutboxState; attempts: number; replyId: string; runId: string; interactionId: string; channelConnectionId: string; bodySha256: string; createdAt: string; deliveredAt?: string; lastError?: string; outcomeUncertainAt?: string };
 export type RuntimeOutboxEvent = MediaOutboxEvent | SpeechOutboxEvent | ChannelReplyOutboxEvent;
 export type SpeechEnqueueResult = { event: SpeechOutboxEvent; duplicate: boolean };
 
 type OutboxStore = { events: Map<string, RuntimeOutboxEvent>; speechCommandEvents: Map<string, string> };
-type PersistentOutboxRow = { id: string; tenant_id: string; event_type: RuntimeOutboxEvent["type"]; state: OutboxState; attempts: number; payload: unknown; created_at: Date | string; delivered_at: Date | string | null; last_error: string | null };
+type PersistentOutboxRow = { id: string; tenant_id: string; event_type: RuntimeOutboxEvent["type"]; state: OutboxState; attempts: number; payload: unknown; created_at: Date | string; delivered_at: Date | string | null; last_error: string | null; outcome_uncertain_at: Date | string | null };
 declare global { var shuzhirenOutboxStore: OutboxStore | undefined; }
 
 const manualDeliveryLeaseSeconds = (() => {
@@ -42,7 +45,7 @@ export async function enqueueMediaCommand(context: RequestContext, input: Omit<M
 
 export async function enqueueMediaCommandInTransaction(client: PoolClient, context: RequestContext, command: MediaCommand, sessionId: string): Promise<MediaOutboxEvent> {
   const result = await client.query<PersistentOutboxRow>(
-    "insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, $2, $3, $4::uuid, $5::jsonb) returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error",
+    "insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, $2, $3, $4::uuid, $5::jsonb) returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error, outcome_uncertain_at",
     [context.tenantId, "media.dispatch", "live_run", command.runId, JSON.stringify({ sessionId, command })]
   );
   return persistentEvent(result.rows[0]) as MediaOutboxEvent;
@@ -71,12 +74,12 @@ export async function enqueueSpeechCommand(context: RequestContext, input: Omit<
 
 export async function enqueueSpeechCommandInTransaction(client: PoolClient, context: RequestContext, command: SpeechCommand, sessionId: string): Promise<SpeechEnqueueResult> {
   const result = await client.query<PersistentOutboxRow>(
-    "insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, $2, $3, $4::uuid, $5::jsonb) on conflict do nothing returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error",
+    "insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, $2, $3, $4::uuid, $5::jsonb) on conflict do nothing returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error, outcome_uncertain_at",
     [context.tenantId, "speech.dispatch", "live_run", command.runId, JSON.stringify({ sessionId, command })]
   );
   if (result.rows[0]) return { event: persistentEvent(result.rows[0]) as SpeechOutboxEvent, duplicate: false };
   const existing = await client.query<PersistentOutboxRow>(
-    "select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error from outbox_events where event_type = 'speech.dispatch' and payload #>> '{command,id}' = $1 order by created_at asc limit 1",
+    "select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error, outcome_uncertain_at from outbox_events where event_type = 'speech.dispatch' and payload #>> '{command,id}' = $1 order by created_at asc limit 1",
     [command.id]
   );
   const event = existing.rows[0] ? persistentEvent(existing.rows[0]) : null;
@@ -94,7 +97,7 @@ export async function getOutboxEvent(context: RequestContext, eventId: string) {
   }
   if (!isUuid(eventId)) return null;
   const event = await withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentOutboxRow>("select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error from outbox_events where id = $1", [eventId]);
+    const result = await client.query<PersistentOutboxRow>("select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error, outcome_uncertain_at from outbox_events where id = $1", [eventId]);
     return result.rows[0] ? persistentEvent(result.rows[0]) : null;
   });
   if (event) await assertOutboxEventAccess(context, event);
@@ -108,9 +111,33 @@ function isUuid(value: string) {
 export async function listOutboxEvents(context: RequestContext) {
   if (!databasePool()) return [...outboxStore().events.values()].filter((event) => event.tenantId === context.tenantId).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentOutboxRow>("select event.id, event.tenant_id, event.event_type, event.state, event.attempts, event.payload, event.created_at, event.delivered_at, event.last_error from outbox_events event where not $1::boolean or exists (select 1 from live_runs r where ((event.aggregate_type = 'live_run' and event.aggregate_id = r.id) or (event.event_type = 'channel.reply.dispatch' and event.payload ->> 'runId' = r.id::text)) and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))) order by event.created_at desc limit 100", [hasRestrictedMembership(context), context.membershipId ?? null]);
+    const result = await client.query<PersistentOutboxRow>("select event.id, event.tenant_id, event.event_type, event.state, event.attempts, event.payload, event.created_at, event.delivered_at, event.last_error, event.outcome_uncertain_at from outbox_events event where not $1::boolean or exists (select 1 from live_runs r where ((event.aggregate_type = 'live_run' and event.aggregate_id = r.id) or (event.event_type = 'channel.reply.dispatch' and event.payload ->> 'runId' = r.id::text)) and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $2::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id)))) order by event.created_at desc limit 100", [hasRestrictedMembership(context), context.membershipId ?? null]);
     return result.rows.map(persistentEvent);
   });
+}
+
+// The media and speech outbox events of this tenant that carry the given Gateway command ids. The Gateway's
+// Command_Journal is shared by every tenant of a deployment, so the console shows and resolves only the
+// commands it can tie to the caller's tenant (row-level security applies inside withTenantTransaction).
+export async function findRuntimeCommandEvents(context: RequestContext, commandIds: string[]): Promise<Map<string, MediaOutboxEvent | SpeechOutboxEvent>> {
+  const found = new Map<string, MediaOutboxEvent | SpeechOutboxEvent>();
+  if (!commandIds.length) return found;
+  const wanted = new Set(commandIds);
+  const keep = (event: RuntimeOutboxEvent) => {
+    if (event.type === "channel.reply.dispatch" || !wanted.has(event.command.id)) return;
+    const current = found.get(event.command.id);
+    if (!current || current.createdAt > event.createdAt) found.set(event.command.id, event);
+  };
+  if (!databasePool()) {
+    for (const event of outboxStore().events.values()) if (event.tenantId === context.tenantId) keep(event);
+    return found;
+  }
+  const rows = await withTenantTransaction(context.tenantId, async (client) => (await client.query<PersistentOutboxRow>(
+    "select id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error, outcome_uncertain_at from outbox_events where tenant_id = $1::uuid and event_type in ('media.dispatch', 'speech.dispatch') and payload #>> '{command,id}' = any($2::text[]) order by created_at asc, id asc",
+    [context.tenantId, [...wanted]]
+  )).rows);
+  for (const row of rows) keep(persistentEvent(row));
+  return found;
 }
 
 export async function deliverOutboxEvent(context: RequestContext, eventId: string) {
@@ -135,7 +162,7 @@ export async function deliverOutboxEvent(context: RequestContext, eventId: strin
       ? await dispatchMediaCommand(claimed.event.command, claimed.event.sessionId, options)
       : await dispatchSpeechCommand(claimed.event.command, claimed.event.sessionId, options);
   } catch (error) {
-    await markFailed(context, claimed.event, error instanceof Error ? error.message : "runtime_dispatch_failed");
+    await markFailed(context, claimed.event, error instanceof Error ? error.message : "runtime_dispatch_failed", gatewayOutcome(error));
     throw error;
   }
   // The Gateway accepted the command. If recording that fails, the event must not become 'failed': that would
@@ -173,13 +200,13 @@ async function claimOutboxEvent(context: RequestContext, eventId: string): Promi
   if (!isUuid(eventId)) throw new Response("Outbox event not found", { status: 404 });
 
   return withTenantTransaction(context.tenantId, async (client) => {
-    const selected = await client.query<PersistentOutboxRow>("select event.id, event.tenant_id, event.event_type, event.state, event.attempts, event.payload, event.created_at, event.delivered_at, event.last_error from outbox_events event where event.id = $1 and (not $2::boolean or exists (select 1 from live_runs r where ((event.aggregate_type = 'live_run' and event.aggregate_id = r.id) or (event.event_type = 'channel.reply.dispatch' and event.payload ->> 'runId' = r.id::text)) and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) for update of event", [eventId, hasRestrictedMembership(context), context.membershipId ?? null]);
+    const selected = await client.query<PersistentOutboxRow>("select event.id, event.tenant_id, event.event_type, event.state, event.attempts, event.payload, event.created_at, event.delivered_at, event.last_error, event.outcome_uncertain_at from outbox_events event where event.id = $1 and (not $2::boolean or exists (select 1 from live_runs r where ((event.aggregate_type = 'live_run' and event.aggregate_id = r.id) or (event.event_type = 'channel.reply.dispatch' and event.payload ->> 'runId' = r.id::text)) and exists (select 1 from membership_resource_scopes scope where scope.membership_id = $3::uuid and ((scope.resource_type = 'live_run' and scope.resource_id = r.id) or (scope.resource_type = 'channel_connection' and scope.resource_id = r.channel_connection_id))))) for update of event", [eventId, hasRestrictedMembership(context), context.membershipId ?? null]);
     if (!selected.rows[0]) throw new Response("Outbox event not found", { status: 404 });
     const current = persistentEvent(selected.rows[0]);
     if (current.state === "delivered") return { event: current, duplicate: true as const };
     if (current.state === "cancelled") throw new Response("Outbox event was cancelled", { status: 409 });
     if (current.state === "delivering") throw new Response("Outbox event is already delivering", { status: 409 });
-    const updated = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivering', attempts = attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second') where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [eventId, manualDeliveryLeaseSeconds]);
+    const updated = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivering', attempts = attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second') where id = $1 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error, outcome_uncertain_at", [eventId, manualDeliveryLeaseSeconds]);
     return { event: persistentEvent(updated.rows[0]), duplicate: false as const, claimStartedAt };
   });
 }
@@ -197,12 +224,13 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent,
     event.state = "delivered";
     event.deliveredAt = new Date().toISOString();
     event.lastError = undefined;
+    event.outcomeUncertainAt = undefined;
     const audit = runtimeCommandDeliveredAudit(event, dispatchResult.delivery);
     if (audit) await recordAuditEvent(context, audit);
     return event;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const result = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null where id = $1 and state = 'delivering' and attempts = $2 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error", [input.id, input.attempts]);
+    const result = await client.query<PersistentOutboxRow>("update outbox_events set state = 'delivered', delivered_at = now(), last_error = null, outcome_uncertain_at = null where id = $1 and state = 'delivering' and attempts = $2 returning id, tenant_id, event_type, state, attempts, payload, created_at, delivered_at, last_error, outcome_uncertain_at", [input.id, input.attempts]);
     if (!result.rows[0]) throw new OutboxLeaseLostError("outbox lease lost before the delivery was recorded");
     const event = persistentEvent(result.rows[0]);
     if (event.type === "media.dispatch" && ["SCHEDULED_START", "START", "RECOVER"].includes(event.command.payload.controlAction)) {
@@ -264,43 +292,68 @@ async function applyActivationProgramReceipt(client: PoolClient, context: Reques
     values ($1, $2, 'live_program.activation_accepted', 'live_run', $3::uuid, $3, $4::jsonb)`, [context.tenantId, actor.rows[0].id, event.command.runId, JSON.stringify({ outboxEventId: event.id, commandId: event.command.id, action: event.command.payload.controlAction, programSegmentId: segmentId, receipt })]);
 }
 
-async function markFailed(context: RequestContext, input: RuntimeOutboxEvent, lastError: string) {
+type GatewayOutcome = { outcomeUncertain: boolean; definite: boolean };
+// The same classification as the runtime worker's deliver(): both codes are final for this delivery.
+function gatewayOutcome(error: unknown): GatewayOutcome {
+  const code = error instanceof RuntimeGatewayError ? error.code : undefined;
+  return { outcomeUncertain: code === "command_outcome_uncertain", definite: code === "command_failed_definite" };
+}
+
+// The same rules as the runtime worker's markFailed. command_outcome_uncertain sets outcome_uncertain_at (kept if
+// already set) and command_failed_definite clears it; either one exhausts the event (attempts raised to the
+// maximum), so the worker does not retry it and the delivery-exhausted alert is opened. Any other failure, for
+// example a network error, leaves the flag as it was.
+async function markFailed(context: RequestContext, input: RuntimeOutboxEvent, lastError: string, { outcomeUncertain, definite }: GatewayOutcome) {
+  const final = outcomeUncertain || definite;
   if (!databasePool()) {
     const event = outboxStore().events.get(input.id);
-    if (event) { event.state = "failed"; event.lastError = lastError; }
+    if (event) {
+      event.state = "failed";
+      event.lastError = lastError;
+      if (final) event.attempts = Math.max(event.attempts, outboxMaxAttempts);
+      if (outcomeUncertain) event.outcomeUncertainAt ??= new Date().toISOString();
+      if (definite) event.outcomeUncertainAt = undefined;
+    }
     return;
   }
   await withTenantTransaction(context.tenantId, async (client) => {
     // Fenced like markDelivered: once the lease was taken over, the new holder owns the event's state.
-    const fenced = await client.query("update outbox_events set state = 'failed', last_error = $2 where id = $1 and state = 'delivering' and attempts = $3", [input.id, lastError, input.attempts]);
+    const fenced = await client.query(`update outbox_events set state = 'failed', last_error = $2,
+      attempts = case when $4 then greatest(attempts, $6) else attempts end,
+      outcome_uncertain_at = case when $4 and $5 then coalesce(outcome_uncertain_at, now()) when $4 then null else outcome_uncertain_at end
+      where id = $1 and state = 'delivering' and attempts = $3`, [input.id, lastError, input.attempts, final, outcomeUncertain, outboxMaxAttempts]);
     if (fenced.rowCount !== 1) return;
-    if (input.attempts >= outboxMaxAttempts) await openDeliveryExhaustedAlert(client, context, input, lastError);
+    if (final || input.attempts >= outboxMaxAttempts) await openDeliveryExhaustedAlert(client, context, input, lastError, outcomeUncertain);
   });
 }
 
-async function openDeliveryExhaustedAlert(client: PoolClient, context: RequestContext, event: RuntimeOutboxEvent, lastError: string) {
+async function openDeliveryExhaustedAlert(client: PoolClient, context: RequestContext, event: RuntimeOutboxEvent, lastError: string, outcomeUncertain: boolean) {
   if (event.type === "channel.reply.dispatch") return;
   const severity = event.type === "media.dispatch" ? "critical" : "warning";
   const code = "runtime_command_delivery_exhausted";
   const existing = await client.query<{ id: string }>("select id from runtime_alerts where live_run_id = $1 and code = $2 and status = 'open' for update", [event.command.runId, code]);
   if (existing.rows[0]) return;
   const error = String(lastError).replace(/[\r\n\t]+/g, " ").slice(0, 500);
+  // An uncertain command may have reached the media session: the operator checks it instead of resending blindly.
+  const message = outcomeUncertain
+    ? `运行时 ${event.type} 指令结果不确定，需人工核对媒体会话后在 Gateway 处置并重新投递：${error}`
+    : `运行时 ${event.type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`;
   const opened = await client.query<{ id: string }>(
     "insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, $3::alert_severity, $4, $5, 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id",
-    [context.tenantId, event.command.runId, severity, code, `运行时 ${event.type} 指令在 ${event.attempts} 次尝试后仍未送达：${error}`]
+    [context.tenantId, event.command.runId, severity, code, message]
   );
   if (!opened.rows[0]) return;
   const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
   await client.query(
     `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
      values ($1, $2, 'runtime_command.delivery_exhausted', 'runtime_alert', $3::uuid, $3, $4::jsonb)`,
-    [context.tenantId, actor.rows[0].id, opened.rows[0].id, JSON.stringify({ runId: event.command.runId, outboxEventId: event.id, eventType: event.type, attempts: event.attempts, severity, deliveryMode: "manual" })]
+    [context.tenantId, actor.rows[0].id, opened.rows[0].id, JSON.stringify({ runId: event.command.runId, outboxEventId: event.id, eventType: event.type, attempts: event.attempts, severity, deliveryMode: "manual", ...(outcomeUncertain ? { outcomeUncertain: true } : {}) })]
   );
 }
 
 function persistentEvent(row: PersistentOutboxRow): RuntimeOutboxEvent {
   const payload = typeof row.payload === "string" ? JSON.parse(row.payload) as Record<string, unknown> : row.payload as Record<string, unknown>;
-  const base = { id: row.id, tenantId: row.tenant_id, state: row.state, attempts: row.attempts, createdAt: new Date(row.created_at).toISOString(), deliveredAt: row.delivered_at ? new Date(row.delivered_at).toISOString() : undefined, lastError: row.last_error ?? undefined };
+  const base = { id: row.id, tenantId: row.tenant_id, state: row.state, attempts: row.attempts, createdAt: new Date(row.created_at).toISOString(), deliveredAt: row.delivered_at ? new Date(row.delivered_at).toISOString() : undefined, lastError: row.last_error ?? undefined, outcomeUncertainAt: row.outcome_uncertain_at ? new Date(row.outcome_uncertain_at).toISOString() : undefined };
   if (row.event_type === "media.dispatch") return { ...base, type: row.event_type, sessionId: payload.sessionId as string, command: payload.command as MediaCommand };
   if (row.event_type === "speech.dispatch") return { ...base, type: row.event_type, sessionId: payload.sessionId as string, command: payload.command as SpeechCommand };
   if (row.event_type === "channel.reply.dispatch") {

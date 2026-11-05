@@ -77,6 +77,30 @@ for (const [route, params, expected] of [
   assert.deepEqual(await response.json(), { error: expected }, `POST /api/v1/${route} must answer a non-empty error code`);
 }
 console.log("PASS  refused mutations answer 403 with a non-empty error code");
+// H7: the uncertain-command routes call the Runtime Gateway with RUNTIME_SHARED_TOKEN, which reaches every
+// tenant's commands, so they are admin-only. Operators and analysts are refused before the Gateway is called.
+{
+  const realFetch = globalThis.fetch;
+  let gatewayCalls = 0;
+  globalThis.fetch = async () => { gatewayCalls += 1; throw new Error("the Gateway must not be called for a refused request"); };
+  try {
+    const { GET } = await import(pathToFileURL(path.join(routesRoot, "runtime/uncertain-commands/route.ts")).href);
+    const { POST } = await import(pathToFileURL(path.join(routesRoot, "runtime/uncertain-commands/[commandId]/resolution/route.ts")).href);
+    for (const role of ["operator", "reviewer", "analyst"]) {
+      const headers = { ...analystHeaders, "x-actor-role": role };
+      const listed = await GET(new Request("http://127.0.0.1/api/v1/runtime/uncertain-commands", { headers }));
+      assert.equal(listed.status, 403, `a ${role} must be refused by GET /api/v1/runtime/uncertain-commands`);
+      assert.deepEqual(await listed.json(), { error: "uncertain_commands_rejected" });
+      const resolved = await POST(new Request("http://127.0.0.1/api/v1/runtime/uncertain-commands/media_x/resolution", { method: "POST", headers, body: JSON.stringify({ resolution: "completed", note: "checked" }) }), { params: Promise.resolve({ commandId: "media_x" }) });
+      assert.equal(resolved.status, 403, `a ${role} must be refused by POST /api/v1/runtime/uncertain-commands/{id}/resolution`);
+      assert.deepEqual(await resolved.json(), { error: "uncertain_command_resolution_rejected" });
+    }
+    assert.equal(gatewayCalls, 0, "refused uncertain-command requests must not reach the Gateway");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+console.log("PASS  only admins may list or resolve uncertain Runtime Gateway commands");
 
 async function collectRoutes(directory) {
   const entries = await readdir(directory, { withFileTypes: true });

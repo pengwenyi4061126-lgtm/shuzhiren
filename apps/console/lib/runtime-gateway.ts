@@ -71,6 +71,19 @@ function previewUrl(value: string) {
 // outlives the claim that authorised it, and `notBefore` (the outbox event's created_at) lets a retry accept
 // the Gateway's receipt of the first acceptance however old it is, as long as it is not older than the event.
 export type DispatchOptions = { timeoutMs?: number; notBefore?: string };
+// A non-2xx Gateway answer. `code` is the top-level machine-readable code of the Gateway's error body
+// (Requirement 19), for example command_outcome_uncertain or command_failed_definite; it is undefined when the
+// body has none. The error body's other fields are not kept: they may carry upstream diagnostics.
+export class RuntimeGatewayError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string | undefined) { super(message); this.name = "RuntimeGatewayError"; }
+}
+const gatewayCodePattern = /^[a-z][a-z0-9_]{0,63}$/;
+async function gatewayError(response: Response, message: string) {
+  const body = await response.json().catch(() => null) as unknown;
+  const code = body && typeof body === "object" && !Array.isArray(body) ? (body as { code?: unknown }).code : undefined;
+  const gatewayCode = typeof code === "string" && gatewayCodePattern.test(code) ? code : undefined;
+  return new RuntimeGatewayError(`${message}: ${response.status}${gatewayCode ? ` ${gatewayCode}` : ""}`, response.status, gatewayCode);
+}
 const RECEIPT_CLOCK_SKEW_MS = 30_000;
 function requestSignal(config: RuntimeGatewayConfig, options?: DispatchOptions) {
   const budget = options?.timeoutMs;
@@ -99,7 +112,7 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
     body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeScript ? { runtime_voice_id: runtimeVoiceId, voice_checksum: voiceChecksum } : {}) }),
     signal: requestSignal(config, options)
   });
-  if (!response.ok) throw new Error(`Runtime gateway rejected media command: ${response.status}`);
+  if (!response.ok) throw await gatewayError(response, "Runtime gateway rejected media command");
   const provider = await response.json() as unknown;
   assertMediaGatewayReceipt(provider, command, sessionId, options?.notBefore);
   return { delivery: "accepted" as const, provider };
@@ -138,6 +151,70 @@ export async function dispatchSpeechCommand(command: SpeechCommand, sessionId: s
     body: JSON.stringify({ command_id: command.id, session_id: sessionId, text: command.text, voice: command.voice, voice_checksum: command.voiceChecksum, interrupt: command.interrupt, provider: "cosyvoice" }),
     signal: requestSignal(config, options)
   });
-  if (!response.ok) throw new Error(`Runtime gateway rejected speech command: ${response.status}`);
+  if (!response.ok) throw await gatewayError(response, "Runtime gateway rejected speech command");
   return { delivery: "accepted" as const, provider: await response.json() as unknown };
+}
+// Operator routes of the Gateway's Command_Journal (Requirement 19.9-19.11). The console calls them with
+// RUNTIME_SHARED_TOKEN on the server; the browser never sees the token.
+export type UncertainRuntimeCommand = {
+  commandId: string;
+  kind: "media" | "speech";
+  reservedAt: string | null;
+  uncertainAt: string | null;
+  reason: string | null;
+  sessionId: string | null;
+  action: string | null;
+  programSegmentId: string | null;
+  succeededSteps: string[];
+  failedStep: string | null;
+  identityAvailable: boolean;
+};
+export type RuntimeCommandResolution = "completed" | "failed_definite";
+export type RuntimeCommandResolutionResult = { commandId: string; previousState: string; state: RuntimeCommandResolution; resolvedAt: string };
+// The Gateway's COMMAND_ID_PATTERN.
+const runtimeCommandIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+export function runtimeCommandIdValid(value: unknown): value is string { return typeof value === "string" && runtimeCommandIdPattern.test(value); }
+export async function listUncertainRuntimeCommands(): Promise<UncertainRuntimeCommand[]> {
+  const config = runtimeGatewayConfig();
+  if (config.demoMode) return [];
+  const response = await fetch(`${config.url}/v1/ops/uncertain-commands`, { cache: "no-store", headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(config.requestTimeoutMs) });
+  if (!response.ok) throw await gatewayError(response, "Runtime gateway uncertain command list failed");
+  const body = await response.json().catch(() => null) as { commands?: unknown } | null;
+  if (!body || !Array.isArray(body.commands)) throw new Error("Runtime gateway uncertain command list is invalid");
+  return body.commands.map(uncertainRuntimeCommand);
+}
+function uncertainRuntimeCommand(value: unknown): UncertainRuntimeCommand {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Runtime gateway uncertain command list is invalid");
+  const item = value as Record<string, unknown>;
+  if (!runtimeCommandIdValid(item.command_id) || (item.kind !== "media" && item.kind !== "speech")) throw new Error("Runtime gateway uncertain command list is invalid");
+  const text = (field: unknown) => typeof field === "string" ? field : null;
+  return {
+    commandId: item.command_id,
+    kind: item.kind,
+    reservedAt: text(item.reserved_at),
+    uncertainAt: text(item.uncertain_at),
+    reason: text(item.reason),
+    sessionId: text(item.session_id),
+    action: text(item.action),
+    programSegmentId: text(item.program_segment_id),
+    succeededSteps: Array.isArray(item.succeeded_steps) ? item.succeeded_steps.filter((step): step is string => typeof step === "string") : [],
+    failedStep: text(item.failed_step),
+    identityAvailable: item.identity_available === true
+  };
+}
+export async function resolveUncertainRuntimeCommand(commandId: string, resolution: RuntimeCommandResolution, note: string): Promise<RuntimeCommandResolutionResult> {
+  const config = runtimeGatewayConfig();
+  if (config.demoMode) throw new RuntimeGatewayError("Runtime gateway is in demo mode", 404, "command_not_found");
+  if (!runtimeCommandIdValid(commandId)) throw new RuntimeGatewayError("Runtime command was not found", 404, "command_not_found");
+  const response = await fetch(`${config.url}/v1/ops/uncertain-commands/${encodeURIComponent(commandId)}/resolution`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+    body: JSON.stringify({ resolution, note }),
+    signal: AbortSignal.timeout(config.requestTimeoutMs)
+  });
+  if (!response.ok) throw await gatewayError(response, "Runtime gateway rejected the resolution");
+  const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body || body.command_id !== commandId || body.state !== resolution || typeof body.previous_state !== "string" || typeof body.resolved_at !== "string") throw new Error("Runtime gateway resolution response is invalid");
+  return { commandId, previousState: body.previous_state, state: resolution, resolvedAt: body.resolved_at };
 }

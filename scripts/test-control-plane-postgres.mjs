@@ -603,6 +603,7 @@ try {
   assert.equal(healthyManualFailureTelemetry.status, 202, "healthy telemetry should be accepted after a manual delivery failure");
   assert.equal((await client.query("select status from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted'", [manualFailureRun.runId])).rows[0].status, "open", "healthy telemetry must not auto-resolve a command delivery failure");
   await assertManualDeliveryDoesNotResend(manualFailureRun.runId, consolePort, requestHeaders);
+  await assertManualDeliveryUncertainOutcome(consolePort, requestHeaders, operatorRequestHeaders, analystRequestHeaders);
 
   const recordingInput = {
     tenantId,
@@ -1365,11 +1366,134 @@ async function assertManualDeliveryDoesNotResend(runId, consolePort, requestHead
   await client.query("update outbox_events set state = 'cancelled' where id = any($1::uuid[])", [[unconfirmedEventId, heldEventId]]);
 }
 
+// H7: a manual delivery the Gateway answers 409 command_outcome_uncertain fails without retrying and is flagged
+// (outbox_events.outcome_uncertain_at, 080); the flag is cleared by a later delivery or a definite answer. The
+// console proxies the Gateway's operator routes for admins only, with RUNTIME_SHARED_TOKEN, and audits each resolution.
+async function assertManualDeliveryUncertainOutcome(consolePort, adminHeaders, operatorHeaders, analystHeaders) {
+  const base = `http://127.0.0.1:${consolePort}`;
+  const adminBearer = adminHeaders.authorization;
+  const run = await seedRun("LIVE", "session_manual_uncertain", new Date());
+  const insertEvent = async (commandId, extra = "") => (await client.query(`insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload${extra ? ", state, attempts, outcome_uncertain_at" : ""})
+    values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb${extra}) returning id`, [tenantId, run.runId, JSON.stringify({
+      sessionId: "session_manual_uncertain",
+      command: { id: commandId, runId: run.runId, type: "switch_to_human", issuedAt: new Date().toISOString(), traceId: `trace_${run.runId}`, payload: { controlAction: "MANUAL_OUTBOX_UNCERTAIN_TEST" } }
+    })])).rows[0].id;
+  const deliver = (eventId) => fetch(`${base}/api/v1/runtime/outbox/${eventId}/deliver`, { method: "POST", headers: adminHeaders });
+  const row = async (eventId) => (await client.query("select state, attempts, outcome_uncertain_at is not null as flagged from outbox_events where id = $1", [eventId])).rows[0];
+
+  const commandId = `uncertain_media_${randomUUID()}`;
+  mock.uncertainCommands.set(commandId, { reservedAt: new Date().toISOString(), uncertainAt: new Date().toISOString(), sessionId: "session_manual_uncertain" });
+  // Uncertain in the Gateway, but its outbox event belongs to another deployment's tenant: never shown here.
+  const foreignCommandId = `uncertain_media_${randomUUID()}`;
+  mock.uncertainCommands.set(foreignCommandId, { reservedAt: new Date().toISOString(), uncertainAt: new Date().toISOString(), sessionId: "session_elsewhere" });
+  const eventId = await insertEvent(commandId);
+
+  const uncertainDelivery = await deliver(eventId);
+  assert.equal(uncertainDelivery.status, 503, "a manual delivery answered command_outcome_uncertain must fail");
+  assert.equal((await uncertainDelivery.json()).gatewayCode, "command_outcome_uncertain", "the response must name the Gateway's code");
+  assert.deepEqual(await row(eventId), { state: "failed", attempts: 1, flagged: true }, "an uncertain manual delivery must be failed and flagged, and not left for an automatic retry");
+  const alert = (await client.query("select message from runtime_alerts where live_run_id = $1 and code = 'runtime_command_delivery_exhausted' and status = 'open'", [run.runId])).rows[0];
+  assert.match(alert?.message ?? "", /结果不确定，需人工核对媒体会话/, "the alert must tell the operator to check the media session");
+  const alertAudit = await client.query("select detail from audit_events where event_type = 'runtime_command.delivery_exhausted' and detail ->> 'outboxEventId' = $1", [eventId]);
+  assert.equal(alertAudit.rows[0]?.detail.outcomeUncertain, true, "the delivery-exhausted audit event must record the uncertain outcome");
+  const listed = (await (await fetch(`${base}/api/v1/runtime/outbox`, { headers: adminHeaders })).json()).data.find((event) => event.id === eventId);
+  assert.ok(listed?.outcomeUncertainAt && !Number.isNaN(Date.parse(listed.outcomeUncertainAt)), "the outbox list must return outcomeUncertainAt");
+  assert.equal(listed.state, "failed");
+
+  // Operators and analysts are refused before the Gateway is called.
+  const opsBefore = mock.opsRequests.length;
+  for (const headers of [operatorHeaders, analystHeaders]) {
+    assert.equal((await fetch(`${base}/api/v1/runtime/uncertain-commands`, { headers })).status, 403, "only admins may list uncertain commands");
+    assert.equal((await fetch(`${base}/api/v1/runtime/uncertain-commands/${commandId}/resolution`, { method: "POST", headers, body: JSON.stringify({ resolution: "completed", note: "operator check" }) })).status, 403, "only admins may resolve uncertain commands");
+  }
+  assert.equal(mock.opsRequests.length, opsBefore, "refused requests must not reach the Gateway");
+
+  const browserHeaders = { ...adminHeaders, "x-runtime-token": "browser-supplied-token", "x-runtime-shared-token": "browser-supplied-token" };
+  const list = await fetch(`${base}/api/v1/runtime/uncertain-commands`, { headers: browserHeaders });
+  assert.equal(list.status, 200, "an admin must list uncertain commands");
+  const listText = await list.text();
+  assert.ok(!listText.includes(gatewayToken), "the Gateway token must never reach the browser");
+  const listedCommands = JSON.parse(listText).data;
+  assert.deepEqual(listedCommands.map((command) => command.commandId), [commandId], "only commands of the caller's tenant are listed");
+  assert.equal(listedCommands[0].outboxEventId, eventId);
+  assert.equal(listedCommands[0].runId, run.runId);
+  assert.ok(listedCommands[0].outcomeUncertainAt, "the listed command carries its outbox flag");
+
+  const invalid = await fetch(`${base}/api/v1/runtime/uncertain-commands/${commandId}/resolution`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ resolution: "completed", note: "" }) });
+  assert.equal(invalid.status, 400, "an empty note must be refused");
+  const tooLong = await fetch(`${base}/api/v1/runtime/uncertain-commands/${commandId}/resolution`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ resolution: "reserved", note: "x" }) });
+  assert.equal(tooLong.status, 400, "a resolution other than completed or failed_definite must be refused");
+  const foreign = await fetch(`${base}/api/v1/runtime/uncertain-commands/${foreignCommandId}/resolution`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ resolution: "failed_definite", note: "not ours" }) });
+  assert.equal(foreign.status, 404, "a command without an outbox event in the caller's tenant must not be resolved");
+  assert.deepEqual(mock.opsRequests.filter((request) => request.method === "POST").length, 0, "invalid and foreign resolutions must not reach the Gateway");
+  assert.ok(mock.uncertainCommands.has(foreignCommandId));
+
+  const note = "已在媒体会话确认画面切换到真人";
+  const resolved = await fetch(`${base}/api/v1/runtime/uncertain-commands/${commandId}/resolution`, { method: "POST", headers: browserHeaders, body: JSON.stringify({ resolution: "completed", note, token: "browser-supplied-token" }) });
+  assert.equal(resolved.status, 200, "an admin must resolve an uncertain command");
+  const resolvedText = await resolved.text();
+  assert.ok(!resolvedText.includes(gatewayToken), "the Gateway token must never reach the browser");
+  assert.deepEqual((({ commandId: id, state, previousState, outboxEventId }) => ({ id, state, previousState, outboxEventId }))(JSON.parse(resolvedText).data), { id: commandId, state: "completed", previousState: "uncertain", outboxEventId: eventId });
+  const forwarded = mock.opsRequests.filter((request) => request.method === "POST");
+  assert.equal(forwarded.length, 1);
+  assert.deepEqual(JSON.parse(forwarded[0].body), { resolution: "completed", note }, "only resolution and note are forwarded to the Gateway");
+  for (const request of mock.opsRequests.slice(opsBefore)) {
+    assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`, "the console must call the Gateway with RUNTIME_SHARED_TOKEN");
+    const forwardedText = JSON.stringify(request);
+    assert.ok(!forwardedText.includes("browser-supplied-token") && !forwardedText.includes(adminBearer.slice("Bearer ".length)), "browser credentials and headers must not be forwarded to the Gateway");
+  }
+  const resolutionAudit = await client.query("select resource_type, resource_key, detail from audit_events where event_type = 'runtime_command.resolved' and detail ->> 'commandId' = $1", [commandId]);
+  assert.equal(resolutionAudit.rows.length, 1, "each resolution writes one audit event");
+  assert.deepEqual({ resource: resolutionAudit.rows[0].resource_type, key: resolutionAudit.rows[0].resource_key, resolution: resolutionAudit.rows[0].detail.resolution, note: resolutionAudit.rows[0].detail.note, runId: resolutionAudit.rows[0].detail.runId }, { resource: "outbox_event", key: eventId, resolution: "completed", note, runId: run.runId });
+
+  // After the resolution the Gateway answers the command again; redelivery records it and clears the flag.
+  const redelivery = await deliver(eventId);
+  assert.equal(redelivery.status, 202, "a resolved command must be redeliverable after the check");
+  assert.equal((await redelivery.json()).data.event.outcomeUncertainAt, undefined);
+  assert.deepEqual(await row(eventId), { state: "delivered", attempts: 2, flagged: false }, "a delivery must clear the uncertain flag");
+
+  // A definite Gateway answer also clears the flag.
+  const definiteEventId = await insertEvent(`definite_media_${randomUUID()}`, ", 'failed', 1, now()");
+  const definite = await deliver(definiteEventId);
+  assert.equal(definite.status, 503);
+  assert.equal((await definite.json()).gatewayCode, "command_failed_definite");
+  assert.deepEqual(await row(definiteEventId), { state: "failed", attempts: 2, flagged: false }, "command_failed_definite must clear the uncertain flag and leave the event failed");
+
+  // The Gateway resolution succeeds but its audit event cannot be written: 5xx, logged, and the resolution stands.
+  const auditFailCommandId = `uncertain_media_${randomUUID()}`;
+  mock.uncertainCommands.set(auditFailCommandId, { reservedAt: new Date().toISOString(), uncertainAt: new Date().toISOString(), sessionId: "session_manual_uncertain" });
+  const auditFailEventId = await insertEvent(auditFailCommandId, ", 'failed', 1, now()");
+  await client.query(`create function it_fail_resolution_audit() returns trigger language plpgsql as $$
+    begin
+      if new.event_type = 'runtime_command.resolved' and new.detail ->> 'commandId' = '${auditFailCommandId}' then raise exception 'injected audit failure'; end if;
+      return new;
+    end $$`);
+  await client.query("create trigger it_fail_resolution_audit before insert on audit_events for each row execute function it_fail_resolution_audit()");
+  try {
+    const auditFailed = await fetch(`${base}/api/v1/runtime/uncertain-commands/${auditFailCommandId}/resolution`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ resolution: "failed_definite", note: "checked: not on air" }) });
+    assert.equal(auditFailed.status, 500, "a resolution whose audit event was not written must not be reported as complete");
+    const auditFailedBody = await auditFailed.json();
+    assert.equal(auditFailedBody.error, "resolution_audit_failed");
+    assert.equal(auditFailedBody.data.state, "failed_definite", "the response tells the admin that the Gateway recorded the resolution");
+    assert.ok(!mock.uncertainCommands.has(auditFailCommandId), "the Gateway resolution stands");
+  } finally {
+    await client.query("drop trigger it_fail_resolution_audit on audit_events");
+    await client.query("drop function it_fail_resolution_audit()");
+  }
+
+  mock.uncertainCommands.delete(foreignCommandId);
+  // Keep the worker started later in this run away from these synthetic events.
+  await client.query("update outbox_events set state = 'cancelled' where id = any($1::uuid[]) and state <> 'delivered'", [[eventId, definiteEventId, auditFailEventId]]);
+}
+
 async function startMockServer() {
   const mediaCommands = [];
   const speechCommands = [];
   const alertNotifications = [];
   const channelReplies = [];
+  // H7: the Gateway's uncertain commands (command id -> view fields) and the operator requests it received.
+  const uncertainCommands = new Map();
+  const opsRequests = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/jwks") return json(response, 200, { keys: [jwk] });
@@ -1409,8 +1533,28 @@ async function startMockServer() {
       // approved runtime voice id and its checksum; a command without a script may not carry a voice.
       if (command.program_script ? !gatewayVoiceIdValid(command.runtime_voice_id) || !gatewayVoiceChecksumValid(command.voice_checksum) : command.runtime_voice_id !== undefined || command.voice_checksum !== undefined) return json(response, 400, { detail: "Approved runtime voice id and checksum must accompany exactly the commands with a program script" });
       if (command.command_id.startsWith("fail_media_")) return json(response, 503, { error: "injected_delivery_failure" });
+      // H7: as the Gateway, an uncertain command answers 409 command_outcome_uncertain until an operator resolves it.
+      if (command.command_id.startsWith("uncertain_media_") && uncertainCommands.has(command.command_id)) return json(response, 409, { detail: "Runtime command outcome is uncertain; an operator must resolve it", code: "command_outcome_uncertain", reason: "livetalking_timeout", duplicate: true });
+      if (command.command_id.startsWith("definite_media_")) return json(response, 502, { detail: "LiveTalking rejected the command", code: "command_failed_definite", reason: "livetalking_client_error", failed_step: "interrupt_talk" });
       if (command.command_id.startsWith("held_fail_media_")) { await mockGates.heldFailure; return json(response, 503, { error: "injected_delivery_failure" }); }
       return json(response, 200, { accepted: true, command_id: command.command_id, session_id: command.session_id, action: command.action, receipt: { command_id: command.command_id, session_id: command.session_id, action: command.action, program_segment_id: command.program_segment_id ?? null, accepted_at: new Date().toISOString(), evidence: "integration_gateway_accepted" } });
+    }
+    if (url.pathname === "/v1/ops/uncertain-commands" && request.method === "GET") {
+      opsRequests.push({ method: "GET", path: url.pathname, headers: { ...request.headers }, body: null });
+      if (request.headers.authorization !== `Bearer ${gatewayToken}`) return json(response, 401, { detail: "Unauthorized" });
+      const commands = [...uncertainCommands.entries()].map(([commandId, item]) => ({ command_id: commandId, kind: "media", reserved_at: item.reservedAt, uncertain_at: item.uncertainAt, reason: "livetalking_timeout", session_id: item.sessionId, action: "switch_to_human", program_segment_id: null, succeeded_steps: [], failed_step: "interrupt_talk", identity_available: true }));
+      return json(response, 200, { count: commands.length, commands });
+    }
+    const resolutionPath = /^\/v1\/ops\/uncertain-commands\/([^/]+)\/resolution$/.exec(url.pathname);
+    if (resolutionPath && request.method === "POST") {
+      const commandId = decodeURIComponent(resolutionPath[1]);
+      const raw = await requestRawBody(request);
+      opsRequests.push({ method: "POST", path: url.pathname, headers: { ...request.headers }, body: raw });
+      if (request.headers.authorization !== `Bearer ${gatewayToken}`) return json(response, 401, { detail: "Unauthorized" });
+      if (!uncertainCommands.has(commandId)) return json(response, 404, { detail: "Runtime command was not found", code: "command_not_found" });
+      const body = JSON.parse(raw);
+      uncertainCommands.delete(commandId);
+      return json(response, 200, { command_id: commandId, previous_state: "uncertain", state: body.resolution, resolved_at: new Date().toISOString() });
     }
     if (url.pathname === "/v1/speak" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${gatewayToken}`);
@@ -1440,7 +1584,7 @@ async function startMockServer() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("mock server did not bind a TCP port");
-  return { server, mediaCommands, speechCommands, alertNotifications, channelReplies, baseUrl: `http://127.0.0.1:${address.port}` };
+  return { server, mediaCommands, speechCommands, alertNotifications, channelReplies, uncertainCommands, opsRequests, baseUrl: `http://127.0.0.1:${address.port}` };
 }
 function gatewayVoiceIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function gatewayVoiceChecksumValid(value) { return typeof value === "string" && /^sha256:[0-9a-fA-F]{64}$/.test(value); }
