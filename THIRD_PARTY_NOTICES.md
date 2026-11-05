@@ -20,7 +20,8 @@ npm 依赖、Python 依赖（`requirements.txt` 安装的包）、CUDA 基础镜
 说明：
 
 - `runtime/open-source.lock.json`（`schemaVersion` 2）记录上表四个组件的路径、父仓库、锁定提交、许可证名称和使用它的镜像；MuseTalk 的 `images` 为空，只为源码审阅和权重来源追溯保留。`npm run deploy:check` 核对每个条目的源码 HEAD、父仓库记录的子模块提交和干净工作树。
-- 两个 Dockerfile 的构建上下文排除规则（`Dockerfile.dockerignore`）只排除 `.git`、模型、数据、密钥和日志类路径，不排除根目录 `LICENSE`。按此规则，镜像中应有 `/app/LICENSE`、`/opt/CosyVoice/CosyVoice/LICENSE` 和 `/opt/CosyVoice/CosyVoice/third_party/Matcha-TTS/LICENSE`。仓库中没有检查这三个文件确实存在于镜像中的门禁，发布时需部署方在镜像中确认。
+- 两个 Dockerfile 的构建上下文排除规则（`Dockerfile.dockerignore`）只排除 `.git`、模型、数据、密钥和日志类路径，不排除根目录 `LICENSE`。镜像中有 `/app/LICENSE`、`/opt/CosyVoice/CosyVoice/LICENSE` 和 `/opt/CosyVoice/CosyVoice/third_party/Matcha-TTS/LICENSE`。
+- `npm run runtime:images:licenses:check` 检查每个进入镜像的组件的 `LICENSE`（锁定提交有 NOTICE 时还有 `NOTICE`）没有被构建上下文排除。CI 的 `docker-build` job 在构建 LiveTalking 与 CosyVoice 镜像后运行 `scripts/check-runtime-image-licenses.mjs`，从镜像中读出这三个 `LICENSE` 文件，与各组件锁定提交中的 `LICENSE` 逐字节比较。
 
 ## 2. LiveTalking 修改说明
 
@@ -36,11 +37,13 @@ Apache License 2.0 第 4 条要求再分发修改后的作品时附带许可证�
 
 锁定提交的 `vendor/LiveTalking` 根目录没有 NOTICE 文件，因此没有需要随镜像保留的 NOTICE 内容。
 
-尚未完成的部分（属代码与 Dockerfile 范围，见 `docs/AUDIT_REGISTER.md` 的 L18 与 Requirement 39）：
+修改说明随镜像分发，并由门禁核对：
 
-- 补丁只在部分改动处带有 `# Shuzhiren:` 注释，没有在每个被修改文件的开头写明"本文件已被 Shuzhiren 修改"。
-- 镜像 `/app` 下没有本修改说明的副本。
-- `deploy:check` 不比对本节列出的文件集合与补丁实际修改的文件集合。补丁变更时须同步更新本节。
+- 每个被修改或新增的 LiveTalking 文件在前 10 行内带有注释 `# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md`，由序列中第一个改动该文件的补丁加入。新增的 `tts/none_tts.py` 另有一行注释，写明该文件由 Shuzhiren 新增、不属于上游 LiveTalking。
+- `runtime/patches/LIVETALKING_MODIFICATIONS.md` 列出上游仓库、被修改的锁定提交、NOTICE 情况，以及每个补丁的改动摘要和"文件 | 操作"表。`runtime/livetalking/Dockerfile` 把它复制到镜像的 `/app/LIVETALKING_MODIFICATIONS.md`，与 `/app/LICENSE` 放在一起。
+- `npm run deploy:check` 比对该文件与锁文件（锁定提交、上游仓库、NOTICE 行）和补丁序列（每个补丁修改、新增、删除或重命名的文件集合），不一致时报错。`npm run runtime:images:licenses:check` 在临时索引中按序列把补丁应用到锁定提交，检查每个被修改或新增的文件前 10 行有上述注释。CI 的 `docker-build` job 在构建出的 LiveTalking 镜像中检查修改说明与仓库文件逐字节一致，并检查镜像中每个被修改或新增的文件带有该注释。
+
+补丁变更时，须在同一提交中更新 `runtime/patches/LIVETALKING_MODIFICATIONS.md` 和本节的表格。
 
 ## 3. 模型权重（不在仓库中，部署时只读挂载）
 

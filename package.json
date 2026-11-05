@@ -80,6 +80,8 @@
     "runtime:gateway:config:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-config.py",
     "runtime:gateway:errors:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-errors.py",
     "runtime:images:check": "node scripts/check-runtime-service-images.mjs",
+    "runtime:images:licenses:check": "node scripts/check-runtime-image-licenses.mjs --static",
+    "runtime:images:licenses:test": "node scripts/test-runtime-image-licenses.mjs",
     "runtime:worker:config:test": "node scripts/test-runtime-worker-config.mjs",
     "runtime:worker:health:test": "node scripts/test-runtime-worker-health.mjs",
     "runtime:acceptance:verify": "node scripts/verify-4090-acceptance.mjs",

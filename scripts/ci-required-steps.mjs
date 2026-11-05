@@ -44,7 +44,10 @@ export const CI_ONLY_STEPS = Object.freeze([
   { job: "docker-build", command: "docker build --file apps/alert-notifier/Dockerfile --tag shuzhiren-alert-notifier-ci .", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", localReason: NO_DOCKER, label: "static" },
-  { job: "docker-build", command: "docker build --file runtime/cosyvoice/Dockerfile --build-arg MINIFORGE_URL=\"$url\" --build-arg MINIFORGE_SHA256=\"$sha\" --tag shuzhiren-cosyvoice-ci .", localReason: NO_DOCKER, label: "static" }
+  // L18 (Requirement 39.10, 39.12-39.14): license, NOTICE and modification notice files inside the built images.
+  { job: "docker-build", command: "node scripts/check-runtime-image-licenses.mjs --livetalking-image shuzhiren/livetalking:ci", localReason: NO_DOCKER, label: "static" },
+  { job: "docker-build", command: "docker build --file runtime/cosyvoice/Dockerfile --build-arg MINIFORGE_URL=\"$url\" --build-arg MINIFORGE_SHA256=\"$sha\" --tag shuzhiren-cosyvoice-ci .", localReason: NO_DOCKER, label: "static" },
+  { job: "docker-build", command: "node scripts/check-runtime-image-licenses.mjs --cosyvoice-image shuzhiren-cosyvoice-ci", localReason: NO_DOCKER, label: "static" }
 ].map((step) => Object.freeze(step)));
 
 const isNonEmptyString = (value) => typeof value === "string" && value.trim() !== "";

@@ -18,8 +18,10 @@ RUN set -eu; cr="$(printf '\r')"; \
       git apply --check --recount "/tmp/livetalking-patches/$patch"; git apply --recount "/tmp/livetalking-patches/$patch"; \
     done < /tmp/livetalking-patches/livetalking.series; \
     rm -rf /tmp/livetalking-patches; \
-    mkdir -p /app/models /app/data/avatars /app/data/record; \
-    chown -R livetalking:livetalking /app
+    mkdir -p /app/models /app/data/avatars /app/data/record
+# Apache-2.0 4(b): ship the modification notice next to /app/LICENSE (Requirement 39.12).
+COPY runtime/patches/LIVETALKING_MODIFICATIONS.md /app/LIVETALKING_MODIFICATIONS.md
+RUN chown -R livetalking:livetalking /app
 # The launcher (PID 1) validates the stream key file and redacts LiveTalking's
 # stdout/stderr; the patched sources import shuzhiren_secrets from here.
 COPY runtime/livetalking/launcher.py runtime/livetalking/shuzhiren_secrets.py /opt/shuzhiren/

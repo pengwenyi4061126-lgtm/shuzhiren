@@ -10,6 +10,7 @@ import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
 import { checkDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
 import { checkTemplateRefVariables, deprecatedRefVariables, verifyOpenSourceLock } from "./lib/open-source-lock.mjs";
+import { verifyLiveTalkingNotice } from "./lib/runtime-image-licenses.mjs";
 import { checkRuntimeComposeConsistency, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 // Context-relative paths the LiveTalking image build must leave out (M23) or keep.
@@ -24,7 +25,8 @@ const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
 const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "vendor/LiveTalking/app.py", "vendor/LiveTalking/config.py", "vendor/LiveTalking/requirements.txt", "vendor/LiveTalking/server/routes.py", "vendor/LiveTalking/streamout/rtmp.py",
   "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch",
-  "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking-local-tts.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py"
+  "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking-local-tts.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py",
+  "vendor/LiveTalking/LICENSE", "runtime/patches/LIVETALKING_MODIFICATIONS.md"
 ]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -570,6 +572,9 @@ if (control.get("RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS") !== runtime.get("RUNTIME_G
 let lock;
 try { lock = JSON.parse(lockText); } catch { errors.push("无法解析开源运行时锁文件"); }
 if (lock !== undefined) errors.push(...verifyOpenSourceLock({ sourceRoot: files.sourceRoot, lock }));
+// L18 (Requirement 39.11, 39.15): runtime/patches/LIVETALKING_MODIFICATIONS.md names the locked commit, its NOTICE
+// state and exactly the files the patch series modifies, adds, deletes or renames.
+if (lock !== undefined) errors.push(...verifyLiveTalkingNotice({ sourceRoot: files.sourceRoot, lock }));
 for (const name of deprecatedRefVariables(runtime)) warnings.push(`${name} 已废弃，镜像源码以 runtime/open-source.lock.json 与子模块提交为准`);
 try {
   const configDirectory = path.join(files.sourceRoot, "config");

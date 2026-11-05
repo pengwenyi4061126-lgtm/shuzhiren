@@ -66,6 +66,8 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "media:evidence:check", kind: "npm", script: "media:evidence:check", label: "static" },
   { id: "recording:evidence:check", kind: "npm", script: "recording:evidence:check", label: "static" },
   { id: "runtime:images:check", kind: "npm", script: "runtime:images:check", label: "static" },
+  { id: "runtime:images:licenses:check", kind: "npm", script: "runtime:images:licenses:check", label: "static" },
+  { id: "runtime:images:licenses:test", kind: "npm", script: "runtime:images:licenses:test", label: "behavioral" },
   // static: its first three assertions match the source text of apps/runtime-worker/index.mjs.
   { id: "runtime:worker:config:test", kind: "npm", script: "runtime:worker:config:test", label: "static" },
   { id: "runtime:worker:health:test", kind: "npm", script: "runtime:worker:health:test", label: "behavioral" },

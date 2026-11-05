@@ -1,8 +1,8 @@
 diff --git a/avatars/base_avatar.py b/avatars/base_avatar.py
-index 263ed05..ee4601d 100644
+index e042423..547f2e0 100644
 --- a/avatars/base_avatar.py
 +++ b/avatars/base_avatar.py
-@@ -95,6 +95,8 @@ class BaseAvatar:
+@@ -96,6 +96,8 @@ class BaseAvatar:
          self.render_event = Event()
  
          _tts_modules = {
@@ -11,7 +11,7 @@ index 263ed05..ee4601d 100644
              'edgetts': 'tts.edge',
              'gpt-sovits': 'tts.sovits',
              'xtts': 'tts.xtts',
-@@ -112,7 +114,8 @@ class BaseAvatar:
+@@ -113,7 +115,8 @@ class BaseAvatar:
              importlib.import_module(_tts_modules[opt.tts])
              self.tts = registry.create("tts", opt.tts, opt=opt, parent=self)
          else:
@@ -22,10 +22,15 @@ index 263ed05..ee4601d 100644
          _output_modules = {
              'webrtc': 'streamout.webrtc',
 diff --git a/config.yaml b/config.yaml
-index 5c3e139..ab6b28b 100644
+index 5c3e139..5cc4e0f 100644
 --- a/config.yaml
 +++ b/config.yaml
-@@ -17,7 +17,7 @@ batch_size: 16
+@@ -1,3 +1,4 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
+ ###############################################################################
+ #  LiveTalking Configuration
+ #  CLI arguments override values in this file
+@@ -17,7 +18,7 @@ batch_size: 16
  customvideo_config: ''
  
  # -------- TTS ----------------------------------------------------------
@@ -36,10 +41,12 @@ index 5c3e139..ab6b28b 100644
  TTS_SERVER: ''                 # TTS server URL, no trailing slash
 diff --git a/tts/none_tts.py b/tts/none_tts.py
 new file mode 100644
-index 0000000..9b429e0
+index 0000000..e3484a5
 --- /dev/null
 +++ b/tts/none_tts.py
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,20 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
++# Added by the Shuzhiren project: this file is new and is not part of upstream LiveTalking.
 +from utils.logger import logger
 +from registry import register
 +from .base_tts import BaseTTS

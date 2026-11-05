@@ -1,9 +1,13 @@
 diff --git a/avatars/base_avatar.py b/avatars/base_avatar.py
-index 5231a81..5a3f634 100644
+index 28c826a..e042423 100644
 --- a/avatars/base_avatar.py
 +++ b/avatars/base_avatar.py
-@@ -70,5 +70,13 @@ class BaseAvatar:
-         self.speaking = False
+@@ -1,3 +1,4 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
+ ###############################################################################
+ #  Copyright (C) 2024 LiveTalking@lipku https://github.com/lipku/LiveTalking
+ #  email: lipku@foxmail.com
+@@ -71,6 +72,14 @@ class BaseAvatar:
          self.recording = False
          self._record_video_pipe = None
          self._record_audio_pipe = None
@@ -16,7 +20,9 @@ index 5231a81..5a3f634 100644
 +            "last_output_error": None,
 +        }
          self.width = self.height = 0
-@@ -368,7 +376,8 @@ class BaseAvatar:
+ 
+         self.custom_audiotype = 0 # 0: normal, 1: sinlence, >1: custom audio
+@@ -368,7 +377,9 @@ class BaseAvatar:
                  counttime += (time.perf_counter() - t)
                  count += self.batch_size
                  if count >= 100:
@@ -28,10 +34,15 @@ index 5231a81..5a3f634 100644
                      counttime = 0
                  for i, res_frame in enumerate(pred):
 diff --git a/server/routes.py b/server/routes.py
-index 23a459e..f6710e4 100644
+index 8037d06..c92c1e9 100644
 --- a/server/routes.py
 +++ b/server/routes.py
-@@ -226,6 +226,22 @@ async def admin_sessions(request):
+@@ -1,3 +1,4 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
+ ###############################################################################
+ #  服务器路由 — 统一异常处理的 API 路由
+ ###############################################################################
+@@ -227,6 +228,23 @@ async def admin_sessions(request):
          logger.exception('admin_sessions exception:')
          return json_error(str(e))
  
@@ -54,41 +65,41 @@ index 23a459e..f6710e4 100644
 +
  
  # ─── 路由注册 ──────────────────────────────────────────────────────────────
-@@ -250,6 +266,7 @@ def setup_routes(app):
-     app.router.add_post("/record", record)
-     app.router.add_post("/interrupt_talk", interrupt_talk)
+ 
+@@ -252,6 +270,7 @@ def setup_routes(app):
      app.router.add_post("/is_speaking", is_speaking)
      app.router.add_get("/api/admin/config", admin_config)
      app.router.add_get("/api/admin/sessions", admin_sessions)
 +    app.router.add_get("/api/admin/runtime-metrics", admin_runtime_metrics)
      app.router.add_get('/sse', sse_handler)
  
+     # ── Local ASR endpoint (SenseVoice/FunASR) ── Issue #604 ──
 diff --git a/streamout/rtmp.py b/streamout/rtmp.py
-index 7719334..f07dcc1 100644
+index 0ddc809..1ecd8e7 100644
 --- a/streamout/rtmp.py
 +++ b/streamout/rtmp.py
-@@ -34,0 +35,4 @@ class RTMPOutput(BaseOutput):
-+    def _record_metrics(self, **metrics) -> None:
-+        if self.parent and hasattr(self.parent, "runtime_metrics"):
-+            self.parent.runtime_metrics.update(metrics)
-+
-@@ -35,6 +39,7 @@ class RTMPOutput(BaseOutput):
-     def start(self) -> None:
-         """Streamer 延迟到第一帧视频到达时再根据实际宽高初始化"""
+@@ -1,3 +1,4 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
+ ###############################################################################
+ #  Output — RTMP 推流输出
+ ###############################################################################
+@@ -37,6 +38,7 @@ class RTMPOutput(BaseOutput):
          import queue
          self._audio_queue = queue.Queue()
          self._quit_event = False
 +        self._record_metrics(output_connected=False, last_output_error=None)
  
      def _init_streamer(self, frame_height, frame_width):
-@@ -64,6 +69,7 @@ class RTMPOutput(BaseOutput):
+         try:
+@@ -66,6 +68,7 @@ class RTMPOutput(BaseOutput):
  
          self._starttime=time.perf_counter()
          self._totalframe=0
 +        self._record_metrics(output_connected=True, output_bitrate_mbps_configured=round(self.bitrate / 1000000, 3), last_output_at=time.time(), last_output_error=None)
          logger.info(f"RTMP output started via python_rtmpstream: {self.push_url} with resolution {frame_width}x{frame_height}")
  
-@@ -82,6 +88,11 @@ class RTMPOutput(BaseOutput):
+     def push_video_frame(self, frame) -> None:
+@@ -82,7 +85,12 @@ class RTMPOutput(BaseOutput):
              import cv2
              # Convert BGR (OpenCV) to RGB since Streamer expects RGB memory layout
              rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -101,7 +112,9 @@ index 7719334..f07dcc1 100644
 +            self._record_metrics(output_connected=True, last_output_at=time.time(), last_output_error=None)
  
              delay = self._starttime+self._totalframe*0.04-time.perf_counter() #40ms
-@@ -92,7 +103,8 @@ class RTMPOutput(BaseOutput):
+             if delay > 0:
+@@ -93,7 +101,9 @@ class RTMPOutput(BaseOutput):
+             self.framecount += 1
              self.lasttime = time.perf_counter()
              if self.framecount==100:
 -                logger.info(f"------actual avg final fps:{self.framecount/self.totaltime:.4f}")
@@ -110,9 +123,14 @@ index 7719334..f07dcc1 100644
 +                logger.info(f"------actual avg final fps:{output_fps:.4f}")
                  self.framecount = 0
                  self.totaltime=0
-@@ -113,4 +125,5 @@ class RTMPOutput(BaseOutput):
+ 
+@@ -113,4 +123,9 @@ class RTMPOutput(BaseOutput):
      def stop(self) -> None:
          self._quit_event = True
          self._streamer = None
 +        self._record_metrics(output_connected=False)
          logger.info("RTMP output stopped")
++    def _record_metrics(self, **metrics) -> None:
++        if self.parent and hasattr(self.parent, "runtime_metrics"):
++            self.parent.runtime_metrics.update(metrics)
++

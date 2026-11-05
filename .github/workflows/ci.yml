@@ -74,6 +74,7 @@ jobs:
       - run: npm run media:evidence:check
       - run: npm run recording:evidence:check
       - run: npm run runtime:images:check
+      - run: npm run runtime:images:licenses:check
       - run: npm run output-probe:response:check
       - run: npm run channel:verification:check
       - run: npm run settlement:reconciliation:check
@@ -105,6 +106,7 @@ jobs:
       - run: npm run deploy:check:test
       - run: npm run deploy:manifest:test
       - run: npm run deploy:images:test
+      - run: npm run runtime:images:licenses:test
       - run: npm run release:evidence:test
       - run: bash scripts/test-postgres-backup-direct.sh
       - run: bash scripts/test-postgres-restore-drill.sh
@@ -229,6 +231,7 @@ jobs:
       - run: docker build --file apps/alert-notifier/Dockerfile --tag shuzhiren-alert-notifier-ci .
       - run: docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway
       - run: docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .
+      - run: node scripts/check-runtime-image-licenses.mjs --livetalking-image shuzhiren/livetalking:ci
       - name: "prep: reclaim disk before CosyVoice build"
         run: docker image rm shuzhiren/livetalking:ci && docker builder prune --all --force && df -h /
       - name: docker build runtime/cosyvoice (committed Miniforge pin)
@@ -236,3 +239,4 @@ jobs:
           url="$(jq -er '.url' runtime/cosyvoice/miniforge.json)"
           sha="$(jq -er '.sha256' runtime/cosyvoice/miniforge.json)"
           docker build --file runtime/cosyvoice/Dockerfile --build-arg MINIFORGE_URL="$url" --build-arg MINIFORGE_SHA256="$sha" --tag shuzhiren-cosyvoice-ci .
+      - run: node scripts/check-runtime-image-licenses.mjs --cosyvoice-image shuzhiren-cosyvoice-ci
