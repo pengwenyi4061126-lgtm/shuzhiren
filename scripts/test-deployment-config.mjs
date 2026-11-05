@@ -5,7 +5,10 @@ import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import yaml from "js-yaml";
+import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
+import { checkRuntimeComposeConsistency } from "./lib/runtime-compose-consistency.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(root, "scripts", "check-deployment-config.mjs");
@@ -147,7 +150,7 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     LIVETALKING_REF: commits.LiveTalking,
     MUSETALK_REF: commits.MuseTalk,
     COSYVOICE_REF: commits.CosyVoice,
-    RUNTIME_GATEWAY_URL: "http://runtime-gateway.internal:8090",
+    RUNTIME_GATEWAY_URL: "http://runtime-gateway:8090",
     RUNTIME_SHARED_TOKEN: runtimeToken,
     RUNTIME_GATEWAY_DEMO_MODE: "false",
     RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS: "20000",
@@ -176,6 +179,9 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     PROGRAM_AUDIOTYPE: "0",
     FALLBACK_AUDIOTYPE: "1",
     HUMAN_HANDOFF_AUDIOTYPE: "2",
+    OUTBOX_POLL_MS: "1000",
+    SCHEDULER_POLL_MS: "1000",
+    SCHEDULER_BATCH_SIZE: "10",
     OUTBOX_MAX_ATTEMPTS: "6",
     OUTBOX_LEASE_SECONDS: "60",
     OUTBOX_RETRY_BASE_MS: "1000",
@@ -199,10 +205,16 @@ const gateway = env({
   COSYVOICE_REQUIRED: "true",
   COSYVOICE_SAMPLE_RATE: "24000",
   COSYVOICE_MODEL_DIR: "/opt/CosyVoice/CosyVoice/pretrained_models/Fun-CosyVoice3-0.5B-2512",
+  COSYVOICE_MODEL_PATH: "/srv/cosyvoice-models",
+  MEDIA_COMMAND_CACHE_TTL_SECONDS: "3600",
+  MEDIA_COMMAND_CACHE_MAX_ENTRIES: "2048",
+  RUNTIME_REQUEST_TIMEOUT_SECONDS: "15",
   RUNTIME_COMMAND_JOURNAL_PATH: "/var/lib/shuzhiren-runtime/commands.sqlite3",
   RUNTIME_COMMAND_JOURNAL_REQUIRED: "true",
   RUNTIME_GATEWAY_STATE_PATH: "/srv/shuzhiren/runtime-gateway-state",
   RUNTIME_GATEWAY_HOST_BIND: "127.0.0.1",
+  PREVIEW_BROKER_URL: "",
+  PREVIEW_BROKER_TOKEN: "",
   PREVIEW_GRANT_MAX_SECONDS: "600",
   STREAM_RTMP_URL: "rtmp://ingest.internal/live",
   STREAM_KEY: "fixture-stream-key-not-a-placeholder",
@@ -490,6 +502,43 @@ try {
   assert.notEqual(unsafePreviewBroker.status, 0, "a preview broker must use a credential-free HTTPS endpoint");
   assert.match(unsafePreviewBroker.stderr, /PREVIEW_BROKER_URL/, "unsafe preview broker must identify the controlled-preview URL gate");
   await writeFile(files.gateway, gateway);
+
+  // M7: Compose hard-coded OUTBOX_MAX_ATTEMPTS: 6, so a matching control/runtime value of 4 passed the
+  // preflight while the worker still ran with 6. The consistency check reports such literals.
+  const fileOf = (id, text) => ({ id, path: `/fixture/${id}.env`, values: new Map(text.split("\n").filter((line) => line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)])) });
+  const legacyWorker = yaml.load("services:\n  runtime-worker:\n    environment:\n      OUTBOX_MAX_ATTEMPTS: 6\n");
+  assert.deepEqual(checkRuntimeComposeConsistency({ composeDoc: legacyWorker, envFiles: [fileOf("runtime", "OUTBOX_MAX_ATTEMPTS=4")] }).errors.map((error) => error.code), ["RC-LITERAL"], "a hard-coded Compose value that an env file also sets must be reported");
+  const runtimeComposeDoc = yaml.load(await readFile(path.join(root, "infra", "compose", "docker-compose.runtime.yml"), "utf8"));
+  const workerEnvironment = runtimeComposeDoc.services["runtime-worker"].environment;
+  const fourAttempts = new Map([["OUTBOX_MAX_ATTEMPTS", "4"], ["OUTBOX_POLL_MS", "1100"], ["SCHEDULER_POLL_MS", "1200"], ["SCHEDULER_BATCH_SIZE", "11"]]);
+  for (const [key, value] of fourAttempts) assert.equal(interpolate(String(workerEnvironment[key]), fourAttempts), value, `runtime-worker ${key} must come from the runtime env file`);
+  assert.equal(interpolate(String(runtimeComposeDoc.services["runtime-gateway"].environment.RUNTIME_REQUEST_TIMEOUT_SECONDS), new Map([["RUNTIME_REQUEST_TIMEOUT_SECONDS", "17"]])), "17", "the Gateway upstream timeout must come from the Gateway env file");
+  await writeFile(files.control, control.replace("OUTBOX_MAX_ATTEMPTS=6", "OUTBOX_MAX_ATTEMPTS=4"));
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("OUTBOX_MAX_ATTEMPTS=6", "OUTBOX_MAX_ATTEMPTS=4"));
+  const changedOutboxAttempts = check(["--require-cosyvoice"]);
+  assert.equal(changedOutboxAttempts.status, 0, `a consistent OUTBOX_MAX_ATTEMPTS change must pass because Compose now forwards it:\n${changedOutboxAttempts.stderr}`);
+  await writeFile(files.control, control);
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_URL=http://runtime-gateway:8090", "RUNTIME_GATEWAY_URL=http://10.0.0.9:8090"));
+  const overriddenLiteral = check(["--require-cosyvoice"]);
+  assert.notEqual(overriddenLiteral.status, 0, "an env value that Compose silently ignores must fail the preflight");
+  assert.match(overriddenLiteral.stderr, /\[RC-LITERAL\][^\n]*runtime-worker[^\n]*RUNTIME_GATEWAY_URL/, "the literal override must name the service and key");
+  assert.doesNotMatch(overriddenLiteral.stderr, /10\.0\.0\.9/, "consistency errors must not print env values");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+
+  await writeFile(files.alert, alert.replace("DATABASE_QUERY_TIMEOUT_MS=5000", "DATABASE_QUERY_TIMEOUT_MS=4000"));
+  const conflictingTimeout = check(["--require-cosyvoice"]);
+  assert.notEqual(conflictingTimeout.status, 0, "one Compose variable defined differently in two env files must fail the preflight");
+  assert.match(conflictingTimeout.stderr, /\[RC-CONFLICT\][^\n]*DATABASE_QUERY_TIMEOUT_MS/, "the conflict must name the variable");
+  assert.doesNotMatch(conflictingTimeout.stderr.split("\n").filter((line) => line.includes("[RC-CONFLICT]")).join("\n"), /4000|5000/, "conflict errors must not print env values");
+  await writeFile(files.alert, alert);
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replace(/^OUTPUT_PROBE_CACHE_MS=.*\n/m, ""));
+  const undefinedVariable = check(["--require-cosyvoice"]);
+  assert.notEqual(undefinedVariable.status, 0, "a Compose variable missing from every env file must fail the preflight");
+  assert.match(undefinedVariable.stderr, /\[RC-UNDEFINED\][^\n]*output-probe[^\n]*OUTPUT_PROBE_CACHE_MS/, "the undefined variable must name the service");
+  await writeFile(files.runtime, runtime(validProbeTarget));
 
   // M23: root-anchored rules followed by `!vendor/LiveTalking/**` re-included submodule secrets and data.
   const legacyLiveTalkingIgnore = ".git\n.env\n.env.*\nsecrets\nmodels\ndata\n*.log\nvendor/*\n!vendor/LiveTalking\n!vendor/LiveTalking/**\nvendor/LiveTalking/.git\nvendor/LiveTalking/.git/**\nruntime/*\n!runtime/patches\n!runtime/patches/livetalking-observability.patch\n";
