@@ -32,6 +32,7 @@ requiredIndexes.push("settlement_batches_tenant_imported_idx", "settlement_lines
 requiredPolicies.push("tenant_isolation_settlement_batches", "tenant_isolation_settlement_lines", "tenant_isolation_settlement_reconciliation_exceptions");
 const requiredTriggers = ["audit_events_append_only", "audit_events_hash_chain", "usage_records_append_only", "show_revision_product_versions_immutable", "show_revision_segments_immutable", "show_revision_model_releases_immutable", "show_revision_policy_profiles_immutable", "show_revision_media_assets_immutable", "show_revision_release_manifest_snapshots_append_only", "product_versions_governed_immutable", "show_revisions_append_only", "policy_profiles_governed_immutable", "model_releases_governed_immutable", "live_commands_append_only", "media_assets_governed_evidence_mutation", "recording_evidence_governed_mutation", "program_output_observations_append_only", "channel_connections_governed_verification", "channel_reply_drafts_governed_mutation", "settlement_batches_governed_mutation", "settlement_lines_governed_mutation", "settlement_exceptions_governed_mutation", "show_program_change_requests_governed_mutation", "live_runs_governed_show_revision_rebind", "show_revisions_require_runtime_scripts_for_approval", "show_program_change_requests_require_runtime_scripts", "live_runs_governed_program_cursor"];
 requiredTriggers.push("audit_chain_heads_guard", "audit_chain_heads_no_truncate");
+requiredTriggers.push("product_versions_approved_insert_evidence", "show_revisions_approved_insert_evidence", "media_assets_approved_insert_evidence", "model_releases_approved_insert_evidence", "policy_profiles_approved_insert_evidence");
 // Functions that must run as their owner so callers need no write privilege on the tables they maintain.
 const requiredSecurityDefinerFunctions = ["seal_audit_event"];
 const requiredConstraints = new Map([["schema_migrations_checksum_format", true], ["policy_profiles_evidence_ref_format_check", false], ["model_releases_evidence_ref_format_check", false], ["channel_connections_verification_evidence_ref_check", true], ["channel_connections_connected_verification_check", true], ["show_revision_segments_runtime_script_length", true]]);
@@ -160,7 +161,8 @@ async function verifyRlsPolicyWithUnprivilegedRole() {
     await client.query("insert into tenants (id, slug, name) values ($1, $2, $3), ($4, $5, $6)", [rlsProbeTenantA, `rls-probe-a-${rlsProbeTenantA}`, "RLS probe A", rlsProbeTenantB, `rls-probe-b-${rlsProbeTenantB}`, "RLS probe B"]);
     await client.query("insert into products (id, tenant_id, external_sku, name) values ($1, $2, $3, $4), ($5, $6, $7, $8)", [rlsProbeProductA, rlsProbeTenantA, "rls-probe-a", "RLS probe A", rlsProbeProductB, rlsProbeTenantB, "rls-probe-b", "RLS probe B"]);
     await client.query("insert into shows (id, tenant_id, name) values ($1, $2, 'RLS commerce A'), ($3, $4, 'RLS commerce B')", [rlsProbeShowA, rlsProbeTenantA, rlsProbeShowB, rlsProbeTenantB]);
-    await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'approved'), ($4, $5, $6, 1, '{}'::jsonb, 'approved')", [rlsProbeRevisionA, rlsProbeTenantA, rlsProbeShowA, rlsProbeRevisionB, rlsProbeTenantB, rlsProbeShowB]);
+    // The probe only needs revisions to attach runs to; an approved insert would need approval evidence (075).
+    await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft'), ($4, $5, $6, 1, '{}'::jsonb, 'draft')", [rlsProbeRevisionA, rlsProbeTenantA, rlsProbeShowA, rlsProbeRevisionB, rlsProbeTenantB, rlsProbeShowB]);
     await client.query("insert into channel_connections (id, tenant_id, name, provider, status, output_protocol, secret_ref, capabilities) values ($1, $2, 'RLS channel A', 'generic-rtmp', 'disabled', 'rtmp', 'secret://rls/a', '{}'::jsonb), ($3, $4, 'RLS channel B', 'generic-rtmp', 'disabled', 'rtmp', 'secret://rls/b', '{}'::jsonb)", [rlsProbeChannelA, rlsProbeTenantA, rlsProbeChannelB, rlsProbeTenantB]);
     await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, channel_connection_id) values ($1, $2, $3, 'ENDED', $4, $5), ($6, $7, $8, 'ENDED', $9, $10)", [rlsProbeRunA, rlsProbeTenantA, rlsProbeRevisionA, `rls-commerce-a-${rlsProbeRunA}`, rlsProbeChannelA, rlsProbeRunB, rlsProbeTenantB, rlsProbeRevisionB, `rls-commerce-b-${rlsProbeRunB}`, rlsProbeChannelB]);
     await client.query("insert into commerce_events (id, tenant_id, live_run_id, channel_connection_id, external_event_id, event_type, amount_cents) values ($1, $2, $3, $4, 'rls-commerce-a', 'order_paid', 100), ($5, $6, $7, $8, 'rls-commerce-b', 'order_paid', 200)", [rlsProbeCommerceA, rlsProbeTenantA, rlsProbeRunA, rlsProbeChannelA, rlsProbeCommerceB, rlsProbeTenantB, rlsProbeRunB, rlsProbeChannelB]);
@@ -288,10 +290,44 @@ async function verifyGovernedEvidenceImmutability() {
     await client.query("insert into outbox_events (id, tenant_id, event_type, aggregate_type, aggregate_id, payload) values ($1, $2, 'channel.reply.dispatch', 'channel_reply_draft', $3, '{}'::jsonb)", [replyOutboxId, tenantId, replyId]);
     await client.query("update channel_reply_drafts set status = 'sending', outbox_event_id = $2 where id = $1", [replyId, replyOutboxId]);
     await expectImmutableRejection("update channel_reply_drafts set channel_connection_id = $2 where id = $1", [replyId, channelId], "投递中的渠道回复不得改写目标渠道");
+
+    // M13: a row inserted directly as approved must carry its approval evidence (075).
+    const approvedInserts = [
+      { table: "product_versions", evidence: ["approved_by", "approved_at"], row: (n) => ({ id: randomUUID(), tenant_id: tenantId, product_id: productId, revision: 100 + n, facts: JSON.stringify({ priceCent: 100, stock: 1 }) }) },
+      { table: "show_revisions", evidence: ["approved_by", "approved_at"], row: (n) => ({ id: randomUUID(), tenant_id: tenantId, show_id: showId, revision: 100 + n, plan: "{}" }) },
+      { table: "media_assets", evidence: ["approved_by", "approved_at", "verified_object_version", "verified_bytes", "verified_content_type", "verification_evidence_ref", "verified_at"], row: (n) => ({ id: randomUUID(), tenant_id: tenantId, kind: "music", name: `Approved insert media ${n}`, object_key: `assets/governed/approved-insert-${n}.mp3`, checksum: `sha256:approved-insert-${n}`, rights_scope: "governed scope", source_ref: "evidence://governed-media", verified_object_version: "approved-insert-v1", verified_bytes: 1024, verified_content_type: "audio/mpeg", verification_evidence_ref: "evidence://governed/approved-insert-content", verified_at: new Date() }) },
+      { table: "model_releases", evidence: ["approved_by", "approved_at"], row: (n) => ({ id: randomUUID(), tenant_id: tenantId, name: "Approved insert release", version: `approved-insert-${n}`, component: "runtime", source_commit: "1234567", image_digest: "sha256:approved-insert-image", artifact_hash: "sha256:approved-insert-artifact", driver_version: "governed-driver", license: "Apache-2.0", rights_scope: "governed scope", evidence_ref: "evidence://governed-release", validation_summary: "Approved insert release" }) },
+      { table: "policy_profiles", evidence: ["approved_by", "approved_at"], row: (n) => ({ id: randomUUID(), tenant_id: tenantId, name: "Approved insert policy", version: `approved-insert-${n}`, rules: "[]", evidence_ref: "evidence://governed-policy", validation_summary: "Approved insert policy" }) }
+    ];
+    let approvedInsertSequence = 0;
+    for (const { table, evidence, row } of approvedInserts) {
+      const approved = () => ({ ...row((approvedInsertSequence += 1)), approval_status: "approved", approved_by: actorId, approved_at: new Date() });
+      for (const column of evidence) await expectApprovedInsertRejection(table, { ...approved(), [column]: null }, column);
+      const accepted = await insertRow(table, approved());
+      if (accepted.rowCount !== 1) errors.push(`带完整审批证据的 ${table} 插入未成功`);
+    }
   } catch (error) {
     errors.push(error instanceof Error ? `治理证据不可变性检查失败：${error.message}` : "治理证据不可变性检查失败");
   } finally {
     await client.query("rollback");
+  }
+}
+
+function insertRow(table, row) {
+  const columns = Object.keys(row);
+  return client.query(`insert into ${table} (${columns.join(", ")}) values (${columns.map((_, index) => `$${index + 1}`).join(", ")})`, columns.map((column) => row[column]));
+}
+
+async function expectApprovedInsertRejection(table, row, column) {
+  await client.query("savepoint governed_approved_insert");
+  try {
+    await insertRow(table, row);
+    errors.push(`缺少 ${table}.${column} 的已批准插入未被数据库触发器拒绝`);
+  } catch (error) {
+    if (error?.code !== "23514" || !String(error.message).includes(`approved_insert_requires_evidence: ${table}.${column} must not be null`)) errors.push(`缺少 ${table}.${column} 的已批准插入返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
+  } finally {
+    await client.query("rollback to savepoint governed_approved_insert");
+    await client.query("release savepoint governed_approved_insert");
   }
 }
 
