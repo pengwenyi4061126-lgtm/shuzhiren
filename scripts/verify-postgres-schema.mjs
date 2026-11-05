@@ -99,6 +99,17 @@ try {
   const triggers = new Set((await client.query("select tgname from pg_trigger where not tgisinternal")).rows.map((row) => row.tgname));
   for (const trigger of requiredTriggers) if (!triggers.has(trigger)) errors.push(`缺少关键触发器：${trigger}`);
 
+  // M15: every foreign key between two tenant tables needs a composite (tenant_id, ...) counterpart (078).
+  if (!(await client.query("select to_regprocedure('public.tenant_reference_foreign_keys()') is not null as present")).rows[0].present) errors.push("缺少函数：tenant_reference_foreign_keys()");
+  else {
+    const uncovered = await client.query(`select f.child::text as child, f.constraint_name from tenant_reference_foreign_keys() f
+      where not f.tenant_scoped and not exists (
+        select 1 from tenant_reference_foreign_keys() g
+        where g.tenant_scoped and g.child = f.child and g.parent = f.parent
+          and (select array_agg(x order by x) from unnest(g.child_columns) x) = (select array_agg(x order by x) from unnest(array['tenant_id'] || f.child_columns) x))`);
+    for (const row of uncovered.rows) errors.push(`外键未校验同租户：${row.child}.${row.constraint_name}`);
+  }
+
   const securityDefiners = new Set((await client.query("select proname from pg_proc where pronamespace = 'public'::regnamespace and prosecdef")).rows.map((row) => row.proname));
   for (const name of requiredSecurityDefinerFunctions) if (!securityDefiners.has(name)) errors.push(`函数必须为 SECURITY DEFINER：${name}`);
 
@@ -306,6 +317,17 @@ async function verifyGovernedEvidenceImmutability() {
       { table: "model_releases", evidence: ["approved_by", "approved_at"], row: (n) => ({ id: randomUUID(), tenant_id: tenantId, name: "Approved insert release", version: `approved-insert-${n}`, component: "runtime", source_commit: "1234567", image_digest: "sha256:approved-insert-image", artifact_hash: "sha256:approved-insert-artifact", driver_version: "governed-driver", license: "Apache-2.0", rights_scope: "governed scope", evidence_ref: "evidence://governed-release", validation_summary: "Approved insert release" }) },
       { table: "policy_profiles", evidence: ["approved_by", "approved_at"], row: (n) => ({ id: randomUUID(), tenant_id: tenantId, name: "Approved insert policy", version: `approved-insert-${n}`, rules: "[]", evidence_ref: "evidence://governed-policy", validation_summary: "Approved insert policy" }) }
     ];
+    // M15: a row must not reference a row of another tenant, and a referenced row must not move to another tenant (078).
+    const otherTenantId = randomUUID();
+    const otherShowId = randomUUID();
+    const otherRevisionId = randomUUID();
+    await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Governed evidence other tenant')", [otherTenantId, `governed-evidence-other-${otherTenantId}`]);
+    await client.query("insert into shows (id, tenant_id, name) values ($1, $2, 'Other tenant show')", [otherShowId, otherTenantId]);
+    await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft')", [otherRevisionId, otherTenantId, otherShowId]);
+    await expectForeignKeyRejection("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 2, '{}'::jsonb, 'draft')", [tenantId, otherShowId], "引用其他租户节目的节目修订");
+    await expectForeignKeyRejection("insert into live_runs (tenant_id, show_revision_id, state, trace_id) values ($1, $2, 'DRAFT', $3)", [tenantId, otherRevisionId, `cross-tenant-${randomUUID()}`], "引用其他租户节目修订的场次");
+    await expectForeignKeyRejection("update shows set tenant_id = $2 where id = $1", [showId, otherTenantId], "被引用节目改换租户");
+
     let approvedInsertSequence = 0;
     for (const { table, evidence, row } of approvedInserts) {
       const approved = () => ({ ...row((approvedInsertSequence += 1)), approval_status: "approved", approved_by: actorId, approved_at: new Date() });
@@ -317,6 +339,19 @@ async function verifyGovernedEvidenceImmutability() {
     errors.push(error instanceof Error ? `治理证据不可变性检查失败：${error.message}` : "治理证据不可变性检查失败");
   } finally {
     await client.query("rollback");
+  }
+}
+
+async function expectForeignKeyRejection(statement, parameters, label) {
+  await client.query("savepoint governed_tenant_reference");
+  try {
+    await client.query(statement, parameters);
+    errors.push(`${label}未被同租户外键拒绝`);
+  } catch (error) {
+    if (error?.code !== "23503") errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
+  } finally {
+    await client.query("rollback to savepoint governed_tenant_reference");
+    await client.query("release savepoint governed_tenant_reference");
   }
 }
 
