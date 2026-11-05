@@ -621,15 +621,19 @@ try {
   const isolatedProductFact = await fetch(`http://127.0.0.1:${consolePort}/api/v1/integrations/product-facts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${isolatedPimToken}` }, body: JSON.stringify({ ...productFactInput, tenantId: isolatedTenantId }) });
   assert.equal(isolatedProductFact.status, 202, "the same external PIM event ID may be used independently by another tenant");
 
+  // Runs seeded earlier in this test (recover, stale, program transition, audio
+  // silence, manual delivery failure) still occupy capacity here, so the
+  // concurrency limits and usage below are relative to that baseline.
+  const occupiedBeforeEntitlements = Number((await client.query("select count(*) as count from live_runs where tenant_id = $1 and (state in ('LIVE', 'DEGRADED') or (state = 'ARMED' and scheduled_start_event_id is not null))", [tenantId])).rows[0].count);
   const degradedOccupyingRun = await seedRun("DEGRADED", "session_entitlement_degraded_active", new Date());
-  const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 3 }) });
+  const entitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: occupiedBeforeEntitlements + 1 }) });
   assert.equal(entitlementUpdate.status, 200, "admin should configure tenant concurrency entitlement");
   const minuteEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/monthly_live_minutes`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 1000 }) });
   assert.equal(minuteEntitlementUpdate.status, 200, "admin should configure tenant live-minute entitlement");
   const entitlementList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
   assert.equal(entitlementList.status, 200);
   const entitlementBody = await entitlementList.json();
-  assert.equal(entitlementBody.data.find((item) => item.code === "max_concurrent_live_runs")?.used, 3, "degraded runs must consume concurrent live-run capacity");
+  assert.equal(entitlementBody.data.find((item) => item.code === "max_concurrent_live_runs")?.used, occupiedBeforeEntitlements + 1, "degraded runs must consume concurrent live-run capacity");
   assert.equal(entitlementBody.data.find((item) => item.code === "monthly_live_minutes")?.limitValue, 1000);
   const limitedRun = await seedRun("DEGRADED", "session_entitlement_limit", new Date());
   const blockedRecovery = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${limitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
@@ -639,11 +643,11 @@ try {
   const pendingStartPayload = { sessionId: "session_entitlement_pending_start", command: { id: `media_${randomUUID()}`, runId: pendingStartRun.runId, type: "start_program", issuedAt: new Date().toISOString(), traceId: `trace_${pendingStartRun.runId}`, payload: { controlAction: "START" } } };
   const pendingStartEvent = await client.query("insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload, available_at) values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb, now() + interval '1 hour') returning id", [tenantId, pendingStartRun.runId, JSON.stringify(pendingStartPayload)]);
   await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1", [pendingStartRun.runId, pendingStartEvent.rows[0].id]);
-  const pendingEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: 4 }) });
+  const pendingEntitlementUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ limitValue: occupiedBeforeEntitlements + 2 }) });
   assert.equal(pendingEntitlementUpdate.status, 200, "admin should update tenant concurrency entitlement for a pending-start reservation");
   const pendingEntitlementList = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
   assert.equal(pendingEntitlementList.status, 200);
-  assert.equal((await pendingEntitlementList.json()).data.find((item) => item.code === "max_concurrent_live_runs")?.used, 4, "an ARMED run with a pending start acknowledgement must reserve capacity");
+  assert.equal((await pendingEntitlementList.json()).data.find((item) => item.code === "max_concurrent_live_runs")?.used, occupiedBeforeEntitlements + 2, "an ARMED run with a pending start acknowledgement must reserve capacity");
   const reservationLimitedRun = await seedRun("DEGRADED", "session_entitlement_pending_limit", new Date());
   const blockedByPendingStart = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${reservationLimitedRun.runId}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: randomUUID() }) });
   assert.equal(blockedByPendingStart.status, 409, "a pending start acknowledgement must block another activation at the tenant limit");
@@ -657,7 +661,8 @@ try {
   assert.equal(cancelledDelivery.status, 409, "cancelled activation events must not be manually re-delivered");
   const afterDisarmEntitlements = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements`, { headers: requestHeaders });
   assert.equal(afterDisarmEntitlements.status, 200);
-  assert.equal((await afterDisarmEntitlements.json()).data.find((item) => item.code === "max_concurrent_live_runs")?.used, 3, "disarming a pending activation must release reserved concurrent capacity");
+  // degradedOccupyingRun and reservationLimitedRun remain DEGRADED; only the pending start is released.
+  assert.equal((await afterDisarmEntitlements.json()).data.find((item) => item.code === "max_concurrent_live_runs")?.used, occupiedBeforeEntitlements + 2, "disarming a pending activation must release reserved concurrent capacity");
   assert.equal((await client.query("select count(*) as count from audit_events where resource_id = $1 and event_type = 'live_run.disarm'", [pendingStartRun.runId])).rows[0].count, "1", "disarming must be recorded in the audit chain");
 
   const interactionHeaders = { "content-type": "application/json", authorization: `Bearer ${interactionToken}` };
