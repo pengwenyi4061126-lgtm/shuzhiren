@@ -821,7 +821,12 @@ const gitBlobId = (text) => {
   const bytes = Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 };
-const repositoryLog = () => validateVerificationLog(readFileSync(path.join(repoRoot, "docs", "VERIFICATION_LOG.md"), "utf8"), options);
+// The repository log is validated as docs:governance:check validates it: each entry's 静态门禁覆盖 against
+// scripts/static-gate-coverage.mjs as of the entry's commit (empty coverage would reject every entry whose
+// commit already has a coverage map, and with it every matrix row or register record citing that entry).
+const repositoryLogText = readFileSync(path.join(repoRoot, "docs", "VERIFICATION_LOG.md"), "utf8");
+const repositoryCoverage = await loadStaticGateCoverage(coverageCommits(parseVerificationLog(repositoryLogText).entries.map((item) => item.data)), { root: repoRoot });
+const repositoryLog = () => validateVerificationLog(repositoryLogText, { resolver, coverageFor: (commit) => repositoryCoverage.get(commit) });
 
 test(`the phase 1 register snapshot (${PHASE1_REGISTER_COMMIT}:docs/AUDIT_REGISTER.md) has no errors and holds the first-round registration`, () => {
   const text = readFileSync(auditFixture("phase1-register.md"), "utf8");
