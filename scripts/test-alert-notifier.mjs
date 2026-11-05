@@ -64,6 +64,42 @@ await withNotifier({ targetId: "oncall-warning", minimumSeverity: "warning" }, a
 });
 console.log("PASS  alert notifier completes a polling cycle with tenant-filtered, explicitly typed SQL (C3)");
 
+// N3: pg times the wait for a connection and the query separately, each up to DATABASE_QUERY_TIMEOUT_MS, so the
+// /healthz connectivity check could take almost twice that long. The whole check must now end within one timeout.
+await withNotifier({ env: { DATABASE_QUERY_TIMEOUT_MS: "1000" }, scenario: { poolQuery: { connectDelayMs: 900, queryDelayMs: null } } }, async (run) => {
+  const started = Date.now();
+  const health = await getHealth(run.port);
+  const elapsed = Date.now() - started;
+  assert.equal(health.status, 503);
+  assert.equal(health.body.ok, false);
+  assert.ok(elapsed < 1_500, `/healthz must answer within DATABASE_QUERY_TIMEOUT_MS (1000 ms) plus scheduling slack, but took ${elapsed} ms`);
+});
+await withNotifier({ env: { DATABASE_QUERY_TIMEOUT_MS: "1000" }, scenario: { poolQuery: { connectDelayMs: 300, queryDelayMs: 300 } } }, async (run) => {
+  let health = null;
+  await waitFor(async () => {
+    health = await getHealth(run.port);
+    return health.status === 200;
+  }, 5_000, () => `/healthz to return 200 when the database answers within the timeout; last response: ${JSON.stringify(health)}`);
+});
+const lib = await import("../apps/alert-notifier/lib.mjs");
+assert.equal(typeof lib.withDeadline, "function", "lib.mjs must export withDeadline");
+{
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const started = Date.now();
+  await assert.rejects(lib.withDeadline(new Promise(() => {}), 50), { message: "deadline_exceeded" });
+  assert.ok(Date.now() - started < 1_000, "withDeadline must reject a promise that never settles once the deadline passes");
+  assert.equal(await lib.withDeadline(Promise.resolve("value"), 50), "value");
+  await assert.rejects(lib.withDeadline(Promise.reject(new Error("query failed")), 50), { message: "query failed" });
+  const late = new Promise((_, reject) => setTimeout(() => reject(new Error("late failure")), 30));
+  await assert.rejects(lib.withDeadline(late, 5), { message: "deadline_exceeded" });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  process.off("unhandledRejection", onUnhandled);
+  assert.deepEqual(unhandled, [], "a rejection after the deadline must not be left unhandled");
+}
+console.log("PASS  alert notifier bounds the whole /healthz connectivity check by DATABASE_QUERY_TIMEOUT_MS (N3)");
+
 async function withNotifier({ targetId = "oncall-critical", minimumSeverity = "critical", env = {}, scenario = {} }, body) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "alert-notifier-test-"));
   const logFile = path.join(directory, "statements.jsonl");

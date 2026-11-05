@@ -1,6 +1,6 @@
 import http from "node:http";
 import pg from "pg";
-import { alertPayload, matchingSeverities, parseTargets, retryDelayMs, signWebhook } from "./lib.mjs";
+import { alertPayload, matchingSeverities, parseTargets, retryDelayMs, signWebhook, withDeadline } from "./lib.mjs";
 
 const port = positiveInt(process.env.ALERT_NOTIFIER_PORT, 8083, "ALERT_NOTIFIER_PORT");
 const databaseUrl = required(process.env.DATABASE_URL, "DATABASE_URL");
@@ -19,7 +19,8 @@ let lastTickError = null;
 const server = http.createServer(async (request, response) => {
   if (request.method !== "GET" || request.url !== "/healthz") return json(response, 404, { error: "not_found" });
   try {
-    await pool.query("select 1");
+    // pg times the wait for a connection and the query separately; the deadline bounds the whole check.
+    await withDeadline(pool.query("select 1"), databaseTimeoutMs);
     const tickFresh = lastSuccessfulTickAt !== null && Date.now() - lastSuccessfulTickAt <= Math.max(pollMs * 3, 15_000);
     const ok = tickFresh && !stopping;
     return json(response, ok ? 200 : 503, { ok, targets: targets.length, lastSuccessfulTickAt: lastSuccessfulTickAt === null ? null : new Date(lastSuccessfulTickAt).toISOString(), lastError: lastTickError });

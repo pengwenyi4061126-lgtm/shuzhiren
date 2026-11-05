@@ -49,6 +49,14 @@ export function verifyWebhook(rawBody, secret, timestamp, signature) {
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
+// Settles as `promise` does, or rejects with Error("deadline_exceeded") once `ms` pass first. A rejection of
+// `promise` after the deadline stays handled.
+export function withDeadline(promise, ms) {
+  let timer;
+  const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("deadline_exceeded")), ms); });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 export function retryDelayMs(attempts, baseMs, maxMs) {
   return Math.min(maxMs, baseMs * (2 ** Math.max(0, attempts - 1)));
 }

@@ -2,13 +2,17 @@
 // It reproduces the PostgreSQL behavior that scripts/test-alert-notifier.mjs depends on:
 // - bind values that include a parameter the SQL never references fail with 42P18 ("could not determine data
 //   type of parameter $n"), and SQL that references more parameters than it receives fails with 08P01;
-// - set_config(name, value, true) lasts until the end of the transaction.
+// - set_config(name, value, true) lasts until the end of the transaction;
+// - Pool#query times the wait for a connection (connectionTimeoutMillis) and the query (query_timeout) separately,
+//   as pg does. FAKE_PG_SCENARIO = { "poolQuery": { "connectDelayMs": n, "queryDelayMs": n | null } } sets how long
+//   the connection and the answer take (null: the server never answers).
 // The fake has no runtime_alerts rows, so enqueue inserts nothing and claim finds nothing.
 // Statements it does not recognize fail, so a test never passes on SQL the fake silently ignored.
 // Every statement is appended to the file named by FAKE_PG_LOG as one JSON line: { client, sql, values, rowCount | error, code }.
 import { appendFileSync } from "node:fs";
 
 const logFile = process.env.FAKE_PG_LOG;
+const scenario = JSON.parse(process.env.FAKE_PG_SCENARIO || "{}");
 let nextClientId = 1;
 
 class DatabaseError extends Error {
@@ -49,6 +53,20 @@ export class Pool {
   }
 
   async query(text, values) {
+    const timing = scenario.poolQuery;
+    if (timing) {
+      const { connectionTimeoutMillis, query_timeout: queryTimeout } = this.options;
+      if (timing.connectDelayMs >= connectionTimeoutMillis) {
+        await sleep(connectionTimeoutMillis);
+        throw new Error("timeout exceeded when trying to connect");
+      }
+      await sleep(timing.connectDelayMs);
+      if (timing.queryDelayMs === null || timing.queryDelayMs >= queryTimeout) {
+        await sleep(queryTimeout);
+        throw new Error("Query read timeout");
+      }
+      await sleep(timing.queryDelayMs);
+    }
     const client = await this.connect();
     try {
       return await client.query(text, values);
@@ -87,6 +105,10 @@ function checkParameters(sql, values) {
   }
   const highest = Math.max(0, ...referenced);
   if (highest > values.length) throw new DatabaseError(`bind message supplies ${values.length} parameters, but prepared statement "" requires ${highest}`, "08P01");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function result(rows) {
