@@ -100,6 +100,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          # Full history: regression:registry:test asserts REG-COMMIT, which the gate only reports as an error
+          # when fixCommit can be looked up (a shallow clone turns it into a NOTE).
+          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
