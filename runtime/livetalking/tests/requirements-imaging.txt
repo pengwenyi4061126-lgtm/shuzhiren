@@ -1,0 +1,5 @@
+# Test-only inputs of the AIGC label drawing tests (test_aigc_label.py); not installed in any image.
+# Regenerate the hashed lock with:
+#   uv pip compile --generate-hashes --python-version 3.12 --python-platform x86_64-manylinux_2_28 runtime/livetalking/tests/requirements-imaging.txt -o runtime/livetalking/tests/requirements-imaging.lock
+numpy==2.5.4
+pillow==13.0.0

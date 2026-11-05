@@ -80,6 +80,9 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "output-probe:config:test", kind: "npm", script: "output-probe:config:test", label: "behavioral" },
   { id: "output-probe:response:check", kind: "npm", script: "output-probe:response:check", label: "static" },
   { id: "channel-adapter:test", kind: "npm", script: "channel-adapter:test", label: "behavioral" },
+  { id: "interaction-rules:test", kind: "npm", script: "interaction-rules:test", label: "behavioral" },
+  // static: it also matches the text of migration 082, the grant files and the asset workspace.
+  { id: "presets:test", kind: "npm", script: "presets:test", label: "static" },
   { id: "channel:verification:check", kind: "npm", script: "channel:verification:check", label: "static" },
   { id: "settlement:reconciliation:check", kind: "npm", script: "settlement:reconciliation:check", label: "static" },
   { id: "alert-notifier:test", kind: "npm", script: "alert-notifier:test", label: "behavioral" },
@@ -112,6 +115,8 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "scripts/test-runtime-gateway-errors.py", kind: "python", file: "scripts/test-runtime-gateway-errors.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-audio.py", kind: "python", file: "scripts/test-runtime-gateway-audio.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-concurrency.py", kind: "python", file: "scripts/test-runtime-gateway-concurrency.py", label: "behavioral", gatewayOnly: true },
+  { id: "scripts/test-runtime-gateway-sft-speakers.py", kind: "python", file: "scripts/test-runtime-gateway-sft-speakers.py", label: "behavioral", gatewayOnly: true },
+  { id: "scripts/test-runtime-gateway-aigc-label.py", kind: "python", file: "scripts/test-runtime-gateway-aigc-label.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-state-backup.py", kind: "python", file: "scripts/test-runtime-gateway-state-backup.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-state-restore-drill.py", kind: "python", file: "scripts/test-runtime-gateway-state-restore-drill.py", label: "behavioral", gatewayOnly: true }
 ].map(freezeCheck));

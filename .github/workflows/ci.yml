@@ -109,7 +109,19 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
+      # deploy:check:test runs runtime/livetalking/tests/test_aigc_label.py; its drawing tests need numpy, Pillow
+      # and a CJK font, and AIGC_LABEL_REQUIRE_IMAGING turns their SKIP into a failure.
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: "prep: install the AIGC label imaging test dependencies"
+        run: python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/livetalking/tests/requirements-imaging.lock
+      - name: "prep: install the CJK font the LiveTalking image ships"
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
       - run: npm run deploy:check:test
+        env:
+          AIGC_LABEL_REQUIRE_IMAGING: "true"
       - run: npm run deploy:manifest:test
       - run: npm run deploy:images:test
       - run: npm run runtime:images:licenses:test
@@ -126,6 +138,8 @@ jobs:
       - run: npm run output-probe:test
       - run: npm run output-probe:config:test
       - run: npm run channel-adapter:test
+      - run: npm run interaction-rules:test
+      - run: npm run presets:test
       - run: npm run alert-notifier:test
       - run: npm run ci:gates:test
       - run: npm run ci:db-fail-closed:test
@@ -158,6 +172,8 @@ jobs:
       - run: python3 -m py_compile runtime/gateway/*.py scripts/test-runtime-gateway-config.py
       - run: python3 scripts/test-runtime-gateway-audio.py
       - run: python3 scripts/test-runtime-gateway-concurrency.py
+      - run: python3 scripts/test-runtime-gateway-sft-speakers.py
+      - run: python3 scripts/test-runtime-gateway-aigc-label.py
       - run: python3 scripts/test-runtime-gateway-state-backup.py
       - run: python3 scripts/test-runtime-gateway-state-restore-drill.py
 
