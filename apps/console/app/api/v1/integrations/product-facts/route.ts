@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import type { ProductFacts } from "@/lib/catalog";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
@@ -13,8 +12,8 @@ export async function POST(request: Request) {
     if (!isBody(body)) return Response.json({ error: "invalid_product_fact_ingest" }, { status: 400 });
     requirePimIngestService(request, body.tenantId);
     const context: RequestContext = { tenantId: body.tenantId, actorId: "pim-ingest-service", actorName: "PIM 商品事实接入服务", role: "operator" };
+    // ingestProductFacts writes product_facts.ingested in the ingest's transaction.
     const result = await ingestProductFacts(context, { externalEventId: body.eventId, externalSku: body.externalSku, name: body.name, facts: body.facts });
-    if (!result.duplicate) await recordAuditEvent(context, { type: "product_facts.ingested", resource: "product_version", resourceId: result.version.id, detail: { productId: result.product.id, externalSku: result.product.externalSku, revision: result.version.revision, sourceRef: result.version.facts.sourceRef } });
     return Response.json({ data: result }, { status: result.duplicate ? 200 : 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "product_fact_ingest_rejected" }, { status: error.status });

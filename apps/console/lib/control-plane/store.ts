@@ -11,7 +11,7 @@ import { activeModelReleaseStatus, activeModelReleaseStatusInTransaction, requir
 import { validateChannelConnection, validateChannelConnectionInTransaction } from "@/lib/channels";
 import { evaluateRuntimeReadiness, evaluateRuntimeReadinessInTransaction } from "@/lib/monitoring";
 import { databasePool, withTenantTransaction } from "@/lib/database";
-import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { enqueueMediaCommand, enqueueMediaCommandInTransaction, enqueueSpeechCommand, enqueueSpeechCommandInTransaction, type SpeechOutboxEvent } from "@/lib/control-plane/outbox";
 import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
 import { createGroundedResponseDraft, type ResponseDraft } from "@/lib/response-draft";
@@ -139,7 +139,11 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
   if (!product) throw new Response("An approved product version is required", { status: 409 });
   const channel = await validateChannelConnection(context, input.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: input.aiDisclosureEnabled });
   if (!channel.passed) throw new Response(`Channel is not ready: ${channel.detail}`, { status: 409 });
-  if (!databasePool()) return createDemoRun(context, input);
+  if (!databasePool()) {
+    const run = await createDemoRun(context, input);
+    await recordAuditEvent(context, liveRunCreatedAudit(run, input));
+    return run;
+  }
   return withTenantTransaction(context.tenantId, async (client) => {
     const releases = await client.query<{ id: string; component: ReleaseComponent }>("select id, component from model_releases where approval_status = 'approved' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' and (evidence_ref ~ '^evidence://[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$' or evidence_ref ~ '^urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$') and component = any($1::model_release_component[]) order by approved_at desc", [requiredProductionReleaseComponents]);
     const frozenReleases = new Map<ReleaseComponent, string>();
@@ -160,8 +164,14 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     const run = await client.query<PersistentRunRow>(`insert into live_runs (tenant_id, show_revision_id, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at) values ($1, $2, 'DRAFT', $3, $4, $5, true, true, true, false, true, false, $6, $7, $8::timestamptz) returning id, tenant_id, show_revision_id, $9::text as show_name, state, trace_id, channel_connection_id, product_version_id, has_operator, rights_approved, has_approved_sku_version, has_fallback_program, channel_ready, output_ready, ai_disclosure_enabled, runtime_session_id, scheduled_at, active_program_segment_id, active_insert_source_segment_id, active_insert_program_segment_id, pending_program_transition_event_id`, [context.tenantId, revision.rows[0].id, `run_${crypto.randomUUID()}`, input.channelConnectionId, input.productVersionId, input.aiDisclosureEnabled, input.runtimeSessionId ?? null, input.scheduledAt ?? null, input.showName]);
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', '本段仅讲解已审核商品事实、价格和活动权益。', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', '本段只处理低风险、可追溯的已审核问题，其他请求转人工。', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', null, true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', null, true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
     await createReleaseManifestSnapshotInTransaction(client, { tenantId: context.tenantId, revisionId: revision.rows[0].id, runId: run.rows[0].id });
-    return persistentRun(run.rows[0], []);
+    const created = persistentRun(run.rows[0], []);
+    await recordAuditEventInTransaction(client, context, liveRunCreatedAudit(created, input));
+    return created;
   });
+}
+
+function liveRunCreatedAudit(run: StoredRun, input: { channelConnectionId: string; productVersionId: string }): AuditEventInput {
+  return { type: "live_run.created", resource: "live_run", resourceId: run.id, detail: { scheduledAt: run.scheduledAt ?? null, channelConnectionId: input.channelConnectionId, productVersionId: input.productVersionId } };
 }
 
 export async function advanceRunLifecycle(context: RequestContext, runId: string, action: RunLifecycleAction) {
@@ -311,26 +321,47 @@ function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, 
   });
 }
 
-export async function degradeRunFromRuntime(context: RequestContext, runId: string, input: { fallbackReady: boolean; reasons: string[] }) {
+type RuntimeDegradation = { changed: true; mediaType: "switch_to_fallback" | "switch_to_human"; mediaEvent?: { id: string; command: MediaCommand } };
+
+// `audit` builds the audit event of a degradation; it is written in the degradation's transaction, so a failed
+// audit write rolls back the DEGRADED state and its media command.
+export async function degradeRunFromRuntime(context: RequestContext, runId: string, input: { fallbackReady: boolean; reasons: string[]; audit?: (degradation: RuntimeDegradation) => AuditEventInput | null }) {
   const mediaType = input.fallbackReady ? "switch_to_fallback" as const : "switch_to_human" as const;
   if (!databasePool()) {
     const run = getDemoRun(context, runId);
     if (!run || run.state !== "LIVE") return { changed: false as const };
     run.state = "DEGRADED";
     const mediaEvent = run.runtimeSessionId ? await enqueueMediaCommand(context, { runId: run.id, traceId: run.traceId, type: mediaType, payload: { controlAction: "RUNTIME_GUARD", reasons: input.reasons.join(",") }, sessionId: run.runtimeSessionId }) : undefined;
-    return { changed: true as const, mediaType, mediaEvent };
+    const degradation = { changed: true as const, mediaType, mediaEvent };
+    const audit = input.audit?.(degradation);
+    if (audit) await recordAuditEvent(context, audit);
+    return degradation;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run || run.state !== "LIVE") return { changed: false as const };
     await client.query("update live_runs set state = 'DEGRADED', updated_at = now() where id = $1", [run.id]);
     const mediaEvent = run.runtimeSessionId ? await enqueueMediaCommandInTransaction(client, context, createMediaCommand({ runId: run.id, traceId: run.traceId, type: mediaType, payload: { controlAction: "RUNTIME_GUARD", reasons: input.reasons.join(",") } }), run.runtimeSessionId) : undefined;
-    return { changed: true as const, mediaType, mediaEvent };
+    const degradation = { changed: true as const, mediaType, mediaEvent };
+    const audit = input.audit?.(degradation);
+    if (audit) await recordAuditEventInTransaction(client, context, audit);
+    return degradation;
   });
 }
 
+function commandAuditEvents(runId: string, input: CommandInput, command: LiveCommand, mediaEvent: { id: string; command: MediaCommand }): AuditEventInput[] {
+  return [
+    { type: "live_command.accepted", resource: "live_run", resourceId: runId, detail: { action: input.action, commandId: command.id, programSegmentId: input.programSegmentId ?? null } },
+    { type: "media_command.enqueued", resource: "outbox_event", resourceId: mediaEvent.id, detail: { mediaCommandId: mediaEvent.command.id, commandType: mediaEvent.command.type, controlAction: input.action, programSegmentId: input.programSegmentId ?? null } }
+  ];
+}
+
 export async function issueCommand(context: RequestContext, runId: string, input: CommandInput) {
-  if (!databasePool()) return issueDemoCommand(context, runId, input);
+  if (!databasePool()) {
+    const result = await issueDemoCommand(context, runId, input);
+    if (!result.duplicate) for (const event of commandAuditEvents(runId, input, result.command, result.mediaEvent)) await recordAuditEvent(context, event);
+    return result;
+  }
   return withTenantTransaction(context.tenantId, async (client) => {
     const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
@@ -381,6 +412,9 @@ export async function issueCommand(context: RequestContext, runId: string, input
     );
     const command = persistentCommand(inserted.rows[0]);
     const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice)), run.runtimeSessionId);
+    // The command, its outbox event and their audit events commit together: a failed audit write rolls back
+    // the command instead of leaving an unaudited command queued for the runtime.
+    for (const event of commandAuditEvents(runId, input, command, mediaEvent)) await recordAuditEventInTransaction(client, context, event);
     if (requiresActivationConfirmation) {
       await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = $3 and scheduled_start_event_id is null", [run.id, mediaEvent.id, run.state]);
       return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
@@ -581,6 +615,7 @@ export async function bindRuntimeSession(context: RequestContext, runId: string,
     if (!run) throw new Response("Live run not found", { status: 404 });
     if (!canBindRuntimeSession(run.state)) throw new Response("Runtime session is locked after arming", { status: 409 });
     run.runtimeSessionId = runtimeSessionId;
+    await recordAuditEvent(context, runtimeSessionBoundAudit(run));
     return run;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -588,8 +623,14 @@ export async function bindRuntimeSession(context: RequestContext, runId: string,
     if (!run) throw new Response("Live run not found", { status: 404 });
     if (!canBindRuntimeSession(run.state)) throw new Response("Runtime session is locked after arming", { status: 409 });
     await client.query("update live_runs set runtime_session_id = $2, updated_at = now() where id = $1", [runId, runtimeSessionId]);
-    return { ...run, runtimeSessionId };
+    const bound = { ...run, runtimeSessionId };
+    await recordAuditEventInTransaction(client, context, runtimeSessionBoundAudit(bound));
+    return bound;
   });
+}
+
+function runtimeSessionBoundAudit(run: StoredRun): AuditEventInput {
+  return { type: "runtime_session.bound", resource: "live_run", resourceId: run.id, detail: { runtimeSessionId: run.runtimeSessionId ?? "" } };
 }
 
 export function canBindRuntimeSession(state: LiveRunState) {

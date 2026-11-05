@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import type { Product, ProductFacts, ProductVersion } from "@/lib/catalog";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 
 export type ProductFactIngestInput = { externalEventId: string; externalSku: string; name: string; facts: ProductFacts };
 export type ProductFactIngestResult = { product: Product; version: ProductVersion; duplicate: boolean };
@@ -14,7 +15,12 @@ function demoStore() { return globalThis.shuzhirenProductIngestStore ??= { produ
 
 export async function ingestProductFacts(context: RequestContext, input: ProductFactIngestInput): Promise<ProductFactIngestResult> {
   const payloadHash = hash(input);
-  if (!databasePool()) return ingestDemo(context, input, payloadHash);
+  if (!databasePool()) {
+    const result = ingestDemo(context, input, payloadHash);
+    if (!result.duplicate) await recordAuditEvent(context, productFactsIngestedAudit(result));
+    return result;
+  }
+  // The ingested version, its ingest event and the product_facts.ingested audit event commit together.
   return withTenantTransaction(context.tenantId, async (client) => {
     await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`${context.tenantId}:${input.externalEventId}`]);
     const previous = await client.query<PersistentIngestRow>(
@@ -35,8 +41,13 @@ export async function ingestProductFacts(context: RequestContext, input: Product
     );
     const version = versionFromRow(versionResult.rows[0]);
     await client.query("insert into product_fact_ingest_events (tenant_id, external_event_id, product_version_id, payload_hash) values ($1, $2, $3, $4)", [context.tenantId, input.externalEventId, version.id, payloadHash]);
-    return { product: { id: product.id, tenantId: product.tenant_id, externalSku: product.external_sku, name: product.name, versions: [] }, version, duplicate: false };
+    const result: ProductFactIngestResult = { product: { id: product.id, tenantId: product.tenant_id, externalSku: product.external_sku, name: product.name, versions: [] }, version, duplicate: false };
+    await recordAuditEventInTransaction(client, context, productFactsIngestedAudit(result));
+    return result;
   });
+}
+function productFactsIngestedAudit(result: ProductFactIngestResult): AuditEventInput {
+  return { type: "product_facts.ingested", resource: "product_version", resourceId: result.version.id, detail: { productId: result.product.id, externalSku: result.product.externalSku, revision: result.version.revision, sourceRef: result.version.facts.sourceRef } };
 }
 
 function ingestDemo(context: RequestContext, input: ProductFactIngestInput, payloadHash: string): ProductFactIngestResult {

@@ -1,6 +1,7 @@
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { verifyRecordingEvidence, type RecordingContentVerification } from "@/lib/recording-evidence";
 
 export type RecordingEvidence = {
@@ -71,6 +72,7 @@ export async function registerRecording(context: RequestContext, input: Register
     const recording: RecordingEvidence = { id: `recording_${crypto.randomUUID()}`, tenantId: context.tenantId, recordedAt: new Date().toISOString(), ...input, contentVerification: verification };
     store.recordings.set(recording.id, recording);
     store.idempotency.set(key, recording.id);
+    await recordAuditEvent(context, recordingRegisteredAudit(recording));
     return { recording, duplicate: false };
   }
   if (!isUuid(input.runId)) throw new Response("Live run not found", { status: 404 });
@@ -93,7 +95,12 @@ export async function registerRecording(context: RequestContext, input: Register
        returning id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until, verified_object_version, verification_evidence_ref, verified_at`,
       [context.tenantId, input.runId, input.objectKey, input.checksumSha256, input.bytes, input.durationSeconds, input.startedAt ?? null, input.endedAt ?? null, input.retentionUntil ?? null, input.idempotencyKey, verification.objectVersion, verification.evidenceRef, verification.verifiedAt],
     );
-    if (result.rows[0]) return { recording: persistentRecording(result.rows[0]), duplicate: false };
+    if (result.rows[0]) {
+      // The recording evidence and its recording_evidence.registered audit event commit together.
+      const recording = persistentRecording(result.rows[0]);
+      await recordAuditEventInTransaction(client, context, recordingRegisteredAudit(recording));
+      return { recording, duplicate: false };
+    }
     const conflicted = await client.query<PersistentRecordingRow>(
       "select id, tenant_id, live_run_id, object_key, checksum_sha256, bytes, duration_seconds, started_at, ended_at, recorded_at, retention_until, verified_object_version, verification_evidence_ref, verified_at from recording_evidence where idempotency_key = $1",
       [input.idempotencyKey],
@@ -105,6 +112,10 @@ export async function registerRecording(context: RequestContext, input: Register
     }
     throw new Response("Recording object key is already registered", { status: 409 });
   });
+}
+
+function recordingRegisteredAudit(recording: RecordingEvidence): AuditEventInput {
+  return { type: "recording_evidence.registered", resource: "recording_evidence", resourceId: recording.id, detail: { runId: recording.runId, objectKey: recording.objectKey, bytes: recording.bytes, durationSeconds: recording.durationSeconds, objectVersion: recording.contentVerification.objectVersion, evidenceRef: recording.contentVerification.evidenceRef } };
 }
 
 function persistentRecording(row: PersistentRecordingRow): RecordingEvidence {

@@ -4,6 +4,7 @@ import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess, hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { dispatchMediaCommand, dispatchSpeechCommand } from "@/lib/runtime-gateway";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import type { PoolClient } from "pg";
 
 export type OutboxState = "pending" | "delivering" | "delivered" | "failed" | "cancelled";
@@ -187,13 +188,17 @@ async function assertOutboxEventAccess(context: RequestContext, event: RuntimeOu
   await assertLiveRunAccess(context, event.type === "channel.reply.dispatch" ? event.runId : event.command.runId);
 }
 
-async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent, dispatchResult?: { provider?: unknown }) {
+// The delivery state, the run transitions it confirms and the runtime_command.delivered audit event commit
+// together; a failed audit write leaves the event 'delivering' like any other failure to record the delivery.
+async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent, dispatchResult: { delivery: string; provider?: unknown }) {
   if (!databasePool()) {
     const event = outboxStore().events.get(input.id);
     if (!event) throw new Error("Outbox event disappeared during delivery");
     event.state = "delivered";
     event.deliveredAt = new Date().toISOString();
     event.lastError = undefined;
+    const audit = runtimeCommandDeliveredAudit(event, dispatchResult.delivery);
+    if (audit) await recordAuditEvent(context, audit);
     return event;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -216,8 +221,15 @@ async function markDelivered(context: RequestContext, input: RuntimeOutboxEvent,
     if (event.type === "media.dispatch" && (event.command.payload.controlAction === "INSERT_PROGRAM" || event.command.payload.controlAction === "ROLLBACK_PROGRAM")) {
       await applyProgramTransitionReceipt(client, context, event, dispatchResult?.provider);
     }
+    const audit = runtimeCommandDeliveredAudit(event, dispatchResult.delivery);
+    if (audit) await recordAuditEventInTransaction(client, context, audit);
     return event;
   });
+}
+
+function runtimeCommandDeliveredAudit(event: RuntimeOutboxEvent, delivery: string): AuditEventInput | null {
+  if (event.type === "channel.reply.dispatch") return null;
+  return { type: "runtime_command.delivered", resource: "outbox_event", resourceId: event.id, detail: { commandId: event.command.id, eventType: event.type, delivery } };
 }
 
 async function applyProgramTransitionReceipt(client: PoolClient, context: RequestContext, event: MediaOutboxEvent, provider: unknown) {

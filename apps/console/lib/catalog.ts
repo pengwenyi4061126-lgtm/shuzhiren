@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 
 export type ProductFacts = { priceCent: number; unitCostCent?: number; stock: number; highlights: string[]; faq: string[]; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil?: string };
 export type ProductVersion = { id: string; revision: number; status: "draft" | "approved" | "rejected"; facts: ProductFacts; createdAt: string; approvedAt?: string };
@@ -64,16 +65,20 @@ export async function createProduct(context: RequestContext, input: { externalSk
     if (demoProducts(context).some((product) => product.externalSku === input.externalSku)) throw new Response("SKU already exists", { status: 409 });
     const product: Product = { id: `product_${crypto.randomUUID()}`, tenantId: context.tenantId, externalSku: input.externalSku, name: input.name, versions: [] };
     catalog().products.set(product.id, product);
+    await recordAuditEvent(context, productCreatedAudit(product));
     return product;
   }
   try {
+    // The product and its product.created audit event commit together.
     return await withTenantTransaction(context.tenantId, async (client) => {
       const result = await client.query<{ id: string; tenant_id: string; external_sku: string; name: string }>(
         "insert into products (tenant_id, external_sku, name) values ($1, $2, $3) returning id, tenant_id, external_sku, name",
         [context.tenantId, input.externalSku, input.name]
       );
       const row = result.rows[0];
-      return { id: row.id, tenantId: row.tenant_id, externalSku: row.external_sku, name: row.name, versions: [] };
+      const product: Product = { id: row.id, tenantId: row.tenant_id, externalSku: row.external_sku, name: row.name, versions: [] };
+      await recordAuditEventInTransaction(client, context, productCreatedAudit(product));
+      return product;
     });
   } catch (error) {
     if (databaseErrorCode(error) === "23505") throw new Response("SKU already exists", { status: 409 });
@@ -88,6 +93,7 @@ export async function createProductVersion(context: RequestContext, productId: s
     if (!product) throw new Response("Product not found", { status: 404 });
     const version: ProductVersion = { id: `pv_${crypto.randomUUID()}`, revision: product.versions.length + 1, status: "draft", facts, createdAt: new Date().toISOString() };
     product.versions.unshift(version);
+    await recordAuditEvent(context, productVersionAudit("product_version.created", productId, version));
     return version;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -98,7 +104,10 @@ export async function createProductVersion(context: RequestContext, productId: s
       "insert into product_versions (tenant_id, product_id, revision, facts, approval_status) values ($1, $2, $3, $4::jsonb, 'draft') returning id, revision, approval_status, facts, created_at",
       [context.tenantId, productId, nextRevision.rows[0].revision, JSON.stringify(facts)]
     );
-    return persistentVersion(result.rows[0]);
+    // The version and its product_version.created audit event commit together.
+    const version = persistentVersion(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, productVersionAudit("product_version.created", productId, version));
+    return version;
   });
 }
 
@@ -111,6 +120,7 @@ export async function approveProductVersion(context: RequestContext, productId: 
     if (!isProductFactsCurrent(version.facts)) throw new Response("Product source facts are stale or outside their valid period", { status: 409 });
     version.status = "approved";
     version.approvedAt = new Date().toISOString();
+    await recordAuditEvent(context, productVersionAudit("product_version.approved", productId, version));
     return version;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -123,8 +133,18 @@ export async function approveProductVersion(context: RequestContext, productId: 
       [versionId, productId, actor.rows[0].id]
     );
     if (!result.rows[0]) throw new Response("Product version not found", { status: 404 });
-    return persistentVersion(result.rows[0]);
+    const version = persistentVersion(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, productVersionAudit("product_version.approved", productId, version));
+    return version;
   });
+}
+
+function productCreatedAudit(product: Product): AuditEventInput {
+  return { type: "product.created", resource: "product", resourceId: product.id, detail: { externalSku: product.externalSku } };
+}
+
+function productVersionAudit(type: "product_version.created" | "product_version.approved", productId: string, version: ProductVersion): AuditEventInput {
+  return { type, resource: "product_version", resourceId: version.id, detail: { productId, revision: version.revision } };
 }
 
 export async function findApprovedProductVersion(context: RequestContext, versionId: string) {

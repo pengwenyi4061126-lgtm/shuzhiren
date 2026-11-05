@@ -2,7 +2,6 @@ import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-contex
 import { readBoundedJson } from "@/lib/bounded-json";
 import { issueCommand, type CommandInput } from "@/lib/control-plane/store";
 import type { LiveCommandAction, LiveRunState } from "@/lib/domain";
-import { recordAuditEvent } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -19,11 +18,8 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
     if (!isCommandBody(body)) return Response.json({ error: "invalid_command" }, { status: 400 });
     const { runId } = await context.params;
 
+    // issueCommand writes live_command.accepted and media_command.enqueued in the command's transaction.
     const result = await issueCommand(requestContext, runId, body);
-    if (!result.duplicate) {
-      await recordAuditEvent(requestContext, { type: "live_command.accepted", resource: "live_run", resourceId: runId, detail: { action: body.action, commandId: result.command.id, programSegmentId: body.programSegmentId ?? null } });
-      await recordAuditEvent(requestContext, { type: "media_command.enqueued", resource: "outbox_event", resourceId: result.mediaEvent.id, detail: { mediaCommandId: result.mediaEvent.command.id, commandType: result.mediaEvent.command.type, controlAction: body.action, programSegmentId: body.programSegmentId ?? null } });
-    }
     return Response.json({ data: result }, { status: result.duplicate ? 200 : 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "command_rejected" }, { status: error.status });

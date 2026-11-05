@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { handleInteraction } from "@/lib/interactions";
@@ -14,8 +13,8 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
     catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
     if (!isHandleInput(body)) return Response.json({ error: "invalid_resolution" }, { status: 400 });
     const { runId, interactionId } = await context.params;
+    // handleInteraction writes interaction.handled in the update's transaction.
     const interaction = await handleInteraction(actor, runId, interactionId, body.resolutionNote);
-    await recordAuditEvent(actor, { type: "interaction.handled", resource: "live_interaction", resourceId: interaction.id, detail: { runId, decision: interaction.decision, risk: interaction.risk } });
     return Response.json({ data: interaction });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "interaction_rejected" }, { status: error.status });

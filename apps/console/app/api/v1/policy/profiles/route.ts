@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { createPolicyProfile, isPolicyRule, listPolicyProfiles, type CreatePolicyProfileInput } from "@/lib/policy-profiles";
@@ -23,8 +22,8 @@ export async function POST(request: Request) {
     requireRole(context, ["admin", "operator"]);
     const body = await readBoundedJson(request);
     if (!isInput(body)) return Response.json({ error: "invalid_policy_profile" }, { status: 400 });
+    // createPolicyProfile writes policy_profile.created in the profile's transaction.
     const profile = await createPolicyProfile(context, body);
-    await recordAuditEvent(context, { type: "policy_profile.created", resource: "policy_profile", resourceId: profile.id, detail: { name: profile.name, version: profile.version, ruleCount: profile.rules.length } });
     return Response.json({ data: profile }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "policy_profile_rejected" }, { status: error.status });

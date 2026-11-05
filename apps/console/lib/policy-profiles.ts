@@ -3,6 +3,7 @@ import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plan
 import { assertLiveRunAccess, assertLiveRunAccessInTransaction } from "@/lib/control-plane/run-access";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { isControlledEvidenceRef } from "@/lib/governance-input";
 
 export type PolicyProfileApproval = "pending" | "approved" | "revoked";
@@ -36,10 +37,17 @@ export async function createPolicyProfile(context: RequestContext, input: Create
   if (!databasePool()) {
     if ([...profileStore().profiles.values()].some((profile) => profile.tenantId === context.tenantId && profile.name === input.name && profile.version === input.version)) throw new Response("Policy profile already exists", { status: 409 });
     const profile: PolicyProfile = { id: `policy_profile_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input, evidenceRef };
-    profileStore().profiles.set(profile.id, profile); return profile;
+    profileStore().profiles.set(profile.id, profile);
+    await recordAuditEvent(context, policyProfileAudit("policy_profile.created", profile));
+    return profile;
   }
   try {
-    return await withTenantTransaction(context.tenantId, async (client) => persistentProfile((await client.query<PersistentProfileRow>(`insert into policy_profiles (tenant_id, name, version, rules, evidence_ref, validation_summary) values ($1, $2, $3, $4::jsonb, $5, $6) returning ${columns}`, [context.tenantId, input.name, input.version, JSON.stringify(input.rules), evidenceRef, input.validationSummary])).rows[0]));
+    // The profile and its policy_profile.created audit event commit together.
+    return await withTenantTransaction(context.tenantId, async (client) => {
+      const profile = persistentProfile((await client.query<PersistentProfileRow>(`insert into policy_profiles (tenant_id, name, version, rules, evidence_ref, validation_summary) values ($1, $2, $3, $4::jsonb, $5, $6) returning ${columns}`, [context.tenantId, input.name, input.version, JSON.stringify(input.rules), evidenceRef, input.validationSummary])).rows[0]);
+      await recordAuditEventInTransaction(client, context, policyProfileAudit("policy_profile.created", profile));
+      return profile;
+    });
   } catch (error) {
     if (databaseErrorCode(error) === "23505") throw new Response("Policy profile already exists", { status: 409 });
     throw error;
@@ -51,13 +59,17 @@ export async function approvePolicyProfile(context: RequestContext, profileId: s
   if (!databasePool()) {
     const profile = profileStore().profiles.get(profileId);
     if (!profile || profile.tenantId !== context.tenantId) throw new Response("Policy profile not found", { status: 404 });
-    profile.approval = "approved"; profile.approvedAt = new Date().toISOString(); return profile;
+    profile.approval = "approved"; profile.approvedAt = new Date().toISOString();
+    await recordAuditEvent(context, policyProfileAudit("policy_profile.approved", profile));
+    return profile;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await syncActor(client, context);
     const result = await client.query<PersistentProfileRow>(`update policy_profiles set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 and approval_status = 'pending' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' returning ${columns}`, [profileId, actor]);
     if (!result.rows[0]) throw new Response("Policy profile not found or cannot be approved", { status: 409 });
-    return persistentProfile(result.rows[0]);
+    const profile = persistentProfile(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, policyProfileAudit("policy_profile.approved", profile));
+    return profile;
   });
 }
 
@@ -67,14 +79,21 @@ export async function revokePolicyProfile(context: RequestContext, profileId: st
     const profile = profileStore().profiles.get(profileId);
     if (!profile || profile.tenantId !== context.tenantId || profile.approval !== "approved") throw new Response("Policy profile not found or cannot be revoked", { status: 409 });
     profile.approval = "revoked"; profile.approvedAt = undefined; profile.revokedAt = new Date().toISOString(); profile.revocationReason = reason;
+    await recordAuditEvent(context, policyProfileAudit("policy_profile.revoked", profile, reason));
     return profile;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await syncActor(client, context);
     const result = await client.query<PersistentProfileRow>(`update policy_profiles set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [profileId, actor, reason]);
     if (!result.rows[0]) throw new Response("Policy profile not found or cannot be revoked", { status: 409 });
-    return persistentProfile(result.rows[0]);
+    const profile = persistentProfile(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, policyProfileAudit("policy_profile.revoked", profile, reason));
+    return profile;
   });
+}
+function policyProfileAudit(type: "policy_profile.created" | "policy_profile.approved" | "policy_profile.revoked", profile: PolicyProfile, reason?: string): AuditEventInput {
+  const detail: AuditEventInput["detail"] = type === "policy_profile.revoked" ? { name: profile.name, version: profile.version, reason: reason ?? "" } : { name: profile.name, version: profile.version, ruleCount: profile.rules.length };
+  return { type, resource: "policy_profile", resourceId: profile.id, detail };
 }
 
 export async function latestApprovedPolicyProfile(client: PoolClient) {

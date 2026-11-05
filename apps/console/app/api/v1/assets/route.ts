@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { createMediaAsset, isRuntimeVoiceId, listAssets, type CreateMediaAssetInput } from "@/lib/assets";
@@ -25,8 +24,8 @@ export async function POST(request: Request) {
     try { body = await readBoundedJson(request); }
     catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
     if (!isAssetInput(body)) return Response.json({ error: "invalid_media_asset" }, { status: 400 });
+    // createMediaAsset writes media_asset.created in the asset's transaction.
     const asset = await createMediaAsset(context, body);
-    await recordAuditEvent(context, { type: "media_asset.created", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectKey: asset.objectKey, objectVersion: asset.contentVerification?.objectVersion ?? "unverified", checksum: asset.checksum, verificationEvidenceRef: asset.contentVerification?.evidenceRef ?? "unverified" } });
     return Response.json({ data: asset }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "media_evidence_verification_failed" }, { status: error.status });

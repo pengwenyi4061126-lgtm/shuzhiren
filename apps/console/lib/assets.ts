@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 import { verifyMediaAssetContent, type MediaContentVerification } from "@/lib/media-evidence";
 
@@ -82,15 +83,31 @@ export async function createMediaAsset(context: RequestContext, input: CreateMed
   if (!databasePool()) {
     const asset: MediaAsset = { id: `asset_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input, contentVerification: verification };
     assetStore().assets.set(asset.id, asset);
+    await recordAuditEvent(context, mediaAssetCreatedAudit(asset));
     return asset;
   }
+  // The asset and its media_asset.created audit event commit together.
   return withTenantTransaction(context.tenantId, async (client) => {
     const result = await client.query<PersistentAssetRow>(
       `insert into media_assets (tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, expires_at, runtime_voice_id, verified_object_version, verified_bytes, verified_content_type, verification_evidence_ref, verified_at) values ($1, $2, $3, $4, $5, $6, $7, $8::date, $9, $10, $11, $12, $13, $14::timestamptz) returning ${columns}`,
       [context.tenantId, input.kind, input.name, input.objectKey, input.checksum, input.rightsScope, input.source, input.expiresAt ?? null, input.runtimeVoiceId ?? null, verification.objectVersion, verification.bytes, verification.contentType, verification.evidenceRef, verification.verifiedAt]
     );
-    return persistentAsset(result.rows[0]);
+    const asset = persistentAsset(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, mediaAssetCreatedAudit(asset));
+    return asset;
   });
+}
+
+function mediaAssetCreatedAudit(asset: MediaAsset): AuditEventInput {
+  return { type: "media_asset.created", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectKey: asset.objectKey, objectVersion: asset.contentVerification?.objectVersion ?? "unverified", checksum: asset.checksum, verificationEvidenceRef: asset.contentVerification?.evidenceRef ?? "unverified" } };
+}
+
+function mediaAssetApprovedAudit(asset: MediaAsset): AuditEventInput {
+  return { type: "media_asset.approved", resource: "media_asset", resourceId: asset.id, detail: { kind: asset.kind, objectVersion: asset.contentVerification?.objectVersion ?? "unverified", checksum: asset.checksum, verificationEvidenceRef: asset.contentVerification?.evidenceRef ?? "unverified" } };
+}
+
+function mediaAssetRevokedAudit(outcome: MediaAssetRevocation, reason: string): AuditEventInput {
+  return { type: "media_asset.revoked", resource: "media_asset", resourceId: outcome.asset.id, detail: { kind: outcome.asset.kind, reason, quarantinedLiveRunCount: outcome.impact.liveRunIds.length, humanHandoffQueuedCount: outcome.impact.humanHandoffQueuedRunIds.length } };
 }
 
 export async function approveMediaAsset(context: RequestContext, assetId: string) {
@@ -101,6 +118,7 @@ export async function approveMediaAsset(context: RequestContext, assetId: string
     asset.contentVerification = await verifyMediaAssetContent(context, asset);
     asset.approval = "approved";
     asset.approvedAt = new Date().toISOString();
+    await recordAuditEvent(context, mediaAssetApprovedAudit(asset));
     return asset;
   }
   const candidate = await withTenantTransaction(context.tenantId, async (client) => {
@@ -116,7 +134,9 @@ export async function approveMediaAsset(context: RequestContext, assetId: string
       [assetId, actor.rows[0].id, verification.objectVersion, verification.bytes, verification.contentType, verification.evidenceRef, verification.verifiedAt, candidate.objectKey, candidate.checksum]
     );
     if (!result.rows[0]) throw new Response("Media asset not found or cannot be approved", { status: 409 });
-    return persistentAsset(result.rows[0]);
+    const asset = persistentAsset(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, mediaAssetApprovedAudit(asset));
+    return asset;
   });
 }
 
@@ -126,14 +146,18 @@ export async function revokeMediaAsset(context: RequestContext, assetId: string,
     const asset = assetStore().assets.get(assetId);
     if (!asset || asset.tenantId !== context.tenantId || asset.approval !== "approved") throw new Response("Media asset not found or cannot be revoked", { status: 409 });
     asset.approval = "revoked"; asset.revokedAt = new Date().toISOString(); asset.revocationReason = reason;
-    return { asset, impact: { liveRunIds: [], humanHandoffQueuedRunIds: [] } } satisfies MediaAssetRevocation;
+    const outcome = { asset, impact: { liveRunIds: [], humanHandoffQueuedRunIds: [] } } satisfies MediaAssetRevocation;
+    await recordAuditEvent(context, mediaAssetRevokedAudit(outcome, reason));
+    return outcome;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await syncActor(client, context);
     const result = await client.query<PersistentAssetRow>(`update media_assets set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [assetId, actor, reason]);
     if (!result.rows[0]) throw new Response("Media asset not found or cannot be revoked", { status: 409 });
     const impact = await quarantineLiveRunsForRevocationInTransaction(client, context, "media_asset", assetId, reason);
-    return { asset: persistentAsset(result.rows[0]), impact } satisfies MediaAssetRevocation;
+    const outcome = { asset: persistentAsset(result.rows[0]), impact } satisfies MediaAssetRevocation;
+    await recordAuditEventInTransaction(client, context, mediaAssetRevokedAudit(outcome, reason));
+    return outcome;
   });
 }
 

@@ -13,6 +13,7 @@ export type AuditEvent = {
   occurredAt: string;
   detail: Record<string, string | number | boolean | null>;
 };
+export type AuditEventInput = Omit<AuditEvent, "id" | "tenantId" | "actorId" | "actorName" | "occurredAt">;
 export type AuditChainVerification = { verified: boolean; sealedEvents: number; legacyEvents: number; detail: string };
 export type AuditEvidenceEvent = AuditEvent & { chainSequence: number | null; previousHash: string | null; eventHash: string | null };
 export type AuditEvidenceExport = { generatedAt: string; chain: AuditChainVerification; events: AuditEvidenceEvent[] };
@@ -40,7 +41,7 @@ function auditStore(): AuditStore {
   return globalThis.shuzhirenAuditStore;
 }
 
-export async function recordAuditEvent(context: RequestContext, input: Omit<AuditEvent, "id" | "tenantId" | "actorId" | "actorName" | "occurredAt">) {
+export async function recordAuditEvent(context: RequestContext, input: AuditEventInput) {
   if (!databasePool()) {
     const event: AuditEvent = { id: `audit_${crypto.randomUUID()}`, tenantId: context.tenantId, actorId: context.actorId, actorName: context.actorName, occurredAt: new Date().toISOString(), ...input };
     auditStore().events.unshift(event);
@@ -49,7 +50,7 @@ export async function recordAuditEvent(context: RequestContext, input: Omit<Audi
   return withTenantTransaction(context.tenantId, async (client) => recordAuditEventInTransaction(client, context, input));
 }
 
-export async function recordAuditEventInTransaction(client: import("pg").PoolClient, context: RequestContext, input: Omit<AuditEvent, "id" | "tenantId" | "actorId" | "actorName" | "occurredAt">) {
+export async function recordAuditEventInTransaction(client: import("pg").PoolClient, context: RequestContext, input: AuditEventInput) {
   const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
   const result = await client.query<PersistentAuditRow>(
     `insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)

@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { registerRecording, type RegisterRecordingInput } from "@/lib/recordings";
@@ -12,8 +11,8 @@ export async function POST(request: Request) {
     if (!isRecordingBody(body)) return Response.json({ error: "invalid_recording_evidence" }, { status: 400 });
     requireRuntimeRecordingService(request, body.tenantId);
     const context: RequestContext = { tenantId: body.tenantId, actorId: "runtime-recording-service", actorName: "运行时录制归档服务", role: "operator" };
+    // registerRecording writes recording_evidence.registered in the registration's transaction.
     const registration = await registerRecording(context, body);
-    if (!registration.duplicate) await recordAuditEvent(context, { type: "recording_evidence.registered", resource: "recording_evidence", resourceId: registration.recording.id, detail: { runId: registration.recording.runId, objectKey: registration.recording.objectKey, bytes: registration.recording.bytes, durationSeconds: registration.recording.durationSeconds, objectVersion: registration.recording.contentVerification.objectVersion, evidenceRef: registration.recording.contentVerification.evidenceRef } });
     return Response.json({ data: registration.recording }, { status: registration.duplicate ? 200 : 201 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "recording_registration_rejected" }, { status: error.status });

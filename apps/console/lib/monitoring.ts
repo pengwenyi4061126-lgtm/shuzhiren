@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess, assertLiveRunAccessInTransaction, hasRestrictedMembership } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 
 export type RuntimeTelemetry = { runId: string; tenantId: string; sampledAt: string; outputConnected: boolean; inferenceFps: number; outputFps: number; avSyncMs: number; bitrateMbps: number; gpuUtilization: number; gpuMemoryMiB: number; audioActive: boolean; fallbackReady: boolean };
 export type RuntimeTelemetryInput = Omit<RuntimeTelemetry, "tenantId" | "sampledAt"> & { sampledAt?: string };
@@ -71,7 +72,9 @@ export async function ingestTelemetry(context: RequestContext, input: RuntimeTel
   if (!databasePool()) {
     const state = monitoringStore();
     state.telemetry.set(telemetry.runId, telemetry);
-    return { telemetry, alerts: reconcileDemoAlerts(state, telemetry) };
+    const alerts = reconcileDemoAlerts(state, telemetry);
+    for (const alert of alerts) await recordAuditEvent(context, alertTransitionAudit(alert));
+    return { telemetry, alerts };
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     await client.query(`insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`, [context.tenantId, telemetry.runId, telemetry.outputConnected, telemetry.inferenceFps, telemetry.outputFps, telemetry.avSyncMs, telemetry.bitrateMbps, telemetry.gpuUtilization, telemetry.gpuMemoryMiB, telemetry.audioActive, telemetry.fallbackReady, telemetry.sampledAt]);
@@ -89,8 +92,19 @@ export async function ingestTelemetry(context: RequestContext, input: RuntimeTel
       const opened = await client.query<PersistentAlertRow>(`insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status, opened_at) values ($1, $2, $3, $4, $5, 'open', $6) on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, null::text as acknowledged_by_name`, [context.tenantId, telemetry.runId, condition.severity, condition.code, condition.message, telemetry.sampledAt]);
       if (opened.rows[0]) changed.push(persistentAlert(opened.rows[0]));
     }
+    // Each opened or resolved alert is audited in the sample's transaction: a failed audit write rolls back the
+    // sample and its alert changes.
+    for (const alert of changed) await recordAuditEventInTransaction(client, context, alertTransitionAudit(alert));
     return { telemetry, alerts: changed };
   });
+}
+
+function alertTransitionAudit(alert: RuntimeAlert): AuditEventInput {
+  return { type: alert.status === "open" ? "runtime_alert.opened" : "runtime_alert.resolved", resource: "runtime_alert", resourceId: alert.id, detail: { runId: alert.runId, code: alert.code, severity: alert.severity } };
+}
+
+function alertAcknowledgedAudit(alert: RuntimeAlert): AuditEventInput {
+  return { type: "runtime_alert.acknowledged", resource: "runtime_alert", resourceId: alert.id, detail: { runId: alert.runId, code: alert.code, severity: alert.severity } };
 }
 
 export async function acknowledgeAlert(context: RequestContext, alertId: string) {
@@ -102,6 +116,7 @@ export async function acknowledgeAlert(context: RequestContext, alertId: string)
     if (alert.acknowledgedAt) return { alert, duplicate: true as const };
     const acknowledged = { ...alert, acknowledgedAt: new Date().toISOString(), acknowledgedBy: context.actorName };
     monitoringStore().alerts.set(alertId, acknowledged);
+    await recordAuditEvent(context, alertAcknowledgedAudit(acknowledged));
     return { alert: acknowledged, duplicate: false as const };
   }
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -112,7 +127,9 @@ export async function acknowledgeAlert(context: RequestContext, alertId: string)
     if (current.acknowledgedAt) return { alert: current, duplicate: true as const };
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const updated = await client.query<PersistentAlertRow>(`update runtime_alerts set acknowledged_at = now(), acknowledged_by = $2 where id = $1 returning id, tenant_id, live_run_id, severity, code, message, status, opened_at, resolved_at, acknowledged_at, $3::text as acknowledged_by_name`, [alertId, actor.rows[0].id, context.actorName]);
-    return { alert: persistentAlert(updated.rows[0]), duplicate: false as const };
+    const acknowledged = persistentAlert(updated.rows[0]);
+    await recordAuditEventInTransaction(client, context, alertAcknowledgedAudit(acknowledged));
+    return { alert: acknowledged, duplicate: false as const };
   });
 }
 

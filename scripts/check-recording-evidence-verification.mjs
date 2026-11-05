@@ -15,8 +15,11 @@ for (const source of ["RECORDING_EVIDENCE_VERIFIER_URL", "RECORDING_EVIDENCE_VER
 for (const source of ["verifyRecordingEvidence(context, input)", "verified_object_version", "verification_evidence_ref", "contentVerification"]) {
   if (!recordings.includes(source)) throw new Error(`Recording registration must require and retain verifier evidence: ${source}`);
 }
-for (const source of ["objectVersion: registration.recording.contentVerification.objectVersion", "evidenceRef: registration.recording.contentVerification.evidenceRef", "body.bytes > 0"]) {
-  if (!route.includes(source)) throw new Error(`Recording ingress must audit verifier evidence and reject empty objects: ${source}`);
+if (!route.includes("body.bytes > 0")) throw new Error("Recording ingress must reject empty objects");
+if (route.includes("recordAuditEvent")) throw new Error("Recording ingress must not write its audit event outside the registration transaction");
+// The registration audits the verifier evidence in the transaction that stores the recording.
+for (const source of ["objectVersion: recording.contentVerification.objectVersion", "evidenceRef: recording.contentVerification.evidenceRef", "recordAuditEventInTransaction(client, context, recordingRegisteredAudit(recording))"]) {
+  if (!recordings.includes(source)) throw new Error(`Recording registration must audit verifier evidence in its transaction: ${source}`);
 }
 for (const source of ["recording_evidence_governed_mutation", "recording evidence requires verifier attestation", "verified_object_version", "recording_evidence_tenant_verification_idx"]) {
   if (!migration.includes(source)) throw new Error(`Recording evidence migration must govern verifier attestation: ${source}`);

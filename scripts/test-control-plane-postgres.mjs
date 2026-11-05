@@ -1086,6 +1086,32 @@ try {
     await client.query("drop function integration_reject_channel_created_audit()");
   }
   assert.equal((await client.query("select count(*)::int as count from channel_connections where tenant_id = $1 and name = $2", [tenantId, rolledBackChannelName])).rows[0].count, 0, "a failed audit write must roll back the channel connection");
+  // N5: a live command, its outbox event and their live_command.accepted and media_command.enqueued audit events commit in one transaction.
+  const auditedCommandRun = await seedRun("LIVE", "session_audited_command", new Date());
+  const auditedCommandResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${auditedCommandRun.runId}/commands`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ action: "PAUSE", expectedState: "LIVE", idempotencyKey: randomUUID() }) });
+  assert.equal(auditedCommandResponse.status, 202, "a tenant-wide operator should issue a live command");
+  const auditedCommand = (await auditedCommandResponse.json()).data;
+  const auditedCommandRows = await client.query("select c.id, u.external_subject from live_commands c join users u on u.id = c.actor_id where c.live_run_id = $1", [auditedCommandRun.runId]);
+  assert.deepEqual(auditedCommandRows.rows, [{ id: auditedCommand.command.id, external_subject: "integration-second-operator" }], "the command must be stored once with the requesting operator");
+  const acceptedCommandAudit = await client.query("select u.external_subject, a.detail ->> 'commandId' as command_id, a.detail ->> 'action' as action from audit_events a join users u on u.id = a.actor_id where a.event_type = 'live_command.accepted' and a.resource_key = $1", [auditedCommandRun.runId]);
+  assert.deepEqual(acceptedCommandAudit.rows, [{ external_subject: "integration-second-operator", command_id: auditedCommand.command.id, action: "PAUSE" }], "the accepted command must be audited exactly once with the requesting operator");
+  const enqueuedCommandAudit = await client.query("select u.external_subject, a.detail ->> 'mediaCommandId' as media_command_id from audit_events a join users u on u.id = a.actor_id where a.event_type = 'media_command.enqueued' and a.resource_key = $1", [auditedCommand.mediaEvent.id]);
+  assert.deepEqual(enqueuedCommandAudit.rows, [{ external_subject: "integration-second-operator", media_command_id: auditedCommand.mediaEvent.command.id }], "the enqueued media command must be audited exactly once with the requesting operator");
+  assert.equal((await client.query("select count(*)::int as count from outbox_events where aggregate_type = 'live_run' and aggregate_id = $1", [auditedCommandRun.runId])).rows[0].count, 1, "the command must enqueue exactly one outbox event");
+  const rolledBackCommandRun = await seedRun("LIVE", "session_rolled_back_command", new Date());
+  await client.query("create function integration_reject_live_command_audit() returns trigger language plpgsql as $$ begin if new.event_type = 'media_command.enqueued' then raise exception 'integration audit write failure'; end if; return new; end $$");
+  await client.query("create trigger integration_reject_live_command_audit before insert on audit_events for each row execute function integration_reject_live_command_audit()");
+  try {
+    const failedAuditCommand = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${rolledBackCommandRun.runId}/commands`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ action: "PAUSE", expectedState: "LIVE", idempotencyKey: randomUUID() }) });
+    assert.ok(failedAuditCommand.status >= 500, "a failed media_command.enqueued audit write must fail the command request");
+  } finally {
+    await client.query("drop trigger integration_reject_live_command_audit on audit_events");
+    await client.query("drop function integration_reject_live_command_audit()");
+  }
+  assert.equal((await client.query("select count(*)::int as count from live_commands where live_run_id = $1", [rolledBackCommandRun.runId])).rows[0].count, 0, "a failed audit write must roll back the command");
+  assert.equal((await client.query("select count(*)::int as count from outbox_events where aggregate_type = 'live_run' and aggregate_id = $1", [rolledBackCommandRun.runId])).rows[0].count, 0, "a failed audit write must leave no command in the outbox");
+  assert.equal((await client.query("select count(*)::int as count from audit_events where event_type = 'live_command.accepted' and resource_key = $1", [rolledBackCommandRun.runId])).rows[0].count, 0, "a failed audit write must roll back the command's other audit event");
+  assert.equal((await client.query("select state from live_runs where id = $1", [rolledBackCommandRun.runId])).rows[0].state, "LIVE", "a failed audit write must leave the run state unchanged");
   // L8: provisioning a subject that already exists in another tenant must not rename it there.
   const sharedSubject = `integration-shared-subject-${randomUUID()}`;
   const otherTenantMembership = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { method: "POST", headers: { ...isolatedRequestHeaders, "content-type": "application/json" }, body: JSON.stringify({ externalSubject: sharedSubject, displayName: "Isolated tenant name", role: "analyst" }) });

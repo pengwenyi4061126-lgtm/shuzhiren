@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { createLiveRun, listRuns } from "@/lib/control-plane/store";
@@ -33,8 +32,8 @@ export async function POST(request: Request) {
         return Response.json({ error: "runtime_session_verification_failed" }, { status: 502 });
       }
     }
+    // createLiveRun writes live_run.created in the run's transaction.
     const run = await createLiveRun(actor, body);
-    await recordAuditEvent(actor, { type: "live_run.created", resource: "live_run", resourceId: run.id, detail: { scheduledAt: run.scheduledAt ?? null, channelConnectionId: body.channelConnectionId, productVersionId: body.productVersionId } });
     return Response.json({ data: run }, { status: 201 });
   } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "live_run_conflict" }, { status: error.status }); throw error; }
 }

@@ -1,4 +1,3 @@
-import { recordAuditEvent } from "@/lib/audit";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { bindRuntimeSession, canBindRuntimeSession, getRun } from "@/lib/control-plane/store";
@@ -24,8 +23,8 @@ export async function PUT(request: Request, context: RouteContext<"/api/v1/live-
     } catch {
       return Response.json({ error: "runtime_session_verification_failed" }, { status: 502 });
     }
+    // bindRuntimeSession writes runtime_session.bound in the binding's transaction.
     const run = await bindRuntimeSession(actor, runId, body.runtimeSessionId);
-    await recordAuditEvent(actor, { type: "runtime_session.bound", resource: "live_run", resourceId: run.id, detail: { runtimeSessionId: run.runtimeSessionId ?? "" } });
     return Response.json({ data: run });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "runtime_session_rejected" }, { status: error.status });

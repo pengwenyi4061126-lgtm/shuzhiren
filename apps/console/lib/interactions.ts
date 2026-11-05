@@ -64,7 +64,12 @@ export async function listInteractions(context: RequestContext, runId: string, s
   });
 }
 
+// An operator interaction and its interaction.received (and interaction.handoff_required) audit events commit
+// together. Channel interactions are audited by createChannelInteraction instead.
 export async function createInteraction(context: RequestContext, input: CreateInteractionInput): Promise<LiveInteraction & { duplicate?: boolean }> {
+  return insertInteraction(context, input, true);
+}
+async function insertInteraction(context: RequestContext, input: CreateInteractionInput, operatorAudit: boolean): Promise<LiveInteraction & { duplicate?: boolean }> {
   await assertLiveRunAccess(context, input.runId);
   if (!isControlledPolicyQuestion(input.question)) throw new Response("Interaction question must be between 1 and 1000 characters", { status: 400 });
   const decision = evaluatePolicy(input.question, input.evidenceIds, await policyRulesForRun(context, input.runId));
@@ -83,15 +88,20 @@ export async function createInteraction(context: RequestContext, input: CreateIn
     const interaction: LiveInteraction = { id: `interaction_${crypto.randomUUID()}`, tenantId: context.tenantId, runId: input.runId, source, channelConnectionId: input.channelConnectionId, externalEventId: input.externalEventId, text: input.question, detail, risk: decision.riskLevel, status: "queued", decision: decision.action, reasons: decision.reasons, requiredEvidence: decision.requiredEvidence, evidenceIds: input.evidenceIds, submittedAt: new Date().toISOString() };
     interactionStore().interactions.set(interaction.id, interaction);
     if (eventKey) interactionStore().externalEvents.set(eventKey, interaction.id);
+    if (operatorAudit) await recordOperatorInteractionAudit(context, input.runId, interaction);
     return interaction;
   }
-  return withTenantTransaction(context.tenantId, (client) => createPersistentInteraction(client, context, input, decision));
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const interaction = await createPersistentInteraction(client, context, input, decision);
+    if (operatorAudit && !interaction.duplicate) await recordOperatorInteractionAudit(context, input.runId, interaction, client);
+    return interaction;
+  });
 }
 
 export async function createChannelInteraction(context: RequestContext, input: CreateInteractionInput & { channelConnectionId: string }): Promise<LiveInteraction & { duplicate?: boolean }> {
   if (!isControlledPolicyQuestion(input.question)) throw new Response("Interaction question must be between 1 and 1000 characters", { status: 400 });
   if (!databasePool()) {
-    const interaction = await createInteraction(context, input);
+    const interaction = await insertInteraction(context, input, false);
     if (!interaction.duplicate) await recordChannelInteractionAudit(context, interaction, input.channelConnectionId);
     return interaction;
   }
@@ -131,6 +141,11 @@ async function recordChannelInteractionAudit(context: RequestContext, interactio
   if (interaction.decision === "handoff") await record({ type: "interaction.handoff_required", resource: "live_interaction", resourceId: interaction.id, detail: { runId: interaction.runId, reasons: interaction.reasons.join(";") } });
 }
 
+async function recordOperatorInteractionAudit(context: RequestContext, runId: string, interaction: LiveInteraction, client?: import("pg").PoolClient) {
+  const record = client ? (input: Parameters<typeof recordAuditEvent>[1]) => recordAuditEventInTransaction(client, context, input) : (input: Parameters<typeof recordAuditEvent>[1]) => recordAuditEvent(context, input);
+  await record({ type: "interaction.received", resource: "live_interaction", resourceId: interaction.id, detail: { runId, risk: interaction.risk, decision: interaction.decision } });
+  if (interaction.decision === "handoff") await record({ type: "interaction.handoff_required", resource: "live_interaction", resourceId: interaction.id, detail: { runId, reasons: interaction.reasons.join(";") } });
+}
 export async function handleInteraction(context: RequestContext, runId: string, interactionId: string, resolutionNote?: string) {
   await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
@@ -140,6 +155,7 @@ export async function handleInteraction(context: RequestContext, runId: string, 
     if (interaction.status === "handled") return interaction;
     const handled = { ...interaction, status: "handled" as const, handledAt: new Date().toISOString(), handledBy: context.actorName, resolutionNote: resolutionNote?.trim() || undefined };
     interactionStore().interactions.set(interaction.id, handled);
+    await recordAuditEvent(context, interactionHandledAudit(runId, handled));
     return handled;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -157,8 +173,14 @@ export async function handleInteraction(context: RequestContext, runId: string, 
       if (exists.rows[0].channel_connection_id) throw new Response("Channel interactions are handled only after a channel reply is delivered", { status: 409 });
       throw new Response("Interaction was already handled", { status: 409 });
     }
-    return persistentInteraction(result.rows[0]);
+    // The update and its interaction.handled audit event commit together.
+    const handled = persistentInteraction(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, interactionHandledAudit(runId, handled));
+    return handled;
   });
+}
+function interactionHandledAudit(runId: string, interaction: LiveInteraction): Parameters<typeof recordAuditEvent>[1] {
+  return { type: "interaction.handled", resource: "live_interaction", resourceId: interaction.id, detail: { runId, decision: interaction.decision, risk: interaction.risk } };
 }
 
 function interactionDetail(decision: PolicyDecision) {

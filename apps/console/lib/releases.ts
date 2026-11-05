@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 import { isControlledEvidenceRef } from "@/lib/governance-input";
 
@@ -40,10 +41,16 @@ export async function createModelRelease(context: RequestContext, input: CreateM
     if ([...releaseStore().releases.values()].some((release) => release.tenantId === context.tenantId && release.component === input.component && release.name === input.name && release.version === input.version)) throw new Response("Model release already exists", { status: 409 });
     const release: ModelRelease = { id: `release_${crypto.randomUUID()}`, tenantId: context.tenantId, approval: "pending", ...input, evidenceRef };
     releaseStore().releases.set(release.id, release);
+    await recordAuditEvent(context, modelReleaseCreatedAudit(release));
     return release;
   }
   try {
-    return await withTenantTransaction(context.tenantId, async (client) => persistentRelease((await client.query<PersistentReleaseRow>(`insert into model_releases (tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, notes) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning ${columns}`, [context.tenantId, input.name, input.version, input.component, input.sourceCommit, input.imageDigest, input.artifactHash, input.driverVersion, input.license, input.rightsScope, evidenceRef, input.validationSummary, input.notes ?? null])).rows[0]));
+    // The release and its model_release.created audit event commit together.
+    return await withTenantTransaction(context.tenantId, async (client) => {
+      const release = persistentRelease((await client.query<PersistentReleaseRow>(`insert into model_releases (tenant_id, name, version, component, source_commit, image_digest, artifact_hash, driver_version, license, rights_scope, evidence_ref, validation_summary, notes) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning ${columns}`, [context.tenantId, input.name, input.version, input.component, input.sourceCommit, input.imageDigest, input.artifactHash, input.driverVersion, input.license, input.rightsScope, evidenceRef, input.validationSummary, input.notes ?? null])).rows[0]);
+      await recordAuditEventInTransaction(client, context, modelReleaseCreatedAudit(release));
+      return release;
+    });
   } catch (error) {
     if (databaseErrorCode(error) === "23505") throw new Response("Model release already exists", { status: 409 });
     throw error;
@@ -56,13 +63,17 @@ export async function approveModelRelease(context: RequestContext, releaseId: st
     const release = releaseStore().releases.get(releaseId);
     if (!release || release.tenantId !== context.tenantId || release.approval !== "pending") throw new Response("Model release not found or cannot be approved", { status: 409 });
     if (!release.evidenceRef.trim() || !release.validationSummary.trim()) throw new Response("Release evidence is required before approval", { status: 409 });
-    release.approval = "approved"; release.approvedAt = new Date().toISOString(); return release;
+    release.approval = "approved"; release.approvedAt = new Date().toISOString();
+    await recordAuditEvent(context, modelReleaseApprovedAudit(release));
+    return release;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentReleaseRow>(`update model_releases set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 and approval_status = 'pending' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' returning ${columns}`, [releaseId, actor.rows[0].id]);
     if (!result.rows[0]) throw new Response("Model release not found or cannot be approved", { status: 409 });
-    return persistentRelease(result.rows[0]);
+    const release = persistentRelease(result.rows[0]);
+    await recordAuditEventInTransaction(client, context, modelReleaseApprovedAudit(release));
+    return release;
   });
 }
 
@@ -72,15 +83,31 @@ export async function revokeModelRelease(context: RequestContext, releaseId: str
     const release = releaseStore().releases.get(releaseId);
     if (!release || release.tenantId !== context.tenantId || release.approval !== "approved") throw new Response("Model release not found or cannot be revoked", { status: 409 });
     release.approval = "revoked"; release.revokedAt = new Date().toISOString(); release.revocationReason = reason;
-    return { release, impact: { liveRunIds: [], humanHandoffQueuedRunIds: [] } } satisfies ModelReleaseRevocation;
+    const outcome = { release, impact: { liveRunIds: [], humanHandoffQueuedRunIds: [] } } satisfies ModelReleaseRevocation;
+    await recordAuditEvent(context, modelReleaseRevokedAudit(outcome, reason));
+    return outcome;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
     const result = await client.query<PersistentReleaseRow>(`update model_releases set approval_status = 'revoked', revoked_by = $2, revoked_at = now(), revocation_reason = $3 where id = $1 and approval_status = 'approved' returning ${columns}`, [releaseId, actor.rows[0].id, reason]);
     if (!result.rows[0]) throw new Response("Model release not found or cannot be revoked", { status: 409 });
     const impact = await quarantineLiveRunsForRevocationInTransaction(client, context, "model_release", releaseId, reason);
-    return { release: persistentRelease(result.rows[0]), impact } satisfies ModelReleaseRevocation;
+    const outcome = { release: persistentRelease(result.rows[0]), impact } satisfies ModelReleaseRevocation;
+    await recordAuditEventInTransaction(client, context, modelReleaseRevokedAudit(outcome, reason));
+    return outcome;
   });
+}
+
+function modelReleaseCreatedAudit(release: ModelRelease): AuditEventInput {
+  return { type: "model_release.created", resource: "model_release", resourceId: release.id, detail: { component: release.component, version: release.version, artifactHash: release.artifactHash } };
+}
+
+function modelReleaseApprovedAudit(release: ModelRelease): AuditEventInput {
+  return { type: "model_release.approved", resource: "model_release", resourceId: release.id, detail: { component: release.component, version: release.version } };
+}
+
+function modelReleaseRevokedAudit(outcome: ModelReleaseRevocation, reason: string): AuditEventInput {
+  return { type: "model_release.revoked", resource: "model_release", resourceId: outcome.release.id, detail: { component: outcome.release.component, version: outcome.release.version, reason, quarantinedLiveRunCount: outcome.impact.liveRunIds.length, humanHandoffQueuedCount: outcome.impact.humanHandoffQueuedRunIds.length } };
 }
 
 export async function hasApprovedProductionReleases(context: RequestContext, revisionId?: string) {
