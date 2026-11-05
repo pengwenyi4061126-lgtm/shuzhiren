@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+
 type TenantServiceTokenVariable = "RUNTIME_TELEMETRY_TENANT_TOKENS" | "PROGRAM_OUTPUT_OBSERVATION_TENANT_TOKENS" | "RUNTIME_RECORDING_TENANT_TOKENS" | "PIM_INGEST_TENANT_TOKENS" | "CHANNEL_INGEST_TENANT_TOKENS" | "CHANNEL_COMMERCE_TENANT_TOKENS" | "SETTLEMENT_INGEST_TENANT_TOKENS";
 
 function configuredTenantTokens(variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
@@ -17,11 +19,21 @@ function configuredTenantTokens(variable: TenantServiceTokenVariable, developmen
   }
 }
 
+// Compares fixed-length SHA-256 digests with timingSafeEqual, so the time taken
+// does not depend on how much of the presented header matches the expected
+// value, and headers of a different length (or with non-ASCII bytes) simply
+// do not match.
+export function tokenMatches(authorization: string | null, expected: string) {
+  const presented = createHash("sha256").update(authorization ?? "", "utf8").digest();
+  const wanted = createHash("sha256").update(`Bearer ${expected}`, "utf8").digest();
+  return timingSafeEqual(presented, wanted);
+}
+
 function requireTenantService(request: Request, tenantId: string, variable: TenantServiceTokenVariable, developmentToken: string, label: string) {
   const expected = configuredTenantTokens(variable, developmentToken, label).get(tenantId);
-  const authorization = request.headers.get("authorization");
-  if (!expected) throw new Response(`No ${label} token is authorized for this tenant`, { status: 401 });
-  if (authorization !== `Bearer ${expected}`) throw new Response(`Invalid ${label} token`, { status: 401 });
+  // Compare even when the tenant has no token so both rejections cost the same.
+  const matches = tokenMatches(request.headers.get("authorization"), expected ?? "");
+  if (!expected || !matches) throw new Response(`Invalid ${label} token`, { status: 401 });
 }
 
 export function requireRuntimeService(request: Request, tenantId: string) { requireTenantService(request, tenantId, "RUNTIME_TELEMETRY_TENANT_TOKENS", "demo-runtime-token", "runtime service"); }
