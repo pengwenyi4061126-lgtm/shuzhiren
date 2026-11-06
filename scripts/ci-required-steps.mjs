@@ -40,6 +40,8 @@ export const CI_ONLY_STEPS = Object.freeze([
   { job: "docker-build", command: "docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file apps/console/Dockerfile --target migrator --tag shuzhiren-control-plane-migrator-ci .", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .", localReason: NO_DOCKER, label: "static" },
+  // Requirement 2.8 (live-commerce-p1-features): the worker image resolves ../console/lib/shared/ at run time.
+  { job: "docker-build", command: "docker run --rm --entrypoint node shuzhiren-runtime-worker-ci --input-type=module -e \"await import('/app/apps/runtime-worker/interaction-rules.mjs')\"", localReason: NO_DOCKER, label: "behavioral" },
   { job: "docker-build", command: "docker build --file apps/runtime-observer/Dockerfile --tag shuzhiren-runtime-observer-ci .", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file apps/output-probe/Dockerfile --tag shuzhiren-output-probe-ci .", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file apps/channel-adapter/Dockerfile --tag shuzhiren-channel-adapter-ci .", localReason: NO_DOCKER, label: "static" },

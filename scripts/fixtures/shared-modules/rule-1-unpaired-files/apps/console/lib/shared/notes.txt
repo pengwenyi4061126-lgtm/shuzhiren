@@ -1,0 +1,1 @@
+Only *.mjs and *.d.mts belong here.

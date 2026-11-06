@@ -82,6 +82,7 @@ jobs:
       - run: npm run db:migrations:lint
       - run: npm run db:migrations:lint:extra
       - run: npm run regression:registry:check
+      - run: npm run shared:modules:check
       - run: node --check apps/runtime-worker/index.mjs
       - run: node --check apps/runtime-observer/index.mjs
       - run: node --check apps/runtime-observer/targets.mjs
@@ -259,6 +260,7 @@ jobs:
       - run: docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .
       - run: docker build --file apps/console/Dockerfile --target migrator --tag shuzhiren-control-plane-migrator-ci .
       - run: docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .
+      - run: docker run --rm --entrypoint node shuzhiren-runtime-worker-ci --input-type=module -e "await import('/app/apps/runtime-worker/interaction-rules.mjs')"
       - run: docker build --file apps/runtime-observer/Dockerfile --tag shuzhiren-runtime-observer-ci .
       - run: docker build --file apps/output-probe/Dockerfile --tag shuzhiren-output-probe-ci .
       - run: docker build --file apps/channel-adapter/Dockerfile --tag shuzhiren-channel-adapter-ci .

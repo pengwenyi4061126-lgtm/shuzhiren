@@ -99,6 +99,7 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "db:migrations:lint:extra", kind: "npm", script: "db:migrations:lint:extra", label: "static" },
   { id: "db:migrations:lint:test", kind: "npm", script: "db:migrations:lint:test", label: "behavioral" },
   { id: "regression:registry:check", kind: "npm", script: "regression:registry:check", label: "static" },
+  { id: "shared:modules:check", kind: "npm", script: "shared:modules:check", label: "static" },
   { id: "regression:registry:test", kind: "npm", script: "regression:registry:test", label: "behavioral" },
   { id: "regression:evidence:test", kind: "npm", script: "regression:evidence:test", label: "behavioral" },
   { id: "typecheck", kind: "npm", script: "typecheck", label: "static" },

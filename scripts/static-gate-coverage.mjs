@@ -35,6 +35,7 @@ export const STATIC_GATE_COVERAGE = Object.freeze({
   "control-room:program-transition:check": [],
   "runtime:program-output:check": [],
   "preflight:check": [],
+  "shared:modules:check": [],
   "lifecycle:authz:check": [],
   "command:confirmation:check": [],
   "service-ingest:auth:check": [],

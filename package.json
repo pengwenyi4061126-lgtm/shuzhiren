@@ -64,6 +64,7 @@
     "governance:tenant-scope:check": "node scripts/check-tenant-wide-governance-access.mjs",
     "membership:bootstrap-admin": "node apps/console/scripts/bootstrap-admin.mjs",
     "policy:red-team": "node scripts/check-policy-redteam.mjs",
+    "shared:modules:check": "node scripts/check-shared-modules.mjs",
     "governance:immutability:check": "node scripts/check-governed-evidence-immutability.mjs",
     "program:revisions:check": "node scripts/check-program-revision-workflow.mjs",
     "program:runtime-scripts:check": "node scripts/check-runtime-program-scripts.mjs",
