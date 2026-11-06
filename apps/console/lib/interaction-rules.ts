@@ -325,6 +325,38 @@ export async function interactionRuleErrorResponse(error: unknown, fallback: str
   throw error;
 }
 
+// ---- Preflight: AI identity disclosure rule ----
+
+export type AiDisclosureRuleRow = Pick<PersistentRuleRow, "enabled" | "approval_status" | "trigger_type" | "action" | "live_run_id" | "interval_seconds">;
+export type AiDisclosureRuleStatus = { passed: boolean; detail: string };
+
+/** Pure: whether the tenant's (single or missing) ai_disclosure rule satisfies the preflight check. Fail closed. */
+export function evaluateAiDisclosureRule(row: AiDisclosureRuleRow | null): AiDisclosureRuleStatus {
+  if (!row) return { passed: false, detail: "未创建 AI 身份提示规则（在\"互动规则\"页一键创建默认规则并审批）" };
+  if (row.enabled !== true) return { passed: false, detail: "AI 身份提示规则未启用" };
+  if (row.approval_status !== "approved") return { passed: false, detail: "AI 身份提示规则待审批" };
+  const interval = row.interval_seconds;
+  if (row.live_run_id !== null || row.trigger_type !== "timed" || row.action !== "speak" || typeof interval !== "number" || !Number.isInteger(interval)
+    || interval < aiDisclosureIntervalBounds.min || interval > aiDisclosureIntervalBounds.max) return { passed: false, detail: "AI 身份提示规则形状无效" };
+  return { passed: true, detail: `已批准，每 ${interval} 秒口播一次` };
+}
+
+/** Reads on the caller's connection (arm and START already hold the run lock; no second pool checkout). Errors propagate so the caller's transaction rolls back. */
+export async function aiDisclosureRuleStatusInTransaction(client: PoolClient): Promise<AiDisclosureRuleStatus> {
+  const result = await client.query<AiDisclosureRuleRow>("select enabled, approval_status, trigger_type, action, live_run_id, interval_seconds from interaction_rules where default_key = 'ai_disclosure'");
+  return evaluateAiDisclosureRule(result.rows[0] ?? null);
+}
+
+/** Demo mode reads the in-memory rule store (no fixture is injected); PostgreSQL mode opens a read-only tenant transaction. */
+export async function aiDisclosureRuleStatus(context: RequestContext): Promise<AiDisclosureRuleStatus> {
+  if (databasePool()) return withTenantTransaction(context.tenantId, (client) => aiDisclosureRuleStatusInTransaction(client), { readOnly: true });
+  const rule = [...ruleStore().rules.values()].find((candidate) => candidate.tenantId === context.tenantId && candidate.defaultKey === "ai_disclosure");
+  return evaluateAiDisclosureRule(rule ? {
+    enabled: rule.enabled, approval_status: rule.approval, trigger_type: rule.triggerType, action: rule.action,
+    live_run_id: rule.liveRunId ?? null, interval_seconds: rule.intervalSeconds ?? null
+  } : null);
+}
+
 // ---- Helpers ----
 
 // Returns null only for a default rule the tenant already has.

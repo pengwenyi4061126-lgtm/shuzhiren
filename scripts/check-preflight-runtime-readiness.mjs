@@ -121,7 +121,7 @@ const tenantId = "00000000-0000-4000-8000-000000000001";
 const runId = "00000000-0000-4000-8000-000000000002";
 const operatorContext = { tenantId, actorId: "preflight-check", actorName: "Preflight Check", role: "operator", accessScope: "tenant" };
 
-function preflightClient(state) {
+function preflightClient(state, { failOn } = {}) {
   const client = fakeClient();
   client.statements = [];
   let inFlight = 0;
@@ -131,6 +131,7 @@ function preflightClient(state) {
     try {
       client.statements.push(sql);
       await new Promise((resolve) => setImmediate(resolve));
+      if (failOn && sql.includes(failOn)) throw new Error(`injected failure for ${failOn}`);
       if (sql.includes("for update of r")) return { rows: [{ id: runId, tenant_id: tenantId, show_revision_id: "00000000-0000-4000-8000-000000000003", show_name: "Preflight check", state, trace_id: "trace", channel_connection_id: "00000000-0000-4000-8000-000000000004", product_version_id: "00000000-0000-4000-8000-000000000005", has_operator: true, rights_approved: true, has_approved_sku_version: true, has_fallback_program: true, channel_ready: true, output_ready: true, ai_disclosure_enabled: true, runtime_session_id: "session-preflight-check", scheduled_at: null, active_program_segment_id: null, active_insert_source_segment_id: null, active_insert_program_segment_id: null, pending_program_transition_event_id: null }] };
       if (sql.includes("select id from live_runs where id = $1::uuid")) return { rows: [{ id: runId }] };
       return { rows: [] };
@@ -155,6 +156,7 @@ const rejectedPreflight = (error) => error instanceof Response && error.status =
   const connects = await withCountingPool(client, () => assert.rejects(store.advanceRunLifecycle(operatorContext, runId, "arm"), rejectedPreflight));
   assert.equal(connects, 1, "arm must evaluate preflight on its own transaction connection");
   assert.ok(client.statements.some((sql) => sql.includes("from runtime_health_samples")), "arm must read runtime readiness inside its transaction");
+  assert.ok(client.statements.some((sql) => sql.includes("from interaction_rules where default_key = 'ai_disclosure'")), "arm must read the AI disclosure rule inside its transaction");
   assert.ok(client.statements.includes("rollback"), "a failed arm preflight must roll back");
 }
 {
@@ -162,12 +164,14 @@ const rejectedPreflight = (error) => error instanceof Response && error.status =
   const connects = await withCountingPool(client, () => assert.rejects(store.issueCommand(operatorContext, runId, { action: "START", expectedState: "ARMED", idempotencyKey: "preflight-check-start" }), rejectedPreflight));
   assert.equal(connects, 1, "START must evaluate preflight on its own transaction connection");
   assert.ok(client.statements.some((sql) => sql.includes("from show_revision_model_releases")), "START must read frozen releases inside its transaction");
+  assert.ok(client.statements.some((sql) => sql.includes("from interaction_rules where default_key = 'ai_disclosure'")), "START must read the AI disclosure rule inside its transaction");
 }
 
 console.log("PASS  lifecycle arm and START evaluate preflight on their transaction connection without nested pool checkouts");
 
 // AIGC explicit label (人工智能生成合成内容标识办法): preflight blocks arm and START unless the Runtime Gateway health
 // reports LiveTalking's label enabled with the run's text; every other answer is fail closed.
+if (!preflightSection.includes("aiDisclosureRuleReady: aiDisclosureRule.passed") || !preflightSection.includes("aiDisclosureRuleStatusInTransaction(client)")) throw new Error("Preflight must read the AI disclosure rule on the caller's transaction client and feed aiDisclosureRuleReady");
 if (!preflightSection.includes("aigcLabelReady: aigcLabel.passed") || !preflightSection.includes("evaluateAigcLabelReadiness(await frozenAigcLabelTextInTransaction(client, run.id) ?? aigcLabelText())")) throw new Error("Preflight must evaluate the AIGC label against the run's sealed label text");
 {
   const { evaluatePreflight } = await import("../apps/console/lib/control-plane/preflight.ts");
@@ -190,7 +194,7 @@ if (!preflightSection.includes("aigcLabelReady: aigcLabel.passed") || !preflight
   }
   assert.match(aigc.evaluateAigcLabelReport(health(enabled), { ...expected, contentProducer: null }).detail, /未配置 AIGC_CONTENT_PRODUCER/);
   assert.equal(aigc.evaluateAigcLabelReport(health({ ...enabled, text: "欢迎" }), { ...expected, text: "欢迎" }).passed, false, "a label text that does not say AI blocks");
-  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true };
+  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true, aiDisclosureRuleReady: true, aiDisclosureRuleDetail: "ok" };
   assert.equal(evaluatePreflight({ ...base, aigcLabelReady: true, aigcLabelDetail: "ok" }).passed, true);
   const blocked = evaluatePreflight({ ...base, aigcLabelReady: false, aigcLabelDetail: "LiveTalking 未启用 AIGC 画面标识" });
   assert.equal(blocked.passed, false, "a disabled AIGC label must block arm and START");
@@ -229,3 +233,47 @@ if (!preflightSection.includes("aigcLabelReady: aigcLabel.passed") || !preflight
 }
 
 console.log("PASS  preflight blocks arm and START unless the Gateway reports the AIGC label enabled with the run's sealed text (fail closed)");
+
+// AI identity disclosure rule (interaction rule default_key ai_disclosure): arm and START need an enabled, approved,
+// correctly shaped rule; a missing rule or a failed read never counts as passed.
+{
+  const { evaluatePreflight } = await import("../apps/console/lib/control-plane/preflight.ts");
+  const rules = await import("../apps/console/lib/interaction-rules.ts");
+  const valid = { enabled: true, approval_status: "approved", trigger_type: "timed", action: "speak", live_run_id: null, interval_seconds: 600 };
+  assert.deepEqual(rules.evaluateAiDisclosureRule(valid), { passed: true, detail: "已批准，每 600 秒口播一次" });
+  for (const [name, row, detail] of [
+    ["no rule", null, "未创建 AI 身份提示规则（在\"互动规则\"页一键创建默认规则并审批）"],
+    ["disabled", { ...valid, enabled: false }, "AI 身份提示规则未启用"],
+    ["pending approval", { ...valid, approval_status: "pending" }, "AI 身份提示规则待审批"],
+    ["bound to one run", { ...valid, live_run_id: "00000000-0000-4000-8000-000000000002" }, "AI 身份提示规则形状无效"],
+    ["not timed", { ...valid, trigger_type: "idle_comment" }, "AI 身份提示规则形状无效"],
+    ["not speak", { ...valid, action: "reply_draft" }, "AI 身份提示规则形状无效"],
+    ["interval below 60", { ...valid, interval_seconds: 59 }, "AI 身份提示规则形状无效"],
+    ["interval above 1800", { ...valid, interval_seconds: 1801 }, "AI 身份提示规则形状无效"],
+    ["interval missing", { ...valid, interval_seconds: null }, "AI 身份提示规则形状无效"]
+  ]) assert.deepEqual(rules.evaluateAiDisclosureRule(row), { passed: false, detail }, name);
+
+  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true, aigcLabelReady: true, aigcLabelDetail: "ok" };
+  const blocked = evaluatePreflight({ ...base, aiDisclosureRuleReady: false, aiDisclosureRuleDetail: "AI 身份提示规则待审批" });
+  assert.equal(blocked.passed, false, "an unready AI disclosure rule must block arm and START");
+  assert.deepEqual(blocked.checks.find((check) => check.id === "ai_disclosure_rule"), { id: "ai_disclosure_rule", label: "AI 身份口播规则", status: "blocked", detail: "AI 身份提示规则待审批" });
+  const ids = blocked.checks.map((check) => check.id);
+  assert.equal(ids.indexOf("ai_disclosure_rule"), ids.indexOf("disclosure") + 1, "the check follows disclosure");
+  assert.equal(ids.indexOf("aigc_label"), ids.indexOf("ai_disclosure_rule") + 1, "the check precedes aigc_label");
+  const passed = evaluatePreflight({ ...base, aiDisclosureRuleReady: true, aiDisclosureRuleDetail: "已批准，每 600 秒口播一次" });
+  assert.equal(passed.checks.find((check) => check.id === "ai_disclosure_rule").status, "passed");
+
+  // A failing read throws out of arm and START (the transaction rolls back); it is never reported as passed or as a 409.
+  for (const [action, state] of [["arm", "PREFLIGHT"], ["START", "ARMED"]]) {
+    const client = preflightClient(state, { failOn: "from interaction_rules where default_key = 'ai_disclosure'" });
+    const connects = await withCountingPool(client, () => assert.rejects(
+      action === "arm" ? store.advanceRunLifecycle(operatorContext, runId, "arm") : store.issueCommand(operatorContext, runId, { action: "START", expectedState: "ARMED", idempotencyKey: `preflight-check-rule-read-${action}` }),
+      (error) => error instanceof Error && !(error instanceof Response) && /injected failure/.test(error.message),
+      `${action} must surface the failed AI disclosure rule read`
+    ));
+    assert.equal(connects, 1);
+    assert.ok(client.statements.includes("rollback"), `a failed rule read must roll back ${action}`);
+  }
+}
+
+console.log("PASS  preflight blocks arm and START without an approved AI disclosure rule and fails closed when it cannot be read");
