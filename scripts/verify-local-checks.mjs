@@ -123,7 +123,8 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "runtime/livetalking/tests/test_overlay.py", kind: "python", file: "runtime/livetalking/tests/test_overlay.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-captions.py", kind: "python", file: "scripts/test-runtime-gateway-captions.py", label: "behavioral", gatewayOnly: true },
   { id: "prohibited-terms:test", kind: "npm", script: "prohibited-terms:test", label: "behavioral" },
-  { id: "program:variants:test", kind: "npm", script: "program:variants:test", label: "behavioral" }
+  { id: "program:variants:test", kind: "npm", script: "program:variants:test", label: "behavioral" },
+  { id: "knowledge:test", kind: "npm", script: "knowledge:test", label: "behavioral" }
 ].map(freezeCheck));
 
 export function localChecks({ withGateway = false } = {}) {

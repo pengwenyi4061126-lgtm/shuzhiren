@@ -115,7 +115,8 @@
     "runtime:gateway:sft-speakers:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-sft-speakers.py",
     "runtime:overlay:test": "node scripts/run-python-test.mjs runtime/livetalking/tests/test_overlay.py",
     "prohibited-terms:test": "node --test scripts/test-prohibited-terms.mjs",
-    "program:variants:test": "node --test scripts/test-script-variants.mjs"
+    "program:variants:test": "node --test scripts/test-script-variants.mjs",
+    "knowledge:test": "node --test scripts/test-knowledge-base.mjs"
   },
   "devDependencies": {
     "fast-check": "4.10.2",
