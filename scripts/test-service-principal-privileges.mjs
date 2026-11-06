@@ -46,6 +46,14 @@ try {
   for (const [privilege, expected] of [["select", true], ["insert", true], ["update", false], ["delete", false], ["truncate", false]]) await expectTable("shuzhiren_runtime_worker", "live_run_script_plays", privilege, expected);
   for (const principal of ["shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) for (const privilege of ["select", "insert", "update", "delete"]) await expectTable(principal, "live_run_script_plays", privilege, false);
 
+  // 087: the worker reaches approved knowledge only through knowledge_answer_candidates; it has no privilege on the
+  // entry, snapshot and document tables or on products, and no other service principal can run the function.
+  for (const table of ["knowledge_entries", "knowledge_entry_approvals", "knowledge_documents", "products"]) for (const privilege of ["select", "insert", "update", "delete", "truncate"]) await expectTable("shuzhiren_runtime_worker", table, privilege, false);
+  for (const principal of ["shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) for (const table of ["knowledge_entries", "knowledge_entry_approvals", "knowledge_documents"]) await expectTable(principal, table, "select", false);
+  for (const [principal, expected] of [["shuzhiren_runtime_worker", true], ["shuzhiren_channel_adapter", false], ["shuzhiren_alert_notifier", false]]) {
+    const knowledgeFunction = await client.query("select has_function_privilege($1, 'knowledge_answer_candidates(uuid,uuid,text[],integer)', 'execute') as allowed", [principal]);
+    assert.equal(knowledgeFunction.rows[0].allowed, expected, `${principal} must${expected ? "" : " not"} execute knowledge_answer_candidates`);
+  }
   await expectTable("shuzhiren_backup", "audit_events", "select", true);
   await expectTable("shuzhiren_backup", "audit_events", "update", false);
   await expectTable("shuzhiren_backup", "live_runs", "select", true);

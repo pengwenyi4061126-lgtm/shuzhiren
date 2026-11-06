@@ -67,6 +67,18 @@ requiredIndexes.push("live_run_script_plays_last_idx");
 requiredPolicies.push("tenant_isolation_live_run_script_plays");
 requiredTriggers.push("live_run_script_plays_governed");
 requiredConstraints.set("show_revision_segments_runtime_script_variants_check", true);
+// 086, 087: the "faq" interaction trigger and the approved knowledge base (entries, approval snapshots, imports).
+requiredTables.push("knowledge_documents", "knowledge_entries", "knowledge_entry_approvals");
+requiredColumns.interaction_rule_firings.push("knowledge_approval_id");
+requiredColumns.knowledge_entries = ["kind", "question", "alias_questions", "answer", "keywords", "product_id", "search_terms", "revision", "status", "approved_approval_id", "source_document_id", "updated_by", "retired_at"];
+requiredColumns.knowledge_entry_approvals = ["entry_id", "revision", "question", "answer", "search_terms", "product_id", "answer_sha256", "policy_profile_id", "lexicon_sha256", "approved_by", "approved_at"];
+requiredIndexes.push("knowledge_entry_approvals_terms_idx");
+requiredPolicies.push("tenant_isolation_knowledge_documents", "tenant_isolation_knowledge_entries", "tenant_isolation_knowledge_entry_approvals");
+requiredTriggers.push("knowledge_entries_governed_mutation", "knowledge_entry_approvals_governed", "knowledge_documents_append_only");
+requiredSecurityDefinerFunctions.push("knowledge_answer_candidates");
+requiredConstraints.set("interaction_rules_default_key_check", true);
+requiredConstraints.set("interaction_rules_faq_shape_check", true);
+requiredConstraints.set("interaction_rules_faq_default_check", true);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.
@@ -152,6 +164,10 @@ try {
 
   const outboxStates = new Set((await client.query("select e.enumlabel from pg_type t join pg_enum e on e.enumtypid = t.oid where t.typname = 'outbox_state'")).rows.map((row) => row.enumlabel));
   for (const state of ["pending", "delivering", "delivered", "failed", "cancelled"]) if (!outboxStates.has(state)) errors.push(`outbox_state 缺少状态：${state}`);
+
+  // 086: the "faq" trigger type of interaction rules.
+  const interactionRuleTriggers = new Set((await client.query("select e.enumlabel from pg_type t join pg_enum e on e.enumtypid = t.oid where t.typname = 'interaction_rule_trigger'")).rows.map((row) => row.enumlabel));
+  if (!interactionRuleTriggers.has("faq")) errors.push("interaction_rule_trigger 缺少类型：faq");
 
   const identity = await client.query("select current_user as role, r.rolsuper, r.rolbypassrls from pg_roles r where r.rolname = current_user");
   if (!allowPrivileged && (identity.rows[0]?.rolsuper || identity.rows[0]?.rolbypassrls)) errors.push(`应用数据库账号 ${identity.rows[0]?.role ?? "unknown"} 可绕过 RLS；请使用非超级、非 BYPASSRLS 的运行时账号`);

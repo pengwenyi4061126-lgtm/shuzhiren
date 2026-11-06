@@ -72,3 +72,8 @@ grant execute on function interaction_rule_product_context(uuid, uuid) to shuzhi
 -- readable above) and records the choice in the append-only rotation ledger, which it also reads to continue
 -- after the last version played. The ledger trigger rejects updates and deletes for every role.
 grant select, insert on live_run_script_plays to shuzhiren_runtime_worker;
+-- Knowledge base (087): the worker reads no knowledge entry, approval snapshot or product table. It gets the
+-- approved snapshots that match a question only through this SECURITY DEFINER function, which refuses any tenant
+-- but the one of the caller's transaction. Writing the snapshot id into interaction_rule_firings.knowledge_approval_id
+-- needs no new grant (the insert grant above is table-wide).
+grant execute on function knowledge_answer_candidates(uuid, uuid, text[], integer) to shuzhiren_runtime_worker;
