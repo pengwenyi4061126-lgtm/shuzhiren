@@ -355,3 +355,149 @@ test("GET script-plays serves the ledger to the four read roles and refuses the 
     }
   }
 });
+// ---- Worker: scheduled start picks a script version (task 7.9; design.md C.3, C.6) ----
+// The code under test is the real scheduleDueRun of apps/runtime-worker/index.mjs. That file is a long-running
+// entry point (it connects and loops when imported), so its text from the version-selection helpers up to
+// meterLiveUsage is evaluated here with a fake pg client and fake tenant transaction instead.
+const workerSourceText = (await (await import("node:fs/promises")).readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+const workerPolicyEngine = await import("../apps/console/lib/shared/policy-engine.mjs");
+const workerGuard = await import("../apps/console/lib/shared/broadcast-guard.mjs");
+const workerBuiltin = await import("../apps/console/lib/shared/prohibited-terms-builtin.mjs");
+const workerLexicon = await import("../apps/console/lib/shared/prohibited-terms.mjs");
+const workerRotation = await import("../apps/console/lib/shared/script-rotation.mjs");
+function sliceWorker(startMarker, endMarker) {
+  const start = workerSourceText.indexOf(startMarker);
+  const end = workerSourceText.indexOf(endMarker, start);
+  assert.ok(start >= 0 && end > start, `worker source must contain ${startMarker} before ${endMarker}`);
+  return workerSourceText.slice(start, end);
+}
+const workerPieces = [
+  sliceWorker("function tenantOrder(", "function inTenantTransaction("),
+  sliceWorker("// ---- Script version selection for scheduled starts", "async function meterLiveUsage()"),
+  workerSourceText.match(/^function runtimeVoiceIdValid.*$/m)[0],
+  workerSourceText.match(/^function voiceChecksumValid.*$/m)[0]
+].join("\n");
+const buildScheduleDueRun = (deps) => new Function("deps", `const { tenantIds, inTenantTransaction, createHash, guardBroadcastText, parsePolicyRules, BUILTIN_LEXICON, effectiveLexicon, chooseScriptVariant, scriptVariantsProblem } = deps;
+let nextSchedulerTenantCursor = 0;
+${workerPieces}
+return scheduleDueRun;`)(deps);
+const workerTenant = "10000000-0000-4000-8000-000000000001";
+const workerRun = { id: "10000000-0000-4000-8000-0000000000a1", tenant_id: workerTenant, show_revision_id: "10000000-0000-4000-8000-0000000000b1", trace_id: "trace-1", runtime_session_id: "session-1" };
+const workerSegment = { id: "10000000-0000-4000-8000-0000000000c1", runtime_script: "主版本话术", runtime_script_variants: ["变体一话术", "变体二话术"] };
+const workerProfile = { rules: [{ id: "r1", terms: ["违规词"], reason: "测试拦截", action: "refuse", riskLevel: "high", requiredEvidence: [] }], evidence_ref: "evidence://probe/policy", validation_summary: "ok", approval_status: "approved" };
+const workerVoice = { runtime_voice_id: "voice_1", checksum: `sha256:${"a".repeat(64)}` };
+// Runs scheduleDueRun once against a fake client; `state` selects what the reads return. Every statement is logged with its transaction.
+async function runWorkerSchedule({ segment = workerSegment, last = null, profile = workerProfile, voice = workerVoice, failOn = null } = {}) {
+  const log = [];
+  let transactions = 0;
+  const client = {
+    async query(text, params = []) {
+      const sql = text.replace(/\s+/g, " ").trim();
+      log.push({ sql, params, tx: transactions });
+      if (failOn && failOn.test(sql)) throw new Error("injected failure");
+      if (/from live_runs where state = 'ARMED'/.test(sql)) return { rows: [workerRun] };
+      if (sql.startsWith("select id, runtime_script, runtime_script_variants from show_revision_segments")) return { rows: segment ? [segment] : [] };
+      if (sql.includes("from show_revision_media_assets binding")) return { rows: voice ? [voice] : [] };
+      if (sql.includes("from tenant_entitlements")) return { rows: [] };
+      if (sql.startsWith("update runtime_alerts")) return { rows: [] };
+      if (sql.includes("from show_revision_policy_profiles binding")) return { rows: profile ? [profile] : [] };
+      if (sql.startsWith("select variant_index, play_seq from live_run_script_plays")) return { rows: last ? [last] : [] };
+      if (sql.startsWith("insert into outbox_events")) return { rows: [{ id: "10000000-0000-4000-8000-0000000000e1" }] };
+      if (sql.startsWith("insert into runtime_alerts")) return { rows: [{ id: "alert-1" }] };
+      if (sql.includes("runtime_worker_actor")) return { rows: [{ id: "actor-1" }] };
+      if (/^(update live_runs|insert into live_run_script_plays|insert into audit_events)/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected worker query: ${sql}`);
+    }
+  };
+  const scheduleDueRun = buildScheduleDueRun({
+    tenantIds: async () => [workerTenant],
+    inTenantTransaction: async (tenantId, operation) => {
+      assert.equal(tenantId, workerTenant);
+      transactions += 1;
+      log.push({ sql: "begin", params: [], tx: transactions });
+      try { const value = await operation(client); log.push({ sql: "commit", params: [], tx: transactions }); return value; } catch (error) { log.push({ sql: "rollback", params: [], tx: transactions }); throw error; }
+    },
+    createHash,
+    guardBroadcastText: workerGuard.guardBroadcastText,
+    parsePolicyRules: workerPolicyEngine.parsePolicyRules,
+    BUILTIN_LEXICON: workerBuiltin.BUILTIN_LEXICON,
+    effectiveLexicon: workerLexicon.effectiveLexicon,
+    chooseScriptVariant: workerRotation.chooseScriptVariant,
+    scriptVariantsProblem: workerRotation.scriptVariantsProblem
+  });
+  const result = await scheduleDueRun();
+  const find = (prefix) => log.filter((entry) => entry.sql.startsWith(prefix));
+  const outbox = find("insert into outbox_events")[0] ?? null;
+  return { result, log, find, outbox, command: outbox ? JSON.parse(outbox.params[2]).command : null };
+}
+const hashOf = (text) => createHash("sha256").update(text, "utf8").digest("hex");
+test("worker scheduled start selects version 0 on the first play and records the ledger row with the outbox event", async () => {
+  const { result, find, outbox, command, log } = await runWorkerSchedule();
+  assert.deepEqual(result, { runId: workerRun.id, eventId: "10000000-0000-4000-8000-0000000000e1" });
+  assert.equal(command.payload.controlAction, "SCHEDULED_START");
+  assert.equal(command.payload.runtimeScript, "主版本话术");
+  assert.equal(command.payload.scriptSha256, hashOf("主版本话术"));
+  assert.equal(command.payload.scriptVariantIndex, "0");
+  const ledger = find("insert into live_run_script_plays")[0];
+  // $1 tenant, $2 run, $3 revision, $4 segment, $5 play_seq, $6 variant_index, $7 variant_count, $8 sha, $9 outbox event, $10 skipped
+  assert.deepEqual(ledger.params, [workerTenant, workerRun.id, workerRun.show_revision_id, workerSegment.id, 1, 0, 3, hashOf("主版本话术"), "10000000-0000-4000-8000-0000000000e1", []]);
+  assert.match(ledger.sql, /'SCHEDULED_START'/);
+  assert.equal(ledger.tx, outbox.tx, "the ledger insert and the outbox insert share one transaction");
+  assert.ok(log.indexOf(ledger) > log.indexOf(outbox), "the ledger row is written after the outbox event it references");
+  assert.equal(log.at(-1).sql, "commit");
+  const audit = find("insert into audit_events").find((entry) => entry.sql.includes("program_script.variant_selected"));
+  assert.ok(audit && audit.tx === outbox.tx);
+  assert.deepEqual(JSON.parse(audit.params[3]), { segmentId: workerSegment.id, variantIndex: 0, variantCount: 3, scriptSha256: hashOf("主版本话术"), playSeq: 1, outboxEventId: "10000000-0000-4000-8000-0000000000e1", skippedVariantIndexes: "", controlAction: "SCHEDULED_START" });
+  assert.equal(find("insert into runtime_alerts").length, 0);
+});
+test("worker scheduled start continues the rotation after the last ledger row", async () => {
+  const second = await runWorkerSchedule({ last: { variant_index: 0, play_seq: 1 } });
+  assert.deepEqual([second.command.payload.runtimeScript, second.command.payload.scriptVariantIndex], ["变体一话术", "1"]);
+  assert.deepEqual(second.find("insert into live_run_script_plays")[0].params.slice(4, 8), [2, 1, 3, hashOf("变体一话术")]);
+  const wrapped = await runWorkerSchedule({ last: { variant_index: 2, play_seq: 7 } });
+  assert.deepEqual([wrapped.command.payload.scriptVariantIndex, wrapped.find("insert into live_run_script_plays")[0].params[4]], ["0", 8]);
+});
+test("worker scheduled start skips a refused version and records it", async () => {
+  const segment = { ...workerSegment, runtime_script_variants: ["含违规词的话术", "变体二话术"] };
+  const { command, find } = await runWorkerSchedule({ segment, last: { variant_index: 0, play_seq: 1 } });
+  assert.equal(command.payload.scriptVariantIndex, "2");
+  assert.deepEqual(find("insert into live_run_script_plays")[0].params[9], [1]);
+  const audit = find("insert into audit_events").find((entry) => entry.sql.includes("program_script.variant_selected"));
+  assert.equal(JSON.parse(audit.params[3]).skippedVariantIndexes, "1");
+});
+test("worker scheduled start with every version refused dispatches nothing and opens program_script_blocked", async () => {
+  const segment = { id: workerSegment.id, runtime_script: "含违规词的主话术", runtime_script_variants: ["违规词变体"] };
+  const { result, find, log } = await runWorkerSchedule({ segment });
+  assert.equal(result, null);
+  assert.equal(find("insert into outbox_events").length, 0, "no SCHEDULED_START outbox event");
+  assert.equal(find("insert into live_run_script_plays").length, 0, "no ledger row");
+  assert.ok(find("update live_runs set scheduled_at = null").length === 1, "the schedule is cleared");
+  const alert = find("insert into runtime_alerts");
+  assert.equal(alert.length, 1);
+  assert.match(alert[0].sql, /'program_script_blocked'/);
+  assert.deepEqual(alert[0].params, [workerTenant, workerRun.id]);
+  assert.ok(find("insert into audit_events").some((entry) => entry.sql.includes("live_run.start_blocked_by_program_script_policy")));
+  assert.equal(log.at(-1).sql, "commit");
+});
+test("worker scheduled start refuses when the revision has no approved policy profile", async () => {
+  const { result, find } = await runWorkerSchedule({ profile: null });
+  assert.equal(result, null);
+  assert.equal(find("insert into outbox_events").length, 0);
+  assert.match(find("insert into runtime_alerts")[0].sql, /'program_script_blocked'/);
+});
+test("worker scheduled start treats a malformed stored variant list like a missing script", async () => {
+  const { result, find } = await runWorkerSchedule({ segment: { ...workerSegment, runtime_script_variants: ["主版本话术"] } });
+  assert.equal(result, null);
+  assert.equal(find("insert into outbox_events").length, 0);
+  assert.match(find("insert into runtime_alerts")[0].sql, /'program_script_missing'/);
+});
+test("worker scheduled start rolls back when the ledger insert fails", async () => {
+  await assert.rejects(runWorkerSchedule({ failOn: /^insert into live_run_script_plays/ }), /injected failure/);
+});
+test("the worker never forwards scriptVariantIndex to the Gateway and imports shared code only from console/lib/shared", () => {
+  const request = sliceWorker("function deliveryRequest(", "\nfunction ");
+  assert.ok(!request.includes("scriptVariantIndex"), "deliveryRequest must not send scriptVariantIndex");
+  const sharedImports = [...workerSourceText.matchAll(/^import .* from "(\.\.\/console\/[^"]+)";$/gm)].map((match) => match[1]);
+  assert.deepEqual(sharedImports.filter((specifier) => !/^\.\.\/console\/lib\/shared\/[a-z-]+\.mjs$/.test(specifier)), []);
+  assert.ok(sharedImports.length >= 5);
+});

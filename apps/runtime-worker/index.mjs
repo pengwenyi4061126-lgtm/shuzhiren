@@ -2,6 +2,11 @@ import http from "node:http";
 import { createHash } from "node:crypto";
 import { createServicePool, inTenantTransaction as inPoolTenantTransaction } from "./db.mjs";
 import { createInteractionRuleEvaluator, interactionRuleConfig } from "./interaction-rules.mjs";
+import { guardBroadcastText } from "../console/lib/shared/broadcast-guard.mjs";
+import { parsePolicyRules } from "../console/lib/shared/policy-engine.mjs";
+import { BUILTIN_LEXICON } from "../console/lib/shared/prohibited-terms-builtin.mjs";
+import { effectiveLexicon } from "../console/lib/shared/prohibited-terms.mjs";
+import { chooseScriptVariant, scriptVariantsProblem } from "../console/lib/shared/script-rotation.mjs";
 
 const databaseUrl = required("DATABASE_URL");
 const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
@@ -144,6 +149,50 @@ async function sweepExhaustedLeases(client, tenantId) {
   }
 }
 
+// ---- Script version selection for scheduled starts (design.md module C, K4; isomorphic to apps/console/lib/script-plays.ts) ----
+const scriptGuardMaxLength = 800;
+const CONTROLLED_EVIDENCE_REF = /^(?:evidence:\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}|urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255})$/;
+// All versions of a runnable segment (primary script first), or null when the stored extra versions do not have the
+// shape migration 085 enforces; such a segment is treated as not runnable (design.md C.6).
+function frozenScripts(primaryScript, rawVariants) {
+  let variants = rawVariants ?? [];
+  if (typeof variants === "string") { try { variants = JSON.parse(variants); } catch { return null; } }
+  if (!Array.isArray(variants) || !variants.every((item) => typeof item === "string")) return null;
+  if (scriptVariantsProblem(variants, primaryScript) !== null) return null;
+  return [primaryScript, ...variants];
+}
+// The rules of the run's frozen policy profile plus the built-in lexicon, the same guard context as the console
+// (the tenant lexicon follows in task 8.4). A revision without an approved, evidence-backed profile has no rules to
+// check against, so nothing may be said: null means every version is refused.
+async function scheduledScriptGuardContext(client, showRevisionId) {
+  const profile = (await client.query(`select profile.rules, profile.evidence_ref, profile.validation_summary, profile.approval_status
+    from show_revision_policy_profiles binding join policy_profiles profile on profile.id = binding.policy_profile_id
+    where binding.show_revision_id = $1`, [showRevisionId])).rows[0];
+  const evidence = profile?.evidence_ref;
+  const active = Boolean(profile && profile.approval_status === "approved" && typeof evidence === "string" && evidence.length > 0 && evidence.length <= 300 && CONTROLLED_EVIDENCE_REF.test(evidence) && String(profile.validation_summary ?? "").trim());
+  return active ? { policyRules: parsePolicyRules(profile.rules), lexicon: effectiveLexicon(BUILTIN_LEXICON, []) } : null;
+}
+// The version to dispatch next: the one after the segment's last ledger row, skipping versions the broadcast guard
+// refuses. The caller holds the live_runs row lock. Returns null when every version is refused. Writes nothing.
+async function selectScheduledScript(client, run, segmentId, scripts, guard) {
+  const last = (await client.query("select variant_index, play_seq from live_run_script_plays where live_run_id = $1 and segment_id = $2 order by play_seq desc limit 1", [run.id, segmentId])).rows[0] ?? null;
+  const choice = guard === null ? null : chooseScriptVariant({
+    scripts,
+    lastVariantIndex: last && last.variant_index < scripts.length ? last.variant_index : null,
+    isAllowed: (script) => guardBroadcastText(script, { policyRules: guard.policyRules, lexicon: guard.lexicon, maxLength: scriptGuardMaxLength }).allowed
+  });
+  if (!choice) return null;
+  const runtimeScript = scripts[choice.variantIndex];
+  return { segmentId, variantIndex: choice.variantIndex, variantCount: scripts.length, runtimeScript, scriptSha256: createHash("sha256").update(runtimeScript).digest("hex"), playSeq: (last?.play_seq ?? 0) + 1, skipped: choice.skipped };
+}
+// Writes the ledger row and the program_script.variant_selected audit event of a dispatch whose outbox event is already inserted.
+async function recordScheduledScriptPlay(client, run, selected, outboxEventId) {
+  await client.query("insert into live_run_script_plays (tenant_id, live_run_id, show_revision_id, segment_id, play_seq, variant_index, variant_count, script_sha256, control_action, outbox_event_id, skipped_variant_indexes) values ($1, $2, $3, $4, $5, $6, $7, $8, 'SCHEDULED_START', $9, $10::int[])",
+    [run.tenant_id, run.id, run.show_revision_id, selected.segmentId, selected.playSeq, selected.variantIndex, selected.variantCount, selected.scriptSha256, outboxEventId, selected.skipped]);
+  const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-scheduler') as id", [run.tenant_id]);
+  await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+    values ($1, $2, 'program_script.variant_selected', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ segmentId: selected.segmentId, variantIndex: selected.variantIndex, variantCount: selected.variantCount, scriptSha256: selected.scriptSha256, playSeq: selected.playSeq, outboxEventId, skippedVariantIndexes: selected.skipped.join(","), controlAction: "SCHEDULED_START" })]);
+}
 async function scheduleDueRun() {
   const ids = await tenantIds();
   const ordered = tenantOrder(ids, nextSchedulerTenantCursor);
@@ -162,8 +211,10 @@ async function scheduleDueRun() {
     `);
       const run = due.rows[0];
       if (!run) return null;
-      const initialProgram = await client.query("select id, runtime_script from show_revision_segments where tenant_id = $1 and show_revision_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position limit 1", [run.tenant_id, run.show_revision_id]);
-      if (!initialProgram.rows[0]) {
+      const initialProgram = await client.query("select id, runtime_script, runtime_script_variants from show_revision_segments where tenant_id = $1 and show_revision_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position limit 1", [run.tenant_id, run.show_revision_id]);
+      // A stored variant list that breaks the migration 085 shape makes the segment not runnable, like a missing script.
+      const initialScripts = initialProgram.rows[0] ? frozenScripts(initialProgram.rows[0].runtime_script, initialProgram.rows[0].runtime_script_variants) : null;
+      if (!initialScripts) {
         await client.query("update live_runs set scheduled_at = null, updated_at = now() where id = $1 and scheduled_at is not null", [run.id]);
         const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'program_script_missing', '场次缺少已批准的冻结主节目脚本，已拒绝定时开播', 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id]);
         if (opened.rows[0]) {
@@ -221,14 +272,28 @@ async function scheduleDueRun() {
           values ($1, $2, 'runtime_alert.resolved', 'runtime_alert', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, resolvedEntitlementAlert.rows[0].id, JSON.stringify({ runId: run.id, code: "entitlement_exhausted" })]);
       }
       const segment = initialProgram.rows[0];
-      const scriptSha256 = createHash("sha256").update(segment.runtime_script).digest("hex");
-      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: segment.runtime_script, scriptSha256, runtimeVoiceId: voice.runtime_voice_id, voiceChecksum: voice.checksum } };
+      // Version rotation: the same selection as the console's dispatch, in this transaction under the live_runs row lock.
+      const selected = await selectScheduledScript(client, run, segment.id, initialScripts, await scheduledScriptGuardContext(client, run.show_revision_id));
+      if (!selected) {
+        // Every version is refused by the pre-broadcast check: nothing is dispatched, the schedule is cleared and an operator is alerted.
+        await client.query("update live_runs set scheduled_at = null, updated_at = now() where id = $1 and scheduled_at is not null", [run.id]);
+        const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'program_script_blocked', '首个节目段落的全部话术版本均被播报前检查拦截，已拒绝定时开播', 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id]);
+        if (opened.rows[0]) {
+          const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-scheduler') as id", [run.tenant_id]);
+          await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+            values ($1, $2, 'live_run.start_blocked_by_program_script_policy', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ showRevisionId: run.show_revision_id, segmentId: segment.id, variantCount: initialScripts.length })]);
+        }
+        return null;
+      }
+      // scriptVariantIndex stays in the outbox payload for audit; deliveryRequest never sends it to the Gateway.
+      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtime_voice_id, voiceChecksum: voice.checksum } };
       const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
       values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)
       returning id
     `, [run.tenant_id, run.id, JSON.stringify({ sessionId: run.runtime_session_id, command })]);
       await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1", [run.id, event.rows[0].id]);
+      await recordScheduledScriptPlay(client, run, selected, event.rows[0].id);
       return { runId: run.id, eventId: event.rows[0].id };
     });
     if (scheduled) {
