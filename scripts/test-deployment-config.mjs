@@ -640,6 +640,22 @@ try {
   assert.match(duplicateObserverRun.stderr, /RUNTIME_OBSERVER_TARGETS/, "duplicate observer targets must identify the observer configuration gate");
   await writeFile(files.runtime, runtime(validProbeTarget));
 
+  // Requirement 1.11: disabling the interaction rule loop stops AI disclosure speech, so deployments reject it.
+  assert.match(runtime(validProbeTarget), /^INTERACTION_RULES_ENABLED=true$/m, "the runtime fixture must set INTERACTION_RULES_ENABLED=true");
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("INTERACTION_RULES_ENABLED=true", "INTERACTION_RULES_ENABLED=false"));
+  const rulesDisabled = check(["--require-cosyvoice"]);
+  assert.notEqual(rulesDisabled.status, 0, "deployment must reject INTERACTION_RULES_ENABLED=false");
+  assert.match(rulesDisabled.stderr, /INTERACTION_RULES_ENABLED/, "the rejection must name the variable");
+  assert.match(rulesDisabled.stderr, /AI 身份口播/, "the rejection must explain that AI disclosure speech stops");
+  await writeFile(files.runtime, runtime(validProbeTarget).replace(/^INTERACTION_RULES_ENABLED=.*\n/m, ""));
+  const rulesUnset = check(["--require-cosyvoice"]);
+  // An unset value is not reported by this gate (the worker defaults to true). The separate Compose consistency
+  // gate (RC-UNDEFINED) still wants the variable defined, so only this gate's message is asserted absent.
+  assert.doesNotMatch(rulesUnset.stderr, /INTERACTION_RULES_ENABLED 不得为 false/, "an unset INTERACTION_RULES_ENABLED must not be reported as disabled");
+  await writeFile(files.runtime, runtime(validProbeTarget));
+  const rulesEnabled = check(["--require-cosyvoice"]);
+  assert.equal(rulesEnabled.status, 0, `INTERACTION_RULES_ENABLED=true must pass: ${rulesEnabled.stderr}`);
+
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
   const demoGateway = check(["--require-cosyvoice"]);
   assert.notEqual(demoGateway.status, 0, "production deployment must reject runtime gateway demo mode");

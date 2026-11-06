@@ -507,6 +507,9 @@ equal(runtime, "运行时", "LIVE_MAX_CONCURRENT_AVATARS", "1");
 equal(runtime, "运行时", "LIVE_ALLOW_LLM_FREEFORM", "false");
 equal(runtime, "运行时", "LIVE_REQUIRE_HUMAN_HANDOFF_FOR_HIGH_RISK", "true");
 equal(runtime, "运行时", "LIVE_REQUIRE_AI_DISCLOSURE", "true");
+// Live interaction rules: the console cannot see the worker's environment, so it cannot tell that the evaluation
+// loop is off. With INTERACTION_RULES_ENABLED=false an approved AI disclosure rule is never spoken. Unset means true.
+if (runtime.get("INTERACTION_RULES_ENABLED") === "false") errors.push("运行时 的 INTERACTION_RULES_ENABLED 不得为 false：关闭互动规则评估会停止 AI 身份口播，而控制台看不到 worker 的该变量，无法在开播前检查中发现");
 // AIGC explicit label (人工智能生成合成内容标识办法): it cannot be turned off, so these are errors with or without
 // --allow-placeholders, and the console's expected text must equal the text LiveTalking draws.
 errors.push(...aigcLabelEnvProblems({ runtime, control, allowPlaceholders }));
