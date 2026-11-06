@@ -22,6 +22,7 @@ import { createReleaseManifestSnapshotInTransaction, frozenAigcLabelTextInTransa
 import { aigcLabelText, evaluateAigcLabelReadiness } from "@/lib/aigc-label";
 import { aiDisclosureRuleStatus, aiDisclosureRuleStatusInTransaction } from "@/lib/interaction-rules";
 import type { PolicyRule } from "@/lib/policy-engine";
+import { demoScriptGuardContext, frozenScripts, recordDemoScriptPlay, recordScriptPlayInTransaction, scriptGuardContextInTransaction, selectDemoScriptForDispatch, selectScriptForDispatch, type FrozenRuntimeSegment, type ScriptDispatchAction, type SelectedScript } from "@/lib/script-plays";
 
 export type StoredRun = LiveRun & {
   tenantId: string;
@@ -417,6 +418,10 @@ export async function issueCommand(context: RequestContext, runId: string, input
     // A command that carries a script must carry the frozen voice the Gateway synthesizes it with; without
     // one the command is refused here instead of being queued for a certain Gateway rejection.
     const programVoice = (programTransition?.target ?? activationProgram) ? await runtimeVoiceForRunInTransaction(client, run.revisionId) : undefined;
+    // The segment's next script version is chosen from the rotation ledger under the run lock; when every version is
+    // refused by the pre-broadcast check the command is rejected before anything is written.
+    const dispatchSegment = programTransition?.target ?? activationProgram;
+    const selectedScript = dispatchSegment ? await selectScriptForDispatch(client, run, dispatchSegment, input.action as ScriptDispatchAction, await scriptGuardContextInTransaction(client, run)) : undefined;
 
     const nextState = nextStateFor(run.state, input.action);
     const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
@@ -425,10 +430,11 @@ export async function issueCommand(context: RequestContext, runId: string, input
       [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted", programSegmentId: programTransition?.target?.id ?? activationProgram?.id ?? null, sourceProgramSegmentId: programTransition?.source?.id ?? null }), context.actorName]
     );
     const command = persistentCommand(inserted.rows[0]);
-    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice)), run.runtimeSessionId);
-    // The command, its outbox event and their audit events commit together: a failed audit write rolls back
-    // the command instead of leaving an unaudited command queued for the runtime.
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript)), run.runtimeSessionId);
+    // The command, its outbox event, the rotation ledger row and their audit events commit together: a failed
+    // write rolls back the command instead of leaving an unaudited command queued for the runtime.
     for (const event of commandAuditEvents(runId, input, command, mediaEvent)) await recordAuditEventInTransaction(client, context, event);
+    if (selectedScript) await recordScriptPlayInTransaction(client, context, run, selectedScript, mediaEvent.id);
     if (requiresActivationConfirmation) {
       await client.query("update live_runs set scheduled_start_event_id = $2, updated_at = now() where id = $1 and state = $3 and scheduled_start_event_id is null", [run.id, mediaEvent.id, run.state]);
       return { command, mediaEvent, run: { ...run, commandHistory: [command, ...run.commandHistory] }, duplicate: false as const };
@@ -447,7 +453,6 @@ export async function issueCommand(context: RequestContext, runId: string, input
   });
 }
 
-type FrozenRuntimeSegment = { id: string; runtimeScript: string };
 type ProgramTransition = { kind: "insert" | "rollback"; target?: FrozenRuntimeSegment; source?: FrozenRuntimeSegment };
 
 async function resolveActivationProgram(client: PoolClient, run: StoredRun): Promise<FrozenRuntimeSegment | undefined> {
@@ -455,9 +460,13 @@ async function resolveActivationProgram(client: PoolClient, run: StoredRun): Pro
     const current = await loadFrozenRuntimeSegment(client, run, run.activeProgramSegmentId);
     if (current) return current;
   }
-  const initial = await client.query<{ id: string; runtime_script: string }>("select id, runtime_script from show_revision_segments where show_revision_id = $1 and tenant_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position limit 1", [run.revisionId, run.tenantId]);
-  const row = initial.rows[0];
-  return row ? { id: row.id, runtimeScript: row.runtime_script } : undefined;
+  const initial = await client.query<{ id: string; runtime_script: string; runtime_script_variants: unknown }>("select id, runtime_script, runtime_script_variants from show_revision_segments where show_revision_id = $1 and tenant_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position", [run.revisionId, run.tenantId]);
+  for (const row of initial.rows) {
+    // A segment whose stored versions have an invalid shape is not runnable; the first valid one is the baseline.
+    const scripts = frozenScripts(row.runtime_script, row.runtime_script_variants);
+    if (scripts) return { id: row.id, scripts };
+  }
+  return undefined;
 }
 
 async function resolveProgramTransition(client: PoolClient, run: StoredRun, input: CommandInput): Promise<ProgramTransition> {
@@ -476,9 +485,10 @@ async function resolveProgramTransition(client: PoolClient, run: StoredRun, inpu
 }
 
 async function loadFrozenRuntimeSegment(client: PoolClient, run: StoredRun, segmentId: string): Promise<FrozenRuntimeSegment | null> {
-  const result = await client.query<{ id: string; runtime_script: string }>("select id, runtime_script from show_revision_segments where id = $1 and show_revision_id = $2 and tenant_id = $3 and kind in ('prepared_product', 'interactive') and runtime_script is not null", [segmentId, run.revisionId, run.tenantId]);
+  const result = await client.query<{ id: string; runtime_script: string; runtime_script_variants: unknown }>("select id, runtime_script, runtime_script_variants from show_revision_segments where id = $1 and show_revision_id = $2 and tenant_id = $3 and kind in ('prepared_product', 'interactive') and runtime_script is not null", [segmentId, run.revisionId, run.tenantId]);
   const row = result.rows[0];
-  return row ? { id: row.id, runtimeScript: row.runtime_script } : null;
+  const scripts = row ? frozenScripts(row.runtime_script, row.runtime_script_variants) : null;
+  return row && scripts ? { id: row.id, scripts } : null;
 }
 
 export async function enqueueGroundedSpeech(context: RequestContext, runId: string, question: string, idempotencyKey: string): Promise<GroundedSpeechDispatch> {
@@ -573,7 +583,10 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
     result: "accepted",
     programSegmentId: programTransition?.target?.id ?? activationProgram?.id
   };
-  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice), sessionId: run.runtimeSessionId });
+  const dispatchSegment = programTransition?.target ?? activationProgram;
+  const selectedScript = dispatchSegment ? selectDemoScriptForDispatch(run, dispatchSegment, input.action as ScriptDispatchAction, demoScriptGuardContext()) : undefined;
+  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript), sessionId: run.runtimeSessionId });
+  if (selectedScript) await recordDemoScriptPlay(context, run, selectedScript, mediaEvent.id);
   if (programTransition) {
     run.activeProgramSegmentId = programTransition.target?.id;
     run.activeInsertSourceSegmentId = programTransition.kind === "insert" ? programTransition.source?.id : undefined;
@@ -594,14 +607,20 @@ async function resolveDemoProgramTransition(context: RequestContext, run: Stored
   const runnable = (segmentId: string | undefined) => program.segments.find((segment) => segment.id === segmentId && (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript));
   if (input.action === "INSERT_PROGRAM") {
     if (run.activeInsertProgramSegmentId) throw new Response("An accepted program insertion must be rolled back before another insertion", { status: 409 });
-    const target = runnable(input.programSegmentId);
-    if (!target?.runtimeScript) throw new Response("Program segment is not runnable in this frozen revision", { status: 409 });
-    const source = runnable(run.activeProgramSegmentId);
-    return { kind: "insert", target: { id: target.id, runtimeScript: target.runtimeScript }, source: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined };
+    const target = demoFrozenSegment(runnable(input.programSegmentId));
+    if (!target) throw new Response("Program segment is not runnable in this frozen revision", { status: 409 });
+    return { kind: "insert", target, source: demoFrozenSegment(runnable(run.activeProgramSegmentId)) };
   }
   if (!run.activeInsertProgramSegmentId) throw new Response("No accepted program insertion is available to roll back", { status: 409 });
-  const source = runnable(run.activeInsertSourceSegmentId);
-  return { kind: "rollback", target: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined, source: source?.runtimeScript ? { id: source.id, runtimeScript: source.runtimeScript } : undefined };
+  const source = demoFrozenSegment(runnable(run.activeInsertSourceSegmentId));
+  return { kind: "rollback", target: source, source };
+}
+
+// A demo segment as the frozen runnable segment the dispatch rotates over: the primary script followed by its extra versions.
+function demoFrozenSegment(segment: ShowProgram["segments"][number] | undefined): FrozenRuntimeSegment | undefined {
+  if (!segment?.runtimeScript) return undefined;
+  const scripts = frozenScripts(segment.runtimeScript, segment.runtimeScriptVariants);
+  return scripts ? { id: segment.id, scripts } : undefined;
 }
 
 async function resolveDemoActivationProgram(context: RequestContext, run: StoredRun): Promise<FrozenRuntimeSegment | undefined> {
@@ -609,17 +628,19 @@ async function resolveDemoActivationProgram(context: RequestContext, run: Stored
   if (!program) throw new Response("Show program not found", { status: 404 });
   const runnable = (segmentId: string | undefined) => program.segments.find((segment) => segment.id === segmentId && (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript));
   const target = runnable(run.activeProgramSegmentId) ?? program.segments.find((segment) => (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript));
-  return target?.runtimeScript ? { id: target.id, runtimeScript: target.runtimeScript } : undefined;
+  return demoFrozenSegment(target);
 }
 
-function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment, voice?: RuntimeVoiceBinding): Omit<MediaCommand, "id" | "issuedAt"> {
+function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment, voice?: RuntimeVoiceBinding, selected?: SelectedScript): Omit<MediaCommand, "id" | "issuedAt"> {
   const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program", INSERT_PROGRAM: "insert_program", ROLLBACK_PROGRAM: "resume_program" } as const;
   // START/RECOVER carry the activation baseline segment and INSERT/ROLLBACK their target, each with the
   // frozen voice that the Gateway synthesizes the script with.
   const segment = transition?.target ?? activationProgram;
   if (segment && !voice) throw new Response("Frozen voice asset is not approved for runtime speech", { status: 409, statusText: "runtime_voice_binding_unavailable" });
   const transitionPayload: Record<string, string> = transition ? { programTransition: transition.kind, ...(transition.source ? { sourceProgramSegmentId: transition.source.id } : {}), ...(run.activeInsertProgramSegmentId ? { insertedProgramSegmentId: run.activeInsertProgramSegmentId } : {}) } : {};
-  const segmentPayload: Record<string, string> = segment && voice ? { programSegmentId: segment.id, runtimeScript: segment.runtimeScript, scriptSha256: createHash("sha256").update(segment.runtimeScript).digest("hex"), runtimeVoiceId: voice.runtimeVoiceId, voiceChecksum: voice.voiceChecksum } : {};
+  // The script is the version selected for this dispatch (selectScriptForDispatch), never the primary by default.
+  if (segment && (!selected || selected.segmentId !== segment.id)) throw new Error("A dispatched program segment requires its selected script version");
+  const segmentPayload: Record<string, string> = segment && selected && voice ? { programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtimeVoiceId, voiceChecksum: voice.voiceChecksum } : {};
   return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...transitionPayload, ...segmentPayload } };
 }
 

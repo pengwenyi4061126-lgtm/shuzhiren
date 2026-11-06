@@ -198,3 +198,160 @@ test("normalizeProgramSegments refuses extra versions on non-runnable segments",
   withHandoffVariants[2].runtimeScriptVariants = ["变体一"];
   assert.match(await refusal(() => normalizeProgramSegments(withHandoffVariants, productVersionId)), /non-blank primary runtime script|cannot carry script variants/);
 });
+
+// Module C dispatch (demo mode): the console picks the next frozen script version for every script dispatch,
+// records it in the rotation ledger and carries it (text, hash, index) in the media command.
+process.env.CONTROL_PLANE_DEMO_MODE = "true";
+const { createHash } = await import("node:crypto");
+const controlStore = await import("../apps/console/lib/control-plane/store.ts");
+const { registerDemoProgram } = await import("../apps/console/lib/show-program.ts");
+const { listScriptPlays } = await import("../apps/console/lib/script-plays.ts");
+const monitoring = await import("../apps/console/lib/monitoring.ts");
+const { GET: scriptPlaysRoute } = await import("../apps/console/app/api/v1/live-runs/[runId]/script-plays/route.ts");
+const sha256Hex = (text) => createHash("sha256").update(text, "utf8").digest("hex");
+const operator = { tenantId: "tenant_demo", actorId: "variant-test", actorName: "Variant Test", role: "operator", accessScope: "tenant" };
+const segmentIds = { first: "20000000-0000-4000-8000-000000000001", second: "20000000-0000-4000-8000-000000000002" };
+let runCounter = 0;
+async function demoRunWith(state, segments, activeSegmentId) {
+  await controlStore.listRuns(operator); // creates the demo store
+  runCounter += 1;
+  const id = `00000000-0000-4000-8000-0000000000c${runCounter}`;
+  globalThis.shuzhirenControlStore.runs.set(id, {
+    id, tenantId: operator.tenantId, revisionId: `show_revision_variants_${runCounter}`, channelConnectionId: "channel_demo", productVersionId: "pv_a102_v1", showName: "话术轮换", state,
+    traceId: id, hasOperator: true, hasApprovedRights: true, hasApprovedSkuVersion: true, hasFallbackProgram: true, channelReady: true, outputReady: true, aiDisclosureEnabled: true,
+    runtimeSessionId: `session_variants_${runCounter}`, activeProgramSegmentId: activeSegmentId, commandHistory: [], questions: []
+  });
+  registerDemoProgram({ runId: id, tenantId: operator.tenantId, revisionId: `show_revision_variants_${runCounter}`, status: "approved", editable: false, segments });
+  // RECOVER needs fresh healthy runtime telemetry for the run.
+  await monitoring.getTelemetry(operator, id);
+  globalThis.shuzhirenMonitoringStore.telemetry.set(id, { runId: id, tenantId: operator.tenantId, sampledAt: new Date().toISOString(), outputConnected: true, inferenceFps: 30, outputFps: 25, avSyncMs: 30, bitrateMbps: 4, gpuUtilization: 70, gpuMemoryMiB: 14000, audioActive: true, fallbackReady: true });
+  return id;
+}
+const runnable = (id, position, kind, runtimeScript, runtimeScriptVariants) => ({ id, position, kind, title: `段落${position}`, durationSeconds: 60, productVersionId: "pv_a102_v1", purpose: "话术轮换", runtimeScript, ...(runtimeScriptVariants ? { runtimeScriptVariants } : {}), fallback: false });
+const fallbackSegments = [
+  { id: "20000000-0000-4000-8000-000000000009", position: 3, kind: "fallback", title: "兜底", durationSeconds: 30, purpose: "兜底", fallback: true },
+  { id: "20000000-0000-4000-8000-00000000000a", position: 4, kind: "human_handoff", title: "转人工", durationSeconds: 0, purpose: "转人工", fallback: true }
+];
+let commandCounter = 0;
+const dispatch = (runId, action, expectedState, programSegmentId) => controlStore.issueCommand(operator, runId, { action, expectedState, idempotencyKey: `variant-command-${(commandCounter += 1)}-${runId}`, ...(programSegmentId ? { programSegmentId } : {}) });
+const chosen = (result) => ({ index: result.mediaEvent.command.payload.scriptVariantIndex, script: result.mediaEvent.command.payload.runtimeScript, segment: result.mediaEvent.command.payload.programSegmentId });
+const fixedProgram = (variants) => [
+  runnable(segmentIds.first, 1, "prepared_product", "主版本话术", variants),
+  runnable(segmentIds.second, 2, "interactive", "互动环节话术"),
+  ...fallbackSegments
+];
+
+test("demo dispatch rotates START-less transitions through INSERT_PROGRAM, ROLLBACK_PROGRAM and RECOVER", async () => {
+  const runId = await demoRunWith("LIVE", fixedProgram(["变体一话术", "变体二话术"]), segmentIds.first);
+  const auditBefore = globalThis.shuzhirenAuditStore?.events.length ?? 0;
+  const sequence = [];
+  sequence.push(chosen(await dispatch(runId, "INSERT_PROGRAM", "LIVE", segmentIds.second))); // second: one version
+  sequence.push(chosen(await dispatch(runId, "ROLLBACK_PROGRAM", "LIVE"))); // back to first: version 0
+  sequence.push(chosen(await dispatch(runId, "INSERT_PROGRAM", "LIVE", segmentIds.second)));
+  sequence.push(chosen(await dispatch(runId, "ROLLBACK_PROGRAM", "LIVE"))); // first again: version 1
+  await dispatch(runId, "PAUSE", "LIVE");
+  sequence.push(chosen(await dispatch(runId, "RECOVER", "DEGRADED"))); // first again: version 2
+  assert.deepEqual(sequence, [
+    { index: "0", script: "互动环节话术", segment: segmentIds.second },
+    { index: "0", script: "主版本话术", segment: segmentIds.first },
+    { index: "0", script: "互动环节话术", segment: segmentIds.second },
+    { index: "1", script: "变体一话术", segment: segmentIds.first },
+    { index: "2", script: "变体二话术", segment: segmentIds.first }
+  ]);
+  // The ledger lists every dispatch, newest first, with indexes and hashes but no script text.
+  const plays = await listScriptPlays(operator, runId);
+  assert.equal(plays.length, 5);
+  assert.deepEqual(plays.map((play) => [play.segmentId === segmentIds.first ? "first" : "second", play.playSeq, play.variantIndex, play.variantCount, play.controlAction]), [
+    ["first", 3, 2, 3, "RECOVER"], ["first", 2, 1, 3, "ROLLBACK_PROGRAM"], ["second", 2, 0, 1, "INSERT_PROGRAM"], ["first", 1, 0, 3, "ROLLBACK_PROGRAM"], ["second", 1, 0, 1, "INSERT_PROGRAM"]
+  ]);
+  assert.equal(plays[0].scriptSha256, sha256Hex("变体二话术"));
+  assert.ok(plays.every((play) => !JSON.stringify(play).includes("话术")));
+  const events = globalThis.shuzhirenAuditStore.events.slice(0, globalThis.shuzhirenAuditStore.events.length - auditBefore).filter((event) => event.type === "program_script.variant_selected" && event.resourceId === runId);
+  assert.equal(events.length, 5);
+  assert.deepEqual(events.find((event) => event.detail.variantIndex === 2).detail, {
+    segmentId: segmentIds.first, variantIndex: 2, variantCount: 3, scriptSha256: sha256Hex("变体二话术"), playSeq: 3, outboxEventId: plays[0].outboxEventId, skippedVariantIndexes: "", controlAction: "RECOVER"
+  });
+});
+
+test("the media command carries the hash of the selected version", async () => {
+  const runId = await demoRunWith("LIVE", fixedProgram(["变体一话术"]), segmentIds.second);
+  const first = await dispatch(runId, "INSERT_PROGRAM", "LIVE", segmentIds.first);
+  assert.equal(first.mediaEvent.command.payload.runtimeScript, "主版本话术");
+  assert.equal(first.mediaEvent.command.payload.scriptSha256, sha256Hex("主版本话术"));
+  await dispatch(runId, "ROLLBACK_PROGRAM", "LIVE");
+  const second = await dispatch(runId, "INSERT_PROGRAM", "LIVE", segmentIds.first);
+  assert.equal(second.mediaEvent.command.payload.runtimeScript, "变体一话术");
+  assert.equal(second.mediaEvent.command.payload.scriptSha256, sha256Hex("变体一话术"));
+  assert.equal(second.mediaEvent.command.payload.scriptVariantIndex, "1");
+});
+
+test("START selects version 0 first and the block-listed version is skipped on later dispatches", async () => {
+  // START in demo mode needs a verified channel and an approved AI disclosure rule (the preflight checks).
+  const { validateChannelConnection } = await import("../apps/console/lib/channels.ts");
+  await validateChannelConnection(operator, "channel_demo", { resolution: "720p", aiDisclosureEnabled: true });
+  Object.assign(globalThis.shuzhirenChannelStore.connections.get("channel_demo"), { lastVerifiedAt: new Date().toISOString(), verifiedBy: "variant-test" });
+  const rules = await import("../apps/console/lib/interaction-rules.ts");
+  const admin = { ...operator, actorId: "variant-admin", actorName: "Variant Admin", role: "admin" };
+  const reviewer = { ...operator, actorId: "variant-reviewer", actorName: "Variant Reviewer", role: "reviewer" };
+  const created = await rules.createDefaultInteractionRules(admin);
+  const disclosure = created.created.find((rule) => rule.defaultKey === "ai_disclosure");
+  await rules.approveInteractionRule(reviewer, disclosure.id);
+
+  // The second version contains a built-in block term (最低价); the third is clean.
+  const runId = await demoRunWith("ARMED", fixedProgram(["全网最低价，欢迎选购", "变体二话术"]), undefined);
+  const started = chosen(await dispatch(runId, "START", "ARMED"));
+  assert.deepEqual(started, { index: "0", script: "主版本话术", segment: segmentIds.first });
+  await dispatch(runId, "INSERT_PROGRAM", "LIVE", segmentIds.second);
+  const rollback = await dispatch(runId, "ROLLBACK_PROGRAM", "LIVE");
+  // After version 0 comes version 1, which is refused; version 2 is chosen and version 1 is recorded as skipped.
+  assert.deepEqual(chosen(rollback), { index: "2", script: "变体二话术", segment: segmentIds.first });
+  assert.equal(rollback.mediaEvent.command.payload.scriptSha256, sha256Hex("变体二话术"));
+  const [latest] = await listScriptPlays(operator, runId);
+  assert.deepEqual([latest.variantIndex, latest.variantCount, latest.skippedVariantIndexes, latest.playSeq, latest.controlAction], [2, 3, [1], 2, "ROLLBACK_PROGRAM"]);
+  const selected = globalThis.shuzhirenAuditStore.events.find((event) => event.type === "program_script.variant_selected" && event.detail.outboxEventId === latest.outboxEventId);
+  assert.equal(selected.detail.skippedVariantIndexes, "1");
+});
+
+test("when every version of a segment is blocked the command is refused and nothing is written", async () => {
+  const runId = await demoRunWith("LIVE", [
+    runnable(segmentIds.first, 1, "prepared_product", "主版本话术"),
+    runnable(segmentIds.second, 2, "interactive", "全网最低价", ["最佳产品", "治疗效果"]),
+    ...fallbackSegments
+  ], segmentIds.first);
+  const outbox = globalThis.shuzhirenOutboxStore?.events.size ?? 0;
+  const run = globalThis.shuzhirenControlStore.runs.get(runId);
+  await assert.rejects(dispatch(runId, "INSERT_PROGRAM", "LIVE", segmentIds.second), (error) => error instanceof Response && error.status === 409 && error.statusText === "program_script_policy_blocked");
+  assert.equal(run.commandHistory.length, 0);
+  assert.equal(run.activeInsertProgramSegmentId, undefined);
+  assert.equal(globalThis.shuzhirenOutboxStore?.events.size ?? 0, outbox);
+  assert.deepEqual(await listScriptPlays(operator, runId), []);
+});
+
+test("GET script-plays serves the ledger to the four read roles and refuses the others", async () => {
+  const runId = await demoRunWith("LIVE", fixedProgram(["变体一话术"]), segmentIds.second);
+  await dispatch(runId, "INSERT_PROGRAM", "LIVE", segmentIds.first);
+  const saved = { identity: process.env.CONTROL_PLANE_DEV_HEADER_IDENTITY, hostname: process.env.HOSTNAME };
+  process.env.CONTROL_PLANE_DEV_HEADER_IDENTITY = "true";
+  process.env.HOSTNAME = "127.0.0.1";
+  try {
+    const call = (role, id = runId, tenantId = operator.tenantId) => scriptPlaysRoute(
+      new Request(`http://console.test/api/v1/live-runs/${id}/script-plays`, { headers: { "x-tenant-id": tenantId, "x-actor-id": "route-test", "x-actor-name": "Route Test", "x-actor-role": role } }),
+      { params: Promise.resolve({ runId: id }) }
+    );
+    for (const role of ["admin", "operator", "reviewer", "analyst"]) {
+      const response = await call(role);
+      assert.equal(response.status, 200, role);
+      const { data } = await response.json();
+      assert.equal(data.length, 1);
+      assert.deepEqual([data[0].variantIndex, data[0].variantCount, data[0].playSeq, data[0].controlAction], [0, 2, 1, "INSERT_PROGRAM"]);
+      assert.ok(!JSON.stringify(data).includes("话术"), "the ledger never carries script text");
+    }
+    assert.equal((await call("viewer")).status, 403);
+    assert.equal((await call("operator", "not-a-run")).status, 404);
+    assert.deepEqual((await (await call("operator", runId, "tenant_other")).json()).data, [], "another tenant sees no ledger rows");
+  } finally {
+    for (const [key, value] of [["CONTROL_PLANE_DEV_HEADER_IDENTITY", saved.identity], ["HOSTNAME", saved.hostname]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
