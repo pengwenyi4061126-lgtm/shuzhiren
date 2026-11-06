@@ -533,6 +533,152 @@ async def check_overlay_scene_rejected_before_reservation() -> None:
     finally:
         scene_gateway_restore(journal_dir, saved)
 
+
+# Feature: live-commerce-p1-features, Property 25: 场景字段在预留前校验
+# Validates: Requirements 6.7
+SCENE_PROPERTY_SEED = 250607
+SCENE_PROPERTY_CASES = 300
+SCENE_ACTIONS = ["start_program", "switch_to_fallback", "switch_to_human", "stop_program", "insert_program", "resume_program"]
+SCENE_VERSION_VALUES = [0, 2, 3, -1, 10**12, "1", None, [1], {}, "missing"]
+SCENE_NON_OBJECTS = ["[1]", "[]", "1", "0", '"scene"', "null", "true", "not json{", "{", "", "   "]
+
+
+def sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def random_scene_object(rng: random.Random, version: object = 1) -> dict:
+    scene: dict = {}
+    if version != "missing":
+        scene["version"] = version
+    scene["background"] = rng.choice([{"mode": "none"}, {"mode": "chroma_key", "color": "#00ff00"}, None])
+    scene["productCard"] = rng.choice([None, {"title": "".join(rng.choice("洁面慕斯油性肌肤abc 123") for _ in range(rng.randint(0, 30))), "price": rng.randint(1, 9999)}])
+    scene["priceSticker"] = rng.choice([None, {"text": "限时优惠", "expiresAt": "2030-01-01T00:00:00Z"}])
+    scene["captions"] = {"position": rng.choice(["bottom", "top"]), "extra": [rng.randint(0, 99) for _ in range(rng.randint(0, 5))]}
+    return scene
+
+
+def dump_scene(rng: random.Random, scene: object) -> str:
+    return json.dumps(scene, ensure_ascii=rng.choice([True, False]), separators=rng.choice([(",", ":"), (", ", ": ")]))
+
+
+def scene_of_length(rng: random.Random, length: int) -> str:
+    # A version 1 object whose text is exactly `length` characters, padded with ASCII or CJK characters.
+    pad_char = rng.choice(["x", "测"])
+    base = json.dumps({"version": 1, "pad": ""}, ensure_ascii=False, separators=(",", ":"))
+    scene = json.dumps({"version": 1, "pad": pad_char * (length - len(base))}, ensure_ascii=False, separators=(",", ":"))
+    assert len(scene) == length, (len(scene), length)
+    return scene
+
+
+def flip_hex(rng: random.Random, digest: str) -> str:
+    position = rng.randrange(len(digest))
+    return digest[:position] + rng.choice([c for c in "0123456789abcdef" if c != digest[position]]) + digest[position + 1:]
+
+
+def random_scene_request(rng: random.Random) -> tuple[str, dict, bool]:
+    """Returns (case label, MediaRequest field overrides, whether the combination is legal)."""
+    kind = rng.choice(["valid", "valid", "valid_script", "valid_boundary", "valid_no_scene", "json_only", "hash_only", "hash_flipped", "hash_other_text", "hash_uppercase",
+                       "hash_malformed", "not_object", "bad_version", "too_long", "too_long_cjk", "wrong_action", "wrong_action_hash_only"])
+    scene_json = dump_scene(rng, random_scene_object(rng))
+    fields: dict = {"action": "start_program", "scene_json": scene_json, "scene_sha256": sha256_hex(scene_json)}
+    if kind == "valid":
+        return kind, fields, True
+    if kind == "valid_script":
+        fields["with_script"] = True
+        return kind, fields, True
+    if kind == "valid_boundary":
+        fields["scene_json"] = scene_json = scene_of_length(rng, captions_scene_limit())
+        fields["scene_sha256"] = sha256_hex(scene_json)
+        return kind, fields, True
+    if kind == "valid_no_scene":
+        fields.update(action=rng.choice(["start_program", "stop_program", "switch_to_fallback", "switch_to_human"]), scene_json=None, scene_sha256=None)
+        return kind, fields, True
+    if kind == "json_only":
+        fields["scene_sha256"] = None
+    elif kind == "hash_only":
+        fields["scene_json"] = None
+    elif kind == "hash_flipped":
+        fields["scene_sha256"] = flip_hex(rng, fields["scene_sha256"])
+    elif kind == "hash_other_text":
+        fields["scene_sha256"] = sha256_hex(scene_json + rng.choice([" ", "\n", "x"]))
+    elif kind == "hash_uppercase":
+        fields["scene_sha256"] = fields["scene_sha256"].upper()
+    elif kind == "hash_malformed":
+        fields["scene_sha256"] = rng.choice(["", "0" * 63, "0" * 65, "g" * 64, fields["scene_sha256"][:32], "sha256:" + fields["scene_sha256"]])
+    elif kind == "not_object":
+        fields["scene_json"] = scene_json = rng.choice(SCENE_NON_OBJECTS)
+        fields["scene_sha256"] = sha256_hex(scene_json)
+    elif kind == "bad_version":
+        fields["scene_json"] = scene_json = dump_scene(rng, random_scene_object(rng, rng.choice(SCENE_VERSION_VALUES)))
+        fields["scene_sha256"] = sha256_hex(scene_json)
+    elif kind in ("too_long", "too_long_cjk"):
+        fields["scene_json"] = scene_json = scene_of_length(rng, captions_scene_limit() + rng.choice([1, 2, 50, 4000]))
+        if kind == "too_long_cjk":
+            fields["scene_json"] = scene_json = scene_json.replace("x", "测")
+        fields["scene_sha256"] = sha256_hex(scene_json)
+    elif kind == "wrong_action":
+        fields["action"] = rng.choice(SCENE_ACTIONS[1:])
+        if rng.random() < 0.3:  # even an invalid scene on a wrong action is a 400
+            fields["scene_sha256"] = flip_hex(rng, fields["scene_sha256"])
+    elif kind == "wrong_action_hash_only":
+        fields["action"] = rng.choice(SCENE_ACTIONS[1:])
+        fields["scene_json"] = None
+    return kind, fields, False
+
+
+def captions_scene_limit() -> int:
+    return gateway.OVERLAY_SCENE_JSON_MAX_CHARS
+
+
+async def check_property_overlay_scene_before_reservation() -> None:
+    upstreams = SceneUpstreams()
+    journal_dir, saved = scene_gateway_setup(upstreams)
+    headers = {"authorization": "Bearer test-runtime-token"}
+    rng = random.Random(SCENE_PROPERTY_SEED)
+    assert gateway.OVERLAY_SCENE_JSON_MAX_CHARS == 8192
+    counts = {"legal": 0, "illegal": 0}
+    try:
+        # The real HTTP path (routing, pydantic, handler) is exercised through the ASGI app, so a 422 would not pass as a 400.
+        async with RealAsyncClient(transport=httpx.ASGITransport(app=gateway.app), base_url="http://gateway.test") as client:
+            first = await client.post("/v1/media", headers=headers, json={"command_id": "p25_control", "session_id": "session_1", "action": "stop_program"})
+            assert first.status_code == 200, first.text  # creates the journal table, so "no journal row" below is not vacuous
+            assert journal_state("p25_control") is not None
+            for case in range(SCENE_PROPERTY_CASES):
+                kind, fields, legal = random_scene_request(rng)
+                command_id = f"p25_{case}_{rng.getrandbits(32):08x}"
+                body = {"command_id": command_id, "session_id": "session_1", "action": fields["action"]}
+                if fields["scene_json"] is not None:
+                    body["overlay_scene_json"] = fields["scene_json"]
+                if fields["scene_sha256"] is not None:
+                    body["overlay_scene_sha256"] = fields["scene_sha256"]
+                if fields.get("with_script"):
+                    script = "大家好，欢迎来到直播间。"
+                    body.update(program_segment_id=SCENE_SEGMENT_ID, program_script=script, script_sha256=sha256_hex(script), runtime_voice_id="speaker_1")
+                upstreams.echo = fields["scene_sha256"]
+                upstreams.requests.clear()
+                label = f"Property 25 seed={SCENE_PROPERTY_SEED} case={case} kind={kind} command_id={command_id} action={fields['action']} json_chars={len(fields['scene_json']) if fields['scene_json'] is not None else None}"
+                try:
+                    response = await client.post("/v1/media", headers=headers, json=body)
+                    if legal:
+                        assert response.status_code == 200, (response.status_code, response.text)
+                        assert journal_state(command_id) is not None, "a legal request is reserved"
+                        assert (upstreams.paths()[0] == "/api/admin/overlay/scene") == (fields["scene_json"] is not None), upstreams.paths()
+                        counts["legal"] += 1
+                    else:
+                        assert response.status_code == 400, (response.status_code, response.text)
+                        assert journal_state(command_id) is None, "the command id must not be reserved"
+                        assert upstreams.requests == [], upstreams.paths()
+                        counts["illegal"] += 1
+                except AssertionError:
+                    print("FAIL  " + label)
+                    raise
+        assert counts["legal"] >= 60 and counts["illegal"] >= 120, counts
+        print(f"PASS  Property 25: {SCENE_PROPERTY_CASES} random media requests (seed {SCENE_PROPERTY_SEED}, {counts['illegal']} invalid, {counts['legal']} legal): invalid scene fields get 400 with no command log row and no LiveTalking call")
+    finally:
+        scene_gateway_restore(journal_dir, saved)
+
+
 async def main() -> None:
     check_cue_timeline()
     check_unpronounceable_chunks()
@@ -545,6 +691,7 @@ async def main() -> None:
     await check_overlay_scene_failures()
     await check_overlay_health()
     await check_overlay_scene_rejected_before_reservation()
+    await check_property_overlay_scene_before_reservation()
 
 
 asyncio.run(main())
