@@ -22,6 +22,11 @@ const routes = {
   approve: await import("../apps/console/app/api/v1/interaction-rules/[ruleId]/approve/route.ts"),
   defaults: await import("../apps/console/app/api/v1/interaction-rules/defaults/route.ts")
 };
+const live = {
+  list: await import("../apps/console/app/api/v1/live-runs/route.ts"),
+  lifecycle: await import("../apps/console/app/api/v1/live-runs/[runId]/lifecycle/route.ts"),
+  preflight: await import("../apps/console/app/api/v1/live-runs/[runId]/preflight/route.ts")
+};
 
 const rule = (overrides = {}) => rules.parseRule({ id: "00000000-0000-4000-8000-000000000001", name: "rule", trigger_type: "viewer_enter", match_config: {}, templates: ["欢迎{nickname}"], action: "speak", cooldown_seconds: 30, interval_seconds: null, priority: 100, default_key: null, ...overrides });
 const interaction = (overrides = {}) => ({ id: "00000000-0000-4000-8000-0000000000aa", interaction_kind: "viewer_enter", question_text: "观众进入直播间", policy_action: "answer", viewer_ref: null, viewer_nickname: "小明", gift_value_cents: null, channel_connection_id: null, ...overrides });
@@ -241,6 +246,73 @@ describe("console API (demo mode)", () => {
     assert.deepEqual(await call(routes.list.POST, "/api/v1/interaction-rules", { method: "POST", role: "reviewer", body: {} }), { status: 403, body: { error: "interaction_rule_rejected" } });
     assert.deepEqual(await call(routes.approve.POST, "/approve", { method: "POST", role: "operator", params: { ruleId: "x" } }), { status: 403, body: { error: "interaction_rule_approval_rejected" } });
     assert.equal((await call(routes.list.POST, "/api/v1/interaction-rules", { method: "POST", body: { name: "x" } })).status, 400);
+  });
+});
+
+// Module A (live-commerce-p1-features, Requirement 1.2, 1.3, 1.5, 1.9): in demo mode the preflight reads the in-memory
+// rule store of the run's tenant and never injects an approved AI disclosure rule. The tenant is dedicated to this block,
+// so the "five default rules on first creation" assertions above stay valid whatever the test order.
+describe("demo-mode AI disclosure preflight", () => {
+  const tenantId = "tenant_rules_preflight";
+  const runId = "00000000-0000-4000-8000-0000000000f1"; // telemetry lookups require a UUID run id, also in demo mode
+  const blockedDetail = {
+    missing: "未创建 AI 身份提示规则（在\"互动规则\"页一键创建默认规则并审批）",
+    pending: "AI 身份提示规则待审批"
+  };
+  const headers = { "x-tenant-id": tenantId, "x-actor-id": "actor-preflight", "x-actor-name": "Preflight Check", "x-actor-role": "admin", "content-type": "application/json" };
+  const call = async (handler, url, { method = "GET", body, params = {} } = {}) => {
+    const response = await handler(new Request(`http://127.0.0.1${url}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }), { params: Promise.resolve(params) });
+    return { status: response.status, body: await response.json() };
+  };
+  const arm = () => call(live.lifecycle.POST, "/lifecycle", { method: "POST", body: { action: "arm" }, params: { runId } });
+  const aiCheck = async () => {
+    const preflight = await call(live.preflight.GET, "/preflight", { params: { runId } });
+    assert.equal(preflight.status, 200, JSON.stringify(preflight.body));
+    const checks = preflight.body.data.checks;
+    assert.deepEqual(checks.map((check) => check.id).filter((id) => id === "disclosure" || id === "ai_disclosure_rule" || id === "aigc_label"), ["disclosure", "ai_disclosure_rule", "aigc_label"]);
+    return { check: checks.find((check) => check.id === "ai_disclosure_rule"), blocked: checks.filter((check) => check.status === "blocked").map((check) => check.id) };
+  };
+
+  test("arm is refused without a rule and while it is pending; approving it clears only the ai_disclosure_rule check", async () => {
+    // Initialize the demo control store through the public route, then add a PREFLIGHT run for the dedicated tenant.
+    assert.equal((await call(live.list.GET, "/api/v1/live-runs")).status, 200);
+    globalThis.shuzhirenControlStore.runs.set(runId, {
+      id: runId, tenantId, revisionId: "show_revision_rules_preflight", channelConnectionId: "channel_demo", productVersionId: "pv_a102_v1", showName: "AI disclosure preflight",
+      state: "PREFLIGHT", traceId: runId, hasOperator: true, hasApprovedRights: true, hasApprovedSkuVersion: true, hasFallbackProgram: true, channelReady: true,
+      outputReady: false, aiDisclosureEnabled: true, commandHistory: [], questions: []
+    });
+    try {
+      assert.deepEqual((await consoleRules.aiDisclosureRuleStatus({ tenantId })), { passed: false, detail: blockedDetail.missing }, "no fixture rule is injected");
+      let state = await aiCheck();
+      const blockedWithoutRule = state.blocked;
+      assert.deepEqual([state.check.status, state.check.detail], ["blocked", blockedDetail.missing]);
+      assert.ok(blockedWithoutRule.includes("ai_disclosure_rule"));
+      const refused = await arm();
+      assert.equal(refused.status, 409);
+      assert.equal(globalThis.shuzhirenControlStore.runs.get(runId).state, "PREFLIGHT", "a refused arm leaves the run in PREFLIGHT");
+
+      const created = await call(routes.defaults.POST, "/api/v1/interaction-rules/defaults", { method: "POST" });
+      assert.equal(created.status, 201);
+      assert.equal(created.body.data.created.length, 5);
+      state = await aiCheck();
+      assert.deepEqual([state.check.status, state.check.detail], ["blocked", blockedDetail.pending]);
+      const stillRefused = await arm();
+      assert.equal(stillRefused.status, 409);
+      assert.equal(globalThis.shuzhirenControlStore.runs.get(runId).state, "PREFLIGHT");
+
+      const ai = created.body.data.created.find((rule) => rule.defaultKey === "ai_disclosure");
+      const approved = await call(routes.approve.POST, "/approve", { method: "POST", params: { ruleId: ai.id } });
+      assert.equal(approved.body.data.approval, "approved");
+      state = await aiCheck();
+      assert.equal(state.check.status, "passed");
+      assert.match(state.check.detail, /600/, "the detail carries the interval in seconds");
+      assert.ok(!state.blocked.includes("ai_disclosure_rule"), "arm is no longer refused because of the AI disclosure rule");
+      assert.deepEqual(state.blocked, blockedWithoutRule.filter((id) => id !== "ai_disclosure_rule"), "approving the rule clears only that check");
+      // Other checks (rights, releases, channel, output ...) stay blocked in demo mode, so arm is still 409, now for those checks only.
+      assert.equal((await arm()).status, 409);
+    } finally {
+      globalThis.shuzhirenControlStore.runs.delete(runId);
+    }
   });
 });
 
