@@ -365,3 +365,80 @@ test("Property 16: the compiled built-in lexicon never lets an obfuscated block 
     { numRuns: 300, seed: 20250117 }
   );
 });
+
+// Feature: live-commerce-p1-features, Property 17: 运行时词表只会更严
+// Validates: Requirements 5.7
+// F (a frozen lexicon or null) and C (the current lexicon) are drawn from a small pool of spellings that normalize to the
+// same term, so one normalized term often appears on both sides, or twice on one side, with different severities.
+// runtimeLexicon(F, C) must keep every Block_Term of either side (as a block), lose no term, and with F = null equal compileLexicon(C).
+const property17Spellings = ["vx", "VX", "ｖｘ", "v x", "全网最低", "全 网 最 低", "全\u200B网最低", "加微信", "加 微信", "第一", "顶级", "ABC", "ａｂｃ", "神药"];
+const property17Term = fc.oneof(
+  { weight: 4, arbitrary: fc.constantFrom(...property17Spellings) },
+  { weight: 1, arbitrary: fc.array(property15Char, { minLength: 1, maxLength: 4 }).map((parts) => parts.join("")) }
+);
+const property17Side = (prefix) =>
+  fc
+    .array(fc.tuple(property17Term, fc.constantFrom("block", "warn"), fc.constantFrom(...property16Categories), fc.array(fc.constantFrom("活动价", "优惠价", "热门", "优质"), { maxLength: 3 })), { maxLength: 8 })
+    .map((entries) => entries.map(([term, severity, category, suggestions], index) => ({ id: `${prefix}${index}`, term, category, severity, suggestions })));
+const blockSet = (entries) => new Set(entries.filter((entry) => entry.severity === "block").map((entry) => normalizePolicyText(entry.term)).filter((normalized) => normalized !== ""));
+const normalizedSet = (entries) => new Set(entries.map((entry) => normalizePolicyText(entry.term)).filter((normalized) => normalized !== ""));
+
+test("Property 17: runtimeLexicon keeps every Block_Term of the frozen and the current lexicon", () => {
+  let nullFrozen = 0;
+  let severityDisagreements = 0;
+  let sharedTerms = 0;
+  fc.assert(
+    fc.property(fc.option(property17Side("f"), { nil: null, freq: 5 }), property17Side("c"), (frozen, current) => {
+      const frozenBefore = JSON.stringify(frozen);
+      const currentBefore = JSON.stringify(current);
+      const result = runtimeLexicon(frozen, current);
+      const resultBlocks = new Set(result.filter((entry) => entry.severity === "block").map((entry) => entry.normalized));
+      const expectedBlocks = new Set([...blockSet(current), ...(frozen === null ? [] : blockSet(frozen))]);
+      for (const normalized of expectedBlocks) assert.ok(resultBlocks.has(normalized), `Block_Term ${JSON.stringify(normalized)} was dropped or downgraded`);
+      assert.deepEqual([...resultBlocks].sort(), [...expectedBlocks].sort(), "no term becomes a block that neither side blocks");
+      // Every term of either side survives, exactly once.
+      const expectedTerms = new Set([...normalizedSet(current), ...(frozen === null ? [] : normalizedSet(frozen))]);
+      assert.deepEqual(result.map((entry) => entry.normalized).sort(), [...expectedTerms].sort());
+      for (const entry of result) assert.equal(entry.normalized, normalizePolicyText(entry.term));
+      if (frozen === null) {
+        nullFrozen += 1;
+        assert.deepEqual(result, compileLexicon(current));
+        assert.deepEqual(runtimeLexicon(undefined, current), result);
+      } else {
+        const frozenAll = normalizedSet(frozen);
+        const currentAll = normalizedSet(current);
+        for (const normalized of frozenAll) {
+          if (!currentAll.has(normalized)) continue;
+          sharedTerms += 1;
+          const inFrozenBlock = blockSet(frozen).has(normalized);
+          const inCurrentBlock = blockSet(current).has(normalized);
+          if (inFrozenBlock !== inCurrentBlock) {
+            severityDisagreements += 1;
+            assert.equal(result.find((entry) => entry.normalized === normalized).severity, "block", "block wins over warn for the same term");
+          }
+        }
+      }
+      assert.equal(JSON.stringify(frozen), frozenBefore);
+      assert.equal(JSON.stringify(current), currentBefore);
+    }),
+    { numRuns: 1000, seed: 20250118 }
+  );
+  assert.ok(nullFrozen >= 20, `only ${nullFrozen} cases had a null frozen lexicon`);
+  assert.ok(sharedTerms >= 100, `only ${sharedTerms} shared terms were generated`);
+  assert.ok(severityDisagreements >= 100, `only ${severityDisagreements} shared terms had different severities`);
+});
+
+test("Property 17: a term blocked only by the frozen lexicon, or only by the current one, still stops the broadcast", () => {
+  fc.assert(
+    fc.property(property17Side("f"), property17Side("c"), (frozen, current) => {
+      const runtime = runtimeLexicon(frozen, current);
+      for (const source of [frozen, current]) {
+        for (const entry of source.filter((candidate) => candidate.severity === "block" && normalizePolicyText(candidate.term) !== "")) {
+          const result = guardBroadcastText(`欢迎${entry.term}大家`, { policyRules: [], lexicon: runtime, maxLength: 800 });
+          assert.equal(result.allowed, false, `${JSON.stringify(entry.term)} was let through`);
+        }
+      }
+    }),
+    { numRuns: 300, seed: 20250119 }
+  );
+});
