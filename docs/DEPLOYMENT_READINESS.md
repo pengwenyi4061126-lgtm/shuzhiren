@@ -9,7 +9,7 @@
 - 证据列只写引用（`V-` 编号，或 `位置=…，日期=…，提供方=…`），不写推流地址、推流密钥、签名私钥、OAuth 应用密钥或 registry 凭据的值。
 - "说明"列中的"验证方式"是验证所用的命令或步骤，本身不是证据。
 
-核对基准：`origin/master` = `ed934bf669b02c1d3efe070ffa8749226bd1a04b`（2026-11-06 核对）。VERIFICATION_LOG 中最近一条登记的 CI 运行是 #506（run 42083647115，提交 ed934bf，`V-20261106-02`）；#503、#504 只改动文档，结论为 success，没有登记条目；#505（run 42077391358）为 failure，原因见 `V-20261106-02` 的说明。
+核对基准：`origin/master` = `c0f9f52801b473fccfed8f30554a7c54a0cbaea7`（2026-11-06 核对）。VERIFICATION_LOG 中最近一条登记的 CI 运行是 #508（run 42132486742，提交 c0f9f52，`V-20261106-04`）；#507（run 42088421323，提交 1017e0f）只改动文档，结论为 success，没有登记条目。
 
 ## 状态定义
 
@@ -161,9 +161,9 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-000-10 | 部署 release manifest 生产器、Ed25519 验签与部署前 `RepoDigest` 核验 | 代码已完成且有验证证据 | V-20261105-20 | 无 | 来源同 RW-000-01。相关检查：`deploy:manifest:test`、`deploy:images:test`；签名私钥与 registry 依赖 EP-05、EP-10 |
 | RW-000-11 | 策略红队、observer、输出探针活动音频与 4090 验收证据门禁的无 GPU 测试 | 代码已完成且有验证证据 | V-20261105-20 | 无 | 来源同 RW-000-01。相关检查：`policy:red-team`、`observer:runtime:test`、`output-probe:test`、`runtime:acceptance:test` |
 | RW-000-12 | 4090 实机画面标识核验：`livetalking-aigc-label.patch` 叠加的 AIGC 显式标识出现在推流画面（抖音观看端）和录制文件的每一帧上，文字、位置与清晰度符合 `AIGC_LABEL_TEXT`、`AIGC_LABEL_POSITION` | 代码已完成但待外部环境验证 | — | 无 | 环境：4090 与抖音观看端。验收入口：`docs/DEPLOYMENT_RUNBOOK.md` 第 2.13 节的实机核验步骤；尚无记录。`apps/output-probe` 只用 ffprobe/ffmpeg 读取流参数和音频活动，不读取画面内容，不能代替本项 |
-| RW-000-13 | AIGC 标识开播前检查（`aigc_label`）、`deploy:check` 的标识配置规则与录制留证、release manifest 中的隐式标识元数据（迁移 083） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 相关检查：`deploy:check:test`（node-unit 安装 numpy、Pillow 与 `fonts-noto-cjk` 并设 `AIGC_LABEL_REQUIRE_IMAGING=true`，`runtime/livetalking/tests/test_aigc_label.py` 的绘制用例不允许 SKIP）、`runtime:images:licenses:test`、`control-plane:integration`、python-gateway 的 `scripts/test-runtime-gateway-aigc-label.py`；`preflight:check` 为 static；尚无 VERIFICATION_LOG 条目。画面标识的实机核验是 RW-000-12，合规结论是 EP-15 |
-| RW-000-14 | 默认预设库：平台级 `runtime_presets`（迁移 082）、`/api/v1/presets` 与 `/api/v1/presets/{presetCode}/adopt`、资产页“从默认库添加”、Gateway `COSYVOICE_SFT_SPEAKER_MAP` | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 相关检查：`scripts/integration/runtime-presets.test.mjs`（`postgres:integration`）、python-gateway 的 `scripts/test-runtime-gateway-sft-speakers.py`；`presets:test` 为 static；尚无 VERIFICATION_LOG 条目。素材商用授权是 EP-16 |
-| RW-000-15 | 互动规则引擎：迁移 084、runtime-worker 评估循环、`/api/v1/interaction-rules/**` 与 `/interaction-rules` 页面、场次触发记录、Channel_Adapter `viewer_event` | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 相关检查：`interaction-rules:test`（含 console 与 worker 策略引擎的一致性）、`scripts/integration/interaction-rules.test.mjs` 与 `trigger-cases/interaction-rules.mjs`（`postgres:integration`）、`channel-adapter:test`；尚无 VERIFICATION_LOG 条目。抖音真实事件接入是 EP-17 与 RW-040-02 |
+| RW-000-13 | AIGC 标识开播前检查（`aigc_label`）、`deploy:check` 的标识配置规则与录制留证、release manifest 中的隐式标识元数据（迁移 083） | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`deploy:check:test`（node-unit 安装 numpy、Pillow 与 `fonts-noto-cjk` 并设 `AIGC_LABEL_REQUIRE_IMAGING=true`，`runtime/livetalking/tests/test_aigc_label.py` 的绘制用例不允许 SKIP，见 V-20261106-03）、`runtime:images:licenses:test`、`control-plane:integration`、python-gateway 的 `scripts/test-runtime-gateway-aigc-label.py`；`preflight:check` 为 static。画面标识的实机核验是 RW-000-12，合规结论是 EP-15 |
+| RW-000-14 | 默认预设库：平台级 `runtime_presets`（迁移 082）、`/api/v1/presets` 与 `/api/v1/presets/{presetCode}/adopt`、资产页“从默认库添加”、Gateway `COSYVOICE_SFT_SPEAKER_MAP` | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`scripts/integration/runtime-presets.test.mjs`（`postgres:integration`）、`service-principals:integration`、python-gateway 的 `scripts/test-runtime-gateway-sft-speakers.py`；`presets:test` 为 static。素材商用授权是 EP-16 |
+| RW-000-15 | 互动规则引擎：迁移 084、runtime-worker 评估循环、`/api/v1/interaction-rules/**` 与 `/interaction-rules` 页面、场次触发记录、Channel_Adapter `viewer_event` | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`interaction-rules:test`（含 console 与 worker 策略引擎的一致性）、`scripts/integration/interaction-rules.test.mjs` 与 `trigger-cases/interaction-rules.mjs`（`postgres:integration`）、`channel-adapter:test`。抖音真实事件接入是 EP-17 与 RW-040-02 |
 
 ## 待决策事项
 

@@ -5,12 +5,12 @@
 ## 当前检查点
 
 - 核对日期：2026-11-06
-- origin/master：ed934bf669b02c1d3efe070ffa8749226bd1a04b
+- origin/master：c0f9f52801b473fccfed8f30554a7c54a0cbaea7
 - 同步状态：一致
-- 最新 CI 运行：run 42083647115，提交 ed934bf669b02c1d3efe070ffa8749226bd1a04b，结论 success
+- 最新 CI 运行：run 42132486742，提交 c0f9f52801b473fccfed8f30554a7c54a0cbaea7，结论 success
 - 仓库：`git@github.com:pengwenyi4061126-lgtm/shuzhiren.git`
 - 分支：`master`
-- 核对方式：先执行 `git fetch origin`，再执行 `git rev-list --left-right --count origin/master...master`，结果为 `0 0`；最新 CI 运行取自 GitHub Actions 接口 `GET /repos/pengwenyi4061126-lgtm/shuzhiren/actions/runs?head_sha=<提交>`（#506）。VERIFICATION_LOG 中最近一条登记的运行是 #506（[V-20261106-02](VERIFICATION_LOG.md#v-20261106-02)）；#503、#504 只改动文档，没有登记；#505（run 42077391358）结论为 failure，原因与修复见 V-20261106-02 的说明。
+- 核对方式：先执行 `git fetch origin`，再执行 `git rev-list --left-right --count origin/master...master`，结果为 `0 0`；最新 CI 运行取自 GitHub Actions 接口 `GET /repos/pengwenyi4061126-lgtm/shuzhiren/actions/runs?head_sha=<提交>`（#508）。VERIFICATION_LOG 中最近一条登记的运行是 #508（[V-20261106-04](VERIFICATION_LOG.md#v-20261106-04)），同一运行中 deploy:check:test 的步骤变更见 [V-20261106-03](VERIFICATION_LOG.md#v-20261106-03)；#507（run 42088421323）只改动文档，结论为 success，没有登记。
 - 本机环境：Windows 开发机，Node 24（`package.json` 的 `engines.node` 为 `^24.11.0`）。
 - 工作区状态：恢复前先以 `git status --short` 为准；不得通过重装依赖、解压运行时或清理工作区覆盖已有审计修复。
 - 本文件不保存任何平台密钥、SSH 私钥、GPU 租机凭据、OIDC 凭据或数据库口令。
@@ -152,8 +152,8 @@ npm run build
 
 - 代码未完成：RW-032-05、RW-040-01 至 RW-040-04、RW-040-06。
 - 代码已完成但待外部环境验证：RW-013-02、RW-014-02 至 RW-014-05、RW-015-02 至 RW-015-05、RW-031-02 至 RW-031-04、RW-032-02、RW-032-03、RW-000-12。
-- 代码已完成但待 CI 或 Linux 验证：RW-002-01、RW-002-03、RW-012-01、RW-021-01、RW-025-02、RW-031-01、RW-032-04、RW-033-01、RW-033-03、RW-036-01、RW-037-04、RW-038-02、RW-038-03、RW-000-01 至 RW-000-03、RW-000-13 至 RW-000-15。
-- 其余 RW 行为代码已完成且有验证证据，引用 [V-20261105-20](VERIFICATION_LOG.md#v-20261105-20)、[V-20261106-02](VERIFICATION_LOG.md#v-20261106-02) 等条目；RW-005-01、RW-006-01、RW-010-01、RW-013-01、RW-036-02 依据 [run 42083647115 @ ed934bf](VERIFICATION_LOG.md#v-20261106-02) 改为该状态。
+- 代码已完成但待 CI 或 Linux 验证：RW-002-01、RW-002-03、RW-012-01、RW-021-01、RW-025-02、RW-031-01、RW-032-04、RW-033-01、RW-033-03、RW-036-01、RW-037-04、RW-038-02、RW-038-03、RW-000-01 至 RW-000-03。
+- 其余 RW 行为代码已完成且有验证证据，引用 [V-20261105-20](VERIFICATION_LOG.md#v-20261105-20)、[V-20261106-02](VERIFICATION_LOG.md#v-20261106-02) 等条目；RW-005-01、RW-006-01、RW-010-01、RW-013-01、RW-036-02 依据 [run 42083647115 @ ed934bf](VERIFICATION_LOG.md#v-20261106-02) 改为该状态，RW-000-13 至 RW-000-15 依据 [run 42132486742 @ c0f9f52](VERIFICATION_LOG.md#v-20261106-04) 改为该状态。
 
 ## 代码审计结果与下一步
 
