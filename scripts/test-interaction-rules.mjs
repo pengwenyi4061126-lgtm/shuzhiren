@@ -316,6 +316,49 @@ describe("demo-mode AI disclosure preflight", () => {
   });
 });
 
+// Feature: live-commerce-p1-features, Property 1: AI 身份口播规则判定
+// For any row | null, evaluateAiDisclosureRule(row).passed holds exactly when the rule exists, is enabled, is approved,
+// is tenant-level (live_run_id null), is timed + speak and its interval is an integer in [60, 1800]. detail is never empty.
+// **Validates: Requirements 1.2, 1.3, 1.4, 1.5**
+describe("Property 1: AI disclosure rule evaluation", () => {
+  const uuid = fc.uuid();
+  const rowArbitrary = fc.record({
+    enabled: fc.boolean(),
+    approval_status: fc.oneof({ weight: 4, arbitrary: fc.constant("approved") }, { weight: 2, arbitrary: fc.constant("pending") }, { weight: 1, arbitrary: fc.string({ maxLength: 12 }) }),
+    live_run_id: fc.oneof({ weight: 4, arbitrary: fc.constant(null) }, { weight: 1, arbitrary: uuid }),
+    trigger_type: fc.oneof({ weight: 4, arbitrary: fc.constant("timed") }, { weight: 2, arbitrary: fc.constantFrom("viewer_enter", "follow", "gift", "keyword", "faq") }, { weight: 1, arbitrary: fc.string({ maxLength: 12 }) }),
+    action: fc.oneof({ weight: 4, arbitrary: fc.constant("speak") }, { weight: 1, arbitrary: fc.constant("reply_draft") }, { weight: 1, arbitrary: fc.string({ maxLength: 12 }) }),
+    interval_seconds: fc.oneof(
+      { weight: 4, arbitrary: fc.constantFrom(59, 60, 1800, 1801) },
+      { weight: 3, arbitrary: fc.integer({ min: 60, max: 1800 }) },
+      { weight: 2, arbitrary: fc.integer({ min: -100_000, max: 100_000 }) },
+      { weight: 1, arbitrary: fc.constant(null) },
+      { weight: 2, arbitrary: fc.double({ min: 0, max: 2000, noNaN: true }) }
+    )
+  });
+  const expectedPassed = (row) => row !== null && row.enabled === true && row.approval_status === "approved" && row.live_run_id === null
+    && row.trigger_type === "timed" && row.action === "speak" && Number.isInteger(row.interval_seconds) && row.interval_seconds >= 60 && row.interval_seconds <= 1800;
+
+  test("passes if and only if the design postcondition holds, and always explains the result", () => {
+    let passedCount = 0;
+    fc.assert(fc.property(fc.oneof({ weight: 1, arbitrary: fc.constant(null) }, { weight: 9, arbitrary: rowArbitrary }), (row) => {
+      const result = consoleRules.evaluateAiDisclosureRule(row);
+      assert.equal(result.passed, expectedPassed(row), JSON.stringify(row));
+      assert.equal(typeof result.detail, "string");
+      assert.ok(result.detail.length > 0, "detail is never empty");
+      if (result.passed) passedCount += 1;
+    }), { numRuns: 1000, seed: 20250101 });
+    assert.ok(passedCount > 0, "the generator reaches the passing region");
+  });
+
+  test("interval boundaries 59, 60, 1800 and 1801 on an otherwise valid rule", () => {
+    const valid = { enabled: true, approval_status: "approved", live_run_id: null, trigger_type: "timed", action: "speak", interval_seconds: 600 };
+    const passes = (overrides) => consoleRules.evaluateAiDisclosureRule({ ...valid, ...overrides }).passed;
+    assert.deepEqual([59, 60, 1800, 1801, 60.5, null].map((interval_seconds) => passes({ interval_seconds })), [false, true, true, false, false, false]);
+    assert.equal(passes({}), true);
+  });
+});
+
 describe("channel adapter viewer events", () => {
   const target = { tenantId: "t", channelConnectionId: "c", interactionToken: "interaction-token", commerceToken: "commerce-token" };
   test("viewer events are parsed and forwarded on the interaction ingest path", () => {
