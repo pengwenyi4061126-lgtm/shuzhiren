@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import fc from "fast-check";
+
 import {
   chooseScriptVariant,
   normalizeScriptVariants,
@@ -53,4 +55,19 @@ test("scriptVariantsProblem reports each broken rule", () => {
   assert.match(scriptVariantsProblem([1], "主版本"), /must be a string/);
   assert.match(scriptVariantsProblem("a", "主版本"), /array/);
   assert.match(scriptVariantsProblem(["a"], null), /primary/);
+});
+
+// Feature: live-commerce-p1-features, Property 5: 多版本段落不连续重复
+// Validates: Requirements 3.7
+test("Property 5: with every version allowed, a multi-version segment never repeats the last version", () => {
+  const scriptsArbitrary = fc.integer({ min: 2, max: 5 }).chain((count) => fc.record({
+    scripts: fc.array(fc.string({ maxLength: 40 }), { minLength: count, maxLength: count }),
+    lastVariantIndex: fc.integer({ min: 0, max: count - 1 })
+  }));
+  fc.assert(fc.property(scriptsArbitrary, ({ scripts: versions, lastVariantIndex }) => {
+    const choice = chooseScriptVariant({ scripts: versions, lastVariantIndex, isAllowed: () => true });
+    assert.notEqual(choice, null);
+    assert.notEqual(choice.variantIndex, lastVariantIndex);
+    assert.deepEqual(choice.skipped, []);
+  }), { numRuns: 500, seed: 20250105 });
 });
