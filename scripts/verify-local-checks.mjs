@@ -121,7 +121,8 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "scripts/test-runtime-gateway-state-backup.py", kind: "python", file: "scripts/test-runtime-gateway-state-backup.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-state-restore-drill.py", kind: "python", file: "scripts/test-runtime-gateway-state-restore-drill.py", label: "behavioral", gatewayOnly: true },
   { id: "runtime/livetalking/tests/test_overlay.py", kind: "python", file: "runtime/livetalking/tests/test_overlay.py", label: "behavioral", gatewayOnly: true },
-  { id: "scripts/test-runtime-gateway-captions.py", kind: "python", file: "scripts/test-runtime-gateway-captions.py", label: "behavioral", gatewayOnly: true }
+  { id: "scripts/test-runtime-gateway-captions.py", kind: "python", file: "scripts/test-runtime-gateway-captions.py", label: "behavioral", gatewayOnly: true },
+  { id: "prohibited-terms:test", kind: "npm", script: "prohibited-terms:test", label: "behavioral" }
 ].map(freezeCheck));
 
 export function localChecks({ withGateway = false } = {}) {
