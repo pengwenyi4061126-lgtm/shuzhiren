@@ -489,6 +489,127 @@ def test_layout_avoids_aigc_label(font: str) -> None:
     passed(f"Property 20: {LAYOUT_CASES} random scenes, frames and label positions keep layers inside the frame and clear of the label (kept {kept_total}, excluded {excluded_total})")
 
 
+COMPOSE_SEED = 20240621
+COMPOSE_CASES = 200
+
+
+class LabelConfigHolder:
+    """The part of the AIGC renderer a SessionOverlay reads: its LabelConfig (compose never draws the label)."""
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+
+def random_compose_scene(rng: random.Random, asset_digests: list[str]) -> dict:
+    """A random valid scene document with random layer switches, anchors, caption position and background."""
+    document = {
+        "version": 1,
+        "caption": {"enabled": rng.random() < 0.7, "position": rng.choice(overlay.CAPTION_POSITIONS)},
+        "productCard": None,
+        "priceSticker": None,
+        "background": None,
+    }
+    if rng.random() < 0.8:
+        document["productCard"] = {"anchor": rng.choice(overlay.CARD_ANCHORS), "title": "洁面慕斯 120ml"}
+        if rng.random() < 0.8:
+            document["priceSticker"] = {"priceText": "¥99.00", "note": "价格以下单页为准" if rng.random() < 0.5 else None,
+                                        "validUntil": rng.choice([None, PRICE_VALID_UNTIL])}
+    mode = rng.choice(["none", "canvas", "chroma_key"])
+    if mode == "canvas":
+        document["background"] = {"mode": "canvas", "assetSha256": rng.choice(asset_digests), "avatarAnchor": rng.choice(["left", "center", "right"]),
+                                  "avatarScalePermille": rng.randint(500, 1000)}
+    elif mode == "chroma_key":
+        document["background"] = {"mode": "chroma_key", "assetSha256": rng.choice(asset_digests),
+                                  "keyColor": "#" + "".join(f"{rng.randint(0, 255):02x}" for _ in range(3)), "tolerance": rng.randint(0, 255)}
+    return document
+
+
+def random_compose_frame(rng: random.Random, width: int, height: int, channels: int, background: dict | None, bgr: bool):
+    """Random noise; for chroma_key scenes part (or all) of the frame is painted in the key colour so the keyer has work to do."""
+    import numpy as np
+
+    frame = np.frombuffer(rng.randbytes(width * height * channels), dtype=np.uint8).reshape(height, width, channels).copy()
+    if background is not None and background["mode"] == "chroma_key" and rng.random() < 0.8:
+        key = [int(background["keyColor"][index:index + 2], 16) for index in (1, 3, 5)]
+        paint = key[::-1] if bgr else key
+        if rng.random() < 0.5:
+            frame[..., :3] = paint
+        else:
+            x0, y0 = rng.randint(0, width - 1), rng.randint(0, height - 1)
+            frame[y0:rng.randint(y0 + 1, height), x0:rng.randint(x0 + 1, width), :3] = paint
+    return frame
+
+
+def test_compose_keeps_input_and_label_area(font: str, work: Path) -> None:
+    """Feature: live-commerce-p1-features, Property 21: 合成不改输入且不写角标区域
+
+    Validates: Requirements 6.13, 6.14
+    """
+    import numpy as np
+
+    assets = work / "property-assets"
+    assets.mkdir()
+    asset_digests = [write_png(assets, color, size=size) for color, size in (((200, 100, 50), (64, 48)), ((10, 220, 40), (17, 33)), ((250, 250, 20), (8, 8)))]
+    seed = int(os.environ.get("OVERLAY_PROPERTY_SEED", COMPOSE_SEED))
+    rng = random.Random(seed)
+    drawn_cases = background_cases = conflict_cases = captioned_cases = 0
+    cue = json.dumps({"id": "p21", "cues": [{"text": "欢迎来到直播间，今天讲解洁面慕斯", "start_ms": 0, "end_ms": 1000}]}, ensure_ascii=False)
+    points = [{"shuzhiren_caption_id": "p21"}] * 2
+    for case in range(COMPOSE_CASES):
+        document = random_compose_scene(rng, asset_digests)
+        width, height, channels = rng.randint(64, 480), rng.randint(64, 480), rng.choice([3, 4])
+        position = aigc.POSITIONS[case % len(aigc.POSITIONS)] if case < 2 * len(aigc.POSITIONS) else rng.choice(aigc.POSITIONS)
+        order = rng.choice(["bgr", "rgb"])
+        now = rng.choice([BEFORE_EXPIRY, AFTER_EXPIRY])
+        with_caption = rng.random() < 0.8
+        read_only = rng.random() < 0.5
+        context = f"seed={seed} case={case} scene={document} frame={width}x{height}x{channels} position={position} order={order} read_only={read_only}"
+        try:
+            holder = LabelConfigHolder(aigc.LabelConfig(font_file=font, position=position))
+            frame = random_compose_frame(rng, width, height, channels, document["background"], order == "bgr")
+            original = frame.copy()
+            if read_only:
+                frame.setflags(write=False)  # a write into the input would raise instead of silently passing
+            box = aigc.label_box(holder.config, width, height)
+            label_rect = overlay.Rect(*box)
+
+            def session_for(scene_document) -> overlay.SessionOverlay:
+                session = overlay.SessionOverlay(holder, asset_dir=str(assets), channel_order=order, clock=lambda: now)
+                session.set_scene(*encode(scene_document))
+                return session
+
+            full = session_for(document)
+            if with_caption:
+                assert full.register_caption(cue) == "p21"
+            out = full.compose(frame, points if with_caption else [None, None])
+            assert np.array_equal(frame, original), "compose changed its input frame"
+
+            # Reference: the same scene with only the background layer enabled.
+            only_background = {**document, "caption": {"enabled": False, "position": "bottom_band"}, "productCard": None, "priceSticker": None}
+            reference = session_for(only_background).compose(frame, [None, None])
+            assert np.array_equal(frame, original), "the background-only compose changed its input frame"
+            assert out.shape == frame.shape and out.dtype == np.uint8 and reference.shape == frame.shape
+
+            assert np.array_equal(region(out, label_rect), region(reference, label_rect)), "pixels in the AIGC label rectangle differ from the background-only output"
+            assert region(out, label_rect).size > 0, "the AIGC label rectangle is empty inside the frame"
+
+            # Non-vacuity bookkeeping: did a foreground layer draw, and did one get excluded by the label?
+            if not np.array_equal(out, reference):
+                drawn_cases += 1
+            if document["background"] is not None:
+                background_cases += 1
+            if with_caption and document["caption"]["enabled"]:
+                captioned_cases += 1
+            if full.scene_state.excluded_layers:
+                conflict_cases += 1
+        except AssertionError as error:
+            raise AssertionError(f"Property 21 failed: {error}; {context}; rerun with OVERLAY_PROPERTY_SEED={seed}") from None
+    assert drawn_cases > 0 and conflict_cases > 0 and background_cases > 0 and captioned_cases > 0, (
+        f"generator did not cover the property: drawn {drawn_cases}, conflicts {conflict_cases}, backgrounds {background_cases}, captions {captioned_cases}")
+    passed(f"Property 21: {COMPOSE_CASES} random frames and scenes leave the input intact and the AIGC label area equal to the background-only output "
+           f"(foreground drawn in {drawn_cases}, layers excluded in {conflict_cases}, backgrounds in {background_cases}, captions in {captioned_cases})")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--require-imaging", action="store_true", help="fail instead of skipping when numpy, Pillow or a CJK font is missing")
@@ -514,6 +635,7 @@ def main() -> int:
                 print(f"INFO  CJK font {font}", flush=True)
                 test_drawing(font, Path(directory))
                 test_layout_avoids_aigc_label(font)
+                test_compose_keeps_input_and_label_area(font, Path(directory))
     return 0
 
 
