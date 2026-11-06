@@ -412,3 +412,46 @@ describe("channel adapter viewer events", () => {
     assert.deepEqual(controlPlaneRequest({ target, eventId: "e2", event: { kind: "interaction", runId: "run_1", question: "q" } }).body, { tenantId: "t", channelConnectionId: "c", eventId: "e2", runId: "run_1", question: "q" }, "a comment without viewer fields keeps its original body");
   });
 });
+// Feature: live-commerce-p1-features, Property 3: 策略引擎只有一个实现
+// No .mjs file under apps/runtime-worker defines evaluatePolicy, and the policy engine module that
+// apps/runtime-worker/interaction-rules.mjs resolves to is the same file as the one apps/console/lib/policy-engine.ts
+// resolves to. The console side is resolved through the console TypeScript loader's own resolve hook.
+// **Validates: Requirements 2.1, 2.2, 2.3**
+const { existsSync, readdirSync, readFileSync } = await import("node:fs");
+const nodePath = await import("node:path");
+const { fileURLToPath, pathToFileURL } = await import("node:url");
+const { resolve: resolveWithConsoleLoader } = await import("./lib/console-ts-loader.mjs");
+describe("Property 3: the policy engine has a single implementation", () => {
+  const repoRoot = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), "..");
+  const workerDir = nodePath.join(repoRoot, "apps", "runtime-worker");
+  const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\\])\/\/.*$/gm, "$1");
+  const mjsFiles = (directory) => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const full = nodePath.join(directory, entry.name);
+    if (entry.isDirectory()) return entry.name === "node_modules" ? [] : mjsFiles(full);
+    return entry.name.endsWith(".mjs") ? [full] : [];
+  });
+  // Resolves the module that `file` imports or re-exports `evaluatePolicy` from, using the loader's resolve hook.
+  const policyEngineUrlFrom = async (file) => {
+    const source = stripComments(readFileSync(file, "utf8"));
+    const statement = [...source.matchAll(/(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)].find((match) => /\bevaluatePolicy\b/.test(match[1]));
+    assert.ok(statement, `${nodePath.relative(repoRoot, file)} imports or re-exports evaluatePolicy`);
+    const nextResolve = (specifier, context) => ({ url: new URL(specifier, context.parentURL).href });
+    return (await resolveWithConsoleLoader(statement[2], { parentURL: pathToFileURL(file).href }, nextResolve)).url;
+  };
+  test("no .mjs file in apps/runtime-worker defines evaluatePolicy, and the old copy is gone", () => {
+    const definition = /\bfunction\s*\*?\s*evaluatePolicy\b|\b(?:const|let|var)\s+evaluatePolicy\b|\bexport\s+function\s+evaluatePolicy\b/;
+    const files = mjsFiles(workerDir);
+    assert.ok(files.length > 0);
+    assert.deepEqual(files.filter((file) => definition.test(stripComments(readFileSync(file, "utf8")))).map((file) => nodePath.relative(repoRoot, file)), []);
+    assert.equal(existsSync(nodePath.join(workerDir, "policy-engine.mjs")), false);
+  });
+  test("worker and console resolve evaluatePolicy to the same module file", async () => {
+    const workerUrl = await policyEngineUrlFrom(nodePath.join(workerDir, "interaction-rules.mjs"));
+    const consoleUrl = await policyEngineUrlFrom(nodePath.join(repoRoot, "apps", "console", "lib", "policy-engine.ts"));
+    assert.equal(workerUrl, consoleUrl);
+    assert.equal(workerUrl, pathToFileURL(nodePath.join(repoRoot, "apps", "console", "lib", "shared", "policy-engine.mjs")).href);
+    const shared = await import(workerUrl);
+    const viaConsole = await import("../apps/console/lib/policy-engine.ts");
+    assert.equal(viaConsole.evaluatePolicy, shared.evaluatePolicy, "the console re-exports the shared function itself");
+  });
+});
