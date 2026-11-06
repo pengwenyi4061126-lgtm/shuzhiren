@@ -157,6 +157,7 @@ jobs:
       - run: npm run regression:registry:test
       - run: npm run regression:evidence:test
       - run: npm run prohibited-terms:test
+      - run: npm run program:variants:test
 
   python-gateway:
     runs-on: ubuntu-24.04
