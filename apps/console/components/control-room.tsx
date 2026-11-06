@@ -12,6 +12,7 @@ import { canTransition } from "@/lib/live-run";
 import { ChannelReplyWorkflow } from "@/components/channel-reply-workflow";
 import { ControlledPreview } from "@/components/controlled-preview";
 import type { ShowProgram } from "@/lib/show-program";
+import type { ScriptPlay } from "@/lib/script-plays";
 
 type Props = { initialRun: LiveRun; initialProgram: ShowProgram | null; initialTelemetry: RuntimeTelemetry | null; initialAlerts: RuntimeAlert[]; initialInteractions: LiveInteraction[]; canOperate: boolean; canReview: boolean };
 type CommandResponse = { data: { command: LiveCommand; run: LiveRun; mediaEvent: Pick<RuntimeOutboxEvent, "id" | "state">; duplicate: boolean } };
@@ -40,6 +41,8 @@ const navigation: NavigationItem[] = [
 ];
 const stateLabel: Record<LiveRunState, string> = { DRAFT: "草稿", REVIEW: "审核中", APPROVED: "已批准", PREFLIGHT: "预检", ARMED: "待开播", LIVE: "直播中", DEGRADED: "降级运行", ENDED: "已结束", ARCHIVED: "已归档" };
 const confirmationActions = new Set<LiveCommand["action"]>(["START", "PAUSE", "HANDOFF", "END", "INSERT_PROGRAM", "ROLLBACK_PROGRAM"]);
+// 版本序号 0 是主版本，1 起是备选话术；账本只有序号与哈希，不含话术全文。
+const variantLabel = (variantIndex: number) => variantIndex === 0 ? "主版本" : `备选 ${variantIndex}`;
 const commandActionLabel: Record<LiveCommand["action"], string> = { START: "开始直播", PAUSE: "切入备用节目", HANDOFF: "切入人工接管", RECOVER: "恢复数字人节目", END: "结束直播", INSERT_PROGRAM: "插播冻结节目", ROLLBACK_PROGRAM: "回退节目" };
 const commandConfirmationNotice: Record<LiveCommand["action"], string> = {
   START: "该动作会向运行时投递开播指令，并等待 Gateway 回执后才进入直播状态。",
@@ -71,6 +74,9 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
   const [confirmationAction, setConfirmationAction] = useState<LiveCommand["action"] | null>(null);
   const [confirmationAcknowledged, setConfirmationAcknowledged] = useState(false);
   const [programCommandSegmentId, setProgramCommandSegmentId] = useState<string | null>(null);
+  const [scriptPlays, setScriptPlays] = useState<ScriptPlay[]>([]);
+  const lastPlayBySegment = useMemo(() => { const latest = new Map<string, ScriptPlay>(); for (const play of scriptPlays) if (!latest.has(play.segmentId)) latest.set(play.segmentId, play); return latest; }, [scriptPlays]);
+  const latestScriptPlay = scriptPlays[0] ?? null;
   const elapsed = useMemo(() => (run.state === "LIVE" ? "01:24:17" : run.state === "DEGRADED" ? "已降级" : "未开始"), [run.state]);
   const telemetryHealthy = Boolean(telemetry?.outputConnected && telemetry.outputFps >= 24 && telemetry.avSyncMs <= 120 && telemetry.bitrateMbps >= 2 && telemetry.audioActive && telemetry.fallbackReady);
   const selectedInteraction = interactions.find((interaction) => interaction.id === selectedQuestion) ?? null;
@@ -83,17 +89,19 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
       inFlight = true;
       try {
         const encodedRunId = encodeURIComponent(run.id);
-        const [runResponse, telemetryResponse, alertsResponse, interactionsResponse] = await Promise.all([
+        const [runResponse, telemetryResponse, alertsResponse, interactionsResponse, scriptPlaysResponse] = await Promise.all([
           fetch(`/api/v1/live-runs/${encodedRunId}`, { cache: "no-store" }),
           fetch(`/api/v1/live-runs/${encodedRunId}/telemetry`, { cache: "no-store" }),
           fetch(`/api/v1/alerts?runId=${encodedRunId}`, { cache: "no-store" }),
-          fetch(`/api/v1/live-runs/${encodedRunId}/interactions`, { cache: "no-store" })
+          fetch(`/api/v1/live-runs/${encodedRunId}/interactions`, { cache: "no-store" }),
+          fetch(`/api/v1/live-runs/${encodedRunId}/script-plays`, { cache: "no-store" })
         ]);
-        const [runPayload, telemetryPayload, alertsPayload, interactionsPayload] = await Promise.all([
+        const [runPayload, telemetryPayload, alertsPayload, interactionsPayload, scriptPlaysPayload] = await Promise.all([
           runResponse.json().catch(() => null) as Promise<{ data?: LiveRun } | null>,
           telemetryResponse.json().catch(() => null) as Promise<{ data?: RuntimeTelemetry } | null>,
           alertsResponse.json().catch(() => null) as Promise<{ data?: RuntimeAlert[] } | null>,
-          interactionsResponse.json().catch(() => null) as Promise<{ data?: LiveInteraction[] } | null>
+          interactionsResponse.json().catch(() => null) as Promise<{ data?: LiveInteraction[] } | null>,
+          scriptPlaysResponse.json().catch(() => null) as Promise<{ data?: ScriptPlay[] } | null>
         ]);
         if (!active) return;
         if (runResponse.ok && runPayload?.data) {
@@ -103,6 +111,7 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
         if (telemetryResponse.ok && telemetryPayload?.data) setTelemetry(telemetryPayload.data);
         if (alertsResponse.ok && alertsPayload?.data) setAlerts(alertsPayload.data);
         if (interactionsResponse.ok && interactionsPayload?.data) setInteractions(interactionsPayload.data);
+        if (scriptPlaysResponse.ok && scriptPlaysPayload?.data) setScriptPlays(scriptPlaysPayload.data);
       } catch {
         // The latest successful server snapshot remains visible while a refresh retries.
       } finally {
@@ -281,7 +290,7 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
           <section className="panel queue-panel"><div className="panel-header"><div><h2>互动与风险</h2><span>高风险问题必须人工确认</span></div><AlertTriangle size={18} className="warning-icon" /></div><div className="queue-list">{interactions.length ? interactions.map((interaction) => <button className={selectedQuestion === interaction.id ? "question selected" : "question"} key={interaction.id} onClick={() => { setSelectedQuestion(interaction.id); setDraftReply(null); setSpeechStatus(null); }} type="button"><span className={`risk ${interaction.risk}`}>{interaction.risk === "high" ? "需人工确认" : interaction.risk === "medium" ? "需商品证据" : "有证据"}</span><strong>{interaction.text}</strong><small>{interaction.detail}</small></button>) : <div className="queue-empty">暂无待处理互动</div>}</div><div className="handoff-box"><Volume2 size={16} /><div><span>{selectedInteraction ? `${selectedInteraction.decision === "handoff" ? "建议人工接管后" : "已核验策略后"}处理此问题` : alerts.length ? `有 ${alerts.length} 条运行告警待处理` : "选择一条互动查看处理建议"}</span>{draftReply ? <small className="draft-reply">{draftReply}</small> : null}{speechStatus ? <small className="speech-status">{speechStatus}</small> : null}</div>{canOperate && selectedInteraction?.decision === "answer" ? <button className="handle-interaction" disabled={draftLoading || speechLoading} onClick={createDraftReply} type="button">{draftLoading ? "生成中" : "生成草稿"}</button> : null}{canOperate && selectedInteraction?.decision === "answer" && draftReply ? <button className="handle-interaction" disabled={speechLoading} onClick={dispatchGroundedSpeech} type="button">{speechLoading ? "入队中" : "确认播报"}</button> : null}{canOperate && selectedInteraction ? <button className="handle-interaction" disabled={Boolean(handlingInteractionId)} onClick={handleSelectedInteraction} type="button">{handlingInteractionId ? "处理中" : "标记已处理"}</button> : null}</div></section>
         </div>
         <ChannelReplyWorkflow runId={run.id} canOperate={canOperate} canReview={canReview} />
-        <section className="panel timeline-panel"><div className="panel-header"><div><h2>节目单与命令记录</h2><span>插播只能引用当前批准修订的冻结脚本，并等待 Gateway 受绑定回执。</span></div><Clock3 size={17} /></div><div className="timeline-content"><div className="program-track">{initialProgram?.segments.map((segment) => { const runnable = (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript); const active = run.activeProgramSegmentId === segment.id; return <span className={`segment ${active ? "live" : segment.fallback ? "queued" : "preset"}`} key={segment.id}><strong>{segment.position}. {segment.title}</strong><small>{segment.durationSeconds ? `${segment.durationSeconds}s` : "人工结束"}</small>{runnable ? <button type="button" className="subtle-button" disabled={!canOperate || run.state !== "LIVE" || Boolean(pendingAction) || Boolean(gatewayConfirmation)} onClick={() => requestDispatch("INSERT_PROGRAM", segment.id)} title="插播此冻结节目段落"><Send size={14} />插播</button> : null}</span>; }) ?? <span className="segment queued">节目单不可用</span>}</div><div className="command-list">{commands.slice(0, 5).map((command) => <div className="command" key={command.id}><span>{commandActionLabel[command.action]}</span><small>{command.actorName} · {new Date(command.issuedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}{command.programSegmentId ? ` · ${command.programSegmentId.slice(0, 8)}` : ""}</small><b>{command.result}</b></div>)}</div></div></section>
+        <section className="panel timeline-panel"><div className="panel-header"><div><h2>节目单与命令记录</h2><span>插播只能引用当前批准修订的冻结脚本，并等待 Gateway 受绑定回执。</span></div><Clock3 size={17} /></div><div className="timeline-content"><div className="program-track">{initialProgram?.segments.map((segment) => { const runnable = (segment.kind === "prepared_product" || segment.kind === "interactive") && Boolean(segment.runtimeScript); const active = run.activeProgramSegmentId === segment.id; return <span className={`segment ${active ? "live" : segment.fallback ? "queued" : "preset"}`} key={segment.id}><strong>{segment.position}. {segment.title}</strong><small>{segment.durationSeconds ? `${segment.durationSeconds}s` : "人工结束"}</small>{runnable ? <small title="主版本与备选话术合计的话术版本数">{1 + (segment.runtimeScriptVariants?.length ?? 0)} 个话术版本{lastPlayBySegment.has(segment.id) ? ` · 最近播出：${variantLabel(lastPlayBySegment.get(segment.id)!.variantIndex)}` : ""}</small> : null}{runnable ? <button type="button" className="subtle-button" disabled={!canOperate || run.state !== "LIVE" || Boolean(pendingAction) || Boolean(gatewayConfirmation)} onClick={() => requestDispatch("INSERT_PROGRAM", segment.id)} title="插播此冻结节目段落"><Send size={14} />插播</button> : null}</span>; }) ?? <span className="segment queued">节目单不可用</span>}</div>{latestScriptPlay ? <p className="script-play-summary" style={{ margin: 0, color: "var(--muted)", fontSize: 12 }}>话术轮换：最近一次选用{variantLabel(latestScriptPlay.variantIndex)}（共 {latestScriptPlay.variantCount} 个版本）· {commandActionLabel[latestScriptPlay.controlAction as LiveCommand["action"]] ?? latestScriptPlay.controlAction} · {new Date(latestScriptPlay.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</p> : null}<div className="command-list">{commands.slice(0, 5).map((command) => <div className="command" key={command.id}><span>{commandActionLabel[command.action]}</span><small>{command.actorName} · {new Date(command.issuedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}{command.programSegmentId ? ` · ${command.programSegmentId.slice(0, 8)}` : ""}</small><b>{command.result}</b></div>)}</div></div></section>
       </section>
     </main>
     {confirmationAction ? <div className="command-confirm-backdrop" role="presentation"><section className="command-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="command-confirm-title"><span className={`command-confirm-action ${confirmationAction === "END" ? "danger" : ""}`}>{commandActionLabel[confirmationAction]}</span><h2 id="command-confirm-title">确认派发高风险命令</h2><p>{commandConfirmationNotice[confirmationAction]}</p><dl><div><dt>场次</dt><dd>{run.showName}</dd></div><div><dt>当前状态</dt><dd>{stateLabel[run.state]}</dd></div><div><dt>追踪标识</dt><dd>{run.traceId}</dd></div></dl><label className="command-confirm-check"><input type="checkbox" checked={confirmationAcknowledged} onChange={(event) => setConfirmationAcknowledged(event.target.checked)} />我已核对当前场次和状态，确认执行此命令。</label><div className="command-confirm-actions"><button type="button" onClick={cancelCommandConfirmation}>取消</button><button className={confirmationAction === "END" ? "danger" : ""} type="button" disabled={!confirmationAcknowledged || Boolean(pendingAction)} onClick={confirmCommandDispatch}>确认派发{commandActionLabel[confirmationAction]}</button></div></section></div> : null}
