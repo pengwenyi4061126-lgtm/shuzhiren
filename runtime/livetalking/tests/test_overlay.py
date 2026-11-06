@@ -610,6 +610,156 @@ def test_compose_keeps_input_and_label_area(font: str, work: Path) -> None:
            f"(foreground drawn in {drawn_cases}, layers excluded in {conflict_cases}, backgrounds in {background_cases}, captions in {captioned_cases})")
 
 
+CAPTION_SEED = 20240624
+CAPTION_CASES = 300
+CLEAR_FRAMES = overlay.CLEAR_AFTER_MS // overlay.FRAME_MS  # 15 consecutive frames without the id clear the caption
+
+
+def random_cues(rng: random.Random, prefix: str) -> list[overlay.Cue]:
+    """Sorted, non-overlapping cues with unique text, so the text shown identifies the position on the time line."""
+    cues, position = [], rng.choice([0, 0, 0, 20, 100])
+    for index in range(rng.randint(0, 6)):
+        start = position + rng.choice([0, 0, 0, 20, 40, 120])
+        end = start + rng.choice([20, 40, 60, 100, 200, 400])
+        cues.append(overlay.Cue(f"{prefix}-{index}", start, end))
+        position = end
+    return cues
+
+
+def cue_text_at(cues: list[overlay.Cue], elapsed_ms: int) -> str | None:
+    for cue in cues:
+        if cue.start_ms <= elapsed_ms < cue.end_ms:
+            return cue.text
+    return None
+
+
+class CaptionModel:
+    """Reference model of the CaptionTrack.advance contract in design.md, written independently of the implementation."""
+
+    def __init__(self) -> None:
+        self.cues: dict[str, list[overlay.Cue]] = {}
+        self.order: list[str] = []
+        self.elapsed: dict[str, int] = {}
+        self.current: str | None = None
+        self.silence = 0
+
+    def register(self, caption_id: str, cues: list[overlay.Cue]) -> None:
+        assert caption_id not in self.cues
+        self.cues[caption_id], self.elapsed[caption_id] = cues, 0
+        self.order.append(caption_id)
+        if len(self.order) > 16:
+            oldest = self.order.pop(0)
+            del self.cues[oldest], self.elapsed[oldest]
+
+    def advance(self, userdatas: list) -> str | None:
+        for userdata in userdatas:
+            caption_id = userdata.get("shuzhiren_caption_id") if isinstance(userdata, dict) else None
+            if caption_id in self.cues:
+                self.elapsed[caption_id] += 20
+                self.current = cue_text_at(self.cues[caption_id], self.elapsed[caption_id])
+                self.silence = 0
+                if userdata.get("status") == "end":
+                    self.order.remove(caption_id)
+                    del self.cues[caption_id], self.elapsed[caption_id]
+            else:
+                self.silence += 20
+                if self.silence >= 300:
+                    self.current = None
+        return self.current
+
+
+def test_caption_track_follows_only_its_audio() -> None:
+    """Feature: live-commerce-p1-features, Property 24: 字幕只随对应音频推进
+
+    Validates: Requirements 6.12
+    """
+    seed = int(os.environ.get("OVERLAY_PROPERTY_SEED", CAPTION_SEED))
+    rng = random.Random(seed)
+    own_frames = silent_frames = cleared_cases = ended_ids = evicted_ids = shown_frames = 0
+    for case in range(CAPTION_CASES):
+        context = f"seed={seed} case={case}"
+        try:
+            # (1) Random event point sequences (with and without ids, with `end`, with registration and eviction mid-stream)
+            #     agree frame by frame with the reference model.
+            track, model = overlay.CaptionTrack(), CaptionModel()
+            known: list[str] = []
+            history: list[str] = []
+            for step in range(rng.randint(5, 120)):
+                if rng.random() < (0.5 if step == 0 else 0.06) or (case % 10 == 0 and len(known) < 20 and step < 20):
+                    caption_id = f"c{case}-{len(known)}"
+                    cues = random_cues(rng, caption_id)
+                    track.register(caption_id, cues)
+                    model.register(caption_id, cues)
+                    known.append(caption_id)
+                    assert track.registered_ids() == model.order, "registration order or eviction differs from first-in-first-out with 16 ids"
+                batch = []
+                for _ in range(rng.choice([0, 1, 2, 2, 2, 3])):
+                    kind = rng.random()
+                    if kind < 0.12:
+                        batch.append(rng.choice([None, {}, "audio", 3, {"status": "end"}, {"shuzhiren_caption_id": None}, {"shuzhiren_caption_id": 7}]))
+                    elif kind < 0.2:
+                        batch.append({"shuzhiren_caption_id": f"unregistered-{rng.randint(0, 3)}", **({"status": "end"} if rng.random() < 0.3 else {})})
+                    elif known and kind < 0.9:
+                        batch.append({"shuzhiren_caption_id": rng.choice(known[-18:]), **({"status": "end"} if rng.random() < 0.04 else {})})
+                    elif known:
+                        batch.append({"shuzhiren_caption_id": rng.choice(known), "status": rng.choice(["start", "running", "end"])})
+                    else:
+                        batch.append({})
+                before = dict(model.elapsed)
+                expected = model.advance(batch)
+                actual = track.advance(batch)
+                assert actual == expected, f"step {step}: shown {actual!r}, model expects {expected!r}, batch {batch}"
+                assert track.registered_ids() == model.order, f"step {step}: registered ids differ after {batch}"
+                # Only own-ID frames moved a time line, by exactly 20 ms each.
+                for caption_id, elapsed in before.items():
+                    own = sum(1 for item in batch if isinstance(item, dict) and item.get("shuzhiren_caption_id") == caption_id)
+                    assert model.elapsed.get(caption_id, elapsed + 20 * own) == elapsed + 20 * own
+                for item in batch:
+                    registered = isinstance(item, dict) and item.get("shuzhiren_caption_id") in before
+                    own_frames += registered
+                    silent_frames += not registered
+                shown_frames += actual is not None
+                ended_ids += sum(1 for item in batch if isinstance(item, dict) and item.get("status") == "end" and item.get("shuzhiren_caption_id") in before)
+            evicted_ids += max(0, len(known) - 16)
+
+            # (2) Frames without a registered id between two frames of an id never change the position shown afterwards;
+            #     they can only clear the caption, after 300 ms in a row.
+            cues = random_cues(rng, "g") or [overlay.Cue("g-0", 0, 400)]
+            ids = [f"g{case}-{index}" for index in range(rng.randint(1, 3))]
+            plain, gapped = overlay.CaptionTrack(), overlay.CaptionTrack()
+            for caption_id in ids:
+                plain.register(caption_id, cues)
+                gapped.register(caption_id, cues)
+            live = list(ids)
+            for _ in range(rng.randint(2, 40)):
+                if not live:
+                    break
+                caption_id = rng.choice(live)
+                frame = {"shuzhiren_caption_id": caption_id}
+                if rng.random() < 0.05:
+                    frame["status"] = "end"
+                    live.remove(caption_id)
+                last_shown = gapped.advance([])  # the text on screen before the gap
+                gap = rng.choice([0, 0, 1, 2, 5, CLEAR_FRAMES - 1, CLEAR_FRAMES, CLEAR_FRAMES + 3, rng.randint(0, 60)])
+                for length in range(1, gap + 1):
+                    silent = rng.choice([None, {}, {"shuzhiren_caption_id": f"never-{rng.randint(0, 5)}"}, {"status": "end"}, {"other": 1}])
+                    got = gapped.advance([silent])
+                    silent_frames += 1
+                    expected_gap = last_shown if length < CLEAR_FRAMES else None
+                    assert got == expected_gap, f"after {length} frames without an id the track shows {got!r}, expected {expected_gap!r}"
+                cleared_cases += gap >= CLEAR_FRAMES and last_shown is not None
+                with_gap = gapped.advance([frame])
+                without_gap = plain.advance([frame])
+                own_frames += 1
+                assert with_gap == without_gap, f"gap of {gap} frames moved the caption: {with_gap!r} != {without_gap!r}"
+        except AssertionError as error:
+            raise AssertionError(f"Property 24 failed: {error}; {context}; rerun with OVERLAY_PROPERTY_SEED={seed}") from None
+    assert own_frames > 0 and silent_frames > 0 and cleared_cases > 0 and ended_ids > 0 and evicted_ids > 0 and shown_frames > 0, (
+        f"generator did not cover the property: own {own_frames}, silent {silent_frames}, cleared {cleared_cases}, ended {ended_ids}, evicted {evicted_ids}, shown {shown_frames}")
+    passed(f"Property 24: {CAPTION_CASES} random event point sequences advance a caption only on frames of its own id "
+           f"(own frames {own_frames}, other frames {silent_frames}, cleared after 300 ms in {cleared_cases}, ended ids {ended_ids}, evicted ids {evicted_ids})")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--require-imaging", action="store_true", help="fail instead of skipping when numpy, Pillow or a CJK font is missing")
@@ -617,6 +767,7 @@ def main() -> int:
     required = args.require_imaging or os.environ.get("AIGC_LABEL_REQUIRE_IMAGING") == "true"
     test_parse_scene()
     test_caption_track()
+    test_caption_track_follows_only_its_audio()
     test_parse_caption_and_register()
     test_set_scene_keeps_old_scene_on_failure()
     test_layout()
