@@ -265,3 +265,103 @@ test("Property 15: every finding maps back to the original text, is ordered, and
   assert.ok(totalFindings >= 100, `the generators produced only ${totalFindings} findings`);
   assert.ok(wholeTextFindings < totalFindings, "some findings must map to a narrower range than the whole text");
 });
+
+// Feature: live-commerce-p1-features, Property 16: 拦截词不会漏拦
+// Validates: Requirements 5.8, 5.9, 5.13
+// A Block_Term is hidden inside random text in an obfuscated form (case changes, full-width letters, inserted
+// whitespace and zero-width characters). Whenever normalizePolicyText(text) contains the term's normalized form,
+// scanProhibitedTerms must return a finding for it and guardBroadcastText must refuse to broadcast the text and say why.
+const property16Categories = ["extreme", "medical", "false_claim", "offsite_trade", "custom"];
+const property16Separators = ["", "", "", " ", "  ", "\t", "\n", "\u3000", "\u200B", "\u200C", "\u200D", "\uFEFF", " \u200B "];
+const builtinBlockTerms = BUILTIN_LEXICON.filter((entry) => entry.severity === "block").map((entry) => entry.term);
+const property16Term = fc.oneof(
+  { weight: 3, arbitrary: fc.constantFrom(...builtinBlockTerms, "vx", "加微信", "ABC", "Ab1") },
+  { weight: 2, arbitrary: fc.array(property15Char, { minLength: 1, maxLength: 5 }).map((parts) => parts.join("")) },
+  { weight: 1, arbitrary: fc.string({ minLength: 1, maxLength: 6, unit: "grapheme-ascii" }) }
+);
+const toFullWidth = (char) => {
+  const code = char.codePointAt(0);
+  if (code === 0x20) return "\u3000";
+  return code >= 0x21 && code <= 0x7e ? String.fromCodePoint(code + 0xfee0) : char;
+};
+const obfuscateChar = (char, style) => (style === 1 ? char.toUpperCase() : style === 2 ? toFullWidth(char) : style === 3 ? toFullWidth(char.toUpperCase()) : char);
+const property16Filler = fc.oneof(
+  fc.array(property15Char, { maxLength: 300 }).map((parts) => parts.join("")),
+  fc.string({ maxLength: 100, unit: "binary" }),
+  fc.constantFrom("", "今天", "欢迎来到直播间 ", "。！")
+);
+const property16Case = fc
+  .tuple(
+    fc.array(fc.tuple(property16Term, fc.constantFrom("block", "warn"), fc.constantFrom(...property16Categories)), { minLength: 1, maxLength: 6 }),
+    fc.nat(),
+    fc.array(fc.tuple(fc.integer({ min: 0, max: 3 }), fc.constantFrom(...property16Separators)), { minLength: 60, maxLength: 60 }),
+    property16Filler,
+    property16Filler,
+    fc.boolean()
+  )
+  .map(([rawTerms, pick, noise, before, after, withSecondHit]) => {
+    const lexicon = rawTerms.map(([term, severity, category], index) => ({ id: `t${index}`, term, normalized: normalizePolicyText(term), category, severity: index === pick % rawTerms.length ? "block" : severity, suggestions: [] })).filter((entry) => entry.normalized !== "");
+    if (lexicon.length === 0) return { lexicon, text: before + after };
+    const target = lexicon[pick % lexicon.length];
+    let cursor = 0;
+    const hide = (term) => {
+      const chars = [...term];
+      let out = "";
+      chars.forEach((char, index) => {
+        const [style, separator] = noise[cursor % noise.length];
+        cursor += 1;
+        out += obfuscateChar(char, style) + (index < chars.length - 1 ? separator : "");
+      });
+      return out;
+    };
+    const second = withSecondHit ? hide(lexicon[(pick + 1) % lexicon.length].term) : "";
+    const text = `${before}${hide(target.term)}${second}${after}`.slice(0, 2000);
+    return { lexicon, text };
+  });
+
+test("Property 16: a block term whose normalized form occurs in the text is always found and always stops the broadcast", () => {
+  let premiseHeld = 0;
+  fc.assert(
+    fc.property(property16Case, ({ lexicon, text }) => {
+      fc.pre(lexicon.length > 0 && text.length <= 2000);
+      const normalizedText = normalizePolicyText(text);
+      const hits = lexicon.filter((entry) => entry.severity === "block" && normalizedText.includes(entry.normalized));
+      fc.pre(hits.length > 0);
+      premiseHeld += 1;
+      const findings = scanProhibitedTerms(text, lexicon);
+      const result = guardBroadcastText(text, { policyRules: [], lexicon, maxLength: 2000 });
+      for (const entry of hits) {
+        assert.ok(findings.some((finding) => finding.termId === entry.id && finding.severity === "block"), `no finding for ${entry.id} ${JSON.stringify(entry.term)} in ${JSON.stringify(text)}`);
+        assert.ok(result.findings.some((finding) => finding.termId === entry.id), `the guard reports no finding for ${entry.id}`);
+        assert.ok(result.reasons.includes(`lexicon:${entry.category}:${entry.id}`), `reasons lack lexicon:${entry.category}:${entry.id}`);
+      }
+      assert.equal(result.allowed, false);
+    }),
+    { numRuns: 1000, seed: 20250116 }
+  );
+  assert.ok(premiseHeld >= 100, `only ${premiseHeld} generated cases satisfied the premise`);
+});
+
+test("Property 16: the compiled built-in lexicon never lets an obfuscated block term through", () => {
+  const blocks = builtinLexicon.filter((entry) => entry.severity === "block");
+  assert.ok(blocks.length > 0);
+  fc.assert(
+    fc.property(
+      fc.constantFrom(...blocks),
+      fc.array(fc.tuple(fc.integer({ min: 0, max: 3 }), fc.constantFrom(...property16Separators)), { minLength: 30, maxLength: 30 }),
+      property16Filler,
+      property16Filler,
+      (entry, noise, before, after) => {
+        const chars = [...entry.term];
+        const hidden = chars.map((char, index) => obfuscateChar(char, noise[index % noise.length][0]) + (index < chars.length - 1 ? noise[index % noise.length][1] : "")).join("");
+        const text = `${before}${hidden}${after}`.slice(0, 2000);
+        fc.pre(normalizePolicyText(text).includes(entry.normalized));
+        assert.ok(scanProhibitedTerms(text, builtinLexicon).some((finding) => finding.termId === entry.id));
+        const result = guardBroadcastText(text, { policyRules: [], lexicon: builtinLexicon, maxLength: 2000 });
+        assert.equal(result.allowed, false);
+        assert.ok(result.reasons.includes(`lexicon:${entry.category}:${entry.id}`));
+      }
+    ),
+    { numRuns: 300, seed: 20250117 }
+  );
+});
