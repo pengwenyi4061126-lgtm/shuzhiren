@@ -5,12 +5,15 @@ CosyVoice and LiveTalking are one httpx MockTransport; the LiveTalking side reco
 import asyncio
 import hashlib
 import json
+import math
 import pathlib
+import random
 import re
 import sys
 import tempfile
 
 import httpx
+from fractions import Fraction
 from urllib.parse import parse_qs
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "runtime" / "gateway"))
@@ -120,6 +123,98 @@ def check_form_value() -> None:
     print("PASS  the caption field is compact JSON {id, cues} of at most 16 KiB")
 
 
+# Feature: live-commerce-p1-features, Property 23: 字幕时间轴
+# Validates: Requirements 6.10, 6.11
+PROPERTY_SEED = 230610
+PROPERTY_CASES = 400
+CHUNK_ALPHABET = {
+    "cjk": "欢迎来到直播间今天讲解洁面慕斯适合油性肌肤使用大家好谢谢请看这里价格优惠库存有限",
+    "latin": "abcdefghijklmnopqrstuvwxyzABCXYZ",
+    "digit": "0123456789０１２",
+    "space": " \t\n\r\u3000",
+    "punct": "，。！？,.;；:：、…!?\"'“”‘’（）()「」【】《》-—~·",
+    "odd": "\u200b\u200d\ufeff😀★",
+}
+def random_chunk(rng: random.Random) -> str:
+    kind = rng.choice(["empty", "space", "punct", "odd", "normal", "normal", "normal", "long", "long_unbroken", "mixed_script"])
+    def draw(pools: list[str], count: int) -> str:
+        return "".join(rng.choice(rng.choice(pools)) for _ in range(count))
+    if kind == "empty":
+        return ""
+    if kind == "space":
+        return draw([CHUNK_ALPHABET["space"]], rng.randint(1, 6))
+    if kind == "punct":
+        return draw([CHUNK_ALPHABET["punct"], CHUNK_ALPHABET["space"]], rng.randint(1, 8))
+    if kind == "odd":
+        return draw([CHUNK_ALPHABET["odd"], CHUNK_ALPHABET["space"]], rng.randint(1, 5))
+    if kind == "normal":
+        return draw([CHUNK_ALPHABET["cjk"], CHUNK_ALPHABET["cjk"], CHUNK_ALPHABET["punct"], CHUNK_ALPHABET["space"]], rng.randint(1, 40))
+    if kind == "long":
+        return draw([CHUNK_ALPHABET["cjk"], CHUNK_ALPHABET["cjk"], CHUNK_ALPHABET["punct"], CHUNK_ALPHABET["space"], CHUNK_ALPHABET["digit"]], rng.randint(40, 200))
+    if kind == "long_unbroken":
+        return draw([CHUNK_ALPHABET["cjk"], CHUNK_ALPHABET["latin"]], rng.randint(41, 200))
+    return draw(list(CHUNK_ALPHABET.values()), rng.randint(1, 80))
+def expected_total_ms(total_samples: int, sample_rate: int) -> int:
+    # round(1000 * samples / rate), halves rounded up, computed with exact fractions.
+    return math.floor(Fraction(1000 * total_samples, sample_rate) + Fraction(1, 2))
+def assert_caption_timeline(chunk_texts: list[str], chunk_samples: list[int], sample_rate: int, line_max_chars: int) -> list[dict]:
+    cues = captions.build_caption_cues(chunk_texts, chunk_samples, sample_rate, line_max_chars)
+    original = strip_space("".join(chunk_texts))
+    assert len(cues) <= captions.MAX_CUES, len(cues)
+    if not original:
+        assert cues == [], cues
+        return cues
+    assert cues, "text with visible characters must produce at least one cue"
+    for cue in cues:
+        assert set(cue) == {"text", "start_ms", "end_ms"}, cue
+        assert isinstance(cue["start_ms"], int) and isinstance(cue["end_ms"], int), cue
+        assert cue["text"] and cue["text"].strip() == cue["text"], cue
+        assert len(cue["text"]) <= line_max_chars, cue
+        assert 0 <= cue["start_ms"] <= cue["end_ms"], cue
+    # Sorted, touching and therefore not overlapping.
+    for left, right in zip(cues, cues[1:]):
+        assert left["end_ms"] == right["start_ms"], (left, right)
+    assert cues[0]["start_ms"] == 0, cues[0]
+    assert cues[-1]["end_ms"] == expected_total_ms(sum(chunk_samples), sample_rate), (cues[-1], sum(chunk_samples), sample_rate)
+    joined = strip_space("".join(cue["text"] for cue in cues))
+    if len(cues) < captions.MAX_CUES:
+        assert joined == original, (joined, original)
+    else:
+        # At 200 cues the last one may be the merged, shortened tail; the cues before it still match in order.
+        assert original.startswith(joined), (joined, original)
+    return cues
+def check_property_caption_timeline() -> None:
+    rng = random.Random(PROPERTY_SEED)
+    produced = empty = 0
+    for case in range(PROPERTY_CASES):
+        count = rng.randint(0, 8)
+        chunk_texts = [random_chunk(rng) for _ in range(count)]
+        sample_rate = rng.choice([8000, 16000, 22050, 24000, 44100, 48000, rng.randint(1, 96000)])
+        chunk_samples = [rng.choice([0, 0, rng.randint(0, 5), rng.randint(0, sample_rate), rng.randint(0, sample_rate * 20)]) for _ in range(count)]
+        line_max_chars = rng.randint(captions.MIN_LINE_MAX_CHARS, captions.MAX_LINE_MAX_CHARS)
+        try:
+            cues = assert_caption_timeline(chunk_texts, chunk_samples, sample_rate, line_max_chars)
+            # The same input gives the same cues.
+            assert cues == captions.build_caption_cues(chunk_texts, chunk_samples, sample_rate, line_max_chars)
+        except AssertionError:
+            print(f"FAIL  Property 23 seed={PROPERTY_SEED} case={case} sample_rate={sample_rate} line_max_chars={line_max_chars} chunk_texts={chunk_texts!r} chunk_samples={chunk_samples!r}")
+            raise
+        produced += bool(cues)
+        empty += not cues
+    assert produced > PROPERTY_CASES // 2 and empty > 0, (produced, empty)
+    # Many chunks: the 200 cue limit holds and the last cue still ends at the total duration.
+    for case in range(20):
+        count = rng.randint(150, 400)
+        chunk_texts = [f"第{index}句，" + random_chunk(rng) + "。" for index in range(count)]
+        sample_rate = rng.choice([16000, 24000, 48000])
+        chunk_samples = [rng.randint(0, sample_rate * 3) for _ in range(count)]
+        line_max_chars = rng.randint(captions.MIN_LINE_MAX_CHARS, 20)
+        try:
+            assert_caption_timeline(chunk_texts, chunk_samples, sample_rate, line_max_chars)
+        except AssertionError:
+            print(f"FAIL  Property 23 (many chunks) seed={PROPERTY_SEED} case={case} sample_rate={sample_rate} line_max_chars={line_max_chars} chunks={count}")
+            raise
+    print(f"PASS  Property 23: {PROPERTY_CASES} random cue timelines (seed {PROPERTY_SEED}) are sorted, touching, within line_max_chars, complete and end at the total duration")
 class Upstreams:
     def __init__(self) -> None:
         self.humanaudio: list[dict] = []
@@ -239,6 +334,7 @@ async def main() -> None:
     check_unpronounceable_chunks()
     check_cue_limit()
     check_form_value()
+    check_property_caption_timeline()
     await check_line_max_chars_configuration()
     await check_humanaudio_caption_field()
 
