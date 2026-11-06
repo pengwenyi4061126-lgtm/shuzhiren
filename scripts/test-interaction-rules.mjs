@@ -359,6 +359,45 @@ describe("Property 1: AI disclosure rule evaluation", () => {
   });
 });
 
+// Feature: live-commerce-p1-features, Property 2: 口播规则未就绪必然阻止开播
+// With every other input in its passing state, aiDisclosureRuleReady = false makes evaluatePreflight fail with a blocked
+// ai_disclosure_rule check whose detail is exactly the supplied text; aiDisclosureRuleReady = true makes that check passed.
+// **Validates: Requirements 1.1, 1.6**
+const { evaluatePreflight } = await import("../apps/console/lib/control-plane/preflight.ts");
+describe("Property 2: an unready AI disclosure rule always blocks preflight", () => {
+  const passingInputs = {
+    hasApprovedRights: true, rightsDetail: "rights ok", hasApprovedModelReleases: true, modelReleaseDetail: "releases ok",
+    hasApprovedPolicyProfile: true, policyProfileDetail: "policy ok", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "sku ok",
+    hasFallbackProgram: true, channelReady: true, channelDetail: "channel ok", outputReady: true, outputDetail: "output ok",
+    runtimeSessionReady: true, runtimeSessionDetail: "session ok", aiDisclosureEnabled: true, aiDisclosureRuleReady: true,
+    aiDisclosureRuleDetail: "rule ok", aigcLabelReady: true, aigcLabelDetail: "label ok"
+  };
+  const detailArbitrary = fc.oneof(fc.string({ minLength: 1, maxLength: 80 }), fc.string({ unit: "grapheme", minLength: 1, maxLength: 40 })).filter((text) => text.length > 0);
+
+  test("aiDisclosureRuleReady = false => passed is false and the rule check is blocked with the input detail", () => {
+    fc.assert(fc.property(detailArbitrary, (aiDisclosureRuleDetail) => {
+      const result = evaluatePreflight({ ...passingInputs, aiDisclosureRuleReady: false, aiDisclosureRuleDetail });
+      const check = result.checks.find((item) => item.id === "ai_disclosure_rule");
+      assert.equal(result.passed, false);
+      assert.ok(check, "the ai_disclosure_rule check is present");
+      assert.equal(check.status, "blocked");
+      assert.equal(check.detail, aiDisclosureRuleDetail);
+      assert.deepEqual(result.checks.filter((item) => item.status === "blocked").map((item) => item.id), ["ai_disclosure_rule"], "no other check is affected");
+    }), { numRuns: 200, seed: 20250102 });
+  });
+
+  test("aiDisclosureRuleReady = true => the rule check is passed and, with everything else passing, so is the preflight", () => {
+    fc.assert(fc.property(detailArbitrary, (aiDisclosureRuleDetail) => {
+      const result = evaluatePreflight({ ...passingInputs, aiDisclosureRuleReady: true, aiDisclosureRuleDetail });
+      const check = result.checks.find((item) => item.id === "ai_disclosure_rule");
+      assert.ok(check, "the ai_disclosure_rule check is present");
+      assert.equal(check.status, "passed");
+      assert.equal(check.detail, aiDisclosureRuleDetail);
+      assert.equal(result.passed, true);
+    }), { numRuns: 200, seed: 20250103 });
+  });
+});
+
 describe("channel adapter viewer events", () => {
   const target = { tenantId: "t", channelConnectionId: "c", interactionToken: "interaction-token", commerceToken: "commerce-token" };
   test("viewer events are parsed and forwarded on the interaction ingest path", () => {
