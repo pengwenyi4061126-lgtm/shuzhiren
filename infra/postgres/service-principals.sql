@@ -68,3 +68,7 @@ grant select (show_revision_id, policy_profile_id) on show_revision_policy_profi
 grant select (id, rules, evidence_ref, validation_summary, approval_status) on policy_profiles to shuzhiren_runtime_worker;
 grant insert (tenant_id, live_run_id, interaction_id, channel_connection_id, body, body_sha256, policy_action, evidence_snapshot, product_version_id, product_revision, created_by) on channel_reply_drafts to shuzhiren_runtime_worker;
 grant execute on function interaction_rule_product_context(uuid, uuid) to shuzhiren_runtime_worker;
+-- Script variants (085): scheduleDueRun chooses the next script version of a segment (show_revision_segments is
+-- readable above) and records the choice in the append-only rotation ledger, which it also reads to continue
+-- after the last version played. The ledger trigger rejects updates and deletes for every role.
+grant select, insert on live_run_script_plays to shuzhiren_runtime_worker;

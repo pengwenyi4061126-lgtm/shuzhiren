@@ -32,4 +32,13 @@ for (const source of ["show_revision_segments_runtime_script_length", "show_revi
   if (!schema.includes(source)) throw new Error(`Database schema verifier must require runtime script governance: ${source}`);
 }
 
+// 085: extra script versions are a column of the same governed segment row, and every dispatch is ledgered.
+const variantMigration = await read("infra", "postgres", "migrations", "085_segment_script_variants.sql");
+for (const source of ["runtime_script_variants", "script_variants_valid", "show_revision_segments_runtime_script_variants_check", "live_run_script_plays", "tenant_isolation_live_run_script_plays", "enforce_live_run_script_play", "live_run_script_plays_governed", "live run script plays are append-only", "live_run_script_plays_last_idx"]) {
+  if (!variantMigration.includes(source)) throw new Error(`Script variant migration is missing: ${source}`);
+}
+for (const source of ["runtime_script_variants", "show_revision_segments_runtime_script_variants_check", "live_run_script_plays", "live_run_script_plays_governed", "live_run_script_plays_last_idx"]) {
+  if (!schema.includes(source)) throw new Error(`Database schema verifier must require script variant governance: ${source}`);
+}
+
 console.log("PASS  runnable show segments require versioned runtime scripts, review-time database gates, and operator-visible editing");

@@ -59,6 +59,14 @@ requiredIndexes.push("interaction_rules_tenant_default_key_idx", "interaction_ru
 requiredPolicies.push("tenant_isolation_interaction_rules", "tenant_isolation_interaction_rule_firings");
 requiredTriggers.push("interaction_rules_governed_mutation", "interaction_rule_firings_append_only");
 requiredSecurityDefinerFunctions.push("interaction_rule_product_context");
+// 085: script variants on program segments and the append-only script rotation ledger.
+requiredTables.push("live_run_script_plays");
+requiredColumns.show_revision_segments.push("runtime_script_variants");
+requiredColumns.live_run_script_plays = ["live_run_id", "show_revision_id", "segment_id", "play_seq", "variant_index", "variant_count", "script_sha256", "control_action", "outbox_event_id", "skipped_variant_indexes"];
+requiredIndexes.push("live_run_script_plays_last_idx");
+requiredPolicies.push("tenant_isolation_live_run_script_plays");
+requiredTriggers.push("live_run_script_plays_governed");
+requiredConstraints.set("show_revision_segments_runtime_script_variants_check", true);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.

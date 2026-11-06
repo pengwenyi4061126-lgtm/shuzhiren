@@ -31,7 +31,8 @@ for (const source of [
   "grant select (tenant_id, show_revision_id, media_asset_id, kind) on show_revision_media_assets to shuzhiren_runtime_worker",
   "grant select (id, runtime_voice_id, checksum, approval_status, expires_at) on media_assets to shuzhiren_runtime_worker",
   "grant insert on audit_events to shuzhiren_runtime_worker",
-  "grant execute on function runtime_worker_actor(uuid, text) to shuzhiren_runtime_worker"
+  "grant execute on function runtime_worker_actor(uuid, text) to shuzhiren_runtime_worker",
+  "grant select, insert on live_run_script_plays to shuzhiren_runtime_worker"
 ]) if (!grants.includes(source)) throw new Error(`Service principal grants missing: ${source}`);
 // The worker reads the voice binding by column only; a table-wide grant would expose asset evidence.
 for (const forbidden of ["grant select on media_assets", "grant select on show_revision_media_assets"]) if (grants.toLowerCase().includes(forbidden)) throw new Error(`Service principal grants must stay column-scoped: ${forbidden}`);

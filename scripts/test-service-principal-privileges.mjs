@@ -42,6 +42,9 @@ try {
   assert.equal(adapterFunctionPrivilege.rows[0].allowed, false, "channel adapter must not execute the runtime worker actor function");
   await assertSealedAuditChain();
   await assertWorkerVoiceBindingRead();
+  // 085: the worker records script rotation in the append-only ledger; it can read and insert, never change it.
+  for (const [privilege, expected] of [["select", true], ["insert", true], ["update", false], ["delete", false], ["truncate", false]]) await expectTable("shuzhiren_runtime_worker", "live_run_script_plays", privilege, expected);
+  for (const principal of ["shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) for (const privilege of ["select", "insert", "update", "delete"]) await expectTable(principal, "live_run_script_plays", privilege, false);
 
   await expectTable("shuzhiren_backup", "audit_events", "select", true);
   await expectTable("shuzhiren_backup", "audit_events", "update", false);
