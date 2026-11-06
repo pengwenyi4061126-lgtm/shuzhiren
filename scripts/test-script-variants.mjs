@@ -125,3 +125,76 @@ test("Property 7: n consecutive calls from lastVariantIndex null with every vers
     assert.deepEqual(visited, Array.from({ length: count }, (_, index) => index));
   }), { numRuns: 500, seed: 20250107 });
 });
+
+// Module C program storage: programHash compatibility and segment validation.
+const { register } = await import("node:module");
+register("./lib/console-ts-loader.mjs", import.meta.url);
+const { normalizeProgramSegments, programHash } = await import("../apps/console/lib/show-program.ts");
+const { programHash: referenceProgramHash } = await import("./fixtures/program-hash/f0fc02e-program-hash.mjs");
+// Feature: live-commerce-p1-features, Property 8: 无变体节目的哈希不变
+// Validates: Requirements 3.1, 3.5
+test("Property 8: a program without extra versions hashes exactly as it did at f0fc02e", () => {
+  const segmentArbitrary = fc.record({
+    id: fc.string({ maxLength: 20 }),
+    position: fc.integer({ min: 1, max: 20 }),
+    kind: fc.constantFrom("prepared_product", "interactive", "fallback", "human_handoff"),
+    title: fc.string({ maxLength: 60 }),
+    durationSeconds: fc.integer({ min: 0, max: 3600 }),
+    productVersionId: fc.option(fc.uuid(), { nil: undefined }),
+    purpose: fc.string({ maxLength: 120 }),
+    runtimeScript: fc.option(fc.string({ maxLength: 120 }), { nil: undefined }),
+    fallback: fc.boolean()
+  }, { requiredKeys: ["id", "position", "kind", "title", "durationSeconds", "purpose", "fallback"] });
+  // "No extra versions" means the field is absent, undefined, null or an empty list.
+  const noVariants = fc.constantFrom({}, { runtimeScriptVariants: undefined }, { runtimeScriptVariants: null }, { runtimeScriptVariants: [] });
+  const programArbitrary = fc.array(fc.tuple(segmentArbitrary, noVariants).map(([segment, variants]) => ({ ...segment, ...variants })), { maxLength: 20 });
+  fc.assert(fc.property(programArbitrary, (segments) => {
+    assert.equal(programHash(segments), referenceProgramHash(segments));
+  }), { numRuns: 500, seed: 20250108 });
+});
+test("programHash changes once a segment carries an extra version", () => {
+  const segment = { id: "s1", position: 1, kind: "prepared_product", title: "t", durationSeconds: 30, productVersionId: "p", purpose: "x", runtimeScript: "主版本", fallback: false };
+  assert.notEqual(programHash([{ ...segment, runtimeScriptVariants: ["变体一"] }]), referenceProgramHash([segment]));
+  assert.notEqual(programHash([{ ...segment, runtimeScriptVariants: ["变体一"] }]), programHash([{ ...segment, runtimeScriptVariants: ["变体二"] }]));
+});
+const productVersionId = "00000000-0000-4000-8000-0000000000aa";
+const programWith = (variants, overrides = {}) => [
+  { kind: "prepared_product", title: "开场", durationSeconds: 60, purpose: "介绍商品", runtimeScript: "主版本", runtimeScriptVariants: variants, ...overrides },
+  { kind: "fallback", title: "兜底", durationSeconds: 30, purpose: "兜底内容" },
+  { kind: "human_handoff", title: "转人工", durationSeconds: 0, purpose: "人工接管" }
+];
+async function refusal(fn) {
+  try {
+    fn();
+  } catch (error) {
+    assert.ok(error instanceof Response);
+    assert.equal(error.status, 409);
+    return error.text();
+  }
+  assert.fail("expected a 409 Response");
+}
+test("normalizeProgramSegments keeps 0-4 valid extra versions and hashes like the reference when none", async () => {
+  assert.equal(normalizeProgramSegments(programWith([]), productVersionId)[0].runtimeScriptVariants, undefined);
+  assert.equal(normalizeProgramSegments(programWith(undefined), productVersionId)[0].runtimeScriptVariants, undefined);
+  assert.deepEqual(normalizeProgramSegments(programWith(["a", "b", "c", "d"]), productVersionId)[0].runtimeScriptVariants, ["a", "b", "c", "d"]);
+  assert.deepEqual(normalizeProgramSegments(programWith(["  x  ", "x".repeat(800)]), productVersionId)[0].runtimeScriptVariants, ["x", "x".repeat(800)]);
+  const plain = normalizeProgramSegments(programWith([]), productVersionId);
+  assert.equal(programHash(plain), referenceProgramHash(plain));
+});
+test("normalizeProgramSegments refuses invalid extra versions with 409", async () => {
+  assert.match(await refusal(() => normalizeProgramSegments(programWith(["a", "b", "c", "d", "e"]), productVersionId)), /at most 4/);
+  assert.match(await refusal(() => normalizeProgramSegments(programWith(["a", "a"]), productVersionId)), /duplicates/);
+  assert.match(await refusal(() => normalizeProgramSegments(programWith(["主版本"]), productVersionId)), /differ from the primary/);
+  assert.match(await refusal(() => normalizeProgramSegments(programWith(["  主版本 "]), productVersionId)), /differ from the primary/);
+  assert.match(await refusal(() => normalizeProgramSegments(programWith(["x".repeat(801)]), productVersionId)), /1-800/);
+  assert.match(await refusal(() => normalizeProgramSegments(programWith(["   "]), productVersionId)), /1-800|blank/);
+  assert.match(await refusal(() => normalizeProgramSegments(programWith("a"), productVersionId)), /array/);
+});
+test("normalizeProgramSegments refuses extra versions on non-runnable segments", async () => {
+  const withFallbackVariants = programWith([]);
+  withFallbackVariants[1].runtimeScriptVariants = ["变体一"];
+  assert.match(await refusal(() => normalizeProgramSegments(withFallbackVariants, productVersionId)), /non-blank primary runtime script|cannot carry script variants/);
+  const withHandoffVariants = programWith([]);
+  withHandoffVariants[2].runtimeScriptVariants = ["变体一"];
+  assert.match(await refusal(() => normalizeProgramSegments(withHandoffVariants, productVersionId)), /non-blank primary runtime script|cannot carry script variants/);
+});
