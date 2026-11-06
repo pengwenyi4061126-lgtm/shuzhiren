@@ -122,6 +122,10 @@ jobs:
       - run: npm run deploy:check:test
         env:
           AIGC_LABEL_REQUIRE_IMAGING: "true"
+      # test_overlay.py shares the imaging dependencies and the CJK font installed above.
+      - run: npm run runtime:overlay:test
+        env:
+          AIGC_LABEL_REQUIRE_IMAGING: "true"
       - run: npm run deploy:manifest:test
       - run: npm run deploy:images:test
       - run: npm run runtime:images:licenses:test
