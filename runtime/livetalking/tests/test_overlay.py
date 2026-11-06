@@ -12,6 +12,7 @@ build context.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -760,6 +761,202 @@ def test_caption_track_follows_only_its_audio() -> None:
            f"(own frames {own_frames}, other frames {silent_frames}, cleared after 300 ms in {cleared_cases}, ended ids {ended_ids}, evicted ids {evicted_ids})")
 
 
+LABEL_LAST_SEED = 20240625
+LABEL_LAST_CASES = 300
+REPO_ROOT = MODULE_DIR.parent.parent
+PATCH_DIR = REPO_ROOT / "runtime" / "patches"
+VENDOR_BASE_AVATAR = REPO_ROOT / "vendor" / "LiveTalking" / "avatars" / "base_avatar.py"
+BASE_AVATAR_PATH = "avatars/base_avatar.py"
+
+
+def patched_base_avatar(required: bool) -> str | None:
+    """base_avatar.py of the locked LiveTalking commit with every patch of livetalking.series applied (git apply, as the
+    LiveTalking Dockerfile does), or None (SKIP) when the vendor checkout or git is missing."""
+    import shutil
+    import subprocess
+
+    if not VENDOR_BASE_AVATAR.is_file():
+        skipped("vendor/LiveTalking is not checked out; the patched process_frames was not parsed", required)
+        return None
+    if shutil.which("git") is None:
+        skipped("git is not installed; the patched process_frames was not parsed", required)
+        return None
+    series = [line.strip() for line in (PATCH_DIR / "livetalking.series").read_text(encoding="utf-8").splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    assert series and series[-1] == "livetalking-overlay.patch", f"livetalking-overlay.patch must be the last patch of the series, got {series}"
+    with tempfile.TemporaryDirectory(prefix="base-avatar-") as directory:
+        target = Path(directory) / BASE_AVATAR_PATH
+        target.parent.mkdir(parents=True)
+        # A Windows checkout may have CRLF line endings, the patches and the Linux image use LF.
+        target.write_bytes(VENDOR_BASE_AVATAR.read_bytes().replace(b"\r\n", b"\n"))
+        for name in series:
+            patch = PATCH_DIR / name
+            if f"diff --git a/{BASE_AVATAR_PATH} " not in patch.read_text(encoding="utf-8"):
+                continue
+            result = subprocess.run(["git", "apply", f"--include={BASE_AVATAR_PATH}", str(patch)], cwd=directory, capture_output=True, text=True, timeout=60)
+            assert result.returncode == 0, f"git apply {name} to {BASE_AVATAR_PATH} failed: {result.stderr.strip()}"
+        return target.read_text(encoding="utf-8")
+
+
+def attribute_name(node) -> str | None:
+    return node.attr if isinstance(node, ast.Attribute) else None
+
+
+def check_process_frames_order(source: str) -> dict:
+    """Property 22 (a): in the patched process_frames the AIGC label is drawn last, by render_output_frame, and the pushed and
+    recorded frame is exactly its return value. Returns counts of what was inspected."""
+    tree = ast.parse(source)
+    classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "BaseAvatar"]
+    assert len(classes) == 1, "BaseAvatar not found in the patched base_avatar.py"
+    functions = [node for node in classes[0].body if isinstance(node, ast.FunctionDef) and node.name == "process_frames"]
+    assert len(functions) == 1, "BaseAvatar.process_frames not found in the patched base_avatar.py"
+    function = functions[0]
+
+    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
+    renders = [call for call in calls if attribute_name(call.func) == "render_output_frame"]
+    assert len(renders) == 1, f"process_frames must call render_output_frame exactly once, found {len(renders)}"
+    render = renders[0]
+    direct = [call for call in calls if attribute_name(call.func) == "apply"]
+    assert not direct, f"process_frames must not call apply directly (line {direct[0].lineno}); the AIGC label is drawn by render_output_frame"
+    assert not any(isinstance(node, ast.Attribute) and node.attr == "aigc_label" and node.lineno != render.lineno and not (render.lineno <= node.lineno <= render.end_lineno) for node in ast.walk(function)), (
+        "process_frames must not use self.aigc_label outside the render_output_frame call")
+
+    # The call is an assignment `frame = render_output_frame(self.overlay, self.aigc_label, frame, ...)` inside a try whose handler drops the frame.
+    assigns = [node for node in ast.walk(function) if isinstance(node, ast.Assign) and node.value is render]
+    assert len(assigns) == 1 and len(assigns[0].targets) == 1 and isinstance(assigns[0].targets[0], ast.Name), "the result of render_output_frame must be assigned to one name"
+    name = assigns[0].targets[0].id
+    assert [ast.unparse(argument) for argument in render.args[:3]] == ["self.overlay", "self.aigc_label", name], f"unexpected render_output_frame arguments {[ast.unparse(a) for a in render.args]}"
+    tries = [node for node in ast.walk(function) if isinstance(node, ast.Try) and any(assigns[0] is child for child in ast.walk(ast.Module(body=node.body, type_ignores=[])))]
+    assert tries, "render_output_frame must run inside a try block"
+    handler = tries[-1].handlers
+    assert handler and all(any(isinstance(child, ast.Continue) for child in ast.walk(ast.Module(body=item.body, type_ignores=[]))) for item in handler), (
+        "a frame whose AIGC label failed must be dropped (continue), not pushed")
+
+    # The frame is not rebound after the call, and push and record receive exactly that name, after the call.
+    later = [node for node in ast.walk(function) if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)) and node is not assigns[0]
+             and node.lineno > render.end_lineno and any(isinstance(target, ast.Name) and target.id == name for target in (node.targets if isinstance(node, ast.Assign) else [node.target]))]
+    assert not later, f"{name} is rebound after render_output_frame (line {later[0].lineno})"
+    outputs = {"push_video_frame": [], "record_video_data": []}
+    for call in calls:
+        method = attribute_name(call.func)
+        if method in outputs:
+            outputs[method].append(call)
+    for method, found in outputs.items():
+        assert found, f"process_frames no longer calls {method}"
+        for call in found:
+            assert call.lineno > render.end_lineno, f"{method} (line {call.lineno}) runs before render_output_frame (line {render.lineno})"
+            assert len(call.args) == 1 and not call.keywords and isinstance(call.args[0], ast.Name) and call.args[0].id == name, (
+                f"{method} must receive only the return value of render_output_frame ({name}), got {[ast.unparse(a) for a in call.args]}")
+    return {"push": len(outputs["push_video_frame"]), "record": len(outputs["record_video_data"])}
+
+
+class ExplodingOverlay:
+    """A picture layer whose compose raises; records the order of the calls."""
+
+    def __init__(self, error: Exception, log: list, record_failure: str) -> None:
+        self.error, self.log, self.mode = error, log, record_failure
+
+    def compose(self, frame, userdatas):
+        self.log.append("compose")
+        raise self.error
+
+    def __getattr__(self, name):
+        if name == "record_failure" and self.mode != "missing":
+            def record_failure(error):
+                self.log.append("record_failure")
+                if self.mode == "raises":
+                    raise RuntimeError("record_failure broke")
+            return record_failure
+        raise AttributeError(name)
+
+
+class RecordingRenderer:
+    """Stand-in AIGC renderer: a pure function of the frame content, counts and remembers its calls."""
+
+    def __init__(self, log: list) -> None:
+        self.log, self.received = log, []
+
+    @staticmethod
+    def expected(frame) -> tuple:
+        return ("aigc", bytes(frame), len(frame))
+
+    def apply(self, frame):
+        self.log.append("apply")
+        self.received.append(frame)
+        return self.expected(frame)
+
+
+def test_aigc_label_drawn_last(required: bool) -> None:
+    """Feature: live-commerce-p1-features, Property 22: AIGC 角标最后绘制
+
+    Validates: Requirements 6.13, 6.15
+    """
+    # (a) The patched process_frames: render_output_frame runs before push and record, which receive only its return value.
+    source = patched_base_avatar(required)
+    inspected = None
+    if source is not None:
+        try:
+            inspected = check_process_frames_order(source)
+        except AssertionError as error:
+            raise AssertionError(f"Property 22 failed in runtime/patches/livetalking-overlay.patch (patched base_avatar.py): {error}") from None
+    # The checker itself rejects the three ways the order can break (a negative control on text, not on the patch).
+    template = (
+        "class BaseAvatar:\n  def process_frames(self, quit_event):\n    while True:\n      f = self.read()\n      try:\n        f = {render}\n      except Exception:\n        continue\n"
+        "{before}      self.output.push_video_frame({push})\n      self.record_video_data({record})\n")
+    good = dict(render="shuzhiren_overlay.render_output_frame(self.overlay, self.aigc_label, f, [])", before="", push="f", record="f")
+    check_process_frames_order(template.format(**good))
+    for broken in (
+        {**good, "push": "self.read()"},
+        {**good, "record": "g"},
+        {**good, "render": "self.aigc_label.apply(f)"},
+        {**good, "before": "      self.aigc_label.apply(f)\n"},
+    ):
+        try:
+            check_process_frames_order(template.format(**broken))
+        except AssertionError:
+            continue
+        raise AssertionError(f"the process_frames checker accepted a broken order: {broken}")
+    reordered = template.replace("      self.output.push_video_frame({push})\n", "").replace("      try:", "      self.output.push_video_frame(f)\n      try:", 1)
+    try:
+        check_process_frames_order(reordered.format(**good))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("the process_frames checker accepted push_video_frame before render_output_frame")
+
+    # (b) For random frames and a picture layer whose compose raises anything, render_output_frame returns what the renderer makes of
+    #     the unlayered frame, and the renderer is called exactly once, with that very frame, after compose.
+    seed = int(os.environ.get("OVERLAY_PROPERTY_SEED", LABEL_LAST_SEED))
+    rng = random.Random(seed)
+    errors = (RuntimeError, ValueError, TypeError, KeyError, IndexError, ZeroDivisionError, MemoryError, OSError, AttributeError, AssertionError, overlay.OverlayError,
+              type("CustomError", (Exception,), {}), type("QuietError", (Exception,), {"__str__": lambda self: ""}))
+    modes = ("works", "raises", "missing")
+    seen_errors, seen_modes = set(), set()
+    for case in range(LABEL_LAST_CASES):
+        context = f"seed={seed} case={case}"
+        try:
+            frame = bytearray(rng.randrange(256) for _ in range(rng.choice([0, 1, 3, 16, 200])))
+            snapshot = bytes(frame)
+            userdatas = [rng.choice([None, {}, {"shuzhiren_caption_id": f"c{rng.randint(0, 3)}"}, {"status": "end"}, 7]) for _ in range(rng.randint(0, 6))]
+            error_class = rng.choice(errors)
+            error = error_class("boom") if error_class is not overlay.OverlayError else overlay.OverlayError("scene_invalid", "boom")
+            mode = rng.choice(modes)
+            seen_errors.add(error_class.__name__)
+            seen_modes.add(mode)
+            log: list = []
+            renderer = RecordingRenderer(log)
+            result = overlay.render_output_frame(ExplodingOverlay(error, log, mode), renderer, frame, userdatas)
+            assert result == RecordingRenderer.expected(snapshot), "the result is not the renderer's output for the unlayered frame"
+            assert len(renderer.received) == 1 and renderer.received[0] is frame, f"the renderer was called {len(renderer.received)} times, or not with the input frame"
+            assert bytes(frame) == snapshot, "the input frame was modified"
+            assert log[0] == "compose" and log[-1] == "apply" and log.count("apply") == 1, f"call order {log}"
+        except AssertionError as failure:
+            raise AssertionError(f"Property 22 failed: {failure}; {context}; rerun with OVERLAY_PROPERTY_SEED={seed}") from None
+    assert len(seen_errors) >= 8 and seen_modes == set(modes), f"generator did not cover the property: errors {sorted(seen_errors)}, modes {sorted(seen_modes)}"
+    parsed = (f"patched process_frames pushes {inspected['push']} and records {inspected['record']} only the return value of render_output_frame"
+              if inspected else "patched process_frames not parsed (vendor or git unavailable)")
+    passed(f"Property 22: {parsed}; {LABEL_LAST_CASES} random frames with a failing picture layer ({len(seen_errors)} error types) get the AIGC label exactly once on the unlayered frame")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--require-imaging", action="store_true", help="fail instead of skipping when numpy, Pillow or a CJK font is missing")
@@ -772,6 +969,7 @@ def main() -> int:
     test_set_scene_keeps_old_scene_on_failure()
     test_layout()
     test_render_output_frame_fallback()
+    test_aigc_label_drawn_last(required)
     with tempfile.TemporaryDirectory(prefix="overlay-") as directory:
         try:
             import numpy  # noqa: F401
