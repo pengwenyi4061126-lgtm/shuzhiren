@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import fc from "fast-check";
 import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
 import { guardBroadcastText } from "../apps/console/lib/shared/broadcast-guard.mjs";
 import { evaluatePolicy, normalizePolicyText } from "../apps/console/lib/shared/policy-engine.mjs";
@@ -188,4 +189,79 @@ test("guardBroadcastText uses the supplied evidence and policy rules", () => {
   const blockedByBuiltin = guardBroadcastText("今天全 网 最 低价！", guardOptions(builtinLexicon));
   assert.equal(blockedByBuiltin.allowed, false);
   assert.ok(blockedByBuiltin.reasons.includes("lexicon:extreme:builtin:extreme:001"));
+});
+
+// Feature: live-commerce-p1-features, Property 15: 扫描结果映射回原文
+// Validates: Requirements 5.8
+// Texts of up to 2000 UTF-16 units built from whitespace, zero-width characters, full-width letters, combining marks,
+// Hangul jamo (which compose across code points), context-sensitive and expanding characters, and astral code points.
+// A finding that cannot be mapped to a narrower range covers the whole text, which still satisfies every assertion.
+const property15Pool = [
+  "a", "B", "v", "x", "V", "X", " ", " ", "\t", "\n", "\u3000", "\u200B", "\u200C", "\u200D", "\uFEFF", "\u2060",
+  "Ｖ", "ｘ", "Ａ", "ａ", "１", "全", "网", "最", "低", "加", "微", "信", "\u0301", "\u0323", "\u0308",
+  "\u1112", "\u1161", "\u11ab", "İ", "Σ", "ς", "ﬁ", "㈱", "Å", "\u212B", "😀", "𝐀", "。", "！"
+];
+const property15Char = fc.constantFrom(...property15Pool);
+const property15Text = fc.oneof(
+  { weight: 8, arbitrary: fc.array(property15Char, { maxLength: 1000 }).map((parts) => parts.join("")) },
+  { weight: 1, arbitrary: fc.string({ maxLength: 200, unit: "binary" }) }
+);
+const property15RandomTerm = fc.oneof(
+  fc.array(property15Char, { minLength: 1, maxLength: 5 }).map((parts) => parts.join("")),
+  fc.string({ minLength: 1, maxLength: 6, unit: "binary" })
+);
+const property15Case = fc
+  .tuple(
+    property15Text,
+    fc.array(fc.tuple(fc.double({ min: 0, max: 1, noNaN: true }), fc.double({ min: 0, max: 1, noNaN: true })), { maxLength: 4 }),
+    fc.array(property15RandomTerm, { maxLength: 4 }),
+    fc.array(fc.tuple(fc.constantFrom("extreme", "medical", "false_claim", "offsite_trade", "custom"), fc.constantFrom("block", "warn")), { minLength: 8, maxLength: 8 })
+  )
+  .map(([text, picks, randomTerms, flavors]) => {
+    const derived = picks.map(([from, to]) => {
+      const a = Math.floor(Math.min(from, to) * text.length);
+      return text.slice(a, Math.min(Math.max(a, Math.floor(Math.max(from, to) * text.length)), a + 8));
+    });
+    const lexicon = [...derived, ...randomTerms]
+      .map((raw) => ({ raw, normalized: normalizePolicyText(raw) }))
+      .filter((entry) => entry.normalized !== "")
+      .map((entry, index) => ({ id: `t${index}`, term: entry.raw, normalized: entry.normalized, category: flavors[index % flavors.length][0], severity: flavors[index % flavors.length][1], suggestions: [] }));
+    return { text, lexicon };
+  });
+
+test("Property 15: every finding maps back to the original text, is ordered, and inputs are not modified", () => {
+  let totalFindings = 0;
+  let wholeTextFindings = 0;
+  fc.assert(
+    fc.property(property15Case, ({ text, lexicon }) => {
+      assert.ok(text.length <= 2000);
+      const textBefore = text;
+      const lexiconBefore = JSON.stringify(lexicon);
+      for (const entry of lexicon) Object.freeze(entry);
+      Object.freeze(lexicon);
+      const findings = scanProhibitedTerms(text, lexicon);
+      const byId = new Map(lexicon.map((entry) => [entry.id, entry]));
+      for (const finding of findings) {
+        const entry = byId.get(finding.termId);
+        assert.ok(entry, `unknown termId ${finding.termId}`);
+        assert.ok(Number.isInteger(finding.start) && Number.isInteger(finding.end));
+        assert.ok(0 <= finding.start && finding.start < finding.end && finding.end <= text.length, `range [${finding.start}, ${finding.end}) of ${text.length}`);
+        assert.equal(finding.matchedText, text.slice(finding.start, finding.end));
+        assert.ok(normalizePolicyText(finding.matchedText).includes(entry.normalized), `${JSON.stringify(finding.matchedText)} does not contain ${JSON.stringify(entry.normalized)}`);
+        totalFindings += 1;
+        if (finding.start === 0 && finding.end === text.length) wholeTextFindings += 1;
+      }
+      for (let index = 1; index < findings.length; index += 1) {
+        const previous = findings[index - 1];
+        const current = findings[index];
+        const inOrder = previous.start < current.start || (previous.start === current.start && (previous.end > current.end || (previous.end === current.end && previous.termId <= current.termId)));
+        assert.ok(inOrder, `findings ${index - 1} and ${index} are out of order`);
+      }
+      assert.equal(text, textBefore);
+      assert.equal(JSON.stringify(lexicon), lexiconBefore);
+    }),
+    { numRuns: 1000, seed: 20250115 }
+  );
+  assert.ok(totalFindings >= 100, `the generators produced only ${totalFindings} findings`);
+  assert.ok(wholeTextFindings < totalFindings, "some findings must map to a narrower range than the whole text");
 });
