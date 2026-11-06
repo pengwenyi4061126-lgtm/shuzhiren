@@ -225,3 +225,51 @@ describe("scoreKnowledgeEntry properties", () => {
     );
   });
 });
+
+describe("rankKnowledgeHits properties", () => {
+  // Feature: live-commerce-p1-features, Property 12: 排序与输入顺序无关
+  // Validates: Requirements 4.8, 4.9
+  // Contents come from a small pool (so several candidates score the same and the entryId tie-break is
+  // exercised) mixed with free-form text; every candidate gets its own entryId.
+  const fragment = fc.oneof(
+    { weight: 6, arbitrary: fc.constantFrom("发", "货", "控", "油", "面", "膜", "什么时候", "多久能到", "快递", "退货", "你好") },
+    { weight: 2, arbitrary: fc.constantFrom("a", "SPF50", "spf", "Z9", "ＳＰＦ５０", "，", "？", " ", "\u200B") },
+    { weight: 1, arbitrary: fc.string({ unit: "grapheme", maxLength: 3 }) }
+  );
+  const text = fc.array(fragment, { maxLength: 8 }).map((parts) => parts.join(""));
+  const content = fc.record({ question: text, aliasQuestions: fc.array(text, { maxLength: 3 }), keywords: fc.array(text, { maxLength: 5 }), answer: text });
+  const pooled = fc.constantFrom(
+    { question: "什么时候发货", aliasQuestions: [], keywords: ["发货"], answer: "a" },
+    { question: "什么时候发货", aliasQuestions: ["多久能到"], keywords: ["发货"], answer: "b" },
+    { question: "怎么退货", aliasQuestions: [], keywords: ["退货"], answer: "c" },
+    { question: "控油面膜", aliasQuestions: ["面膜控油"], keywords: [], answer: "d" }
+  );
+  const scenario = fc
+    .array(fc.oneof({ weight: 3, arbitrary: pooled }, { weight: 2, arbitrary: content }), { maxLength: 10 })
+    .chain((contents) =>
+      fc.record({
+        candidates: fc.uniqueArray(fc.uuid(), { minLength: contents.length, maxLength: contents.length }).map((ids) => contents.map((one, index) => ({ entryId: ids[index], ...one }))),
+        order: fc.array(fc.nat(), { minLength: contents.length, maxLength: contents.length }),
+        question: fc.oneof({ weight: 3, arbitrary: fc.constantFrom("什么时候发货呀", "怎么退货", "控油面膜", "多久能到", "SPF50能用吗") }, { weight: 2, arbitrary: text }),
+        minScorePermille: fc.integer({ min: 300, max: 1000 }),
+        ambiguityMarginPermille: fc.oneof({ weight: 1, arbitrary: fc.constant(undefined) }, { weight: 2, arbitrary: fc.integer({ min: 0, max: 1000 }) })
+      })
+    );
+
+  test("the hit and the reason do not depend on the order of the candidates", () => {
+    const seen = new Set();
+    fc.assert(
+      fc.property(scenario, ({ candidates, order, question, minScorePermille, ambiguityMarginPermille }) => {
+        const options = ambiguityMarginPermille === undefined ? { minScorePermille } : { minScorePermille, ambiguityMarginPermille };
+        const permuted = candidates.map((candidate, index) => ({ candidate, index })).sort((a, b) => order[a.index] - order[b.index] || a.index - b.index).map(({ candidate }) => candidate);
+        const expected = rankKnowledgeHits(question, candidates, options);
+        seen.add(expected.reason);
+        assert.deepEqual(rankKnowledgeHits(question, permuted, options), expected);
+        assert.deepEqual(rankKnowledgeHits(question, [...candidates].reverse(), options), expected);
+      }),
+      { seed: 10501, numRuns: 500 }
+    );
+    // The generator must reach every outcome, otherwise the property would pass vacuously.
+    for (const reason of ["matched", "below_threshold", "ambiguous", "no_candidates"]) assert.ok(seen.has(reason), `no generated case ended in ${reason}`);
+  });
+});
