@@ -71,3 +71,38 @@ test("Property 5: with every version allowed, a multi-version segment never repe
     assert.deepEqual(choice.skipped, []);
   }), { numRuns: 500, seed: 20250105 });
 });
+
+// Feature: live-commerce-p1-features, Property 6: 只选被允许的版本
+// Validates: Requirements 3.6, 3.8
+test("Property 6: only allowed versions are chosen, skipped lists the refused ones before it, null only when none is allowed", () => {
+  const inputArbitrary = fc.integer({ min: 1, max: 5 }).chain((count) => fc.record({
+    versions: fc.array(fc.string({ maxLength: 40 }), { minLength: count, maxLength: count }),
+    lastVariantIndex: fc.option(fc.integer({ min: 0, max: count - 1 }), { nil: null }),
+    allowedFlags: fc.array(fc.boolean(), { minLength: count, maxLength: count })
+  }));
+  fc.assert(fc.property(inputArbitrary, ({ versions, lastVariantIndex, allowedFlags }) => {
+    const count = versions.length;
+    const allowedIndexes = new Set(allowedFlags.flatMap((flag, index) => (flag ? [index] : [])));
+    const choice = chooseScriptVariant({
+      scripts: versions,
+      lastVariantIndex,
+      isAllowed: (script, index) => {
+        assert.equal(script, versions[index]);
+        return allowedIndexes.has(index);
+      }
+    });
+    if (allowedIndexes.size === 0) {
+      assert.equal(choice, null);
+      return;
+    }
+    assert.notEqual(choice, null);
+    assert.ok(allowedIndexes.has(choice.variantIndex));
+    // The visiting order starts after the last version (or at 0) and wraps around.
+    const start = lastVariantIndex === null ? 0 : (lastVariantIndex + 1) % count;
+    const order = Array.from({ length: count }, (_, offset) => (start + offset) % count);
+    const chosenAt = order.indexOf(choice.variantIndex);
+    assert.deepEqual(choice.skipped, order.slice(0, chosenAt));
+    assert.ok(choice.skipped.every((index) => !allowedIndexes.has(index)));
+    assert.ok(order.slice(0, chosenAt).every((index) => !allowedIndexes.has(index)));
+  }), { numRuns: 500, seed: 20250106 });
+});
