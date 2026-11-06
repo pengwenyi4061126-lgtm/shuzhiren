@@ -106,3 +106,22 @@ test("Property 6: only allowed versions are chosen, skipped lists the refused on
     assert.ok(order.slice(0, chosenAt).every((index) => !allowedIndexes.has(index)));
   }), { numRuns: 500, seed: 20250106 });
 });
+
+// Feature: live-commerce-p1-features, Property 7: 轮询顺序
+// Validates: Requirements 3.6
+test("Property 7: n consecutive calls from lastVariantIndex null with every version allowed yield 0, 1, ..., n-1", () => {
+  const versionsArbitrary = fc.array(fc.string({ maxLength: 40 }), { minLength: 1, maxLength: 5 });
+  fc.assert(fc.property(versionsArbitrary, (versions) => {
+    const count = versions.length;
+    const visited = [];
+    let lastVariantIndex = null;
+    for (let call = 0; call < count; call += 1) {
+      const choice = chooseScriptVariant({ scripts: versions, lastVariantIndex, isAllowed: () => true });
+      assert.notEqual(choice, null);
+      assert.deepEqual(choice.skipped, []);
+      visited.push(choice.variantIndex);
+      lastVariantIndex = choice.variantIndex;
+    }
+    assert.deepEqual(visited, Array.from({ length: count }, (_, index) => index));
+  }), { numRuns: 500, seed: 20250107 });
+});
