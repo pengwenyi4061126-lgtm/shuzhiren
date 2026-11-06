@@ -25,6 +25,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from audio import pcm_s16le_to_wav
+from captions import build_caption_cues, caption_form_value, caption_id_for
 
 logger = logging.getLogger(__name__)
 # One JSON object per line for uncertain commands and operator resolutions. uvicorn's default logging
@@ -62,6 +63,8 @@ DEFAULT_COSYVOICE_SFT_SPEAKER_MAP = {"preset-zh-female": "中文女", "preset-zh
 COSYVOICE_SFT_SPEAKER_MAP_MAX_ENTRIES = 256
 COSYVOICE_SFT_SPEAKER_MAX_CHARS = 64
 COSYVOICE_CHUNK_MAX_CHARS = int(os.environ.get("COSYVOICE_CHUNK_MAX_CHARS", "120"))
+# Longest caption line sent to LiveTalking with the speech audio (shuzhiren_caption cues).
+CAPTION_LINE_MAX_CHARS = int(os.environ.get("CAPTION_LINE_MAX_CHARS", "18"))
 # Total upstream budget of one command, counted from its journal reservation.
 RUNTIME_COMMAND_DEADLINE_SECONDS = int(os.environ.get("RUNTIME_COMMAND_DEADLINE_SECONDS", "15"))
 MEDIA_COMMAND_CACHE_TTL_SECONDS = float(os.environ.get("MEDIA_COMMAND_CACHE_TTL_SECONDS", "3600"))
@@ -226,6 +229,9 @@ class SynthesisResult:
     pcm: bytes
     chunks: int
     synth_ms: int
+    # The text and the PCM sample count of every synthesized chunk, in order; they time the captions.
+    chunk_texts: tuple[str, ...] = ()
+    chunk_samples: tuple[int, ...] = ()
 
 PROGRAM_AUDIOTYPE = int(os.environ.get("PROGRAM_AUDIOTYPE", "0"))
 FALLBACK_AUDIOTYPE = int(os.environ.get("FALLBACK_AUDIOTYPE", "1"))
@@ -569,6 +575,7 @@ def validate_runtime_configuration() -> None:
     # Checked in both model kinds, so a broken value cannot wait for a later switch to sft.
     parse_sft_speaker_map(COSYVOICE_SFT_SPEAKER_MAP)
     validate_integer_range("COSYVOICE_CHUNK_MAX_CHARS", COSYVOICE_CHUNK_MAX_CHARS, 20, 800)
+    validate_integer_range("CAPTION_LINE_MAX_CHARS", CAPTION_LINE_MAX_CHARS, 8, 40)
     validate_integer_range("RUNTIME_COMMAND_DEADLINE_SECONDS", RUNTIME_COMMAND_DEADLINE_SECONDS, 1, 59)
     validate_number_range("RUNTIME_REQUEST_TIMEOUT_SECONDS", REQUEST_TIMEOUT_SECONDS, 0.1, 120)
     validate_number_range("MEDIA_COMMAND_CACHE_TTL_SECONDS", MEDIA_COMMAND_CACHE_TTL_SECONDS, 60, 604_800)
@@ -1155,6 +1162,7 @@ async def cosyvoice_synthesize(text: str, voice: VoiceSpec, deadline: float) -> 
     chunks = split_script(text, COSYVOICE_CHUNK_MAX_CHARS)
     max_bytes = COSYVOICE_SAMPLE_RATE * 2 * COSYVOICE_MAX_AUDIO_SECONDS
     pcm = bytearray()
+    chunk_samples: list[int] = []
     for index, chunk in enumerate(chunks):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -1165,11 +1173,31 @@ async def cosyvoice_synthesize(text: str, voice: VoiceSpec, deadline: float) -> 
         except asyncio.TimeoutError as error:
             raise cosyvoice_failure(504, "CosyVoice synthesis exceeded the command deadline", "cosyvoice_deadline_exceeded", index) from error
         pcm.extend(audio)
+        chunk_samples.append(len(audio) // 2)
         logger.info("cosyvoice_chunk index=%d bytes=%d ms=%d", index, len(audio), int((time.monotonic() - chunk_started) * 1000))
-    return SynthesisResult(bytes(pcm), len(chunks), int((time.monotonic() - started) * 1000))
+    return SynthesisResult(bytes(pcm), len(chunks), int((time.monotonic() - started) * 1000), tuple(chunks), tuple(chunk_samples))
 
-async def livetalking_audio(session_id: str, audio: bytes) -> None:
-    await livetalking_command_post("/humanaudio", "LiveTalking audio request failed", "LiveTalking rejected audio request", data={"sessionid": session_id}, files={"file": ("speech.wav", audio, "audio/wav")})
+def command_caption(command_id: str, synthesis: SynthesisResult) -> str | None:
+    """The shuzhiren_caption form value for a synthesized command, or None. A caption problem never stops the audio."""
+    if not synthesis.chunk_texts:
+        return None
+    try:
+        cues = build_caption_cues(list(synthesis.chunk_texts), list(synthesis.chunk_samples), COSYVOICE_SAMPLE_RATE, CAPTION_LINE_MAX_CHARS)
+        return caption_form_value(caption_id_for(command_id), cues)
+    except Exception as error:
+        logger.warning("Caption cues could not be built for command %s: %s", command_id, type(error).__name__)
+        return None
+
+async def livetalking_audio(session_id: str, audio: bytes, caption: str | None = None) -> None:
+    data = {"sessionid": session_id}
+    if caption:
+        # Unpatched LiveTalking ignores this field (it reads only sessionid and file).
+        data["shuzhiren_caption"] = caption
+    await livetalking_command_post("/humanaudio", "LiveTalking audio request failed", "LiveTalking rejected audio request", data=data, files={"file": ("speech.wav", audio, "audio/wav")})
+
+async def play_audio(session_id: str, audio: bytes, caption: str | None) -> None:
+    # Without a caption the call keeps its two-argument form.
+    await (livetalking_audio(session_id, audio, caption) if caption else livetalking_audio(session_id, audio))
 
 async def livetalking_step(execution: CommandExecution, step: str, call) -> None:
     """Run one LiveTalking call of a reserved command within the command's total deadline."""
@@ -1372,9 +1400,10 @@ async def speak(request: SpeakRequest, authorization: str | None = Header(defaul
 
         async def execute() -> dict:
             synthesis, audio = await synthesize_reserved_command(request.text, voice, execution.deadline)
+            caption = command_caption(request.command_id, synthesis)
             if request.interrupt:
                 await livetalking_step(execution, "interrupt_talk", lambda: livetalking_post("/interrupt_talk", {"sessionid": request.session_id}))
-            await livetalking_step(execution, "play_speech_audio", lambda: livetalking_audio(request.session_id, audio))
+            await livetalking_step(execution, "play_speech_audio", lambda: play_audio(request.session_id, audio, caption))
             log_command_timing(request.command_id, "speech", synthesis, reserved_at)
             return {"accepted": True, "provider": "cosyvoice_to_livetalking", "requested_provider": request.provider, "mode": "audio", "command_id": request.command_id, "synthesis": synthesis_summary(synthesis)}
 
@@ -1409,11 +1438,13 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
         async def execute() -> dict:
             synthesis: SynthesisResult | None = None
             audio = b""
+            caption: str | None = None
             if request.program_script and voice is not None:
                 synthesis, audio = await synthesize_reserved_command(request.program_script, voice, execution.deadline)
+                caption = command_caption(request.command_id, synthesis)
 
             async def play_program() -> None:
-                await livetalking_step(execution, "play_frozen_program_script", lambda: livetalking_audio(request.session_id, audio))
+                await livetalking_step(execution, "play_frozen_program_script", lambda: play_audio(request.session_id, audio, caption))
 
             if request.action == "stop_program":
                 await step("interrupt_talk", "/interrupt_talk", session)

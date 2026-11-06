@@ -181,6 +181,7 @@ jobs:
       - run: python3 scripts/test-runtime-gateway-aigc-label.py
       - run: python3 scripts/test-runtime-gateway-state-backup.py
       - run: python3 scripts/test-runtime-gateway-state-restore-drill.py
+      - run: python3 scripts/test-runtime-gateway-captions.py
 
   postgres-integration:
     runs-on: ubuntu-24.04

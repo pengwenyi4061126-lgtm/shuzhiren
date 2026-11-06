@@ -111,7 +111,7 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "node --check apps/output-probe/index.mjs", kind: "node-check", entry: "apps/output-probe/index.mjs", label: "static" },
   { id: "node --check apps/channel-adapter/index.mjs", kind: "node-check", entry: "apps/channel-adapter/index.mjs", label: "static" },
   { id: "node --check apps/alert-notifier/index.mjs", kind: "node-check", entry: "apps/alert-notifier/index.mjs", label: "static" },
-  { id: "py_compile", kind: "py-compile", files: ["runtime/gateway/app.py", "runtime/gateway/audio.py", "scripts/test-runtime-gateway-config.py"], label: "static", gatewayOnly: true },
+  { id: "py_compile", kind: "py-compile", files: ["runtime/gateway/app.py", "runtime/gateway/audio.py", "scripts/test-runtime-gateway-config.py", "runtime/gateway/captions.py"], label: "static", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-config.py", kind: "python", file: "scripts/test-runtime-gateway-config.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-errors.py", kind: "python", file: "scripts/test-runtime-gateway-errors.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-audio.py", kind: "python", file: "scripts/test-runtime-gateway-audio.py", label: "behavioral", gatewayOnly: true },
@@ -120,7 +120,8 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "scripts/test-runtime-gateway-aigc-label.py", kind: "python", file: "scripts/test-runtime-gateway-aigc-label.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-state-backup.py", kind: "python", file: "scripts/test-runtime-gateway-state-backup.py", label: "behavioral", gatewayOnly: true },
   { id: "scripts/test-runtime-gateway-state-restore-drill.py", kind: "python", file: "scripts/test-runtime-gateway-state-restore-drill.py", label: "behavioral", gatewayOnly: true },
-  { id: "runtime/livetalking/tests/test_overlay.py", kind: "python", file: "runtime/livetalking/tests/test_overlay.py", label: "behavioral", gatewayOnly: true }
+  { id: "runtime/livetalking/tests/test_overlay.py", kind: "python", file: "runtime/livetalking/tests/test_overlay.py", label: "behavioral", gatewayOnly: true },
+  { id: "scripts/test-runtime-gateway-captions.py", kind: "python", file: "scripts/test-runtime-gateway-captions.py", label: "behavioral", gatewayOnly: true }
 ].map(freezeCheck));
 
 export function localChecks({ withGateway = false } = {}) {
