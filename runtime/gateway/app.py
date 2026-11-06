@@ -123,12 +123,18 @@ class MediaRequest(BaseModel):
     script_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     runtime_voice_id: str | None = None
     voice_checksum: str | None = None
+    # The frozen picture-layer scene of the show; only start_program may carry it. Both fields are checked
+    # in validate_media_request so every bad value is a 400 before the command id is reserved, not a 422.
+    overlay_scene_json: str | None = None
+    overlay_scene_sha256: str | None = None
 
+OVERLAY_SCENE_JSON_MAX_CHARS = 8192
+OVERLAY_SCENE_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 VOICE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 VOICE_CHECKSUM_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 # The Gateway only drives LiveTalking avatar state; speech audio goes through /humanaudio.
 # /human would make LiveTalking synthesize the text with its own TTS plugin (edge-tts).
-LIVETALKING_POST_PATHS = frozenset({"/interrupt_talk", "/set_audiotype", "/record"})
+LIVETALKING_POST_PATHS = frozenset({"/interrupt_talk", "/set_audiotype", "/record", "/api/admin/overlay/scene"})
 VOICE_PROMPT_WAV_MAX_BYTES = 16 * 1024 * 1024
 VOICE_PROMPT_TEXT_MAX_CHARS = 1000
 COSYVOICE_MAX_AUDIO_SECONDS = 600
@@ -809,6 +815,8 @@ def resolved_response(entry: JournalEntry, resolved_at: float) -> dict:
     identity = entry.identity or {}
     if entry.kind == "media":
         receipt = {"command_id": entry.command_id, "session_id": identity.get("session_id"), "action": identity.get("action"), "program_segment_id": identity.get("program_segment_id"), "accepted_at": iso_timestamp(resolved_at), "evidence": "operator_verified"}
+        if identity.get("overlay_scene_sha256"):
+            receipt["overlay_scene_sha256"] = identity["overlay_scene_sha256"]
         return {"accepted": True, "provider": "livetalking", "command_id": entry.command_id, "session_id": identity.get("session_id"), "action": identity.get("action"), "program_segment_id": identity.get("program_segment_id"), "downstream_actions": list((entry.progress or {}).get("succeeded_steps", [])), "receipt": receipt}
     return {"accepted": True, "provider": "cosyvoice_to_livetalking", "requested_provider": identity.get("provider"), "mode": "audio", "command_id": entry.command_id, "evidence": "operator_verified"}
 
@@ -1199,6 +1207,15 @@ async def play_audio(session_id: str, audio: bytes, caption: str | None) -> None
     # Without a caption the call keeps its two-argument form.
     await (livetalking_audio(session_id, audio, caption) if caption else livetalking_audio(session_id, audio))
 
+async def set_overlay_scene(session_id: str, scene_json: str, scene_sha256: str) -> None:
+    """Install the frozen scene; LiveTalking must echo the same hash or the command fails definitely."""
+    data = await livetalking_post("/api/admin/overlay/scene", {"sessionid": session_id, "scene_json": scene_json, "scene_sha256": scene_sha256})
+    payload = data.get("data")
+    echoed = payload.get("scene_sha256") if isinstance(payload, dict) else None
+    if not isinstance(echoed, str) or not hmac.compare_digest(echoed, scene_sha256):
+        logger.warning("LiveTalking echoed a different overlay scene hash for session %s", session_id)
+        raise LiveTalkingFailure(502, "LiveTalking overlay scene hash does not match", "overlay_scene_hash_mismatch", True)
+
 async def livetalking_step(execution: CommandExecution, step: str, call) -> None:
     """Run one LiveTalking call of a reserved command within the command's total deadline."""
     remaining = execution.remaining()
@@ -1230,12 +1247,27 @@ async def livetalking_aigc_label() -> dict:
     text, position, frames, error = label.get("text"), label.get("position"), label.get("frames_labelled"), label.get("last_error")
     return {"enabled": label.get("enabled") is True, "reported": True, "text": text if isinstance(text, str) else None, "position": position if isinstance(position, str) else None, "frames_labelled": frames if type(frames) is int else None, "last_error": error if isinstance(error, str) else None}
 
+async def livetalking_overlay() -> dict:
+    """Health passthrough of LiveTalking's picture layer state; a failed or unpatched read reports supported false."""
+    unsupported = {"supported": False, "aigc_position": None, "active_sessions": None, "frames_composed": None, "frames_overlay_failed": None, "last_error": "livetalking_unavailable"}
+    try:
+        data = await livetalking_get("/api/admin/overlay")
+    except HTTPException:
+        return unsupported
+    overlay = data.get("data") if isinstance(data.get("data"), dict) else {}
+    if overlay.get("supported") is not True:
+        return unsupported
+    position, error = overlay.get("aigc_position"), overlay.get("last_error")
+    counts = {key: overlay.get(key) if type(overlay.get(key)) is int else None for key in ("active_sessions", "frames_composed", "frames_overlay_failed")}
+    return {"supported": True, "aigc_position": position if isinstance(position, str) else None, **counts, "last_error": error if isinstance(error, str) else None}
+
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
-    livetalking, cosyvoice, aigc_label = await asyncio.gather(
+    livetalking, cosyvoice, aigc_label, overlay = await asyncio.gather(
         service_health(LIVE_TALKING_URL, "/api/admin/sessions", expected_code=0),
         service_health(COSYVOICE_URL, "/openapi.json"),
         livetalking_aigc_label(),
+        livetalking_overlay(),
     )
     command_journal = await asyncio.to_thread(command_journal_status)
     status = "ok" if livetalking["available"] and (not COSYVOICE_REQUIRED or cosyvoice["available"]) and (not RUNTIME_COMMAND_JOURNAL_REQUIRED or command_journal["available"]) else "degraded"
@@ -1244,7 +1276,7 @@ async def healthz() -> JSONResponse:
         content={
             "status": status,
             "dependencies": {
-                "livetalking": {**livetalking, "aigc_label": aigc_label},
+                "livetalking": {**livetalking, "aigc_label": aigc_label, "overlay": overlay},
                 "cosyvoice": {**cosyvoice, "required": COSYVOICE_REQUIRED, "model_kind": COSYVOICE_MODEL_KIND},
                 "command_journal": command_journal,
             },
@@ -1327,7 +1359,33 @@ def validate_speak_request(request: SpeakRequest) -> None:
     if not pronounceable(request.text):
         raise HTTPException(status_code=400, detail="Speech text has nothing to pronounce")
 
+def validate_overlay_scene(request: MediaRequest) -> None:
+    scene_json, scene_sha256 = request.overlay_scene_json, request.overlay_scene_sha256
+    if scene_json is None and scene_sha256 is None:
+        return
+    if request.action != "start_program":
+        raise HTTPException(status_code=400, detail="Only program start may carry an overlay scene")
+    if scene_json is None or scene_sha256 is None:
+        raise HTTPException(status_code=400, detail="Overlay scene and hash must be supplied together")
+    if len(scene_json) > OVERLAY_SCENE_JSON_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="Overlay scene is too long")
+    if not OVERLAY_SCENE_SHA256_PATTERN.fullmatch(scene_sha256):
+        raise HTTPException(status_code=400, detail="Overlay scene hash is invalid")
+    try:
+        digest = hashlib.sha256(scene_json.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=400, detail="Overlay scene is not valid text") from None
+    if not hmac.compare_digest(digest, scene_sha256):
+        raise HTTPException(status_code=400, detail="Overlay scene hash does not match scene")
+    try:
+        scene = json.loads(scene_json)
+    except (ValueError, RecursionError):
+        raise HTTPException(status_code=400, detail="Overlay scene is not valid JSON") from None
+    if not isinstance(scene, dict) or type(scene.get("version")) is not int or scene["version"] != 1:
+        raise HTTPException(status_code=400, detail="Overlay scene must be a version 1 object")
+
 def validate_media_request(request: MediaRequest) -> None:
+    validate_overlay_scene(request)
     if request.action == "insert_program":
         if not request.program_segment_id or not request.program_script or not request.script_sha256:
             raise HTTPException(status_code=400, detail="Program insertion requires segment, script, and script hash")
@@ -1419,6 +1477,9 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
     if request.program_script:
         identity["runtime_voice_id"] = request.runtime_voice_id
         identity["voice_checksum"] = request.voice_checksum
+    if request.overlay_scene_sha256 is not None:
+        # Added only when present, so the identity of a command without a scene is unchanged.
+        identity["overlay_scene_sha256"] = request.overlay_scene_sha256
     lock = await acquire_runtime_command_lock(request.command_id)
     try:
         cached = await cached_runtime_command(request.command_id, "media", identity)
@@ -1450,6 +1511,9 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
                 await step("interrupt_talk", "/interrupt_talk", session)
                 await step("end_record", "/record", {**session, "type": "end_record"})
             elif request.action == "start_program":
+                if request.overlay_scene_json is not None and request.overlay_scene_sha256 is not None:
+                    # First step: a refused or mismatched scene is a definite failure that changed nothing.
+                    await livetalking_step(execution, "set_overlay_scene", lambda: set_overlay_scene(request.session_id, request.overlay_scene_json, request.overlay_scene_sha256))
                 if synthesis:
                     # Interrupt before /set_audiotype: LiveTalking's flush resets the audiotype to 0.
                     await step("interrupt_talk", "/interrupt_talk", session)
@@ -1468,6 +1532,8 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
                 await step("set_fallback_audiotype" if request.action == "switch_to_fallback" else "set_human_handoff_audiotype", "/set_audiotype", {**session, "audiotype": audiotype})
             accepted_at = datetime.now(timezone.utc).isoformat()
             result = {"accepted": True, "provider": "livetalking", "command_id": request.command_id, "session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "downstream_actions": list(execution.succeeded_steps), "receipt": {"command_id": request.command_id, "session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "accepted_at": accepted_at, "evidence": "livetalking_api_accepted"}}
+            if request.overlay_scene_sha256 is not None:
+                result["receipt"]["overlay_scene_sha256"] = request.overlay_scene_sha256
             if synthesis:
                 log_command_timing(request.command_id, "media", synthesis, reserved_at)
                 result["synthesis"] = synthesis_summary(synthesis)

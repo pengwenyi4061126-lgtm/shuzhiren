@@ -829,6 +829,32 @@ async def main() -> None:
     else:
         raise AssertionError("a governed program transition must require a UUID segment identifier")
 
+    # A frozen overlay scene is part of the command identity: the same id with another scene is an idempotency conflict.
+    def scene_of(version_note: str) -> tuple[str, str]:
+        scene_json = json.dumps({"version": 1, "note": version_note}, separators=(",", ":"))
+        return scene_json, hashlib.sha256(scene_json.encode("utf-8")).hexdigest()
+
+    async def livetalking_post_echoing_scene(path: str, payload: dict) -> dict:
+        calls.append((path, payload))
+        return {"code": 0, "data": {"scene_sha256": payload["scene_sha256"]}} if path == "/api/admin/overlay/scene" else {"code": 0}
+
+    gateway.livetalking_post = livetalking_post_echoing_scene
+    scene_a, scene_b = scene_of("a"), scene_of("b")
+    calls_before_scene = len(calls)
+    with_scene = await gateway.media(gateway.MediaRequest(command_id="command_scene", session_id="session_1", action="start_program", overlay_scene_json=scene_a[0], overlay_scene_sha256=scene_a[1]), authorization)
+    assert with_scene["duplicate"] is False and with_scene["receipt"]["overlay_scene_sha256"] == scene_a[1]
+    assert [path for path, _payload in calls[calls_before_scene:]] == ["/api/admin/overlay/scene", "/set_audiotype", "/record"]
+    calls_after_scene = len(calls)
+    for conflicting in (gateway.MediaRequest(command_id="command_scene", session_id="session_1", action="start_program", overlay_scene_json=scene_b[0], overlay_scene_sha256=scene_b[1]), gateway.MediaRequest(command_id="command_scene", session_id="session_1", action="start_program")):
+        try:
+            await gateway.media(conflicting, authorization)
+        except gateway.HTTPException as error:
+            assert error.status_code == 409 and "different payload" in error.detail, (error.status_code, error.detail)
+        else:
+            raise AssertionError("a completed command id reused with a different or missing scene must be rejected")
+    same_scene = await gateway.media(gateway.MediaRequest(command_id="command_scene", session_id="session_1", action="start_program", overlay_scene_json=scene_a[0], overlay_scene_sha256=scene_a[1]), authorization)
+    assert same_scene["duplicate"] is True and len(calls) == calls_after_scene, "the same scene is a retry and calls nothing"
+    gateway.livetalking_post = livetalking_post
     async def unknown_outcome(path: str, payload: dict) -> dict:
         calls.append((path, payload))
         raise gateway.HTTPException(status_code=502, detail="downstream outcome unknown")
@@ -893,6 +919,11 @@ async def check_event_loop_stays_responsive(authorization: str, calls: list, jou
         return {"enabled": True, "reported": True, "text": None, "position": None, "frames_labelled": None, "last_error": None}
 
     gateway.livetalking_aigc_label = aigc_label
+
+    async def overlay() -> dict:
+        return {"supported": True, "aigc_position": None, "active_sessions": 0, "frames_composed": 0, "frames_overlay_failed": 0, "last_error": None}
+
+    gateway.livetalking_overlay = overlay
 
     ready = threading.Event()
     holder = threading.Thread(target=hold_journal_write_lock, args=(gateway.RUNTIME_COMMAND_JOURNAL_PATH, 1.5, ready))

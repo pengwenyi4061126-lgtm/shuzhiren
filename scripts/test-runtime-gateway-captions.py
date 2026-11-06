@@ -9,6 +9,7 @@ import math
 import pathlib
 import random
 import re
+import sqlite3
 import sys
 import tempfile
 
@@ -329,6 +330,209 @@ async def check_line_max_chars_configuration() -> None:
         gateway.RUNTIME_TOKEN, gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED, gateway.RUNTIME_COMMAND_JOURNAL_PATH, gateway.COSYVOICE_MODEL_KIND, gateway.CAPTION_LINE_MAX_CHARS = saved
     print("PASS  CAPTION_LINE_MAX_CHARS defaults to 18 and startup accepts only 8 to 40")
 
+SCENE_SEGMENT_ID = "10000000-0000-4000-8000-000000000001"
+SCENE_JSON = json.dumps({"version": 1, "background": {"mode": "none"}, "productCard": None, "priceSticker": None}, separators=(",", ":"))
+SCENE_SHA256 = hashlib.sha256(SCENE_JSON.encode("utf-8")).hexdigest()
+
+
+class SceneUpstreams:
+    """LiveTalking stand-in that records every request in order with its JSON body or form."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str, object]] = []
+        self.scene_status = 200
+        self.scene_code = 0
+        self.echo: str | None = SCENE_SHA256
+        self.overlay_status = 200
+        self.overlay_body: object = {"code": 0, "data": {"supported": True, "aigc_position": "bottom_right", "active_sessions": 2, "frames_composed": 120, "frames_overlay_failed": 3, "captions_ignored": 0, "layer_conflicts": [], "last_error": "caption_layer_conflict", "compose_ms_p95": 4}}
+
+    def paths(self) -> list[str]:
+        return [path for _method, path, _body in self.requests]
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.url.host == "cosyvoice":
+            if path == "/openapi.json":
+                return httpx.Response(200, json={})
+            text = parse_form(request)["tts_text"].decode("utf-8")
+            return httpx.Response(200, content=b"\x01\x00" * (12000 * len(text)))
+        body: object = None
+        if request.method == "POST":
+            body = parse_form(request) if path == "/humanaudio" else json.loads(request.content)
+        self.requests.append((request.method, path, body))
+        if path == "/api/admin/overlay/scene":
+            if self.scene_status != 200:
+                return httpx.Response(self.scene_status, json={"detail": "not found"})
+            return httpx.Response(200, json={"code": self.scene_code, "data": {"scene_sha256": self.echo} if self.scene_code == 0 else {}})
+        if path == "/api/admin/overlay":
+            return httpx.Response(self.overlay_status, json=self.overlay_body)
+        if path == "/humanaudio":
+            return httpx.Response(200, json={"code": 0})
+        return httpx.Response(200, json={"code": 0, "data": {"sessions": []}})
+
+
+def journal_state(command_id: str) -> tuple | None:
+    connection = sqlite3.connect(gateway.RUNTIME_COMMAND_JOURNAL_PATH)
+    try:
+        return connection.execute("select state, http_status, error_code, failure_reason from runtime_command_journal where command_id = ?", (command_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return None  # the journal table is created by the first reservation
+    finally:
+        connection.close()
+
+
+def scene_media(command_id: str, *, with_script: bool = False, scene_json: str | None = SCENE_JSON, scene_sha256: str | None = SCENE_SHA256, action: str = "start_program") -> "gateway.MediaRequest":
+    fields: dict = {}
+    if with_script:
+        script = "大家好，欢迎来到直播间。"
+        fields = {"program_segment_id": SCENE_SEGMENT_ID, "program_script": script, "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(), "runtime_voice_id": "speaker_1"}
+    return gateway.MediaRequest(command_id=command_id, session_id="session_1", action=action, overlay_scene_json=scene_json, overlay_scene_sha256=scene_sha256, **fields)
+
+
+def scene_gateway_setup(upstreams: SceneUpstreams) -> tuple[tempfile.TemporaryDirectory, tuple]:
+    journal_dir = tempfile.TemporaryDirectory()
+    saved = (gateway.RUNTIME_TOKEN, gateway.RUNTIME_COMMAND_JOURNAL_PATH, gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED, gateway.COSYVOICE_MODEL_KIND, gateway.COSYVOICE_SAMPLE_RATE)
+    gateway.httpx.AsyncClient = lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(upstreams.handler), **kwargs)
+    gateway.RUNTIME_TOKEN = "test-runtime-token"
+    gateway.RUNTIME_COMMAND_JOURNAL_PATH = str(pathlib.Path(journal_dir.name) / "commands.sqlite3")
+    gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = True
+    gateway.COSYVOICE_MODEL_KIND = "sft"
+    gateway.COSYVOICE_SAMPLE_RATE = SAMPLE_RATE
+    gateway.runtime_command_cache.clear()
+    return journal_dir, saved
+
+
+def scene_gateway_restore(journal_dir: tempfile.TemporaryDirectory, saved: tuple) -> None:
+    gateway.httpx.AsyncClient = RealAsyncClient
+    gateway.RUNTIME_TOKEN, gateway.RUNTIME_COMMAND_JOURNAL_PATH, gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED, gateway.COSYVOICE_MODEL_KIND, gateway.COSYVOICE_SAMPLE_RATE = saved
+    journal_dir.cleanup()
+
+
+async def check_overlay_scene_steps_and_receipt() -> None:
+    upstreams = SceneUpstreams()
+    journal_dir, saved = scene_gateway_setup(upstreams)
+    authorization = "Bearer test-runtime-token"
+    try:
+        # A scene-carrying start_program installs the scene first, then the existing steps follow.
+        result = await gateway.media(scene_media("scene_start_1"), authorization)
+        assert upstreams.paths() == ["/api/admin/overlay/scene", "/set_audiotype", "/record"], upstreams.paths()
+        assert upstreams.requests[0][2] == {"sessionid": "session_1", "scene_json": SCENE_JSON, "scene_sha256": SCENE_SHA256}, upstreams.requests[0]
+        assert result["downstream_actions"] == ["set_overlay_scene", "set_program_audiotype", "start_record"], result["downstream_actions"]
+        assert result["receipt"]["overlay_scene_sha256"] == SCENE_SHA256 and result["duplicate"] is False
+        print("PASS  start_program with a scene sets it first, then audiotype and record, and the receipt echoes the scene hash")
+
+        upstreams.requests.clear()
+        result = await gateway.media(scene_media("scene_start_2", with_script=True), authorization)
+        assert upstreams.paths() == ["/api/admin/overlay/scene", "/interrupt_talk", "/set_audiotype", "/record", "/humanaudio"], upstreams.paths()
+        assert result["downstream_actions"][0] == "set_overlay_scene" and result["receipt"]["overlay_scene_sha256"] == SCENE_SHA256
+        print("PASS  with a program script set_overlay_scene still comes before interrupt, audiotype, record and play")
+
+        # A start_program without a scene keeps its steps and receipt unchanged.
+        upstreams.requests.clear()
+        plain = await gateway.media(scene_media("scene_start_none", scene_json=None, scene_sha256=None), authorization)
+        assert upstreams.paths() == ["/set_audiotype", "/record"] and "overlay_scene_sha256" not in plain["receipt"], (upstreams.paths(), plain["receipt"])
+        print("PASS  start_program without a scene has no set_overlay_scene step and no receipt hash")
+
+        # The same command id is a duplicate for the same scene and an idempotency conflict for another one.
+        upstreams.requests.clear()
+        again = await gateway.media(scene_media("scene_start_1"), authorization)
+        assert again["duplicate"] is True and again["receipt"]["overlay_scene_sha256"] == SCENE_SHA256 and upstreams.requests == []
+        other_json = json.dumps({"version": 1, "background": {"mode": "chroma_key"}}, separators=(",", ":"))
+        try:
+            await gateway.media(scene_media("scene_start_1", scene_json=other_json, scene_sha256=hashlib.sha256(other_json.encode("utf-8")).hexdigest()), authorization)
+        except gateway.HTTPException as error:
+            assert error.status_code == 409, error.status_code
+        else:
+            raise AssertionError("the same command id with a different scene must conflict")
+        assert upstreams.requests == []
+        print("PASS  a retry with the same scene replays and another scene on the same command id conflicts")
+    finally:
+        scene_gateway_restore(journal_dir, saved)
+
+
+async def check_overlay_scene_failures() -> None:
+    upstreams = SceneUpstreams()
+    journal_dir, saved = scene_gateway_setup(upstreams)
+    authorization = "Bearer test-runtime-token"
+    try:
+        cases = [
+            ("scene_echo_mismatch", {"echo": "f" * 64}, "overlay_scene_hash_mismatch"),
+            ("scene_echo_missing", {"echo": None}, "overlay_scene_hash_mismatch"),
+            ("scene_unpatched", {"scene_status": 404}, "livetalking_client_error"),
+            ("scene_refused", {"scene_code": 1}, "livetalking_business_rejected"),
+        ]
+        for command_id, settings, reason in cases:
+            upstreams.scene_status, upstreams.scene_code, upstreams.echo = 200, 0, SCENE_SHA256
+            for key, value in settings.items():
+                setattr(upstreams, key, value)
+            upstreams.requests.clear()
+            try:
+                await gateway.media(scene_media(command_id, with_script=True), authorization)
+            except gateway.CommandError as error:
+                assert error.status_code == 502 and error.code == "command_failed_definite" and error.fields.get("reason") == reason and error.fields.get("failed_step") == "set_overlay_scene", (error.status_code, error.code, error.fields)
+            else:
+                raise AssertionError(f"{command_id} must fail")
+            assert upstreams.paths() == ["/api/admin/overlay/scene"], f"{command_id}: no other LiveTalking call may follow a failed scene: {upstreams.paths()}"
+            assert journal_state(command_id) == ("failed_definite", 502, "command_failed_definite", reason), journal_state(command_id)
+        print("PASS  a hash echo mismatch, a missing echo, an unpatched LiveTalking and a refused scene are definite failures that stop the command")
+    finally:
+        scene_gateway_restore(journal_dir, saved)
+
+
+async def check_overlay_health() -> None:
+    upstreams = SceneUpstreams()
+    journal_dir, saved = scene_gateway_setup(upstreams)
+    try:
+        async def overlay_health() -> dict:
+            response = await gateway.healthz()
+            return json.loads(response.body)["dependencies"]["livetalking"]["overlay"]
+
+        assert await overlay_health() == {"supported": True, "aigc_position": "bottom_right", "active_sessions": 2, "frames_composed": 120, "frames_overlay_failed": 3, "last_error": "caption_layer_conflict"}
+        upstreams.overlay_status = 404
+        unsupported = await overlay_health()
+        assert unsupported["supported"] is False and unsupported["frames_composed"] is None, unsupported
+        upstreams.overlay_status, upstreams.overlay_body = 200, {"code": 1}
+        assert (await overlay_health())["supported"] is False
+        upstreams.overlay_body = {"code": 0, "data": {"supported": "yes"}}
+        assert (await overlay_health())["supported"] is False, "only an explicit true reads as supported"
+        print("PASS  /healthz passes LiveTalking overlay state through and reports supported false when it cannot be read")
+    finally:
+        scene_gateway_restore(journal_dir, saved)
+
+
+async def check_overlay_scene_rejected_before_reservation() -> None:
+    upstreams = SceneUpstreams()
+    journal_dir, saved = scene_gateway_setup(upstreams)
+    authorization = "Bearer test-runtime-token"
+    try:
+        await gateway.media(scene_media("scene_reject_control"), authorization)  # creates the journal table, so the checks below are not vacuous
+        upstreams.requests.clear()
+        too_long = json.dumps({"version": 1, "pad": "x" * 8200})
+        array_json, version_two = "[1]", json.dumps({"version": 2})
+        bad = {
+            "json only": dict(scene_sha256=None),
+            "hash only": dict(scene_json=None),
+            "hash mismatch": dict(scene_sha256="0" * 64),
+            "uppercase hash": dict(scene_sha256=SCENE_SHA256.upper()),
+            "not an object": dict(scene_json=array_json, scene_sha256=hashlib.sha256(array_json.encode()).hexdigest()),
+            "version 2": dict(scene_json=version_two, scene_sha256=hashlib.sha256(version_two.encode()).hexdigest()),
+            "too long": dict(scene_json=too_long, scene_sha256=hashlib.sha256(too_long.encode()).hexdigest()),
+            "wrong action": dict(action="stop_program"),
+        }
+        for index, (label, fields) in enumerate(bad.items()):
+            command_id = f"scene_reject_{index}"
+            try:
+                await gateway.media(scene_media(command_id, **fields), authorization)
+            except gateway.HTTPException as error:
+                assert error.status_code == 400, (label, error.status_code)
+            else:
+                raise AssertionError(f"{label} must be rejected")
+            assert journal_state(command_id) is None, f"{label}: the command id must not be reserved"
+        assert upstreams.requests == [], "a rejected scene request must not reach LiveTalking"
+        print("PASS  invalid scene fields are rejected with 400 before the command id is reserved")
+    finally:
+        scene_gateway_restore(journal_dir, saved)
+
 async def main() -> None:
     check_cue_timeline()
     check_unpronounceable_chunks()
@@ -337,6 +541,10 @@ async def main() -> None:
     check_property_caption_timeline()
     await check_line_max_chars_configuration()
     await check_humanaudio_caption_field()
+    await check_overlay_scene_steps_and_receipt()
+    await check_overlay_scene_failures()
+    await check_overlay_health()
+    await check_overlay_scene_rejected_before_reservation()
 
 
 asyncio.run(main())
