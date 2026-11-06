@@ -11,6 +11,17 @@ import { normalizePolicyText } from "../apps/console/lib/shared/policy-engine.mj
 import { knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry } from "../apps/console/lib/shared/knowledge-match.mjs";
 register("./lib/console-ts-loader.mjs", import.meta.url);
 
+// normalizePolicyText applied until it stops changing: one pass is not stable for e + U+200B + U+0301.
+const normalizeStable = (value) => {
+  let current = normalizePolicyText(value);
+  for (let pass = 0; pass < 8; pass += 1) {
+    const next = normalizePolicyText(current);
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+};
+
 const entry = (overrides = {}) => ({ entryId: "00000000-0000-4000-8000-000000000001", question: "什么时候发货", aliasQuestions: [], keywords: ["发货"], ...overrides });
 
 describe("knowledgeQueryTerms", () => {
@@ -56,11 +67,51 @@ describe("knowledgeSearchTerms", () => {
 });
 
 describe("scoreKnowledgeEntry", () => {
-  test("a keyword contained in the question scores at least 600", () => {
+  test("a keyword whose search terms are all question terms scores at least 600", () => {
     const { scorePermille, keywordHits } = scoreKnowledgeEntry("什么时候发货呀", entry());
     assert.equal(keywordHits, 1);
     assert.equal(scorePermille, 873);
     assert.ok(scoreKnowledgeEntry("发货", entry({ question: "完全不同的问题内容" })).scorePermille >= 600);
+  });
+  test("a single Chinese character or a part of an ASCII word does not hit, even as a substring of the question", () => {
+    for (const [question, keyword] of [
+      ["控油面膜", "油"],
+      ["spf50", "spf"]
+    ]) {
+      const unrelated = { question: "完全不同的问题内容", aliasQuestions: [] };
+      const withKeyword = scoreKnowledgeEntry(question, { ...unrelated, keywords: [keyword] });
+      assert.equal(withKeyword.keywordHits, 0, `${keyword} in ${question}`);
+      assert.deepEqual(withKeyword, scoreKnowledgeEntry(question, { ...unrelated, keywords: [] }));
+      const sameQuestion = { question, aliasQuestions: [] };
+      assert.deepEqual(scoreKnowledgeEntry(question, { ...sameQuestion, keywords: [keyword] }), scoreKnowledgeEntry(question, { ...sameQuestion, keywords: [] }));
+    }
+  });
+  test("a single Chinese character or an ASCII part hits when it is a standalone word of the question", () => {
+    const unrelated = { question: "完全不同的问题内容", aliasQuestions: [] };
+    for (const [question, keyword] of [
+      ["油？", "油"],
+      ["spf-50", "spf"]
+    ]) {
+      const { keywordHits, scorePermille } = scoreKnowledgeEntry(question, { ...unrelated, keywords: [keyword] });
+      assert.equal(keywordHits, 1, `${keyword} in ${question}`);
+      assert.ok(scorePermille >= 600);
+    }
+  });
+  test("a keyword with no search terms never hits: one ASCII character, or only symbols", () => {
+    const unrelated = { question: "完全不同的问题内容", aliasQuestions: [] };
+    for (const [question, keyword] of [
+      ["a", "a"],
+      ["x，a，y", "a"],
+      ["发货？！", "？！"],
+      ["发货", ""]
+    ]) {
+      assert.equal(scoreKnowledgeEntry(question, { ...unrelated, keywords: [keyword] }).keywordHits, 0, `${JSON.stringify(keyword)} in ${question}`);
+    }
+  });
+  test("every term of a multi-term keyword must be a question term", () => {
+    const unrelated = { question: "完全不同的问题内容", aliasQuestions: [] };
+    assert.equal(scoreKnowledgeEntry("什么时候发货", { ...unrelated, keywords: ["发货时间"] }).keywordHits, 0);
+    assert.equal(scoreKnowledgeEntry("发货时间", { ...unrelated, keywords: ["发货时间"] }).keywordHits, 1);
   });
   test("the same question as the entry scores 1000", () => {
     assert.equal(scoreKnowledgeEntry("什么时候发货", entry({ keywords: [] })).scorePermille, 1000);
@@ -177,17 +228,6 @@ describe("scoreKnowledgeEntry properties", () => {
     keywords: fc.array(text, { maxLength: 20 })
   });
 
-  // normalizePolicyText applied until it stops changing: one pass is not stable for e + U+200B + U+0301.
-  const normalizeStable = (value) => {
-    let current = normalizePolicyText(value);
-    for (let pass = 0; pass < 8; pass += 1) {
-      const next = normalizePolicyText(current);
-      if (next === current) break;
-      current = next;
-    }
-    return current;
-  };
-
   test("the score is an integer from 0 to 1000 and keywordHits is an integer from 0 to the keyword count", () => {
     fc.assert(
       fc.property(text, looseEntry, (question, candidate) => {
@@ -200,29 +240,70 @@ describe("scoreKnowledgeEntry properties", () => {
     );
   });
 
-  test("an entry with a keyword that is a substring of the normalized question scores at least 600", () => {
-    const questionWithText = text.filter((value) => normalizeStable(value).length > 0);
-    const substring = fc.record({ start: fc.nat(), length: fc.oneof({ weight: 3, arbitrary: fc.constant(1) }, { weight: 3, arbitrary: fc.integer({ min: 1, max: 4 }) }, { weight: 1, arbitrary: fc.integer({ min: 1, max: 64 }) }) });
+  test("an entry with a keyword made of question search terms scores between 600 and 1000", () => {
+    // Keywords are non-empty subsets of the question's search terms, joined with an ASCII comma: joining them
+    // end to end would create bigrams that are not question terms.
+    const questionWithTerms = text.filter((value) => knowledgeQueryTerms(value).length > 0);
     fc.assert(
       fc.property(
-        questionWithText,
+        questionWithTerms,
         fc.array(text, { maxLength: 5 }),
         text,
-        fc.array(substring, { minLength: 1, maxLength: 20 }),
+        fc.array(fc.array(fc.nat(), { minLength: 1, maxLength: 4 }), { minLength: 1, maxLength: 20 }),
         fc.array(text, { maxLength: 3 }),
         (question, aliasQuestions, entryQuestion, picks, noiseKeywords) => {
-          const normalized = Array.from(normalizeStable(question));
-          const keywords = picks.map(({ start, length }) => {
-            const from = start % normalized.length;
-            return normalized.slice(from, from + length).join("");
-          });
+          const questionTerms = knowledgeQueryTerms(question);
+          const keywords = picks.map((indexes) => [...new Set(indexes.map((index) => questionTerms[index % questionTerms.length]))].join(","));
           const { scorePermille, keywordHits } = scoreKnowledgeEntry(question, { question: entryQuestion, aliasQuestions, keywords: [...noiseKeywords, ...keywords] });
-          assert.ok(keywordHits >= 1, `no keyword hit for ${JSON.stringify(keywords)} in ${JSON.stringify(normalized.join(""))}`);
+          assert.ok(keywordHits >= keywords.length, `${keywordHits} hits for ${JSON.stringify(keywords)} in terms ${JSON.stringify(questionTerms)}`);
           assert.ok(scorePermille >= 600 && scorePermille <= 1000, `score ${scorePermille} for keywords ${JSON.stringify(keywords)}`);
         }
       ),
       { seed: 10402, numRuns: 500 }
     );
+  });
+
+  test("keywords that are substrings of the question but not made of question search terms do not count", () => {
+    // Substrings of the normalized question (length 1 included: single CJK characters, parts of ASCII words,
+    // single ASCII characters, symbols) kept only when the new definition says they cannot hit.
+    const substring = fc.record({ start: fc.nat(), length: fc.oneof({ weight: 3, arbitrary: fc.constant(1) }, { weight: 3, arbitrary: fc.integer({ min: 1, max: 4 }) }, { weight: 1, arbitrary: fc.integer({ min: 1, max: 64 }) }) });
+    const symbolsOnly = fc.constantFrom("！", "？", "，。", "a", "Z", "5", "①", "-");
+    const questionWithText = text.filter((value) => normalizeStable(value).length > 0);
+    let generatedNonHits = 0;
+    fc.assert(
+      fc.property(
+        questionWithText,
+        fc.array(text, { maxLength: 5 }),
+        text,
+        fc.array(text, { maxLength: 6 }),
+        fc.array(fc.oneof({ weight: 4, arbitrary: substring }, { weight: 1, arbitrary: symbolsOnly }), { minLength: 1, maxLength: 20 }),
+        (question, aliasQuestions, entryQuestion, otherKeywords, picks) => {
+          const normalized = Array.from(normalizeStable(question));
+          const questionTerms = new Set(knowledgeQueryTerms(question));
+          const cannotHit = (keyword) => {
+            const terms = knowledgeQueryTerms(keyword);
+            return terms.length === 0 || terms.some((term) => !questionTerms.has(term));
+          };
+          const nonHits = picks
+            .map((pick) => {
+              if (typeof pick === "string") return pick;
+              const from = pick.start % normalized.length;
+              return normalized.slice(from, from + pick.length).join("");
+            })
+            .filter(cannotHit);
+          generatedNonHits += nonHits.length;
+          // otherKeywords may hit; the nonHits must change neither the hits nor the score.
+          const base = { question: entryQuestion, aliasQuestions, keywords: otherKeywords };
+          const without = scoreKnowledgeEntry(question, base);
+          const withNonHits = scoreKnowledgeEntry(question, { ...base, keywords: [...otherKeywords, ...nonHits] });
+          assert.deepEqual(withNonHits, without, `non-hit keywords ${JSON.stringify(nonHits)} changed the result for ${JSON.stringify(normalized.join(""))}`);
+          assert.ok(Number.isInteger(withNonHits.scorePermille) && withNonHits.scorePermille >= 0 && withNonHits.scorePermille <= 1000);
+          assert.ok(withNonHits.keywordHits <= otherKeywords.length);
+        }
+      ),
+      { seed: 10403, numRuns: 500 }
+    );
+    assert.ok(generatedNonHits > 500, `only ${generatedNonHits} non-hit keywords were generated`);
   });
 });
 
@@ -271,5 +352,90 @@ describe("rankKnowledgeHits properties", () => {
     );
     // The generator must reach every outcome, otherwise the property would pass vacuously.
     for (const reason of ["matched", "below_threshold", "ambiguous", "no_candidates"]) assert.ok(seen.has(reason), `no generated case ended in ${reason}`);
+  });
+});
+
+describe("knowledge retrieval prefilter property", () => {
+  // Feature: live-commerce-p1-features, Property 13: 检索预筛不漏掉可得分条目
+  // Validates: Requirements 4.6, 4.8, 4.10
+  // Small alphabet (a few CJK characters, ASCII letters and digits, punctuation) so that questions and entries
+  // share search terms in some samples and not in others. Keywords are also cut from the question itself: that
+  // yields single CJK characters ("油" for "控油面膜"), parts of ASCII words ("spf" for "spf50"), single ASCII
+  // characters and symbols, the substring cases the earlier keyword definition scored at 600 or more.
+  const fragment = fc.oneof(
+    { weight: 6, arbitrary: fc.constantFrom("发", "货", "控", "油", "面", "膜", "快递", "你好") },
+    { weight: 3, arbitrary: fc.constantFrom("a", "b", "spf", "SPF50", "50", "x", "9") },
+    { weight: 2, arbitrary: fc.constantFrom("，", "！", "？", "。", "-", " ") },
+    { weight: 1, arbitrary: fc.string({ unit: "grapheme", maxLength: 2 }) }
+  );
+  const text = fc.array(fragment, { maxLength: 6 }).map((parts) => parts.join(""));
+  const question = fc.oneof({ weight: 2, arbitrary: fc.constantFrom("控油面膜", "spf50", "SPF50能用吗", "油？", "spf-50", "发货", "控油，发货") }, { weight: 3, arbitrary: text });
+  const cut = fc.record({ start: fc.nat(), length: fc.integer({ min: 1, max: 4 }) });
+  const keyword = fc.oneof({ weight: 3, arbitrary: text }, { weight: 4, arbitrary: cut }, { weight: 1, arbitrary: fc.constantFrom("油", "spf", "a", "！？") });
+  const scenario = fc.record({
+    question,
+    entryQuestion: text,
+    aliasQuestions: fc.array(text, { maxLength: 5 }),
+    keywords: fc.array(keyword, { maxLength: 20 })
+  });
+
+  const isAsciiWord = (value) => /^[a-z0-9]+$/.test(value);
+  const isCjkChar = (value) => /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(value);
+
+  test("an entry sharing no search term with the question scores 0 with no keyword hits", () => {
+    const seen = { disjoint: 0, overlapping: 0, singleCjk: 0, asciiPart: 0, singleAscii: 0, symbolsOnly: 0, nonSubstring: 0 };
+    fc.assert(
+      fc.property(scenario, (generated) => {
+        const normalizedQuestion = normalizeStable(generated.question);
+        const characters = Array.from(normalizedQuestion);
+        const keywords = generated.keywords.map((one) => {
+          if (typeof one === "string") return one;
+          return characters.length === 0 ? "" : characters.slice(one.start % characters.length, (one.start % characters.length) + one.length).join("");
+        });
+        const candidate = { question: generated.entryQuestion, aliasQuestions: generated.aliasQuestions, keywords };
+        const queryTerms = knowledgeQueryTerms(generated.question);
+        const searchTerms = knowledgeSearchTerms(candidate);
+        if (searchTerms.length >= 2000) return; // truncated: outside the property's premise
+        const shared = searchTerms.filter((term) => queryTerms.includes(term));
+        if (shared.length > 0) {
+          seen.overlapping += 1;
+          return;
+        }
+        seen.disjoint += 1;
+        for (const one of keywords) {
+          const normalized = normalizeStable(one);
+          if (normalized.length === 0) continue;
+          if (!normalizedQuestion.includes(normalized)) {
+            seen.nonSubstring += 1;
+            continue;
+          }
+          if (isCjkChar(normalized)) seen.singleCjk += 1;
+          else if (isAsciiWord(normalized) && normalized.length === 1) seen.singleAscii += 1;
+          else if (isAsciiWord(normalized)) seen.asciiPart += 1;
+          else if (knowledgeQueryTerms(normalized).length === 0) seen.symbolsOnly += 1;
+        }
+        const { scorePermille, keywordHits } = scoreKnowledgeEntry(generated.question, candidate);
+        assert.equal(scorePermille, 0, `score ${scorePermille} for question ${JSON.stringify(generated.question)} and entry ${JSON.stringify(candidate)}`);
+        assert.equal(keywordHits, 0, `keywordHits ${keywordHits} for question ${JSON.stringify(generated.question)} and entry ${JSON.stringify(candidate)}`);
+      }),
+      { seed: 10601, numRuns: 2000 }
+    );
+    // The premise must select plenty of samples, and the generator must reach each substring keyword shape.
+    assert.ok(seen.disjoint >= 100, `only ${seen.disjoint} disjoint samples`);
+    assert.ok(seen.overlapping >= 100, `only ${seen.overlapping} overlapping samples`);
+    for (const shape of ["singleCjk", "asciiPart", "singleAscii", "symbolsOnly"]) assert.ok(seen[shape] >= 10, `only ${seen[shape]} disjoint samples with a ${shape} keyword that is a question substring`);
+  });
+
+  test("an entry whose question, alias or keyword shares a search term with the question can score above 0", () => {
+    const unrelated = { question: "完全不同的问题内容", aliasQuestions: [], keywords: [] };
+    const asked = "什么时候发货";
+    const viaQuestion = { ...unrelated, question: "发货时间" };
+    const viaAlias = { ...unrelated, aliasQuestions: ["几天发货"] };
+    const viaKeyword = { ...unrelated, keywords: ["发货"] };
+    for (const [name, candidate] of [["question", viaQuestion], ["alias", viaAlias], ["keyword", viaKeyword]]) {
+      assert.ok(knowledgeSearchTerms(candidate).some((term) => knowledgeQueryTerms(asked).includes(term)), `${name} shares a term`);
+      assert.ok(scoreKnowledgeEntry(asked, candidate).scorePermille > 0, `${name} scores above 0`);
+    }
+    assert.equal(scoreKnowledgeEntry(asked, unrelated).scorePermille, 0);
   });
 });

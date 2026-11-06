@@ -76,14 +76,17 @@ function diceCoefficient(left, right) {
   return (2 * shared) / (left.size + right.size);
 }
 
-/** Score of one entry for a question, 0-1000. A keyword contained in the question scores at least 600. */
+/**
+ * Score of one entry for a question, 0-1000. A keyword hits when its search terms are non-empty and all among the
+ * question's search terms (token match, not substring match), which keeps scoring consistent with the search_terms
+ * overlap prefilter: an entry sharing no search term with the question always scores 0. A hit scores at least 600.
+ */
 export function scoreKnowledgeEntry(question, entry) {
-  const normalizedQuestion = normalizeStable(question);
-  const questionTerms = tokenize(normalizedQuestion);
+  const questionTerms = tokenize(normalizeStable(question));
   let keywordHits = 0;
   for (const keyword of entry.keywords ?? []) {
-    const normalizedKeyword = normalizeStable(keyword);
-    if (normalizedKeyword.length > 0 && normalizedQuestion.includes(normalizedKeyword)) keywordHits += 1;
+    const keywordTerms = tokenize(normalizeStable(keyword));
+    if (keywordTerms.size > 0 && [...keywordTerms].every((term) => questionTerms.has(term))) keywordHits += 1;
   }
   let dice = 0;
   for (const text of [entry.question, ...(entry.aliasQuestions ?? [])]) {
