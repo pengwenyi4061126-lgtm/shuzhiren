@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -411,6 +412,83 @@ def test_drawing(font: str, work: Path) -> None:
     passed("render_output_frame counts a failing compose and still hands the frame to the AIGC label")
 
 
+LAYOUT_SEED = 20240620
+LAYOUT_CASES = 300
+
+
+def random_layout_scene(rng: random.Random) -> overlay.Scene:
+    """A random valid scene: any layer switches, card anchor and caption position. The price sticker needs the card."""
+    document = {
+        "version": 1,
+        "caption": {"enabled": rng.random() < 0.7, "position": rng.choice(overlay.CAPTION_POSITIONS)},
+        "productCard": None,
+        "priceSticker": None,
+        "background": None,
+    }
+    if rng.random() < 0.8:
+        document["productCard"] = {"anchor": rng.choice(overlay.CARD_ANCHORS), "title": "洁面慕斯 120ml"}
+        if rng.random() < 0.8:
+            document["priceSticker"] = {"priceText": "¥99.00", "note": "价格以下单页为准" if rng.random() < 0.5 else None, "validUntil": None}
+    return parse(document)
+
+
+def test_layout_avoids_aigc_label(font: str) -> None:
+    """Feature: live-commerce-p1-features, Property 20: 图层不与 AIGC 角标相交
+
+    Validates: Requirements 6.14
+    """
+    seed = int(os.environ.get("OVERLAY_PROPERTY_SEED", LAYOUT_SEED))
+    rng = random.Random(seed)
+    kept_total = excluded_total = 0
+    seen_positions: set[str] = set()
+    for case in range(LAYOUT_CASES):
+        scene = random_layout_scene(rng)
+        width, height = rng.randint(64, 3840), rng.randint(64, 3840)
+        position = aigc.POSITIONS[case % len(aigc.POSITIONS)] if case < 2 * len(aigc.POSITIONS) else rng.choice(aigc.POSITIONS)
+        seen_positions.add(position)
+        margin = overlay.layout_margin(width, height) if rng.random() < 0.5 else rng.randint(0, 40)
+        context = f"seed={seed} case={case} scene={scene} frame={width}x{height} position={position} margin={margin}"
+        try:
+            box = aigc.label_box(aigc.LabelConfig(font_file=font, position=position), width, height)
+            rects, excluded = overlay.layout(scene, width, height, box, margin)
+
+            forbidden = overlay.Rect(box[0] - margin, box[1] - margin, box[2] + 2 * margin, box[3] + 2 * margin)
+            for name, rect in rects.items():
+                assert name in overlay.LAYERS, f"unexpected layer {name}"
+                assert rect.w >= 1 and rect.h >= 1 and rect.x >= 0 and rect.y >= 0, f"{name} {rect} is empty or outside the frame"
+                assert rect.x + rect.w <= width and rect.y + rect.h <= height, f"{name} {rect} leaves the frame"
+                assert not overlay._intersects(rect, forbidden), f"{name} {rect} meets the grown label box {forbidden}"
+
+            # Which layers does the scene ask for, and where would they sit without any label?
+            wanted = [name for name, enabled in (("product_card", scene.product_card is not None),
+                                                 ("price_sticker", scene.price_sticker is not None and scene.product_card is not None),
+                                                 ("caption", scene.caption_enabled)) if enabled]
+            free, free_excluded = overlay.layout(scene, width, height, (-10 * width, -10 * height, 1, 1), 0)
+            assert free_excluded == [] and sorted(free) == sorted(wanted), f"label-free layout {sorted(free)} != wanted {wanted}"
+            assert len(set(excluded)) == len(excluded) and not set(excluded) & set(rects), "a layer is both kept and excluded"
+            assert sorted([*rects, *excluded]) == sorted(wanted), f"kept {sorted(rects)} + excluded {excluded} != wanted {wanted}"
+            for name in wanted:
+                if name in rects:
+                    assert rects[name] == free[name], f"{name} moved when the label was added"
+                else:
+                    assert name in excluded and overlay._intersects(free[name], forbidden), f"{name} was dropped without meeting the label"
+
+            # Same input, same result; the conflict is reported with its reason.
+            assert overlay.layout(scene, width, height, box, margin) == (rects, excluded), "layout is not deterministic"
+            state = overlay.SceneState(scene, aigc.LabelConfig(font_file=font, position=position), "/nonexistent", True)
+            state_rects, state_excluded = state.layout_for(width, height)
+            assert state.layout_for(width, height) == (state_rects, state_excluded)
+            assert (overlay.LAYER_CONFLICT in state.reasons()) == bool(state_excluded) and state.excluded_layers == tuple(state_excluded)
+            assert overlay.LAYER_CONFLICT == "layer_conflicts_aigc_label"
+        except AssertionError as error:
+            raise AssertionError(f"Property 20 failed: {error}; {context}; rerun with OVERLAY_PROPERTY_SEED={seed}") from None
+        kept_total += len(rects)
+        excluded_total += len(excluded)
+    assert seen_positions == set(aigc.POSITIONS), seen_positions
+    assert kept_total > 0 and excluded_total > 0, f"generator never produced both outcomes (kept {kept_total}, excluded {excluded_total})"
+    passed(f"Property 20: {LAYOUT_CASES} random scenes, frames and label positions keep layers inside the frame and clear of the label (kept {kept_total}, excluded {excluded_total})")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--require-imaging", action="store_true", help="fail instead of skipping when numpy, Pillow or a CJK font is missing")
@@ -435,6 +513,7 @@ def main() -> int:
             else:
                 print(f"INFO  CJK font {font}", flush=True)
                 test_drawing(font, Path(directory))
+                test_layout_avoids_aigc_label(font)
     return 0
 
 
