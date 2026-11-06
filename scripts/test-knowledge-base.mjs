@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import { describe, test } from "node:test";
+import fc from "fast-check";
 import { normalizePolicyText } from "../apps/console/lib/shared/policy-engine.mjs";
 import { knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry } from "../apps/console/lib/shared/knowledge-match.mjs";
 register("./lib/console-ts-loader.mjs", import.meta.url);
@@ -100,5 +101,58 @@ describe("rankKnowledgeHits", () => {
     const options = { minScorePermille: 600, ambiguityMarginPermille: 0 };
     assert.equal(rankKnowledgeHits("什么时候发货呀", [twin, first], options).hit.entryId, first.entryId);
     assert.equal(rankKnowledgeHits("什么时候发货呀", [first, twin], options).hit.entryId, first.entryId);
+  });
+});
+describe("knowledgeQueryTerms properties", () => {
+  // Feature: live-commerce-p1-features, Property 10: 检索词对规范化不变
+  // Validates: Requirements 4.6, 4.7
+  const fragment = fc.oneof(
+    { weight: 4, arbitrary: fc.constantFrom("发", "货", "控", "油", "面", "膜", "什么时候", "多久能到", "你好", "ひらがな", "カタカナ", "한국어") },
+    { weight: 4, arbitrary: fc.constantFrom("a", "B", "spf", "SPF50", "50", "x", "Z9", "ab_cd", "e") },
+    { weight: 2, arbitrary: fc.constantFrom("ＳＰＦ５０", "Ａｂ", "，", "！", "？", "。", "（", "ｅ", "ｘ１") },
+    { weight: 2, arbitrary: fc.constantFrom(" ", "\t", "\n", "\u3000", "\u00A0", "\u2003") },
+    { weight: 2, arbitrary: fc.constantFrom("\u200B", "\u200C", "\u200D", "\uFEFF") },
+    { weight: 2, arbitrary: fc.constantFrom("\u0301", "\u0308", "\u3099", "\u0323", "\u1100\u1161", "ﬁ", "㎏", "①", "İ", "ǅ") },
+    { weight: 2, arbitrary: fc.string({ unit: "grapheme", maxLength: 3 }) },
+    { weight: 1, arbitrary: fc.string({ unit: "binary", maxLength: 3 }) }
+  );
+  const anyText = fc.array(fragment, { maxLength: 24 }).map((parts) => parts.join(""));
+  const insertion = fc.constantFrom("", " ", "\t", "\n", "\u3000", "\u00A0", "\u200B", "\u200C", "\u200D", "\uFEFF", " \u200B ");
+  const toFullWidth = (char) => {
+    const code = char.charCodeAt(0);
+    return code >= 0x21 && code <= 0x7e ? String.fromCharCode(code + 0xfee0) : char;
+  };
+
+  test("the terms of a text equal the terms of its normalized text", () => {
+    fc.assert(
+      fc.property(anyText, (text) => {
+        assert.deepEqual(knowledgeQueryTerms(text), knowledgeQueryTerms(normalizePolicyText(text)));
+      }),
+      { seed: 10301, numRuns: 500 }
+    );
+  });
+
+  test("inserting whitespace or zero-width characters anywhere does not change the terms", () => {
+    fc.assert(
+      fc.property(anyText, fc.array(fc.record({ at: fc.nat(), text: insertion }), { maxLength: 8 }), (text, insertions) => {
+        let changed = text;
+        for (const { at, text: inserted } of insertions) {
+          const index = changed.length === 0 ? 0 : at % (changed.length + 1);
+          changed = changed.slice(0, index) + inserted + changed.slice(index);
+        }
+        assert.deepEqual(knowledgeQueryTerms(changed), knowledgeQueryTerms(text));
+      }),
+      { seed: 10302, numRuns: 500 }
+    );
+  });
+
+  test("replacing ASCII characters with their full-width forms does not change the terms", () => {
+    fc.assert(
+      fc.property(anyText, fc.array(fc.boolean(), { minLength: 1, maxLength: 12 }), (text, mask) => {
+        const replaced = Array.from(text, (char, index) => (mask[index % mask.length] ? toFullWidth(char) : char)).join("");
+        assert.deepEqual(knowledgeQueryTerms(replaced), knowledgeQueryTerms(text));
+      }),
+      { seed: 10303, numRuns: 500 }
+    );
   });
 });
