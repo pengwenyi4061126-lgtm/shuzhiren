@@ -4,6 +4,7 @@ import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess, assertLiveRunAccessInTransaction } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { normalizeScriptVariants, scriptVariantsProblem } from "@/lib/shared/script-rotation.mjs";
 
 export type ProgramSegmentKind = "prepared_product" | "interactive" | "fallback" | "human_handoff";
 export type ProgramSegment = {
@@ -15,9 +16,17 @@ export type ProgramSegment = {
   productVersionId?: string;
   purpose: string;
   runtimeScript?: string;
+  /** Up to four extra versions of the runtime script; absent when the segment has none (version 0 is runtimeScript). */
+  runtimeScriptVariants?: string[];
   fallback: boolean;
 };
-export type ProgramSegmentInput = Pick<ProgramSegment, "kind" | "title" | "durationSeconds" | "purpose" | "runtimeScript">;
+export type ProgramSegmentInput = Pick<ProgramSegment, "kind" | "title" | "durationSeconds" | "purpose" | "runtimeScript" | "runtimeScriptVariants">;
+
+/** Extension point for model-written script variants (design.md C.8). Only the type exists: nothing registers or calls an implementation. */
+export interface ScriptVariantSuggester {
+  /** Returns candidate texts; the caller writes them into a draft, which still goes through editing, term hints, submission and approval. */
+  suggest(input: { script: string; productVersionId: string; maxVariants: number }): Promise<string[]>;
+}
 
 export type ShowProgram = { runId: string; tenantId: string; revisionId: string; status: "draft" | "approved" | "rejected"; editable: boolean; segments: ProgramSegment[] };
 type ProgramStore = { programs: Map<string, ShowProgram> };
@@ -35,6 +44,7 @@ type PersistentProgramRow = {
   product_version_id: string | null;
   purpose: string | null;
   runtime_script: string | null;
+  runtime_script_variants: unknown;
   is_fallback: boolean | null;
 };
 
@@ -76,7 +86,7 @@ async function loadPersistentProgram(client: PoolClient, runId: string) {
   const result = await client.query<PersistentProgramRow>(
     `select r.id as run_id, r.tenant_id, sr.id as revision_id, sr.approval_status, r.state as run_state,
       s.id as segment_id, s.position, s.kind, s.title, s.duration_seconds,
-      s.product_version_id, s.purpose, s.runtime_script, s.is_fallback
+      s.product_version_id, s.purpose, s.runtime_script, s.runtime_script_variants, s.is_fallback
      from live_runs r
      join show_revisions sr on sr.id = r.show_revision_id
      left join show_revision_segments s on s.show_revision_id = sr.id
@@ -100,7 +110,7 @@ export async function replaceShowProgram(context: RequestContext, runId: string,
     const productVersionId = program.segments.find((segment) => segment.productVersionId)?.productVersionId;
     const beforeSha256 = programHash(program.segments);
     program.segments = normalizeProgramSegments(input, productVersionId);
-    await recordAuditEvent(context, { type: "show_program.updated", resource: "show_revision", resourceId: program.revisionId, detail: { runId, beforeSha256, afterSha256: programHash(program.segments), segmentCount: program.segments.length } });
+    await recordAuditEvent(context, { type: "show_program.updated", resource: "show_revision", resourceId: program.revisionId, detail: { runId, beforeSha256, afterSha256: programHash(program.segments), segmentCount: program.segments.length, variantCount: variantCount(program.segments) } });
     return program;
   }
 
@@ -112,9 +122,9 @@ export async function replaceShowProgram(context: RequestContext, runId: string,
     const segments = normalizeProgramSegments(input, run.productVersionId);
     await client.query("delete from show_revision_segments where show_revision_id = $1", [run.revisionId]);
     for (const segment of segments) {
-      await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", [context.tenantId, run.revisionId, segment.position, segment.kind, segment.title, segment.durationSeconds, segment.productVersionId ?? null, segment.purpose, segment.runtimeScript ?? null, segment.fallback]);
+      await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, runtime_script_variants, is_fallback) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)", [context.tenantId, run.revisionId, segment.position, segment.kind, segment.title, segment.durationSeconds, segment.productVersionId ?? null, segment.purpose, segment.runtimeScript ?? null, JSON.stringify(segment.runtimeScriptVariants ?? []), segment.fallback]);
     }
-    await recordAuditEventInTransaction(client, context, { type: "show_program.updated", resource: "show_revision", resourceId: run.revisionId, detail: { runId, beforeSha256: programHash(current), afterSha256: programHash(segments), segmentCount: segments.length } });
+    await recordAuditEventInTransaction(client, context, { type: "show_program.updated", resource: "show_revision", resourceId: run.revisionId, detail: { runId, beforeSha256: programHash(current), afterSha256: programHash(segments), segmentCount: segments.length, variantCount: variantCount(segments) } });
     return { runId, tenantId: context.tenantId, revisionId: run.revisionId, status: "draft" as const, editable: true, segments };
   });
 }
@@ -172,6 +182,7 @@ function persistentProgram(rows: PersistentProgramRow[]): ShowProgram {
       productVersionId: row.product_version_id ?? undefined,
       purpose: row.purpose,
       runtimeScript: row.runtime_script ?? undefined,
+      ...variantsField(row.runtime_script_variants),
       fallback: row.is_fallback
     }] : [])
   };
@@ -186,8 +197,8 @@ async function loadEditableRun(client: PoolClient, runId: string): Promise<Edita
 }
 
 async function loadSegments(client: PoolClient, revisionId: string): Promise<ProgramSegment[]> {
-  const result = await client.query<{ id: string; position: number; kind: ProgramSegmentKind; title: string; duration_seconds: number; product_version_id: string | null; purpose: string; runtime_script: string | null; is_fallback: boolean }>("select id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback from show_revision_segments where show_revision_id = $1 order by position asc", [revisionId]);
-  return result.rows.map((row) => ({ id: row.id, position: row.position, kind: row.kind, title: row.title, durationSeconds: row.duration_seconds, productVersionId: row.product_version_id ?? undefined, purpose: row.purpose, runtimeScript: row.runtime_script ?? undefined, fallback: row.is_fallback }));
+  const result = await client.query<{ id: string; position: number; kind: ProgramSegmentKind; title: string; duration_seconds: number; product_version_id: string | null; purpose: string; runtime_script: string | null; runtime_script_variants: unknown; is_fallback: boolean }>("select id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, runtime_script_variants, is_fallback from show_revision_segments where show_revision_id = $1 order by position asc", [revisionId]);
+  return result.rows.map((row) => ({ id: row.id, position: row.position, kind: row.kind, title: row.title, durationSeconds: row.duration_seconds, productVersionId: row.product_version_id ?? undefined, purpose: row.purpose, runtimeScript: row.runtime_script ?? undefined, ...variantsField(row.runtime_script_variants), fallback: row.is_fallback }));
 }
 
 export function normalizeProgramSegments(input: ProgramSegmentInput[], productVersionId?: string): ProgramSegment[] {
@@ -201,14 +212,16 @@ export function normalizeProgramSegments(input: ProgramSegmentInput[], productVe
     const isRunnable = segment.kind === "prepared_product" || segment.kind === "interactive";
     if (isRunnable && (!runtimeScript || runtimeScript.length > 800)) throw new Response("Runnable program segments require a frozen runtime script of at most 800 characters", { status: 409 });
     if (!isRunnable && runtimeScript) throw new Response("Fallback and handoff segments cannot carry a runtime script", { status: 409 });
-    return { id: `segment_${crypto.randomUUID()}`, position: index + 1, kind: segment.kind, title: segment.title.trim(), durationSeconds: segment.durationSeconds, productVersionId: segment.kind === "human_handoff" ? undefined : productVersionId, purpose: segment.purpose.trim(), runtimeScript, fallback: segment.kind === "fallback" || segment.kind === "human_handoff" };
+    const runtimeScriptVariants = normalizeInputVariants(segment.runtimeScriptVariants, runtimeScript);
+    if (!isRunnable && runtimeScriptVariants.length > 0) throw new Response("Fallback and handoff segments cannot carry script variants", { status: 409 });
+    return { id: `segment_${crypto.randomUUID()}`, position: index + 1, kind: segment.kind, title: segment.title.trim(), durationSeconds: segment.durationSeconds, productVersionId: segment.kind === "human_handoff" ? undefined : productVersionId, purpose: segment.purpose.trim(), runtimeScript, ...variantsField(runtimeScriptVariants), fallback: segment.kind === "fallback" || segment.kind === "human_handoff" };
   });
   if (!segments.some((segment) => segment.kind === "fallback") || !segments.some((segment) => segment.kind === "human_handoff")) throw new Response("A fallback and human handoff segment are required", { status: 409 });
   return segments;
 }
 
 function validateStoredProgramSegments(segments: ProgramSegment[], productVersionId?: string) {
-  const normalized = normalizeProgramSegments(segments.map((segment) => ({ kind: segment.kind, title: segment.title, durationSeconds: segment.durationSeconds, purpose: segment.purpose, runtimeScript: segment.runtimeScript })), productVersionId);
+  const normalized = normalizeProgramSegments(segments.map((segment) => ({ kind: segment.kind, title: segment.title, durationSeconds: segment.durationSeconds, purpose: segment.purpose, runtimeScript: segment.runtimeScript, runtimeScriptVariants: segment.runtimeScriptVariants })), productVersionId);
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index];
     if (segment.position !== index + 1 || segment.fallback !== normalized[index].fallback || segment.productVersionId !== normalized[index].productVersionId) throw new Response("Show program bindings are invalid", { status: 409 });
@@ -220,5 +233,25 @@ function isProgramSegmentKind(value: unknown): value is ProgramSegmentKind {
 }
 
 export function programHash(segments: ProgramSegment[]) {
-  return createHash("sha256").update(JSON.stringify(segments.map((segment) => ({ position: segment.position, kind: segment.kind, title: segment.title, durationSeconds: segment.durationSeconds, productVersionId: segment.productVersionId ?? null, purpose: segment.purpose, runtimeScript: segment.runtimeScript ?? null, fallback: segment.fallback })))).digest("hex");
+  return createHash("sha256").update(JSON.stringify(segments.map((segment) => ({ position: segment.position, kind: segment.kind, title: segment.title, durationSeconds: segment.durationSeconds, productVersionId: segment.productVersionId ?? null, purpose: segment.purpose, runtimeScript: segment.runtimeScript ?? null, ...variantsField(segment.runtimeScriptVariants), fallback: segment.fallback })))).digest("hex");
+}
+
+/** The runtimeScriptVariants key, present only for a non-empty list so a program without variants hashes and serializes exactly as before. */
+function variantsField(value: unknown): { runtimeScriptVariants?: string[] } {
+  const variants = normalizeScriptVariants(value) as string[];
+  return variants.length > 0 ? { runtimeScriptVariants: variants } : {};
+}
+
+/** Validates the extra versions of one segment (trimmed like the primary script) and returns them. */
+function normalizeInputVariants(value: unknown, runtimeScript: string | undefined): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Response("runtimeScriptVariants must be an array of strings", { status: 409 });
+  const variants = value.map((item) => typeof item === "string" ? item.trim() : item);
+  const problem = scriptVariantsProblem(variants, runtimeScript);
+  if (problem) throw new Response(problem, { status: 409 });
+  return variants as string[];
+}
+
+function variantCount(segments: ProgramSegment[]) {
+  return segments.reduce((total, segment) => total + (segment.runtimeScriptVariants?.length ?? 0), 0);
 }

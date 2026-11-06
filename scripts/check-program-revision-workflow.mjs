@@ -22,6 +22,11 @@ for (const source of ["show_program_change_status", "show_program_change_request
 for (const source of ["cloneRevisionBindings", "createReleaseManifestSnapshotInTransaction", "request.created_by_id === actorId", "status = 'approved'", "status = 'applied'", "canRevise(run.state)"]) {
   if (!service.includes(source)) throw new Error(`Program revision service missing: ${source}`);
 }
+// Script variants (085) travel with the segment row through clone, edit, submit and apply.
+for (const source of ["runtime_script_variants", "runtimeScriptVariants", "variantCount", "storedVariants"]) {
+  if (!service.includes(source)) throw new Error(`Program revision service must carry script variants: ${source}`);
+}
+if ((service.match(/runtime_script, runtime_script_variants, is_fallback/g) ?? []).length < 4) throw new Error("Program revision service must clone, load and insert runtime_script_variants with every segment");
 for (const [source, role] of [[listRoute, 'requireRole(actor, ["admin", "operator", "reviewer", "analyst"])'], [changeRoute, 'requireRole(actor, ["admin", "operator"])'], [submitRoute, 'requireRole(actor, ["admin", "operator"])'], [approveRoute, 'requireRole(actor, ["admin", "reviewer"])'], [rejectRoute, 'requireRole(actor, ["admin", "reviewer"])']]) {
   if (!source.includes("requestContextFrom(request)") || !source.includes(role)) throw new Error(`Program revision route must enforce database-backed role: ${role}`);
 }

@@ -4,6 +4,7 @@ import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { createReleaseManifestSnapshotInTransaction } from "@/lib/release-manifest";
+import { normalizeScriptVariants } from "@/lib/shared/script-rotation.mjs";
 import { normalizeProgramSegments, programHash, type ProgramSegment, type ProgramSegmentInput, type ShowProgram } from "@/lib/show-program";
 
 export type ProgramRevisionRequestStatus = "draft" | "pending_approval" | "approved" | "rejected" | "applied";
@@ -41,7 +42,7 @@ export async function createProgramRevisionRequest(context: RequestContext, runI
     const nextRevision = await client.query<{ revision: number }>("select coalesce(max(revision), 0) + 1 as revision from show_revisions where show_id = $1", [run.show_id]);
     const candidate = await client.query<{ id: string }>("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, jsonb_build_object('derivedFromRevisionId', $4::text, 'createdBy', 'governed-program-revision'), 'draft') returning id", [context.tenantId, run.show_id, nextRevision.rows[0].revision, run.source_revision_id]);
     await cloneRevisionBindings(client, context.tenantId, run.source_revision_id, candidate.rows[0].id);
-    await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback) select tenant_id, $2, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback from show_revision_segments where show_revision_id = $1 order by position", [run.source_revision_id, candidate.rows[0].id]);
+    await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, runtime_script_variants, is_fallback) select tenant_id, $2, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, runtime_script_variants, is_fallback from show_revision_segments where show_revision_id = $1 order by position", [run.source_revision_id, candidate.rows[0].id]);
     const actorId = await actorDatabaseId(client, context);
     const inserted = await client.query<RequestRow>(`insert into show_program_change_requests (tenant_id, live_run_id, source_revision_id, candidate_revision_id, source_program_sha256, created_by) values ($1, $2, $3, $4, $5, $6) returning id, live_run_id, source_revision_id, candidate_revision_id, status, source_program_sha256, proposed_program_sha256, $7::text as created_by_subject, null::text as approved_by_subject, rejection_reason, created_at, updated_at`, [context.tenantId, run.id, run.source_revision_id, candidate.rows[0].id, programHash(sourceSegments), actorId, context.actorId]);
     await recordAuditEventInTransaction(client, context, { type: "show_program_revision.requested", resource: "show_program_change_request", resourceId: inserted.rows[0].id, detail: { runId, sourceRevisionId: run.source_revision_id, candidateRevisionId: candidate.rows[0].id, sourceProgramSha256: programHash(sourceSegments) } });
@@ -62,7 +63,7 @@ export async function replaceProgramRevisionRequest(context: RequestContext, run
     const segments = normalizeProgramSegments(input, run.product_version_id);
     await client.query("delete from show_revision_segments where show_revision_id = $1", [request.candidate_revision_id]);
     await insertSegments(client, context.tenantId, request.candidate_revision_id, segments);
-    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.updated", resource: "show_program_change_request", resourceId: request.id, detail: { runId, candidateRevisionId: request.candidate_revision_id, beforeSha256: programHash(before), afterSha256: programHash(segments), segmentCount: segments.length } });
+    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.updated", resource: "show_program_change_request", resourceId: request.id, detail: { runId, candidateRevisionId: request.candidate_revision_id, beforeSha256: programHash(before), afterSha256: programHash(segments), segmentCount: segments.length, variantCount: segments.reduce((total, segment) => total + (segment.runtimeScriptVariants?.length ?? 0), 0) } });
     return persistentRequest(client, context.tenantId, await loadRequestRow(client, request.id));
   });
 }
@@ -142,16 +143,21 @@ async function loadRequestRow(client: PoolClient, requestId: string) {
   return request;
 }
 async function loadSegments(client: PoolClient, revisionId: string): Promise<ProgramSegment[]> {
-  const result = await client.query<{ id: string; position: number; kind: ProgramSegment["kind"]; title: string; duration_seconds: number; product_version_id: string | null; purpose: string; runtime_script: string | null; is_fallback: boolean }>("select id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback from show_revision_segments where show_revision_id = $1 order by position", [revisionId]);
-  return result.rows.map((row) => ({ id: row.id, position: row.position, kind: row.kind, title: row.title, durationSeconds: row.duration_seconds, productVersionId: row.product_version_id ?? undefined, purpose: row.purpose, runtimeScript: row.runtime_script ?? undefined, fallback: row.is_fallback }));
+  const result = await client.query<{ id: string; position: number; kind: ProgramSegment["kind"]; title: string; duration_seconds: number; product_version_id: string | null; purpose: string; runtime_script: string | null; runtime_script_variants: unknown; is_fallback: boolean }>("select id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, runtime_script_variants, is_fallback from show_revision_segments where show_revision_id = $1 order by position", [revisionId]);
+  return result.rows.map((row) => ({ id: row.id, position: row.position, kind: row.kind, title: row.title, durationSeconds: row.duration_seconds, productVersionId: row.product_version_id ?? undefined, purpose: row.purpose, runtimeScript: row.runtime_script ?? undefined, ...storedVariants(row.runtime_script_variants), fallback: row.is_fallback }));
+}
+function storedVariants(value: unknown): { runtimeScriptVariants?: string[] } {
+  const variants = normalizeScriptVariants(value) as string[];
+  return variants.length > 0 ? { runtimeScriptVariants: variants } : {};
 }
 function assertStoredProgram(segments: ProgramSegment[], productVersionId: string, requireRuntimeScripts = true) {
-  const normalized = normalizeProgramSegments(segments.map(({ kind, title, durationSeconds, purpose, runtimeScript }) => ({
+  const normalized = normalizeProgramSegments(segments.map(({ kind, title, durationSeconds, purpose, runtimeScript, runtimeScriptVariants }) => ({
     kind,
     title,
     durationSeconds,
     purpose,
-    runtimeScript: !requireRuntimeScripts && !runtimeScript && (kind === "prepared_product" || kind === "interactive") ? "legacy-script-pending-revision" : runtimeScript
+    runtimeScript: !requireRuntimeScripts && !runtimeScript && (kind === "prepared_product" || kind === "interactive") ? "legacy-script-pending-revision" : runtimeScript,
+    runtimeScriptVariants
   })), productVersionId);
   const source = requireRuntimeScripts ? segments : segments.map((segment) => ({ ...segment, runtimeScript: segment.runtimeScript ?? ((segment.kind === "prepared_product" || segment.kind === "interactive") ? "legacy-script-pending-revision" : undefined) }));
   if (programHash(source) !== programHash(normalized)) throw new Response("Program revision bindings are invalid", { status: 409 });
@@ -167,7 +173,7 @@ async function cloneRevisionBindings(client: PoolClient, tenantId: string, sourc
   await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) select $1, $3, media_asset_id, kind from show_revision_media_assets where show_revision_id = $2", [tenantId, sourceRevisionId, candidateRevisionId]);
 }
 async function insertSegments(client: PoolClient, tenantId: string, revisionId: string, segments: ProgramSegment[]) {
-  for (const segment of segments) await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", [tenantId, revisionId, segment.position, segment.kind, segment.title, segment.durationSeconds, segment.productVersionId ?? null, segment.purpose, segment.runtimeScript ?? null, segment.fallback]);
+  for (const segment of segments) await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, runtime_script_variants, is_fallback) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)", [tenantId, revisionId, segment.position, segment.kind, segment.title, segment.durationSeconds, segment.productVersionId ?? null, segment.purpose, segment.runtimeScript ?? null, JSON.stringify(segment.runtimeScriptVariants ?? []), segment.fallback]);
 }
 async function persistentRequest(client: PoolClient, tenantId: string, row: RequestRow): Promise<ProgramRevisionRequest> {
   const segments = await loadSegments(client, row.candidate_revision_id);

@@ -41,4 +41,13 @@ for (const source of ["runtime_script_variants", "show_revision_segments_runtime
   if (!schema.includes(source)) throw new Error(`Database schema verifier must require script variant governance: ${source}`);
 }
 
+// The service layer reads, validates, hashes and writes the variants without changing the hash of a program that has none.
+for (const source of ["runtimeScriptVariants", "runtime_script_variants", "scriptVariantsProblem", "normalizeScriptVariants", "variantsField", "variantCount", "ScriptVariantSuggester"]) {
+  if (!program.includes(source)) throw new Error(`Show program service must govern script variants: ${source}`);
+}
+if (!/\.\.\.variantsField\(segment\.runtimeScriptVariants\), fallback: segment\.fallback/.test(program)) throw new Error("programHash must add runtimeScriptVariants only when the list is non-empty");
+if (!/return variants\.length > 0 \? \{ runtimeScriptVariants: variants \} : \{\}/.test(program)) throw new Error("variantsField must omit empty variant lists");
+for (const source of ["runtime_script_variants", "runtimeScriptVariants", "variantCount"]) {
+  if (!revisions.includes(source)) throw new Error(`Program revision workflow must preserve script variants: ${source}`);
+}
 console.log("PASS  runnable show segments require versioned runtime scripts, review-time database gates, and operator-visible editing");
