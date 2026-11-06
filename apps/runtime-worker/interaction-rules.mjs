@@ -12,7 +12,7 @@
 // Every decision on a matched trigger is recorded once in interaction_rule_firings; the unique keys of that table
 // keep evaluation idempotent when several workers run.
 import { createHash, randomUUID } from "node:crypto";
-import { evaluatePolicy, isPolicyRule, normalizePolicyText } from "./policy-engine.mjs";
+import { evaluatePolicy, normalizePolicyText, parsePolicyRules } from "../console/lib/shared/policy-engine.mjs";
 
 export const TRIGGER_TYPES = Object.freeze(["viewer_enter", "follow", "gift", "keyword", "timed", "idle_comment"]);
 export const TIMER_TRIGGERS = Object.freeze(["timed", "idle_comment"]);
@@ -420,7 +420,7 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
           from show_revision_policy_profiles binding join policy_profiles profile on profile.id = binding.policy_profile_id
           where binding.show_revision_id = $1`, [run.show_revision_id])).rows[0];
         const active = Boolean(profile && profile.approval_status === "approved" && isControlledEvidenceRef(profile.evidence_ref) && String(profile.validation_summary ?? "").trim());
-        const rules = active ? parseRules(profile.rules) : [];
+        const rules = active ? parsePolicyRules(profile.rules) : [];
         return { active, rules };
       }),
       product: memo(async () => {
@@ -441,10 +441,4 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
   }
 
   return { runOnce, evaluateRun };
-}
-
-function parseRules(value) {
-  if (Array.isArray(value)) return value.filter(isPolicyRule);
-  if (typeof value === "string") { try { return parseRules(JSON.parse(value)); } catch { return []; } }
-  return [];
 }

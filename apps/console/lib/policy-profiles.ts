@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess, assertLiveRunAccessInTransaction } from "@/lib/control-plane/run-access";
 import type { PolicyRule } from "@/lib/policy-engine";
+import { isPolicyRule, parsePolicyRules } from "@/lib/shared/policy-engine.mjs";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { isControlledEvidenceRef } from "@/lib/governance-input";
@@ -112,7 +113,7 @@ export async function policyRulesForRunInTransaction(client: PoolClient, runId: 
   const profile = await boundPolicyProfile(client, runId);
   if (!profile) throw new Response("Live run has no policy profile binding", { status: 409 });
   if (profile.approval_status !== "approved" || !isControlledEvidenceRef(profile.evidence_ref) || !profile.validation_summary.trim()) throw new Response("Live run policy profile is not active", { status: 409 });
-  return parseRules(profile.rules);
+  return parsePolicyRules(profile.rules);
 }
 
 export async function activePolicyProfileStatusForRun(context: RequestContext, runId: string) {
@@ -136,8 +137,7 @@ async function boundPolicyProfile(client: PoolClient, runId: string) {
   return result.rows[0] ?? null;
 }
 
-function persistentProfile(row: PersistentProfileRow): PolicyProfile { return { id: row.id, tenantId: row.tenant_id, name: row.name, version: row.version, rules: parseRules(row.rules), evidenceRef: row.evidence_ref, validationSummary: row.validation_summary, approval: row.approval_status, approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined, revokedAt: row.revoked_at ? new Date(row.revoked_at).toISOString() : undefined, revocationReason: row.revocation_reason ?? undefined }; }
-function parseRules(value: unknown): PolicyRule[] { return Array.isArray(value) ? value.filter(isPolicyRule) : typeof value === "string" ? parseRules(JSON.parse(value)) : []; }
-export function isPolicyRule(value: unknown): value is PolicyRule { if (!value || typeof value !== "object") return false; const rule = value as Record<string, unknown>; return typeof rule.id === "string" && rule.id.length > 0 && rule.id.length <= 100 && Array.isArray(rule.terms) && rule.terms.length > 0 && rule.terms.length <= 20 && rule.terms.every((term) => typeof term === "string" && term.trim().length > 0 && term.length <= 100) && typeof rule.reason === "string" && rule.reason.trim().length > 0 && rule.reason.length <= 300 && ["answer", "handoff", "refuse"].includes(rule.action as string) && ["low", "medium", "high"].includes(rule.riskLevel as string) && Array.isArray(rule.requiredEvidence) && rule.requiredEvidence.every((item) => typeof item === "string" && item.length <= 100); }
+function persistentProfile(row: PersistentProfileRow): PolicyProfile { return { id: row.id, tenantId: row.tenant_id, name: row.name, version: row.version, rules: parsePolicyRules(row.rules), evidenceRef: row.evidence_ref, validationSummary: row.validation_summary, approval: row.approval_status, approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined, revokedAt: row.revoked_at ? new Date(row.revoked_at).toISOString() : undefined, revocationReason: row.revocation_reason ?? undefined }; }
+export { isPolicyRule };
 async function syncActor(client: PoolClient, context: RequestContext) { return (await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role])).rows[0].id; }
 function databaseErrorCode(error: unknown) { return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined; }

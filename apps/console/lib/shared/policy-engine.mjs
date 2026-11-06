@@ -1,7 +1,8 @@
-// JavaScript copy of apps/console/lib/policy-engine.ts for the runtime worker image, which contains only this
-// directory. The interaction rule evaluator checks every rendered line with it before queueing speech or a reply
-// draft. scripts/test-interaction-rules.mjs asserts that both copies return the same decisions; change them
-// together.
+// The one policy engine of the platform. The console (apps/console/lib/policy-engine.ts re-exports it) and the
+// runtime worker (apps/runtime-worker/interaction-rules.mjs imports it through ../console/lib/shared/) run this
+// module, so there is no second copy to keep in step. It must stay a pure module that imports only node: built-ins
+// and sibling .mjs files; `npm run shared:modules:check` enforces that. Keep policy-engine.d.mts in step with the
+// exports below.
 export const maxPolicyQuestionLength = 1000;
 
 const rules = [
@@ -31,7 +32,7 @@ export function evaluatePolicy(question, evidenceIds, additionalRules = []) {
   return { action: highest.action, riskLevel: highest.riskLevel, reasons: matched.map((rule) => rule.reason), requiredEvidence };
 }
 
-/** Same check as apps/console/lib/policy-profiles.ts isPolicyRule, for rules read from policy_profiles.rules. */
+/** Whether a value is a well-formed policy rule (policy_profiles.rules entry). */
 export function isPolicyRule(value) {
   if (!value || typeof value !== "object") return false;
   const rule = value;
@@ -44,4 +45,15 @@ export function isPolicyRule(value) {
 
 export function normalizePolicyText(text) {
   return text.normalize("NFKC").replace(/[\s\u200B-\u200D\uFEFF]+/g, "").toLocaleLowerCase("zh-CN");
+}
+
+export function isControlledPolicyQuestion(question) {
+  const trimmed = question.trim();
+  return trimmed.length > 0 && trimmed.length <= maxPolicyQuestionLength;
+}
+/** The rules of a policy_profiles.rules jsonb value (an array, or its JSON text); anything unparseable yields []. */
+export function parsePolicyRules(value) {
+  if (Array.isArray(value)) return value.filter(isPolicyRule);
+  if (typeof value === "string") { try { return parsePolicyRules(JSON.parse(value)); } catch { return []; } }
+  return [];
 }
