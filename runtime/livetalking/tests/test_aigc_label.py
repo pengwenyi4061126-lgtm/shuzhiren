@@ -228,7 +228,9 @@ def test_patched_livetalking(source: Path) -> None:
     base_text = (source / "avatars" / "base_avatar.py").read_text(encoding="utf-8")
     tree = ast.parse(base_text)
     process = ast.get_source_segment(base_text, function_source(tree, "BaseAvatar", "process_frames"))
-    apply_at = process.index("combine_frame = self.aigc_label.apply(combine_frame)")
+    # livetalking-overlay.patch routes the label through render_output_frame(), which draws the picture layers and then
+    # calls aigc_label.apply() last (shuzhiren_overlay.py); process_frames no longer calls apply() directly.
+    apply_at = process.index("combine_frame = shuzhiren_overlay.render_output_frame(self.overlay, self.aigc_label, combine_frame,")
     assert apply_at < process.index("self.output.push_video_frame(combine_frame)") < process.index("self.record_video_data(combine_frame)"), "the label is applied before the frame is pushed and recorded"
     assert "continue" in process[apply_at:process.index("self.output.push_video_frame(combine_frame)")], "a frame that cannot be labelled is dropped"
     init = ast.get_source_segment(base_text, function_source(tree, "BaseAvatar", "__init__"))

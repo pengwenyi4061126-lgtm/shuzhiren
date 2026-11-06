@@ -28,7 +28,8 @@ const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch",
   "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking-local-tts.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py",
   "vendor/LiveTalking/LICENSE", "runtime/patches/LIVETALKING_MODIFICATIONS.md",
-  "runtime/patches/livetalking-aigc-label.patch", "runtime/livetalking/shuzhiren_aigc_label.py"
+  "runtime/patches/livetalking-aigc-label.patch", "runtime/livetalking/shuzhiren_aigc_label.py",
+  "runtime/patches/livetalking-overlay.patch", "runtime/livetalking/shuzhiren_overlay.py"
 ]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -510,6 +511,10 @@ equal(runtime, "运行时", "LIVE_REQUIRE_AI_DISCLOSURE", "true");
 // Live interaction rules: the console cannot see the worker's environment, so it cannot tell that the evaluation
 // loop is off. With INTERACTION_RULES_ENABLED=false an approved AI disclosure rule is never spoken. Unset means true.
 if (runtime.get("INTERACTION_RULES_ENABLED") === "false") errors.push("运行时 的 INTERACTION_RULES_ENABLED 不得为 false：关闭互动规则评估会停止 AI 身份口播，而控制台看不到 worker 的该变量，无法在开播前检查中发现");
+// Picture layer background assets (Requirement 6.21): SHUZHIREN_OVERLAY_ASSET_DIR is optional (LiveTalking defaults to
+// /opt/shuzhiren/overlay-assets, the read-only overlay-assets volume), but when set it is a container path, so absolute.
+const overlayAssetDir = runtime.get("SHUZHIREN_OVERLAY_ASSET_DIR");
+if (overlayAssetDir !== undefined && overlayAssetDir.trim() !== "" && !path.posix.isAbsolute(overlayAssetDir.trim())) errors.push("运行时 的 SHUZHIREN_OVERLAY_ASSET_DIR 必须是绝对路径（画面层背景素材目录，如 /opt/shuzhiren/overlay-assets）；相对路径会随 LiveTalking 的工作目录变化而读不到素材");
 // AIGC explicit label (人工智能生成合成内容标识办法): it cannot be turned off, so these are errors with or without
 // --allow-placeholders, and the console's expected text must equal the text LiveTalking draws.
 errors.push(...aigcLabelEnvProblems({ runtime, control, allowPlaceholders }));
@@ -667,6 +672,17 @@ try {
   for (const { patch, message } of series.failures) errors.push(`LiveTalking 补丁 ${patch} 无法应用到锁定提交 ${series.commit}：${message}`);
   const aigcPatchText = await readFile(path.join(files.sourceRoot, "runtime", "patches", "livetalking-aigc-label.patch"), "utf8").catch(() => undefined);
   errors.push(...aigcLabelBuildProblems({ seriesPatches: series.patches, patchText: aigcPatchText, dockerfileText }));
+  // P1 picture layer (Requirement 6.12, 6.13, 6.19): the overlay patch is in the series, draws before the AIGC label,
+  // and the image carries shuzhiren_overlay.py.
+  const overlayPatchText = await readFile(path.join(files.sourceRoot, "runtime", "patches", "livetalking-overlay.patch"), "utf8").catch(() => undefined);
+  if (!series.patches.includes("livetalking-overlay.patch")) errors.push("LiveTalking 补丁序列缺少 livetalking-overlay.patch（画面层）");
+  else if (series.patches.indexOf("livetalking-overlay.patch") < series.patches.indexOf("livetalking-aigc-label.patch")) errors.push("LiveTalking 补丁序列中 livetalking-overlay.patch 必须排在 livetalking-aigc-label.patch 之后");
+  if (overlayPatchText === undefined) errors.push("runtime/patches/livetalking-overlay.patch 无法读取");
+  else for (const hook of ["+        self.overlay = shuzhiren_overlay.SessionOverlay(self.aigc_label)", "shuzhiren_overlay.render_output_frame(self.overlay, self.aigc_label, combine_frame,", "+        raw_caption = form.get('shuzhiren_caption')", "+                datainfo = {\"shuzhiren_caption_id\": caption_id}", "+    app.router.add_post(\"/api/admin/overlay/scene\", admin_overlay_scene)", "+    app.router.add_get(\"/api/admin/overlay\", admin_overlay)"]) {
+    if (!overlayPatchText.includes(hook)) errors.push(`LiveTalking 画面层补丁缺少挂接：${hook.replace(/^\+\s*/, "")}`);
+  }
+  if (overlayPatchText !== undefined && overlayPatchText.split(/\r?\n/).some((line) => line.startsWith("+") && line.includes("aigc_label.apply("))) errors.push("LiveTalking 画面层补丁不得在 process_frames 中直接调用 aigc_label.apply；AIGC 标识只能经 render_output_frame 最后绘制");
+  if (!dockerfileText.split(/\r?\n/).some((line) => line.trim() === "COPY runtime/livetalking/shuzhiren_overlay.py /opt/shuzhiren/")) errors.push("LiveTalking 镜像没有复制画面层模块：COPY runtime/livetalking/shuzhiren_overlay.py /opt/shuzhiren/");
 } catch (error) {
   errors.push(`LiveTalking 观测补丁不可验证：${error instanceof Error ? error.message : "补丁检查失败"}`);
 }
@@ -692,7 +708,7 @@ try {
   const gatewayDockerfile = path.join(files.sourceRoot, "runtime", "gateway", "Dockerfile");
   const observerDockerfile = path.join(files.sourceRoot, "apps", "runtime-observer", "Dockerfile");
   const [compose, config, rtmp, cosyVoice, gatewayAppText, gatewayDockerfileText, observerDockerfileText] = await Promise.all([composePath, liveTalkingConfig, liveTalkingRtmp, cosyVoiceServer, gatewayApp, gatewayDockerfile, observerDockerfile].map((file) => readFile(file, "utf8")));
-  for (const expected of ["--transport rtmp", "--model musetalk", "--avatar_id", "--listenport 8010", "--max_session 1", "--fps ${STREAM_FPS:-25}", "--push_url", "COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 缺少受支持的启动契约：${expected}`);
+  for (const expected of ["--transport rtmp", "--model musetalk", "--avatar_id", "--listenport 8010", "--max_session 1", "--fps ${STREAM_FPS:-25}", "--push_url", "COSYVOICE_SAMPLE_RATE: ${COSYVOICE_SAMPLE_RATE:-24000}", "- overlay-assets:/opt/shuzhiren/overlay-assets:ro"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 缺少受支持的启动契约：${expected}`);
   for (const expected of ["RUNTIME_OBSERVER_TARGETS_FILE: /run/shuzhiren/observer-config/runtime-observer-targets.json", "${RUNTIME_OBSERVER_TARGETS_DIR:-../../config}:/run/shuzhiren/observer-config:ro", "OUTPUT_PROBE_TARGETS: ${OUTPUT_PROBE_TARGETS:-[]}", "CHANNEL_ADAPTER_TARGETS: ${CHANNEL_ADAPTER_TARGETS:-[]}", "ALERT_NOTIFIER_TARGETS: ${ALERT_NOTIFIER_TARGETS:-[]}"]) if (!compose.includes(expected)) errors.push(`运行时 Compose 的可选 profile 解析契约缺失：${expected}`);
   for (const expected of ["parser.add_argument('--transport'", "parser.add_argument('--model'", "parser.add_argument('--avatar_id'", "parser.add_argument('--listenport'", "parser.add_argument('--max_session'", "parser.add_argument('--fps'", "parser.add_argument('--push_url'"]) if (!config.includes(expected)) errors.push(`锁定 LiveTalking 源码不再支持 Compose 所需参数：${expected}`);
   if (!rtmp.includes("sc.stream_server = self.push_url")) errors.push("锁定 LiveTalking 源码不再将 push_url 绑定到 RTMP 输出");

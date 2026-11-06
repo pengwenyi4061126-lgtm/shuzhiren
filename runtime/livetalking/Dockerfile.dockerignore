@@ -9,6 +9,7 @@
 !runtime/livetalking/launcher.py
 !runtime/livetalking/shuzhiren_secrets.py
 !runtime/livetalking/shuzhiren_aigc_label.py
+!runtime/livetalking/shuzhiren_overlay.py
 **/.git
 **/.git/**
 **/.env

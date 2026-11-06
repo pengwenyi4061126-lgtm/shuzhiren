@@ -267,6 +267,7 @@ jobs:
       - run: docker build --file apps/alert-notifier/Dockerfile --tag shuzhiren-alert-notifier-ci .
       - run: docker build --file runtime/gateway/Dockerfile --tag shuzhiren-runtime-gateway-ci runtime/gateway
       - run: docker build --load --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .
+      - run: docker run --rm --entrypoint python3 shuzhiren/livetalking:ci -c "import shuzhiren_overlay"
       - run: node scripts/check-runtime-image-licenses.mjs --livetalking-image shuzhiren/livetalking:ci
       - name: "prep: reclaim disk before CosyVoice build"
         run: docker image rm shuzhiren/livetalking:ci && docker builder prune --all --force && df -h /

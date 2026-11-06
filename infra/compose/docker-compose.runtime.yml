@@ -211,6 +211,9 @@ services:
       - ${MODEL_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/models:ro
       - ${AVATAR_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/data/avatars:ro
       - ${RECORDINGS_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/data/record
+      # Picture layer background assets, read-only: <sha256 hex>.png or .jpg, the default
+      # SHUZHIREN_OVERLAY_ASSET_DIR of shuzhiren_overlay.py (runbook: overlay assets).
+      - overlay-assets:/opt/shuzhiren/overlay-assets:ro
     expose:
       - "8010"
     healthcheck:
@@ -248,6 +251,9 @@ networks:
   runtime-media:
     internal: true
   livetalking-egress: {}
+
+volumes:
+  overlay-assets: {}
 
 secrets:
   stream_key:

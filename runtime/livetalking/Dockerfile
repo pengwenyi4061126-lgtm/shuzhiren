@@ -29,6 +29,9 @@ RUN chown -R livetalking:livetalking /app
 # shuzhiren_aigc_label from here.
 COPY runtime/livetalking/launcher.py runtime/livetalking/shuzhiren_secrets.py /opt/shuzhiren/
 COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/
+# Picture layer (captions, product card, background); the patched sources import shuzhiren_overlay from here.
+# Background assets are mounted read-only at /opt/shuzhiren/overlay-assets (Runtime Compose volume overlay-assets).
+COPY runtime/livetalking/shuzhiren_overlay.py /opt/shuzhiren/
 ENV PYTHONPATH=/opt/shuzhiren
 
 EXPOSE 8010

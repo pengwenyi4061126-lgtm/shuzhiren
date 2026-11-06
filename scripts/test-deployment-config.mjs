@@ -360,6 +360,23 @@ try {
     const buildProblems = aigcLabelBuildProblems({ seriesPatches: seriesPatches.slice(0, 3), patchText: patchText.replace("combine_frame = self.aigc_label.apply(combine_frame)", "pass"), dockerfileText: dockerfileText.replace("git fonts-noto-cjk", "git").replace("COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/", "") }).join("\n");
     for (const pattern of [/补丁序列缺少 livetalking-aigc-label\.patch/, /AIGC 标识补丁缺少挂接：combine_frame = self\.aigc_label\.apply/, /没有复制 AIGC 标识模块/, /没有安装中文字体包 fonts-noto-cjk/]) assert.match(buildProblems, pattern);
     console.log("PASS  deployment configuration fails without an enabled AIGC label, a valid label text and position, a matching console text and a content producer");
+    // Requirement 6.12, 6.13, 6.15, 6.19: the overlay patch closes the series, draws the picture layers before the AIGC
+    // label, the image ships the module, and LiveTalking reads background assets from a read-only volume.
+    const seriesLines = (await readFile(path.join(root, "runtime", "patches", "livetalking.series"), "utf8")).split(/\r?\n/).filter((line) => line && !line.startsWith("#"));
+    assert.equal(seriesLines.at(-1), "livetalking-overlay.patch", "livetalking-overlay.patch must be the last patch of the series");
+    const overlayPatch = await readFile(path.join(root, "runtime", "patches", "livetalking-overlay.patch"), "utf8");
+    const overlayAdded = overlayPatch.split(/\r?\n/).filter((line) => line.startsWith("+")).join("\n");
+    assert.match(overlayAdded, /render_output_frame\(self\.overlay, self\.aigc_label, combine_frame,/, "process_frames must render through render_output_frame");
+    assert.doesNotMatch(overlayAdded, /aigc_label\.apply\(/, "the overlay patch must not call the AIGC label directly");
+    assert.match(overlayAdded, /shuzhiren_overlay\.SessionOverlay\(self\.aigc_label\)/);
+    assert.match(overlayAdded, /datainfo = \{"shuzhiren_caption_id": caption_id\}/);
+    assert.match(overlayAdded, /add_post\("\/api\/admin\/overlay\/scene", admin_overlay_scene\)/);
+    assert.match(overlayAdded, /add_get\("\/api\/admin\/overlay", admin_overlay\)/);
+    assert.ok(dockerfileText.split(/\r?\n/).includes("COPY runtime/livetalking/shuzhiren_overlay.py /opt/shuzhiren/"), "the LiveTalking image must copy shuzhiren_overlay.py");
+    assert.ok((await readFile(path.join(root, "runtime", "livetalking", "Dockerfile.dockerignore"), "utf8")).split(/\r?\n/).includes("!runtime/livetalking/shuzhiren_overlay.py"), "the build context must allow shuzhiren_overlay.py");
+    assert.ok(composeDoc.services.livetalking.volumes.includes("overlay-assets:/opt/shuzhiren/overlay-assets:ro"), "LiveTalking must mount the overlay-assets volume read-only");
+    assert.ok(composeDoc.volumes && Object.hasOwn(composeDoc.volumes, "overlay-assets"), "the overlay-assets volume must be declared");
+    console.log("PASS  the overlay patch closes the series, composes before the AIGC label, and the image, build context and Compose carry the module and the read-only asset volume");
   }
   // L17 (39.1-39.5, 39.7): lock entries against Git fixtures, nested submodules and *_REF template rules.
   const openSourceLock = spawnSync(process.execPath, [path.join(root, "scripts", "test-open-source-lock.mjs")], { cwd: root, encoding: "utf8" });
@@ -656,6 +673,15 @@ try {
   const rulesEnabled = check(["--require-cosyvoice"]);
   assert.equal(rulesEnabled.status, 0, `INTERACTION_RULES_ENABLED=true must pass: ${rulesEnabled.stderr}`);
 
+  // Requirement 6.21: SHUZHIREN_OVERLAY_ASSET_DIR is optional, but a relative value is rejected by name.
+  await writeFile(files.runtime, `${runtime(validProbeTarget)}\nSHUZHIREN_OVERLAY_ASSET_DIR=overlay-assets\n`);
+  const relativeOverlayDir = check(["--require-cosyvoice"]);
+  assert.notEqual(relativeOverlayDir.status, 0, "a relative SHUZHIREN_OVERLAY_ASSET_DIR must fail deployment");
+  assert.match(relativeOverlayDir.stderr, /SHUZHIREN_OVERLAY_ASSET_DIR 必须是绝对路径/, "the rejection must name the variable and the reason");
+  await writeFile(files.runtime, `${runtime(validProbeTarget)}\nSHUZHIREN_OVERLAY_ASSET_DIR=/opt/shuzhiren/overlay-assets\n`);
+  const absoluteOverlayDir = check(["--require-cosyvoice"]);
+  assert.equal(absoluteOverlayDir.status, 0, `an absolute SHUZHIREN_OVERLAY_ASSET_DIR must pass: ${absoluteOverlayDir.stderr}`);
+  assert.doesNotMatch(rulesEnabled.stderr, /SHUZHIREN_OVERLAY_ASSET_DIR/, "an unset SHUZHIREN_OVERLAY_ASSET_DIR must not be reported");
   await writeFile(files.runtime, runtime(validProbeTarget).replace("RUNTIME_GATEWAY_DEMO_MODE=false", "RUNTIME_GATEWAY_DEMO_MODE=true"));
   const demoGateway = check(["--require-cosyvoice"]);
   assert.notEqual(demoGateway.status, 0, "production deployment must reject runtime gateway demo mode");

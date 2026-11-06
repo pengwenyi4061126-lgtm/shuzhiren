@@ -1,0 +1,112 @@
+diff --git a/avatars/base_avatar.py b/avatars/base_avatar.py
+index 2753870..1cb94b4 100644
+--- a/avatars/base_avatar.py
++++ b/avatars/base_avatar.py
+@@ -50,6 +50,8 @@ from utils.logger import logger
+ from utils.image import read_imgs,mirror_index
+ # Shuzhiren: AIGC explicit label, /opt/shuzhiren/shuzhiren_aigc_label.py in the image.
+ import shuzhiren_aigc_label
++# Shuzhiren: picture layer (background, product card, price sticker, captions), /opt/shuzhiren/shuzhiren_overlay.py.
++import shuzhiren_overlay
+ 
+ # class State(Enum):
+ #     INIT=0
+@@ -85,6 +87,8 @@ class BaseAvatar:
+         self.width = self.height = 0
+         # Every pushed and recorded frame carries the AIGC label; a session cannot start without it.
+         self.aigc_label = shuzhiren_aigc_label.process_renderer()
++        # Picture layers are drawn before the AIGC label; they hold no scene until the Gateway sets one.
++        self.overlay = shuzhiren_overlay.SessionOverlay(self.aigc_label)
+ 
+         self.custom_audiotype = 0 # 0: normal, 1: sinlence, >1: custom audio
+         self.custom_img_cycle = {}
+@@ -465,10 +469,11 @@ class BaseAvatar:
+                     combine_frame = current_frame
+ 
+             cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
+-            # Shuzhiren: draw the AIGC label on a copy (combine_frame may be a cached avatar frame).
+-            # A frame that cannot be labelled is dropped, never pushed or recorded without the label.
++            # Shuzhiren: picture layers first, the AIGC label last, on copies (combine_frame may be a cached
++            # avatar frame). A picture layer failure only loses the layers for this frame. A frame that cannot be
++            # labelled is dropped, never pushed or recorded without the label.
+             try:
+-                combine_frame = self.aigc_label.apply(combine_frame)
++                combine_frame = shuzhiren_overlay.render_output_frame(self.overlay, self.aigc_label, combine_frame, [frame.userdata for frame in audio_frames])
+             except Exception as e:
+                 logger.error(f"AIGC label failed, frame dropped: {type(e).__name__}")
+                 continue
+diff --git a/server/routes.py b/server/routes.py
+index 17b0aa6..c1e2bfa 100644
+--- a/server/routes.py
++++ b/server/routes.py
+@@ -10,6 +10,7 @@ from aiohttp import web
+ from utils.logger import logger
+ from shuzhiren_secrets import redact_text, redacted_options_dict
+ import shuzhiren_aigc_label
++import shuzhiren_overlay
+ 
+ 
+ # ─── 路由工具函数 ──────────────────────────────────────────────────────────
+@@ -103,6 +104,17 @@ async def humanaudio(request):
+         avatar_session = get_session(request, sessionid)
+         if avatar_session is None:
+             return json_error("session not found")
++        # Shuzhiren: optional caption track. The caption is registered before the audio is queued; an invalid
++        # field is ignored (and counted) and never affects the audio.
++        raw_caption = form.get('shuzhiren_caption')
++        if raw_caption is not None:
++            try:
++                caption_id = shuzhiren_overlay.register_caption(avatar_session, raw_caption)
++            except Exception as e:
++                logger.error(f"caption registration failed, caption ignored: {type(e).__name__}")
++                caption_id = None
++            if caption_id is not None:
++                datainfo = {"shuzhiren_caption_id": caption_id}
+         avatar_session.put_audio_file(filebytes, datainfo)
+         return json_ok()
+     except Exception as e:
+@@ -255,6 +267,35 @@ async def admin_aigc_label(request):
+         logger.exception('admin_aigc_label exception:')
+         return json_error(str(e))
+ 
++async def admin_overlay(request):
++    """Admin: picture layer state of this process (scene hash, frame counters, layer conflicts, last error)."""
++    try:
++        return json_ok(data=shuzhiren_overlay.status())
++    except Exception as e:
++        logger.exception('admin_overlay exception:')
++        return json_error(str(e))
++
++async def admin_overlay_scene(request):
++    """Admin: install the frozen scene of a session. A scene that fails validation is refused whole and the
++    scene in force stays unchanged; on success the scene hash is echoed back."""
++    try:
++        params = await request.json()
++        sessionid = params.get('sessionid', '')
++        avatar_session = get_session(request, sessionid)
++        if avatar_session is None:
++            return json_error("session not found")
++        overlay = getattr(avatar_session, 'overlay', None)
++        if overlay is None:
++            return json_error("overlay not available")
++        try:
++            scene = overlay.set_scene(params.get('scene_json'), params.get('scene_sha256'))
++        except shuzhiren_overlay.OverlayError as e:
++            return json_error(f"overlay scene rejected: {e.reason}")
++        return json_ok(data={"scene_sha256": scene.sha256})
++    except Exception as e:
++        logger.exception('admin_overlay_scene exception:')
++        return json_error(str(e))
++
+ 
+ # ─── 路由注册 ──────────────────────────────────────────────────────────────
+ 
+@@ -282,6 +323,8 @@ def setup_routes(app):
+     app.router.add_get("/api/admin/sessions", admin_sessions)
+     app.router.add_get("/api/admin/runtime-metrics", admin_runtime_metrics)
+     app.router.add_get("/api/admin/aigc-label", admin_aigc_label)
++    app.router.add_get("/api/admin/overlay", admin_overlay)
++    app.router.add_post("/api/admin/overlay/scene", admin_overlay_scene)
+     app.router.add_get('/sse', sse_handler)
+ 
+     # ── Local ASR endpoint (SenseVoice/FunASR) ── Issue #604 ──

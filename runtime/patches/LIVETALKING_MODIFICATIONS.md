@@ -43,3 +43,11 @@ LiveTalking 以 Apache License 2.0 发布，许可证全文随镜像位于 `/app
 | --- | --- |
 | avatars/base_avatar.py | 修改 |
 | server/routes.py | 修改 |
+
+## runtime/patches/livetalking-overlay.patch
+摘要：在 AIGC 显式标识之前为每一帧推流和录制画面叠加画面层（背景、商品卡与价格贴片、实时字幕），画面层模块来自镜像中的 `/opt/shuzhiren/shuzhiren_overlay.py`。`/humanaudio` 读取可选表单字段 `shuzhiren_caption`，字幕只随带有对应编号的音频帧推进，字段无效时被忽略并计数而不影响音频。新增 `POST /api/admin/overlay/scene`（校验场景 JSON 的哈希与结构，失败时保持原场景并返回错误，成功时回显 `scene_sha256`）与只读接口 `GET /api/admin/overlay`。画面层合成失败时该帧不带画面层、仍带 AIGC 标识输出；AIGC 标识失败时仍丢弃该帧。本补丁基于序列中位于其前的补丁生成，不新增文件；上游 Apache-2.0 许可证不变。
+
+| 文件 | 操作 |
+| --- | --- |
+| avatars/base_avatar.py | 修改 |
+| server/routes.py | 修改 |
