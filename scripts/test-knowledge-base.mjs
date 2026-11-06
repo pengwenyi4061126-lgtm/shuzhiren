@@ -156,3 +156,72 @@ describe("knowledgeQueryTerms properties", () => {
     );
   });
 });
+
+describe("scoreKnowledgeEntry properties", () => {
+  // Feature: live-commerce-p1-features, Property 11: 打分范围与关键词下限
+  // Validates: Requirements 4.8
+  // Text built from a small vocabulary so that questions, aliases and keywords overlap often, plus
+  // full-width, whitespace, zero-width and combining fragments so normalization is exercised.
+  const fragment = fc.oneof(
+    { weight: 6, arbitrary: fc.constantFrom("发", "货", "控", "油", "面", "膜", "什么时候", "多久能到", "快递", "退货", "你好", "한국어", "カタカナ") },
+    { weight: 3, arbitrary: fc.constantFrom("a", "B", "spf", "SPF50", "50", "x", "Z9", "e") },
+    { weight: 2, arbitrary: fc.constantFrom("ＳＰＦ５０", "Ａｂ", "，", "！", "？", "。", "ｅ") },
+    { weight: 1, arbitrary: fc.constantFrom(" ", "\t", "\u3000", "\u200B", "\u200C", "\uFEFF", "\u0301", "\u0308", "ﬁ", "㎏", "①", "İ") },
+    { weight: 1, arbitrary: fc.string({ unit: "grapheme", maxLength: 3 }) }
+  );
+  const text = fc.array(fragment, { maxLength: 12 }).map((parts) => parts.join(""));
+  const looseEntry = fc.record({
+    entryId: fc.uuid(),
+    question: text,
+    aliasQuestions: fc.array(text, { maxLength: 5 }),
+    keywords: fc.array(text, { maxLength: 20 })
+  });
+
+  // normalizePolicyText applied until it stops changing: one pass is not stable for e + U+200B + U+0301.
+  const normalizeStable = (value) => {
+    let current = normalizePolicyText(value);
+    for (let pass = 0; pass < 8; pass += 1) {
+      const next = normalizePolicyText(current);
+      if (next === current) break;
+      current = next;
+    }
+    return current;
+  };
+
+  test("the score is an integer from 0 to 1000 and keywordHits is an integer from 0 to the keyword count", () => {
+    fc.assert(
+      fc.property(text, looseEntry, (question, candidate) => {
+        const { scorePermille, keywordHits } = scoreKnowledgeEntry(question, candidate);
+        assert.ok(Number.isInteger(scorePermille), `score ${scorePermille} is not an integer`);
+        assert.ok(scorePermille >= 0 && scorePermille <= 1000, `score ${scorePermille} is out of range`);
+        assert.ok(Number.isInteger(keywordHits) && keywordHits >= 0 && keywordHits <= candidate.keywords.length);
+      }),
+      { seed: 10401, numRuns: 500 }
+    );
+  });
+
+  test("an entry with a keyword that is a substring of the normalized question scores at least 600", () => {
+    const questionWithText = text.filter((value) => normalizeStable(value).length > 0);
+    const substring = fc.record({ start: fc.nat(), length: fc.oneof({ weight: 3, arbitrary: fc.constant(1) }, { weight: 3, arbitrary: fc.integer({ min: 1, max: 4 }) }, { weight: 1, arbitrary: fc.integer({ min: 1, max: 64 }) }) });
+    fc.assert(
+      fc.property(
+        questionWithText,
+        fc.array(text, { maxLength: 5 }),
+        text,
+        fc.array(substring, { minLength: 1, maxLength: 20 }),
+        fc.array(text, { maxLength: 3 }),
+        (question, aliasQuestions, entryQuestion, picks, noiseKeywords) => {
+          const normalized = Array.from(normalizeStable(question));
+          const keywords = picks.map(({ start, length }) => {
+            const from = start % normalized.length;
+            return normalized.slice(from, from + length).join("");
+          });
+          const { scorePermille, keywordHits } = scoreKnowledgeEntry(question, { question: entryQuestion, aliasQuestions, keywords: [...noiseKeywords, ...keywords] });
+          assert.ok(keywordHits >= 1, `no keyword hit for ${JSON.stringify(keywords)} in ${JSON.stringify(normalized.join(""))}`);
+          assert.ok(scorePermille >= 600 && scorePermille <= 1000, `score ${scorePermille} for keywords ${JSON.stringify(keywords)}`);
+        }
+      ),
+      { seed: 10402, numRuns: 500 }
+    );
+  });
+});
