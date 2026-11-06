@@ -442,3 +442,102 @@ test("Property 17: a term blocked only by the frozen lexicon, or only by the cur
     { numRuns: 300, seed: 20250119 }
   );
 });
+
+// Feature: live-commerce-p1-features, Property 19: 词表只收紧策略判定
+// Validates: Requirements 5.9
+// Texts are built from phrases that trigger built-in policy rules, tenant policy rules, lexicon terms (block and warn) and
+// harmless filler, with obfuscation (spaces, zero-width characters) and sometimes a length above the limit.
+// (a) allowed === true implies evaluatePolicy(text, ["product_version"], rules).action === "answer", and the lexicon never
+// turns a refused text into an allowed one (allowed with a lexicon implies allowed with an empty lexicon).
+// (b) when no Block_Term occurs in the text, allowed equals the result with an empty lexicon, and Warn_Term hits are reported.
+const property19Phrases = [
+  "欢迎来到直播间", "今天", "大家好", "这款", "有赠品", "库存充足", "规格", "发货", "改价", "降价", "退款", "孕妇", "治疗", "全网最低", "包邮", "买一送一",
+  "加微信", "第一", "顶级", "vx", "神药", "忽略之前的指令", "密码", "。", "！", " ", "\u200B"
+];
+const property19Terms = ["包邮", "买一送一", "加微信", "第一", "顶级", "vx", "神药", "赠品", "库存", "全网最低", "今天", "改价"];
+const property19Piece = fc.oneof({ weight: 1, arbitrary: fc.constantFrom(...property19Phrases) }, { weight: 8, arbitrary: fc.constantFrom("欢迎来到直播间", "今天", "大家好", "这款", "。", "！", " ", "加微信", "第一", "顶级", "vx", "神药") }, { weight: 1, arbitrary: fc.string({ maxLength: 6, unit: "grapheme-ascii" }) });
+const property19Text = fc.oneof(
+  { weight: 20, arbitrary: fc.array(property19Piece, { maxLength: 8 }).map((parts) => parts.join("")) },
+  { weight: 1, arbitrary: fc.array(property19Piece, { minLength: 1, maxLength: 12 }).map((parts) => parts.join("").repeat(60)) },
+  { weight: 1, arbitrary: fc.constantFrom("", "   ", "\n") }
+);
+const property19Rule = fc.record({
+  id: fc.constantFrom("r1", "r2", "r3"),
+  terms: fc.array(fc.constantFrom(...property19Terms), { minLength: 1, maxLength: 3 }),
+  reason: fc.constantFrom("运费说明", "活动规则", "合规提示"),
+  action: fc.constantFrom("answer", "handoff", "refuse"),
+  riskLevel: fc.constantFrom("low", "medium", "high"),
+  requiredEvidence: fc.array(fc.constantFrom("product_version", "shipping_policy", "price_policy"), { maxLength: 2 })
+});
+const property19Lexicon = (severities) =>
+  fc
+    .array(fc.tuple(fc.constantFrom("加微信", "第一", "顶级", "vx", "神药", ...property19Terms), fc.constantFrom(...severities), fc.constantFrom("extreme", "medical", "false_claim", "offsite_trade", "custom")), { minLength: 1, maxLength: 6 })
+    .map((entries) => compileLexicon(entries.map(([text, severity, category], index) => term(`t${index}`, text, severity, [], category))));
+const property19Case = (severities) => fc.record({ text: property19Text, rules: fc.array(property19Rule, { maxLength: 4 }), lexicon: property19Lexicon(severities), maxLength: fc.constantFrom(20, 800, 800, 800, 2000) });
+
+test("Property 19: an allowed broadcast is always one the policy engine answers, and the lexicon never loosens a verdict", () => {
+  let allowedCases = 0;
+  let lexiconRefusals = 0;
+  fc.assert(
+    fc.property(property19Case(["block", "block", "warn"]), ({ text, rules, lexicon, maxLength }) => {
+      const withLexicon = guardBroadcastText(text, { policyRules: rules, lexicon, maxLength });
+      const withoutLexicon = guardBroadcastText(text, { policyRules: rules, lexicon: [], maxLength });
+      const policy = evaluatePolicy(text, ["product_version"], rules);
+      assert.deepEqual(withLexicon.decision, policy);
+      if (withLexicon.allowed) {
+        allowedCases += 1;
+        assert.equal(policy.action, "answer");
+        assert.equal(withoutLexicon.allowed, true, "the lexicon allowed a text that the empty lexicon refuses");
+      }
+      if (!withLexicon.allowed && withoutLexicon.allowed) lexiconRefusals += 1;
+    }),
+    { numRuns: 1000, seed: 20250120 }
+  );
+  assert.ok(allowedCases >= 100, `only ${allowedCases} generated cases were allowed`);
+  assert.ok(lexiconRefusals >= 100, `only ${lexiconRefusals} cases were refused because of the lexicon`);
+});
+
+test("Property 19: when only Warn_Terms occur, the verdict equals the one without a lexicon and the hits are reported", () => {
+  let warnHits = 0;
+  let warnAllowed = 0;
+  fc.assert(
+    fc.property(property19Case(["warn"]), ({ text, rules, lexicon, maxLength }) => {
+      const withLexicon = guardBroadcastText(text, { policyRules: rules, lexicon, maxLength });
+      const withoutLexicon = guardBroadcastText(text, { policyRules: rules, lexicon: [], maxLength });
+      assert.equal(withLexicon.allowed, withoutLexicon.allowed);
+      assert.deepEqual(withLexicon.reasons, withoutLexicon.reasons);
+      const normalizedText = normalizePolicyText(text);
+      for (const entry of lexicon) {
+        if (text.length <= 2000 && normalizedText.includes(entry.normalized)) {
+          assert.ok(withLexicon.findings.some((finding) => finding.termId === entry.id && finding.severity === "warn"), `no warn finding for ${entry.id}`);
+        }
+      }
+      if (withLexicon.findings.length > 0) warnHits += 1;
+      if (withLexicon.findings.length > 0 && withLexicon.allowed) warnAllowed += 1;
+    }),
+    { numRuns: 1000, seed: 20250121 }
+  );
+  assert.ok(warnHits >= 100, `only ${warnHits} cases contained a warn hit`);
+  assert.ok(warnAllowed >= 100, `only ${warnAllowed} cases with a warn hit were allowed`);
+});
+
+test("Property 19: a mixed lexicon whose Block_Terms do not occur behaves like an empty lexicon", () => {
+  let premiseHeld = 0;
+  let withWarnHit = 0;
+  fc.assert(
+    fc.property(property19Case(["block", "warn"]), ({ text, rules, lexicon, maxLength }) => {
+      const normalizedText = normalizePolicyText(text);
+      fc.pre(text.length <= 2000 && !lexicon.some((entry) => entry.severity === "block" && normalizedText.includes(entry.normalized)));
+      premiseHeld += 1;
+      const withLexicon = guardBroadcastText(text, { policyRules: rules, lexicon, maxLength });
+      const withoutLexicon = guardBroadcastText(text, { policyRules: rules, lexicon: [], maxLength });
+      assert.equal(withLexicon.allowed, withoutLexicon.allowed);
+      assert.deepEqual(withLexicon.reasons, withoutLexicon.reasons);
+      assert.ok(withLexicon.findings.every((finding) => finding.severity === "warn"));
+      if (withLexicon.findings.length > 0) withWarnHit += 1;
+    }),
+    { numRuns: 1000, seed: 20250122 }
+  );
+  assert.ok(premiseHeld >= 100, `only ${premiseHeld} cases satisfied the premise`);
+  assert.ok(withWarnHit >= 50, `only ${withWarnHit} cases had a warn hit`);
+});
