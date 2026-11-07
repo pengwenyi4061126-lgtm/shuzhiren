@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import type { InteractionRule, InteractionRuleAction, InteractionRuleFiring, InteractionRuleFiringOutcome, InteractionRuleTrigger, TemplatePolicyFailure } from "@/lib/interaction-rules";
 import { clientFetch } from "@/lib/client-request";
+import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
 import styles from "./interaction-rule-workspace.module.css";
 
 type RunOption = { id: string; showName: string; state: string };
@@ -171,7 +172,7 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
         <label>规则冷却（秒）<input type="number" min={0} max={86400} value={draft.cooldownSeconds} onChange={(event) => setDraft({ ...draft, cooldownSeconds: event.target.value })} required /></label>
         <label>优先级（0–999，越大越优先）<input type="number" min={0} max={999} value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value })} required /></label>
         <label>作用范围<select value={draft.liveRunId} onChange={(event) => setDraft({ ...draft, liveRunId: event.target.value })}><option value="">全部场次</option>{runs.map((run) => <option key={run.id} value={run.id}>{run.showName}（{run.state}）</option>)}</select></label>
-        <label className={styles.wide}>话术模板（每行一条，最多 10 条，运行时随机轮换、不连续重复）<textarea value={draft.templates} onChange={(event) => setDraft({ ...draft, templates: event.target.value })} required placeholder={timer ? "例如：正在为大家介绍{product_name}，当前价格{price}元，以结算页为准。" : "例如：欢迎{nickname}来到直播间！"} /></label>
+        <label className={styles.wide}>话术模板<textarea value={draft.templates} onChange={(event) => setDraft({ ...draft, templates: event.target.value })} required placeholder={timer ? "例如：正在为大家介绍{product_name}，当前价格{price}元，以结算页为准。" : "例如：欢迎{nickname}来到直播间！"} /><ProhibitedTermHints text={draft.templates} context="template" onChange={(templates) => setDraft((current) => ({ ...current, templates }))} /></label>
         <div className={`${styles.wide} ${styles.slots}`}>可用槽位：{slotHints.filter((hint) => !(timer && hint.slot === "{nickname}")).map((hint) => <button key={hint.slot} type="button" title={hint.label} onClick={() => setDraft({ ...draft, templates: `${draft.templates}${hint.slot}` })}>{hint.slot}</button>)}<span>{timer ? "定时与冷场规则没有观众，不能使用 {nickname}。" : "昵称会去除控制字符、截断并做违禁检查。"}</span></div>
       </>}
       <div className={styles.wide}><button className={styles.primary} disabled={busy === "save"} type="submit">{busy === "save" ? "保存中" : editing === "new" ? "提交待审批规则" : "保存"}</button></div>

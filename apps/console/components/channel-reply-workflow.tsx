@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { clientFetch } from "@/lib/client-request";
 import type { ChannelReplyDraft } from "@/lib/channel-replies";
 import type { LiveInteraction } from "@/lib/interactions";
+import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
 
 type Props = { runId: string; canOperate: boolean; canReview: boolean };
 
@@ -62,7 +63,7 @@ export function ChannelReplyWorkflow({ runId, canOperate, canReview }: Props) {
     <div className="panel-header"><div><h2>渠道人工回复</h2><span>仅渠道入站互动进入发送闭环</span></div><Send size={18} /></div>
     {error ? <p className="command-error" role="alert">回复未执行：{error}</p> : null}
     <div className="queue-list">{channelInteractions.length ? channelInteractions.map((item) => <button className={selected?.id === item.id ? "question selected" : "question"} key={item.id} type="button" onClick={() => setSelectedId(item.id)}><span className={`risk ${item.risk}`}>{drafts.find((draft) => draft.interactionId === item.id)?.status ?? "待建草稿"}</span><strong>{item.text}</strong><small>{item.channelConnectionId}</small></button>) : <div className="queue-empty">暂无来自渠道的待回复互动</div>}</div>
-    {selected ? <div className="handoff-box"><ShieldCheck size={16} /><div><span>{draft ? `回复状态：${draft.status}` : "填写正文后创建可审计草稿"}</span><textarea aria-label="渠道回复正文" value={body} maxLength={1000} disabled={!canOperate || Boolean(draft && draft.status !== "draft")} onChange={(event) => setBody(event.target.value)} placeholder="输入要发送到来源渠道的回复" /></div>
+    {selected ? <div className="handoff-box"><ShieldCheck size={16} /><div><span>{draft ? `回复状态：${draft.status}` : "填写正文后创建可审计草稿"}</span><textarea aria-label="渠道回复正文" value={body} maxLength={1000} disabled={!canOperate || Boolean(draft && draft.status !== "draft")} onChange={(event) => setBody(event.target.value)} placeholder="输入要发送到来源渠道的回复" /><ProhibitedTermHints text={body} context="reply" onChange={setBody} /></div>
       {!draft && canOperate ? <button className="handle-interaction" disabled={!body.trim() || Boolean(busy)} onClick={createDraft} type="button">创建草稿</button> : null}
       {draft?.status === "draft" && canOperate ? <><button className="handle-interaction" disabled={Boolean(busy)} onClick={saveDraft} type="button">保存草稿</button><button className="handle-interaction" disabled={Boolean(busy)} onClick={() => action("submit")} type="button">提交审核</button></> : null}
       {draft?.status === "pending_approval" && canReview ? <><button className="handle-interaction" disabled={Boolean(busy)} onClick={() => action("approve")} type="button">批准发送</button><input aria-label="拒绝原因" value={rejectionReason} maxLength={1000} onChange={(event) => setRejectionReason(event.target.value)} placeholder="拒绝原因" /><button className="handle-interaction" disabled={!rejectionReason.trim() || Boolean(busy)} onClick={reject} type="button">拒绝</button></> : null}

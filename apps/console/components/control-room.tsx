@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Archive, BarChart3, BookOpenCheck, CalendarDays, ChartNoAxesCombined, Clapperboard, CircleStop, Clock3, FileText, Gauge, LoaderCircle, MonitorPlay, Package, PackageCheck, Pause, Play, Radio, RotateCcw, Send, ShieldCheck, SquareStack, UserRoundCheck, Users, UsersRound, Volume2, Zap } from "lucide-react";
+import { AlertTriangle, Archive, BarChart3, BookOpenCheck, CalendarDays, ChartNoAxesCombined, Clapperboard, CircleStop, Clock3, FileText, Gauge, LoaderCircle, MonitorPlay, Package, PackageCheck, Pause, Play, Radio, RotateCcw, Send, ShieldAlert, ShieldCheck, SquareStack, UserRoundCheck, Users, UsersRound, Volume2, Zap } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { LiveCommand, LiveRun, LiveRunState } from "@/lib/domain";
@@ -29,6 +29,7 @@ const navigation: NavigationItem[] = [
   { icon: PackageCheck, label: "发布治理", href: "/releases" },
   { icon: ShieldCheck, label: "知识与策略", href: "/policy" },
   { icon: Zap, label: "互动规则", href: "/interaction-rules" },
+  { icon: ShieldAlert, label: "违禁词库", href: "/prohibited-terms" },
   { icon: ChartNoAxesCombined, label: "运行监控", href: "/monitoring" },
   { icon: BookOpenCheck, label: "运行手册", href: "/runbooks" },
   { icon: BarChart3, label: "经营数据", href: "/analytics" },
