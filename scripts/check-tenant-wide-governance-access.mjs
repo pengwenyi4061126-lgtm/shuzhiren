@@ -13,6 +13,7 @@ const serviceRequirements = {
   "audit.ts": ["listAuditEvents", "verifyAuditChain", "exportAuditEvidence"],
   "control-plane/store.ts": ["createLiveRun"],
   "interaction-rules.ts": ["listInteractionRules", "getInteractionRule", "createInteractionRule", "updateInteractionRule", "disableInteractionRule", "approveInteractionRule", "createDefaultInteractionRules"],
+  "prohibited-terms.ts": ["listProhibitedTerms", "createProhibitedTerm", "updateProhibitedTerm", "retireProhibitedTerm", "requestBuiltinTermOverride", "approveProhibitedTermRevision"],
   "presets.ts": ["adoptPreset"]
 };
 

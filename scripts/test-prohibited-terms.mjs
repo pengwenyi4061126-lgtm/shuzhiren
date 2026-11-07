@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { register } from "node:module";
 import test from "node:test";
 import fc from "fast-check";
 import { canonicalJson } from "../apps/console/lib/canonical-json.mjs";
@@ -11,6 +12,23 @@ import { guardBroadcastText } from "../apps/console/lib/shared/broadcast-guard.m
 import { evaluatePolicy, normalizePolicyText } from "../apps/console/lib/shared/policy-engine.mjs";
 import { BUILTIN_LEXICON, BUILTIN_LEXICON_VERSION } from "../apps/console/lib/shared/prohibited-terms-builtin.mjs";
 import { applySuggestion, compileLexicon, effectiveLexicon, lexiconSha256, normalizeForScan, runtimeLexicon, scanProhibitedTerms, termProblem } from "../apps/console/lib/shared/prohibited-terms.mjs";
+
+register("./lib/console-ts-loader.mjs", import.meta.url);
+for (const name of ["DATABASE_URL", "CONTROL_PLANE_DEMO_MODE"]) delete process.env[name];
+Object.assign(process.env, { CONTROL_PLANE_DEV_HEADER_IDENTITY: "true", NODE_ENV: "development", HOSTNAME: "127.0.0.1" });
+const termService = await import("../apps/console/lib/prohibited-terms.ts");
+const termRoutes = {
+  list: await import("../apps/console/app/api/v1/prohibited-terms/route.ts"),
+  item: await import("../apps/console/app/api/v1/prohibited-terms/[termId]/route.ts"),
+  approve: await import("../apps/console/app/api/v1/prohibited-terms/[termId]/approve/route.ts"),
+  override: await import("../apps/console/app/api/v1/prohibited-terms/builtin/[builtinTermId]/override/route.ts"),
+  scan: await import("../apps/console/app/api/v1/prohibited-terms/scan/route.ts")
+};
+const termHeaders = (role = "admin", actorId = `term-test-${role}`) => ({ "x-tenant-id": "tenant_prohibited_terms_api_test", "x-actor-id": actorId, "x-actor-name": "Prohibited Terms Test", "x-actor-role": role, "content-type": "application/json" });
+const callTermRoute = async (handler, url, { method = "GET", body, role = "admin", actorId, params = {} } = {}) => {
+  const response = await handler(new Request(`http://127.0.0.1${url}`, { method, headers: termHeaders(role, actorId), body: body === undefined ? undefined : JSON.stringify(body) }), { params: Promise.resolve(params) });
+  return { status: response.status, body: await response.json() };
+};
 
 const term = (id, text, severity = "block", suggestions = [], category = "extreme") => ({ id, term: text, category, severity, suggestions });
 const builtinLexicon = compileLexicon(BUILTIN_LEXICON);
@@ -45,6 +63,52 @@ test("no built-in replacement suggestion contains a blocking term", () => {
       assert.deepEqual(scanProhibitedTerms(suggestion, builtinLexicon).filter((finding) => finding.severity === "block"), [], `${entry.id}: ${suggestion}`);
     }
   }
+});
+
+test("tenant prohibited-term routes enforce governance, second approval and scan access", async () => {
+  assert.equal((await callTermRoute(termRoutes.list.GET, "/api/v1/prohibited-terms", { role: "analyst" })).status, 200);
+  assert.equal((await callTermRoute(termRoutes.list.POST, "/api/v1/prohibited-terms", { method: "POST", role: "operator", body: { term: "角色测试词" } })).status, 403);
+  const auditCount = globalThis.shuzhirenAuditStore?.events.length ?? 0;
+  assert.equal((await callTermRoute(termRoutes.scan.POST, "/api/v1/prohibited-terms/scan", { method: "POST", role: "analyst", body: { text: "全 网 最 低", context: "script" } })).status, 200);
+  assert.equal(globalThis.shuzhirenAuditStore?.events.length ?? 0, auditCount, "high-frequency scans do not write audit events");
+  assert.equal((await callTermRoute(termRoutes.scan.POST, "/api/v1/prohibited-terms/scan", { method: "POST", body: { text: "x".repeat(2001), context: "script" } })).status, 422);
+
+  const created = await callTermRoute(termRoutes.list.POST, "/api/v1/prohibited-terms", { method: "POST", body: { term: "专属审批测试词", suggestions: ["日常用语"] }, actorId: "term-author" });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.data.id;
+  assert.equal(created.body.data.revisions[0].status, "pending");
+  assert.equal(termService.currentDemoLexicon("tenant_prohibited_terms_api_test").some((entry) => entry.normalized === "专属审批测试词"), false);
+  assert.equal((await callTermRoute(termRoutes.approve.POST, "/approve", { method: "POST", params: { termId: id }, actorId: "term-author" })).status, 200);
+
+  assert.equal((await callTermRoute(termRoutes.override.PUT, "/override", { method: "PUT", params: { builtinTermId: "builtin:extreme:001" }, body: { disabled: true, reason: "太短" } })).status, 400);
+  assert.equal((await callTermRoute(termRoutes.item.DELETE, "/term", { method: "DELETE", params: { termId: id }, body: { reason: "太短" } })).status, 400);
+  const requested = await callTermRoute(termRoutes.item.PUT, "/term", { method: "PUT", params: { termId: id }, body: { severity: "warn", reason: "由管理员申请降低拦截级别" }, actorId: "term-author" });
+  assert.equal(requested.status, 200, JSON.stringify(requested.body));
+  const selfApproval = await callTermRoute(termRoutes.approve.POST, "/approve", { method: "POST", params: { termId: id }, actorId: "term-author" });
+  assert.equal(selfApproval.status, 409);
+  assert.equal(selfApproval.body.error, "prohibited_term_second_approver_required");
+  assert.equal((await callTermRoute(termRoutes.approve.POST, "/approve", { method: "POST", role: "reviewer", params: { termId: id }, actorId: "term-reviewer" })).status, 200);
+
+  const restricted = { tenantId: "tenant_prohibited_terms_restricted", actorId: "restricted-operator", actorName: "Restricted", role: "operator", accessScope: "restricted" };
+  assert.equal((await termService.scanProhibitedTermText(restricted, "普通文本")).findings.length, 0);
+  await assert.rejects(termService.listProhibitedTerms(restricted), (error) => error instanceof Response && error.status === 403);
+});
+
+test("Property 18: saved suggestions never contain a currently blocking term", async () => {
+  let sequence = 0;
+  await fc.assert(fc.asyncProperty(fc.string({ minLength: 1, maxLength: 8 }), fc.boolean(), async (surrounding, insertBlockTerm) => {
+    const suggestion = insertBlockTerm ? `可用${surrounding}全 网 最 低替代` : `可用${surrounding}替代`;
+    const containsBlockTerm = scanProhibitedTerms(suggestion, builtinLexicon).some((finding) => finding.severity === "block");
+    const rowCountBefore = globalThis.shuzhirenProhibitedTermStore?.rows.get("tenant_prohibited_terms_api_test")?.length ?? 0;
+    const revisionCountBefore = globalThis.shuzhirenProhibitedTermStore?.revisions.get("tenant_prohibited_terms_api_test")?.length ?? 0;
+    const result = await callTermRoute(termRoutes.list.POST, "/api/v1/prohibited-terms", { method: "POST", body: { term: `属性测试自定义词${sequence++}`, suggestions: [suggestion] }, actorId: "property-author" });
+    assert.equal(result.status, containsBlockTerm ? 422 : 201, JSON.stringify({ suggestion, containsBlockTerm, result }));
+    if (containsBlockTerm) {
+      assert.equal(result.body.error, "prohibited_term_suggestion_blocked");
+      assert.equal(globalThis.shuzhirenProhibitedTermStore.rows.get("tenant_prohibited_terms_api_test").length, rowCountBefore);
+      assert.equal(globalThis.shuzhirenProhibitedTermStore.revisions.get("tenant_prohibited_terms_api_test").length, revisionCountBefore);
+    }
+  }), { numRuns: 100, seed: 180055 });
 });
 
 test("scanProhibitedTerms maps an obfuscated hit back to the original range and applySuggestion edits it", () => {
