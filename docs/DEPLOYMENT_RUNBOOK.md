@@ -479,11 +479,11 @@ Runtime Gateway 接受两个令牌，作用范围不同（`runtime/gateway/app.p
 
 ### 2.14 互动规则（迁移 084）
 
-互动规则按观众进场（`viewer_enter`）、关注（`follow`）、礼物（`gift`）、评论关键词（`keyword`）、定时（`timed`）和冷场（`idle_comment`）自动生成话术，用于欢迎、答谢、定时商品口播和固定间隔的互动提示。控制台页面为 `/interaction-rules`，接口为 `/api/v1/interaction-rules`（列表、创建）、`/api/v1/interaction-rules/{ruleId}`（读取、`PATCH` 更新、`DELETE` 停用）、`/api/v1/interaction-rules/{ruleId}/approve`、`/api/v1/interaction-rules/defaults`（一键创建默认规则）和 `/api/v1/live-runs/{runId}/rule-firings`（场次触发记录）。
+互动规则按观众进场（`viewer_enter`）、关注（`follow`）、礼物（`gift`）、评论关键词（`keyword`）、知识库问答（`faq`）、定时（`timed`）和冷场（`idle_comment`）七种触发类型生成话术，用于欢迎、答谢、定时商品口播和受控互动。控制台页面为 `/interaction-rules`，接口为 `/api/v1/interaction-rules`（列表、创建）、`/api/v1/interaction-rules/{ruleId}`（读取、`PATCH` 更新、`DELETE` 停用）、`/api/v1/interaction-rules/{ruleId}/approve`、`/api/v1/interaction-rules/defaults`（一键创建默认规则）和 `/api/v1/live-runs/{runId}/rule-firings`（场次触发记录）。
 
 **审批与生效。** 规则创建时为待审批。审批（admin、reviewer）把每条模板用示例值（昵称“这位朋友”、商品“示例商品”、价格“99.00”）渲染后交给策略引擎，并带上租户最新批准的策略包规则；任一模板的判定不是“可回答”，审批即被拒绝。修改触发方式、匹配条件、模板、动作或作用范围会让规则回到待审批；修改冷却、间隔、优先级和启停不需要重新审批。规则不能删除（触发记录引用它），只能停用。
 
-**AI 身份提示。** 默认规则包含“AI 身份提示”（每 600 秒播报一次“温馨提示：我是AI数字人主播……”，优先级 1000），这是 AIGC 标识的语音部分。数据库触发器禁止停用它、修改它的话术、冷却和优先级，只允许在 60 到 1800 秒之间调整间隔；每个租户至多一条。默认规则只在点击“一键创建默认规则”时按租户写入（代码中的模板，不是全局种子数据），同样需要审批后才播报。上线前确认该规则已批准；预检目前不检查它（见下文“未覆盖项”）。
+**AI 身份提示。** 六条默认规则包含“AI 身份提示”（每 600 秒播报一次“温馨提示：我是AI数字人主播……”，优先级 1000），这是 AIGC 标识的语音部分。数据库触发器禁止停用它、修改它的话术、冷却和优先级，只允许在 60 到 1800 秒之间调整间隔；每个租户至多一条。默认规则只在点击“一键创建默认规则”时按租户写入（代码中的模板，不是全局种子数据），同样需要审批后才播报。预检项 `ai_disclosure_rule` 会在规则缺失、未启用或未批准时阻止 arm 与 START；`deploy:check` 也拒绝运行时 `INTERACTION_RULES_ENABLED=false`。
 
 **执行位置。** 规则由 `apps/runtime-worker` 评估（`interaction-rules.mjs`，与投递循环独立的循环，默认每 2 秒一轮）。理由：Worker 已是唯一在无人操作时排队运行时命令的长驻进程（定时开播、遥测看门狗、计量），并持有 `speech.dispatch` 的写入与投递；Channel_Adapter 只做验签和转发，不带定时器，也不持有场次数据权限。每轮只处理状态为 `LIVE`、已绑定运行时会话、且有已批准启用规则的场次，并对场次行加 `for no key update skip locked` 锁，多个 Worker 同时运行时同一场次只由一个评估。
 
@@ -499,7 +499,19 @@ Runtime Gateway 接受两个令牌，作用范围不同（`runtime/gateway/app.p
 
 **外部工作（未完成）。** 真实接入抖音的进场、关注、礼物和评论事件需要抖音开放平台的直播互动数据权限（应用审核、主播授权和事件推送），这是外部工作，本仓库没有实现，也不能声称已接通。当前用既有的归一化 Webhook 模拟通道测试：按 `CHANNEL_ADAPTER_TARGETS` 的签名密钥对 `{"kind":"viewer_event","runId":"…","eventType":"viewer_enter","viewerId":"u1","viewerNickname":"小明"}` 签名后发送到 `/v1/webhooks/{channelConnectionId}`。
 
-**未覆盖项。** 预检不检查 AI 身份提示规则是否已批准。与控制台人工插播不同，Worker 不逐条重新检查冻结的肖像、商品视频、音乐授权和模型发布包（与定时开播相同，只检查声线绑定）；撤销这些授权时，控制面把关联的 `LIVE` 场次隔离到 `DEGRADED`（第 6 节），规则只在 `LIVE` 场次评估，因此随之停止。
+**执行边界。** 与控制台人工插播不同，Worker 不逐条重新检查冻结的肖像、商品视频、音乐授权和模型发布包（与定时开播相同，只检查声线绑定）；撤销这些授权时，控制面把关联的 `LIVE` 场次隔离到 `DEGRADED`（第 6 节），规则只在 `LIVE` 场次评估，因此随之停止。
+
+### 2.15 迁移 085–090：话术版本、知识库、违禁词与画面层
+
+**部署影响。** 本次升级包含迁移 085–090。迁移完成后，按 2.9 节重新执行三个授权脚本，使 runtime-worker 获得新增表和列所需的最小权限。LiveTalking 镜像必须包含 `livetalking-overlay.patch`；Runtime Compose 将主机背景目录只读挂载为 `overlay-assets`。可选环境变量 `SHUZHIREN_OVERLAY_ASSET_DIR` 必须是主机上的绝对路径，目录中的文件名使用素材内容的十六进制 SHA-256；容器从只读卷按场景中的 `assetSha256` 读取背景。
+
+**话术变体与轮换。** 每个可播节目段最多保存 4 个额外版本。批准后版本随修订冻结；START、RECOVER、定时开播与段落切换按确定性轮换选择允许版本，并把选择写入只追加的 `live_run_script_plays` 账本。控制台通过 `/api/v1/live-runs/{runId}/script-plays` 查看记录。提交或批准时每个版本都接受违禁词检查；运行时若全部版本被拦截，人工命令以 409 拒绝，定时开播清除 `scheduled_at`、不写开播 outbox 并生成 `program_script_blocked` 告警。场控应修订并重新审批话术后再安排开播，不应手工清除告警来绕过检查。
+
+**知识库问答。** 知识条目先由编辑者提交，再由另一名审批者批准；答案修订后旧批准失效。检索以中文二元组重叠和关键词/别名补充，不包含同义词模型；运营人员应为常见说法显式维护关键词与别名。`faq_answer` 默认规则生成需人工提交和批准的回复草稿，不会自动发送。没有足够匹配或结果含歧义时不回答。若部署保留文档导入，导入只用于产生待审核条目，不能绕过条目审批。
+
+**违禁词库。** 内置词表是示例，不是经法务审定的正式词表（EP-18）。租户可以按治理流程覆盖词条；放宽或停用阻断规则的变更需要第二名审批者。节目修订批准时冻结当时词表，播报前检查取修订冻结词表与当前已批准词表的并集，因此后来新增的阻断词立即生效，当前停用也不会解除修订快照中的阻断词。
+
+**画面层与 4090 核验步骤。** 背景素材以其内容的 64 位十六进制 SHA-256 命名放入 `overlay-assets` 只读卷，文件内容哈希必须等于冻结场景的 `assetSha256`。读取 `GET /api/admin/overlay` 的配置与合成状态，并核对 Gateway `/healthz` 中 `dependencies.livetalking.overlay.supported` 和 `aigc_position`；能力缺失或健康读取失败时，开播预检失败关闭。4090 与抖音观看端的逐项检查必须覆盖：各图层的位置和相互遮挡；AIGC 角标始终可见；字幕与语音同步（包括打断与排队）；`canvas` 与 `chroma_key` 两种背景；全部图层开启时的输出帧率。每项都分别检查推流画面与录制文件并留存证据。`apps/output-probe` 只测流参数与音频活动，不读取画面内容，不能代替 RW-000-22 的人工画面核验。
 
 ## 3. 备份与恢复演练
 
