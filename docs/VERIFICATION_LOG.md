@@ -4097,3 +4097,33 @@ skipped 步骤数: "0"
     未执行的 CI 检查:
       - { job: GitHub Actions, 名称: 本提交对应的 CI_Pipeline 运行, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
 ```
+
+## V-20261108-04 知识条目控制台服务与路由通过本机验证
+
+```yaml
+编号: V-20261108-04
+类型: 结论
+结论: 任务 10.7 知识条目服务与路由的本机演示模式、静态和行为检查通过；数据库集成待计划中的推送后 CI
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: cbca14fc35389587fbb8b28478896a77186544fb
+    检查:
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: knowledge:test, 标签: behavioral }
+      - { 名称: governance:tenant-scope:check, 标签: static }
+      - { 名称: membership:authz:check, 标签: static }
+      - { 名称: console:client-requests:check, 标签: static }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: npm run postgres:integration, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+静态门禁覆盖:
+  - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
+  - { 门禁: membership:authz:check, 行为测试: [无] }
+  - { 门禁: console:client-requests:check, 行为测试: [无] }
+```
