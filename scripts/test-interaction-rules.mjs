@@ -257,6 +257,15 @@ describe("console rule validation and approval", () => {
     assert.match(consoleRules.ruleShapeError(input({ triggerType: "timed", intervalSeconds: 300 })), /不能使用 \{nickname\}/);
     assert.match(consoleRules.ruleShapeError(input({ triggerType: "timed", templates: ["介绍{product_name}"] })), /间隔/);
     assert.match(consoleRules.ruleShapeError(input({ triggerType: "keyword" })), /关键词/);
+    const faq = (overrides = {}) => input({ triggerType: "faq", action: "reply_draft", matchConfig: { minScorePermille: 600 }, templates: ["{nickname}，{faq_answer}"], ...overrides });
+    assert.equal(consoleRules.parseInteractionRuleInput({ name: "知识库问答", triggerType: "faq", matchConfig: { minScorePermille: 600 }, action: "reply_draft", templates: ["{faq_answer}"] }).matchConfig.minScorePermille, 600);
+    assert.match(consoleRules.ruleShapeError(faq({ matchConfig: { minScorePermille: 299 } })), /阈值/);
+    assert.match(consoleRules.ruleShapeError(faq({ matchConfig: { minScorePermille: 1001 } })), /阈值/);
+    assert.match(consoleRules.ruleShapeError(faq({ templates: ["没有答案槽"] })), /恰好包含一次/);
+    assert.match(consoleRules.ruleShapeError(faq({ templates: ["{faq_answer}{faq_answer}"] })), /恰好包含一次/);
+    assert.match(consoleRules.ruleShapeError(faq({ templates: ["{faq_answer}{price}"] })), /不能使用/);
+    assert.match(consoleRules.ruleShapeError(input({ templates: ["{faq_answer}"] })), /只有知识库问答规则/);
+    assert.match(consoleRules.ruleShapeError(input({ matchConfig: { minScorePermille: 600 } })), /只有知识库问答规则/);
     assert.match(consoleRules.ruleShapeError(input({ triggerType: "timed", templates: ["x"], intervalSeconds: 300, action: "reply_draft" })), /只能语音播报/);
     assert.match(consoleRules.ruleShapeError(input({ priority: 1000 })), /优先级/);
     assert.match(consoleRules.ruleShapeError(input({ templates: ["欢迎{name}"] })), /槽位/);
@@ -273,6 +282,10 @@ describe("console rule validation and approval", () => {
     assert.equal(ai.intervalSeconds, 600);
     assert.equal(ai.priority, 1000);
     assert.ok(ai.templates.every((template) => template.includes("AI")));
+    const faq = consoleRules.defaultInteractionRules.find((preset) => preset.defaultKey === "faq_answer");
+    assert.deepEqual([faq.triggerType, faq.action, faq.priority, faq.cooldownSeconds, faq.matchConfig.minScorePermille], ["faq", "reply_draft", 50, 30, 600]);
+    assert.ok(faq.templates.every((template) => (template.match(/\{faq_answer\}/g) ?? []).length === 1));
+    assert.equal(consoleRules.approvalSampleSlots.faq_answer, "请以订单页面显示的信息为准。");
   });
 });
 
@@ -285,10 +298,12 @@ describe("console API (demo mode)", () => {
   test("defaults are created once, pending approval, and approval runs the policy check", async () => {
     const first = await call(routes.defaults.POST, "/api/v1/interaction-rules/defaults", { method: "POST" });
     assert.equal(first.status, 201);
-    assert.equal(first.body.data.created.length, 5);
+    assert.equal(first.body.data.created.length, 6);
     assert.ok(first.body.data.created.every((created) => created.approval === "pending"));
+    const faq = first.body.data.created.find((created) => created.defaultKey === "faq_answer");
+    assert.deepEqual([faq.triggerType, faq.action, faq.priority, faq.approval], ["faq", "reply_draft", 50, "pending"]);
     const second = await call(routes.defaults.POST, "/api/v1/interaction-rules/defaults", { method: "POST" });
-    assert.deepEqual([second.status, second.body.data.created.length, second.body.data.existing], [200, 0, 5]);
+    assert.deepEqual([second.status, second.body.data.created.length, second.body.data.existing], [200, 0, 6]);
     const ai = first.body.data.created.find((created) => created.defaultKey === "ai_disclosure");
     const approved = await call(routes.approve.POST, "/approve", { method: "POST", params: { ruleId: ai.id } });
     assert.equal(approved.body.data.approval, "approved");
@@ -436,7 +451,7 @@ describe("console broadcast guard and runtime lexicon", () => {
 
 // Module A (live-commerce-p1-features, Requirement 1.2, 1.3, 1.5, 1.9): in demo mode the preflight reads the in-memory
 // rule store of the run's tenant and never injects an approved AI disclosure rule. The tenant is dedicated to this block,
-// so the "five default rules on first creation" assertions above stay valid whatever the test order.
+// so the "six default rules on first creation" assertions above stay valid whatever the test order.
 describe("demo-mode AI disclosure preflight", () => {
   const tenantId = "tenant_rules_preflight";
   const runId = "00000000-0000-4000-8000-0000000000f1"; // telemetry lookups require a UUID run id, also in demo mode
@@ -478,7 +493,7 @@ describe("demo-mode AI disclosure preflight", () => {
 
       const created = await call(routes.defaults.POST, "/api/v1/interaction-rules/defaults", { method: "POST" });
       assert.equal(created.status, 201);
-      assert.equal(created.body.data.created.length, 5);
+      assert.equal(created.body.data.created.length, 6);
       state = await aiCheck();
       assert.deepEqual([state.check.status, state.check.detail], ["blocked", blockedDetail.pending]);
       const stillRefused = await arm();

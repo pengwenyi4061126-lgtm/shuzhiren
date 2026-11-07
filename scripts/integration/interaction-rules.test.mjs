@@ -94,7 +94,7 @@ describe("defaults, approval and the speech path", () => {
   test("approved defaults speak the AI disclosure first, then the timed product line and a welcome, with the frozen voice and product", async () => {
     const f = await fixture();
     const { created } = await consoleRules.createDefaultInteractionRules(f.context);
-    assert.equal(created.length, 5);
+    assert.equal(created.length, 6);
     assert.equal((await consoleRules.createDefaultInteractionRules(f.context)).created.length, 0, "default creation is idempotent per tenant");
     const run = evaluator(f.tenantId);
     assert.equal((await run.runOnce()).recorded, 0, "pending rules never fire");

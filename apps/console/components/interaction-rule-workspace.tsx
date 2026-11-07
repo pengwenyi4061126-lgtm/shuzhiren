@@ -9,25 +9,26 @@ import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
 import styles from "./interaction-rule-workspace.module.css";
 
 type RunOption = { id: string; showName: string; state: string };
-type Draft = { name: string; triggerType: InteractionRuleTrigger; action: InteractionRuleAction; keywords: string; minGiftYuan: string; intervalSeconds: string; cooldownSeconds: string; priority: string; liveRunId: string; templates: string };
+type Draft = { name: string; triggerType: InteractionRuleTrigger; action: InteractionRuleAction; keywords: string; minGiftYuan: string; minScorePermille: string; intervalSeconds: string; cooldownSeconds: string; priority: string; liveRunId: string; templates: string };
 type ApiError = { error?: string; detail?: string; failures?: TemplatePolicyFailure[] };
 
-const triggerLabel: Record<InteractionRuleTrigger, string> = { viewer_enter: "欢迎进场", follow: "感谢关注", gift: "礼物答谢", keyword: "关键词回复", timed: "定时口播", idle_comment: "冷场互动" };
+const triggerLabel: Record<InteractionRuleTrigger, string> = { viewer_enter: "欢迎进场", follow: "感谢关注", gift: "礼物答谢", keyword: "关键词回复", faq: "知识库问答", timed: "定时口播", idle_comment: "冷场互动" };
 const actionLabel: Record<InteractionRuleAction, string> = { speak: "语音播报", reply_draft: "生成回复草稿（需人工审批发送）" };
 const outcomeLabel: Record<InteractionRuleFiringOutcome, string> = { speech_queued: "已排队播报", reply_drafted: "已生成草稿", policy_blocked: "策略拦截", suppressed: "限流跳过", unavailable: "条件不满足" };
 const reasonLabel: Record<string, string> = {
-  rule_cooldown: "规则冷却中", viewer_cooldown: "同一观众冷却中", global_speech_interval: "距上次播报不足最小间隔", speech_pending: "上一条语音尚未送达", media_command_pending: "节目指令待送达",
+  rule_cooldown: "规则冷却中", viewer_cooldown: "同一观众冷却中", faq_ambiguous: "知识库匹配存在歧义", global_speech_interval: "距上次播报不足最小间隔", speech_pending: "上一条语音尚未送达", media_command_pending: "节目指令待送达",
   program_transition_pending: "节目切换待确认", speech_budget_used: "本轮已播报一条", no_reply_channel: "互动不来自渠道", reply_draft_exists: "该互动已有回复草稿",
   policy_profile_inactive: "场次策略包未生效", product_unavailable: "冻结商品版本不可用", voice_unavailable: "冻结声线不可用"
 };
 const slotHints = [
   { slot: "{nickname}", label: "观众昵称（清洗后；不通过时读作“这位朋友”）" },
   { slot: "{product_name}", label: "场次冻结的已批准商品名" },
-  { slot: "{price}", label: "已批准商品价格（元）" }
+  { slot: "{price}", label: "已批准商品价格（元）" },
+  { slot: "{faq_answer}", label: "唯一命中的已批准知识库答案" }
 ];
 const timerTriggers: InteractionRuleTrigger[] = ["timed", "idle_comment"];
 const aiDisclosureBounds = { min: 60, max: 1800 };
-const emptyDraft: Draft = { name: "", triggerType: "viewer_enter", action: "speak", keywords: "", minGiftYuan: "", intervalSeconds: "300", cooldownSeconds: "60", priority: "100", liveRunId: "", templates: "" };
+const emptyDraft: Draft = { name: "", triggerType: "viewer_enter", action: "speak", keywords: "", minGiftYuan: "", minScorePermille: "600", intervalSeconds: "300", cooldownSeconds: "60", priority: "100", liveRunId: "", templates: "" };
 const errorText: Record<string, string> = {
   invalid_interaction_rule: "规则字段不完整或格式不正确", interaction_rule_template_policy_blocked: "模板未通过策略检查", ai_disclosure_rule_protected: "AI 身份提示规则不可停用，只能调整间隔",
   live_run_not_found: "所选场次不存在", interaction_rule_rejected: "规则操作被拒绝", interaction_rule_approval_rejected: "规则审批被拒绝", interaction_rule_defaults_rejected: "默认规则创建被拒绝", rule_firings_rejected: "触发记录读取被拒绝"
@@ -75,7 +76,7 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
     setEditing(rule);
     setDraft(rule === "new" ? emptyDraft : {
       name: rule.name, triggerType: rule.triggerType, action: rule.action, keywords: (rule.matchConfig.keywords ?? []).join("，"),
-      minGiftYuan: rule.matchConfig.minGiftValueCents !== undefined ? String(rule.matchConfig.minGiftValueCents / 100) : "", intervalSeconds: String(rule.intervalSeconds ?? 300),
+      minGiftYuan: rule.matchConfig.minGiftValueCents !== undefined ? String(rule.matchConfig.minGiftValueCents / 100) : "", minScorePermille: String(rule.matchConfig.minScorePermille ?? 600), intervalSeconds: String(rule.intervalSeconds ?? 300),
       cooldownSeconds: String(rule.cooldownSeconds), priority: String(rule.priority), liveRunId: rule.liveRunId ?? "", templates: rule.templates.join("\n")
     });
   }
@@ -83,7 +84,7 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
   function body() {
     if (aiDisclosure) return { intervalSeconds: Number(draft.intervalSeconds) };
     const keywords = draft.keywords.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
-    const matchConfig = draft.triggerType === "keyword" ? { keywords } : draft.triggerType === "gift" && draft.minGiftYuan.trim() ? { minGiftValueCents: Math.round(Number(draft.minGiftYuan) * 100) } : {};
+    const matchConfig = draft.triggerType === "keyword" ? { keywords } : draft.triggerType === "gift" && draft.minGiftYuan.trim() ? { minGiftValueCents: Math.round(Number(draft.minGiftYuan) * 100) } : draft.triggerType === "faq" ? { minScorePermille: Number(draft.minScorePermille) } : {};
     return {
       name: draft.name, triggerType: draft.triggerType, action: timer ? "speak" : draft.action, matchConfig,
       templates: draft.templates.split("\n").map((line) => line.trim()).filter(Boolean),
@@ -149,7 +150,7 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
   return <main className={styles.page}>
     <Link className="back-link" href="/"><ArrowLeft size={16} />返回指挥台</Link>
     <header className={styles.top}>
-      <div><p>直播互动</p><h1>互动规则</h1><span>按观众进场、关注、礼物、评论关键词和定时器自动生成话术。规则模板经审批后生效；每次触发都会再次通过策略检查，只使用场次冻结的商品版本和声线，并受全局播报间隔、观众冷却和规则冷却限制。</span></div>
+      <div><p>直播互动</p><h1>互动规则</h1><span>按观众进场、关注、礼物、评论关键词、知识库与定时器生成话术。规则模板经审批后生效；每次触发都会再次通过策略检查，并受全局播报间隔、观众冷却和规则冷却限制。</span></div>
       {canManage ? <div className={styles.toolbar}>
         <button className={styles.secondary} type="button" disabled={busy === "defaults"} onClick={createDefaults}><Sparkles size={16} />{busy === "defaults" ? "创建中" : "一键创建默认规则"}</button>
         <button className={styles.primary} type="button" onClick={() => startEdit("new")}><Plus size={16} />新建规则</button>
@@ -167,6 +168,7 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
         <label>触发方式<select value={draft.triggerType} onChange={(event) => setDraft({ ...draft, triggerType: event.target.value as InteractionRuleTrigger })}>{(Object.keys(triggerLabel) as InteractionRuleTrigger[]).map((trigger) => <option key={trigger} value={trigger}>{triggerLabel[trigger]}</option>)}</select></label>
         <label>动作<select value={timer ? "speak" : draft.action} disabled={timer} onChange={(event) => setDraft({ ...draft, action: event.target.value as InteractionRuleAction })}>{(Object.keys(actionLabel) as InteractionRuleAction[]).map((action) => <option key={action} value={action}>{actionLabel[action]}</option>)}</select></label>
         {draft.triggerType === "keyword" ? <label className={styles.wide}>关键词（逗号分隔，命中任一即触发；只回复策略判定为可回答的评论）<input value={draft.keywords} onChange={(event) => setDraft({ ...draft, keywords: event.target.value })} required placeholder="例如：发货，几天到" /></label> : null}
+        {draft.triggerType === "faq" ? <label>知识库匹配阈值（300–1000）<input type="number" min={300} max={1000} step={1} value={draft.minScorePermille} onChange={(event) => setDraft({ ...draft, minScorePermille: event.target.value })} required /><span>模板须恰好包含一次 {"{faq_answer}"}；有歧义的命中不会自动生成回答。</span></label> : null}
         {draft.triggerType === "gift" ? <label>礼物最低价值（元，可选）<input type="number" min={0} step="0.01" value={draft.minGiftYuan} onChange={(event) => setDraft({ ...draft, minGiftYuan: event.target.value })} /></label> : null}
         {timer ? <label>{draft.triggerType === "timed" ? "播报间隔（秒）" : "无评论多久后提示（秒）"}<input type="number" min={60} max={86400} value={draft.intervalSeconds} onChange={(event) => setDraft({ ...draft, intervalSeconds: event.target.value })} required /></label> : null}
         <label>规则冷却（秒）<input type="number" min={0} max={86400} value={draft.cooldownSeconds} onChange={(event) => setDraft({ ...draft, cooldownSeconds: event.target.value })} required /></label>
@@ -186,6 +188,7 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
             {rule.intervalSeconds ? <span>每 {rule.intervalSeconds} 秒</span> : null}<span>冷却 {rule.cooldownSeconds} 秒</span><span>优先级 {rule.priority}</span>
             {rule.matchConfig.keywords ? <span>关键词：{rule.matchConfig.keywords.join("、")}</span> : null}
             {rule.matchConfig.minGiftValueCents ? <span>礼物 ≥ ¥{(rule.matchConfig.minGiftValueCents / 100).toFixed(2)}</span> : null}
+            {rule.matchConfig.minScorePermille !== undefined ? <span>知识库阈值 {rule.matchConfig.minScorePermille}</span> : null}
             <span>{rule.liveRunId ? `仅场次 ${runs.find((run) => run.id === rule.liveRunId)?.showName ?? rule.liveRunId.slice(0, 8)}` : "全部场次"}</span>
             {rule.defaultKey === "ai_disclosure" ? <span className={styles.locked}><Lock size={11} /> AIGC 合规 · 不可停用</span> : null}
           </div>
@@ -199,7 +202,7 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
         </div>
         <ol className={styles.templates}>{rule.templates.map((template, index) => <li key={index}>{template}</li>)}</ol>
       </article>)}
-      {!rules.length ? <div className={styles.empty}>尚无互动规则。可以一键创建欢迎、关注感谢、礼物答谢、定时商品口播和 AI 身份提示等默认规则，审批后生效。</div> : null}
+      {!rules.length ? <div className={styles.empty}>尚无互动规则。可以一键创建欢迎、关注感谢、礼物答谢、定时商品口播、AI 身份提示和知识库问答等默认规则，审批后生效。</div> : null}
     </section>
     <section className={styles.firings} aria-label="触发记录">
       <div className={styles.firingsHead}><h2><ListChecks size={16} /> 触发记录</h2>
@@ -207,14 +210,14 @@ export function InteractionRuleWorkspace({ initialRules, runs, canManage, canApp
       </div>
       {firingsError ? <p className="catalog-error" role="alert">{firingsError}</p> : null}
       {firings.length ? <table className={styles.table}>
-        <thead><tr><th>时间</th><th>规则</th><th>触发</th><th>结果</th><th>原因</th><th>模板 / 文本哈希</th></tr></thead>
+        <thead><tr><th>时间</th><th>规则</th><th>触发</th><th>结果</th><th>原因</th><th>模板 / 依据</th></tr></thead>
         <tbody>{firings.map((firing) => <tr key={firing.id}>
           <td>{new Date(firing.createdAt).toLocaleString("zh-CN")}</td>
           <td>{firing.ruleName || ruleNames.get(firing.ruleId) || firing.ruleId.slice(0, 8)}</td>
           <td><code>{firing.triggerKey.startsWith("interaction:") ? "互动" : firing.triggerKey.startsWith("idle:") ? "冷场" : "定时"}</code></td>
           <td>{outcomeLabel[firing.outcome]}</td>
           <td>{firing.outcomeReason ? reasonLabel[firing.outcomeReason] ?? firing.outcomeReason : "—"}</td>
-          <td>{firing.templateIndex !== undefined ? `#${firing.templateIndex + 1}` : "—"} {firing.renderedTextSha256 ? <code>{firing.renderedTextSha256.slice(0, 12)}</code> : null}</td>
+          <td>{firing.templateIndex !== undefined ? `#${firing.templateIndex + 1}` : "—"} {firing.renderedTextSha256 ? <code>{firing.renderedTextSha256.slice(0, 12)}</code> : null}{firing.knowledgeApprovalId ? <><br /><code title={firing.knowledgeApprovalId}>知识批准 {firing.knowledgeApprovalId.slice(0, 8)}</code></> : null}</td>
         </tr>)}</tbody>
       </table> : <div className={styles.empty}>{runId ? "该场次暂无触发记录。" : "选择场次后查看触发记录。"}</div>}
     </section>

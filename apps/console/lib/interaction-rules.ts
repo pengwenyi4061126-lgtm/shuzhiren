@@ -14,11 +14,11 @@ import type { LexiconTerm } from "@/lib/shared/prohibited-terms.mjs";
 // existing speech.dispatch outbox or as channel reply drafts. Approval runs every template through the policy
 // engine; the worker checks the rendered line again with the run's bound policy profile.
 
-export type InteractionRuleTrigger = "viewer_enter" | "follow" | "gift" | "keyword" | "timed" | "idle_comment";
+export type InteractionRuleTrigger = "viewer_enter" | "follow" | "gift" | "keyword" | "faq" | "timed" | "idle_comment";
 export type InteractionRuleAction = "speak" | "reply_draft";
 export type InteractionRuleApproval = "pending" | "approved";
-export type InteractionRuleDefaultKey = "welcome" | "follow_thanks" | "gift_thanks" | "timed_product" | "ai_disclosure";
-export type InteractionRuleMatchConfig = { keywords?: string[]; minGiftValueCents?: number };
+export type InteractionRuleDefaultKey = "welcome" | "follow_thanks" | "gift_thanks" | "timed_product" | "ai_disclosure" | "faq_answer";
+export type InteractionRuleMatchConfig = { keywords?: string[]; minGiftValueCents?: number; minScorePermille?: number };
 export type InteractionRule = {
   id: string; tenantId: string; liveRunId?: string; name: string; triggerType: InteractionRuleTrigger; matchConfig: InteractionRuleMatchConfig;
   templates: string[]; action: InteractionRuleAction; cooldownSeconds: number; intervalSeconds?: number; priority: number; enabled: boolean;
@@ -32,16 +32,16 @@ export type InteractionRulePatch = Partial<Omit<InteractionRuleInput, "liveRunId
 export type InteractionRuleFiringOutcome = "speech_queued" | "reply_drafted" | "policy_blocked" | "suppressed" | "unavailable";
 export type InteractionRuleFiring = {
   id: string; ruleId: string; ruleName: string; runId: string; interactionId?: string; triggerKey: string; templateIndex?: number;
-  renderedTextSha256?: string; outcome: InteractionRuleFiringOutcome; outcomeReason?: string; outboxEventId?: string; createdAt: string;
+  renderedTextSha256?: string; outcome: InteractionRuleFiringOutcome; outcomeReason?: string; outboxEventId?: string; knowledgeApprovalId?: string; createdAt: string;
 };
 export type TemplatePolicyFailure = { index: number; text: string; decision: PolicyDecision["action"]; reasons: string[]; findings: ReturnType<typeof guardBroadcastText>["findings"] };
 
-export const interactionRuleTriggers: InteractionRuleTrigger[] = ["viewer_enter", "follow", "gift", "keyword", "timed", "idle_comment"];
+export const interactionRuleTriggers: InteractionRuleTrigger[] = ["viewer_enter", "follow", "gift", "keyword", "faq", "timed", "idle_comment"];
 export const timerTriggers: InteractionRuleTrigger[] = ["timed", "idle_comment"];
-export const templateSlots = ["nickname", "product_name", "price"] as const;
+export const templateSlots = ["nickname", "product_name", "price", "faq_answer"] as const;
 // Values used to render templates for the approval check; the worker renders with the run's real values and
 // checks the result again.
-export const approvalSampleSlots: Record<(typeof templateSlots)[number], string> = { nickname: "这位朋友", product_name: "示例商品", price: "99.00" };
+export const approvalSampleSlots: Record<(typeof templateSlots)[number], string> = { nickname: "这位朋友", product_name: "示例商品", price: "99.00", faq_answer: "请以订单页面显示的信息为准。" };
 export const aiDisclosureIntervalBounds = { min: 60, max: 1800 } as const;
 export const maxTemplateLength = 200;
 
@@ -54,7 +54,8 @@ export const defaultInteractionRules: DefaultRule[] = [
   { defaultKey: "follow_thanks", name: "感谢关注", triggerType: "follow", matchConfig: {}, action: "speak", cooldownSeconds: 30, priority: 200, templates: ["感谢{nickname}的关注！", "谢谢{nickname}关注直播间，后面还有更多讲解。"] },
   { defaultKey: "gift_thanks", name: "礼物答谢", triggerType: "gift", matchConfig: { minGiftValueCents: 0 }, action: "speak", cooldownSeconds: 15, priority: 300, templates: ["感谢{nickname}送的礼物，谢谢支持！", "谢谢{nickname}的礼物，祝你购物愉快。"] },
   { defaultKey: "timed_product", name: "定时商品口播", triggerType: "timed", matchConfig: {}, action: "speak", cooldownSeconds: 0, intervalSeconds: 300, priority: 400, templates: ["正在为大家介绍{product_name}，当前价格{price}元，具体以下单页为准。", "喜欢{product_name}的朋友可以看看购物车，当前价格{price}元，以结算页为准。"] },
-  { defaultKey: "ai_disclosure", name: "AI 身份提示", triggerType: "timed", matchConfig: {}, action: "speak", cooldownSeconds: 0, intervalSeconds: 600, priority: 1000, templates: ["温馨提示：我是AI数字人主播，本场直播内容由人工智能生成。", "温馨提示：当前主播为AI数字人，商品信息以页面展示为准。"] }
+  { defaultKey: "ai_disclosure", name: "AI 身份提示", triggerType: "timed", matchConfig: {}, action: "speak", cooldownSeconds: 0, intervalSeconds: 600, priority: 1000, templates: ["温馨提示：我是AI数字人主播，本场直播内容由人工智能生成。", "温馨提示：当前主播为AI数字人，商品信息以页面展示为准。"] },
+  { defaultKey: "faq_answer", name: "知识库问答", triggerType: "faq", matchConfig: { minScorePermille: 600 }, action: "reply_draft", cooldownSeconds: 30, priority: 50, templates: ["{nickname}，{faq_answer}"] }
 ];
 
 export class TemplatePolicyError extends Error {
@@ -73,7 +74,7 @@ type PersistentRuleRow = {
 };
 type PersistentFiringRow = {
   id: string; rule_id: string; rule_name: string; live_run_id: string; interaction_id: string | null; trigger_key: string; template_index: number | null;
-  rendered_text_sha256: string | null; outcome: InteractionRuleFiringOutcome; outcome_reason: string | null; outbox_event_id: string | null; created_at: Date | string;
+  rendered_text_sha256: string | null; outcome: InteractionRuleFiringOutcome; outcome_reason: string | null; outbox_event_id: string | null; knowledge_approval_id: string | null; created_at: Date | string;
 };
 const columns = "id, tenant_id, live_run_id, name, trigger_type, match_config, templates, action, cooldown_seconds, interval_seconds, priority, enabled, default_key, approval_status, approved_at, created_at, updated_at";
 
@@ -126,9 +127,13 @@ export function ruleShapeError(rule: InteractionRuleInput & { defaultKey?: Inter
   if (rule.action === "reply_draft" && timer) return "定时与冷场规则没有可回复的互动，只能语音播报";
   if (rule.templates.length < 1 || rule.templates.length > 10) return "每条规则需要 1 到 10 条模板";
   for (const template of rule.templates) {
-    if (!isValidTemplate(template)) return `模板只能使用槽位 {nickname}、{product_name}、{price}，且长度为 1 到 ${maxTemplateLength} 个字符`;
+    if (!isValidTemplate(template)) return `模板只能使用槽位 {nickname}、{product_name}、{price}、{faq_answer}，且长度为 1 到 ${maxTemplateLength} 个字符`;
     if (timer && template.includes("{nickname}")) return "定时与冷场规则没有观众，模板不能使用 {nickname}";
+    if (rule.triggerType === "faq" && ((template.match(/\{faq_answer\}/g) ?? []).length !== 1 || /\{(?:product_name|price)\}/.test(template))) return "知识库问答模板须恰好包含一次 {faq_answer}，且不能使用 {product_name} 或 {price}";
+    if (rule.triggerType !== "faq" && template.includes("{faq_answer}")) return "只有知识库问答规则可以使用 {faq_answer}";
   }
+  if (rule.triggerType === "faq" && (!Number.isInteger(rule.matchConfig.minScorePermille) || rule.matchConfig.minScorePermille! < 300 || rule.matchConfig.minScorePermille! > 1000)) return "知识库匹配阈值需为 300 到 1000 的整数";
+  if (rule.triggerType !== "faq" && rule.matchConfig.minScorePermille !== undefined) return "只有知识库问答规则可以设置匹配阈值";
   if (rule.triggerType === "keyword" && !(rule.matchConfig.keywords?.length)) return "关键词规则至少需要一个关键词";
   if (rule.triggerType !== "keyword" && rule.matchConfig.keywords !== undefined) return "只有关键词规则可以设置关键词";
   if (rule.triggerType !== "gift" && rule.matchConfig.minGiftValueCents !== undefined) return "只有礼物规则可以设置礼物最低价值";
@@ -143,11 +148,11 @@ export function ruleShapeError(rule: InteractionRuleInput & { defaultKey?: Inter
 
 export function isValidTemplate(template: string) {
   const trimmed = template.trim();
-  return trimmed.length > 0 && template.length <= maxTemplateLength && !/[{}]/.test(trimmed.replace(/\{(nickname|product_name|price)\}/g, ""));
+  return trimmed.length > 0 && template.length <= maxTemplateLength && !/[{}]/.test(trimmed.replace(/\{(nickname|product_name|price|faq_answer)\}/g, ""));
 }
 
 export function renderTemplate(template: string, slots: Record<string, string>) {
-  return template.replace(/\{(nickname|product_name|price)\}/g, (match, name: string) => slots[name] ?? match).replace(/\s+/g, " ").trim();
+  return template.replace(/\{(nickname|product_name|price|faq_answer)\}/g, (match, name: string) => slots[name] ?? match).replace(/\s+/g, " ").trim();
 }
 
 /** Renders every template with the approval sample values and runs the policy engine; returns the failures. */
@@ -313,7 +318,7 @@ export async function createDefaultInteractionRules(context: RequestContext) {
 export async function listInteractionRuleFirings(context: RequestContext, runId: string) {
   await assertLiveRunAccess(context, runId);
   if (!databasePool()) return [] as InteractionRuleFiring[];
-  return withTenantTransaction(context.tenantId, async (client) => (await client.query<PersistentFiringRow>(`select f.id, f.rule_id, r.name as rule_name, f.live_run_id, f.interaction_id, f.trigger_key, f.template_index, f.rendered_text_sha256, f.outcome, f.outcome_reason, f.outbox_event_id, f.created_at
+  return withTenantTransaction(context.tenantId, async (client) => (await client.query<PersistentFiringRow>(`select f.id, f.rule_id, r.name as rule_name, f.live_run_id, f.interaction_id, f.trigger_key, f.template_index, f.rendered_text_sha256, f.outcome, f.outcome_reason, f.outbox_event_id, f.knowledge_approval_id, f.created_at
     from interaction_rule_firings f join interaction_rules r on r.id = f.rule_id
     where f.live_run_id = $1 order by f.created_at desc limit 200`, [runId])).rows.map(persistentFiring));
 }
@@ -433,7 +438,7 @@ async function mapDatabaseErrors<T>(operation: () => Promise<T>) {
 }
 
 function parseMatchConfig(value: unknown): InteractionRuleMatchConfig | null {
-  if (!isRecord(value) || !Object.keys(value).every((key) => key === "keywords" || key === "minGiftValueCents")) return null;
+  if (!isRecord(value) || !Object.keys(value).every((key) => key === "keywords" || key === "minGiftValueCents" || key === "minScorePermille")) return null;
   const config: InteractionRuleMatchConfig = {};
   if (value.keywords !== undefined) {
     if (!Array.isArray(value.keywords) || value.keywords.length < 1 || value.keywords.length > 20 || !value.keywords.every((keyword) => typeof keyword === "string" && keyword.trim().length > 0 && keyword.trim().length <= 30)) return null;
@@ -443,6 +448,10 @@ function parseMatchConfig(value: unknown): InteractionRuleMatchConfig | null {
     if (!Number.isSafeInteger(value.minGiftValueCents) || (value.minGiftValueCents as number) < 0 || (value.minGiftValueCents as number) > 1_000_000_000_000) return null;
     config.minGiftValueCents = value.minGiftValueCents as number;
   }
+  if (value.minScorePermille !== undefined) {
+    if (!Number.isInteger(value.minScorePermille)) return null;
+    config.minScorePermille = value.minScorePermille as number;
+  }
   return config;
 }
 
@@ -451,7 +460,7 @@ function parseTemplates(value: unknown) {
   return (value as string[]).map((template) => template.trim());
 }
 
-function normalizedMatch(config: InteractionRuleMatchConfig) { return { keywords: config.keywords ?? null, minGiftValueCents: config.minGiftValueCents ?? null }; }
+function normalizedMatch(config: InteractionRuleMatchConfig) { return { keywords: config.keywords ?? null, minGiftValueCents: config.minGiftValueCents ?? null, minScorePermille: config.minScorePermille ?? null }; }
 function optionalInteger(value: unknown) { return value === undefined || Number.isInteger(value); }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function isUuid(value: unknown): value is string { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
@@ -477,6 +486,7 @@ function persistentFiring(row: PersistentFiringRow): InteractionRuleFiring {
   return {
     id: row.id, ruleId: row.rule_id, ruleName: row.rule_name, runId: row.live_run_id, ...(row.interaction_id ? { interactionId: row.interaction_id } : {}), triggerKey: row.trigger_key,
     ...(row.template_index !== null ? { templateIndex: row.template_index } : {}), ...(row.rendered_text_sha256 ? { renderedTextSha256: row.rendered_text_sha256 } : {}),
-    outcome: row.outcome, ...(row.outcome_reason ? { outcomeReason: row.outcome_reason } : {}), ...(row.outbox_event_id ? { outboxEventId: row.outbox_event_id } : {}), createdAt: at(row.created_at)!
+    outcome: row.outcome, ...(row.outcome_reason ? { outcomeReason: row.outcome_reason } : {}), ...(row.outbox_event_id ? { outboxEventId: row.outbox_event_id } : {}),
+    ...(row.knowledge_approval_id ? { knowledgeApprovalId: row.knowledge_approval_id } : {}), createdAt: at(row.created_at)!
   };
 }
