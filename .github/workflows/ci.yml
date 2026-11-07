@@ -158,6 +158,7 @@ jobs:
       - run: npm run regression:evidence:test
       - run: npm run prohibited-terms:test
       - run: npm run program:variants:test
+      - run: npm run overlay:config:test
       - run: npm run knowledge:test
 
   python-gateway:

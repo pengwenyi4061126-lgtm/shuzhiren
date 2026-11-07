@@ -124,6 +124,7 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "scripts/test-runtime-gateway-captions.py", kind: "python", file: "scripts/test-runtime-gateway-captions.py", label: "behavioral", gatewayOnly: true },
   { id: "prohibited-terms:test", kind: "npm", script: "prohibited-terms:test", label: "behavioral" },
   { id: "program:variants:test", kind: "npm", script: "program:variants:test", label: "behavioral" },
+  { id: "overlay:config:test", kind: "npm", script: "overlay:config:test", label: "behavioral" },
   { id: "knowledge:test", kind: "npm", script: "knowledge:test", label: "behavioral" }
 ].map(freezeCheck));
 

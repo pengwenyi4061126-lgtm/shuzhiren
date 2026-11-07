@@ -116,6 +116,7 @@
     "runtime:overlay:test": "node scripts/run-python-test.mjs runtime/livetalking/tests/test_overlay.py",
     "prohibited-terms:test": "node --test scripts/test-prohibited-terms.mjs",
     "program:variants:test": "node --test scripts/test-script-variants.mjs",
+    "overlay:config:test": "node --test scripts/test-overlay-config.mjs",
     "knowledge:test": "node --test scripts/test-knowledge-base.mjs"
   },
   "devDependencies": {
