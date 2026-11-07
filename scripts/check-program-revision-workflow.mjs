@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (...parts) => readFile(path.join(root, ...parts), "utf8");
-const [migration, service, listRoute, changeRoute, submitRoute, approveRoute, rejectRoute, page, workspace] = await Promise.all([
+const [migration, service, listRoute, changeRoute, submitRoute, approveRoute, rejectRoute, page, workspace, lifecycleRoute] = await Promise.all([
   read("infra", "postgres", "migrations", "055_governed_show_program_revisions.sql"),
   read("apps", "console", "lib", "show-program-revisions.ts"),
   read("apps", "console", "app", "api", "v1", "live-runs", "[runId]", "program-revisions", "route.ts"),
@@ -13,7 +13,8 @@ const [migration, service, listRoute, changeRoute, submitRoute, approveRoute, re
   read("apps", "console", "app", "api", "v1", "live-runs", "[runId]", "program-revisions", "[requestId]", "approve", "route.ts"),
   read("apps", "console", "app", "api", "v1", "live-runs", "[runId]", "program-revisions", "[requestId]", "reject", "route.ts"),
   read("apps", "console", "app", "shows", "[runId]", "program", "page.tsx"),
-  read("apps", "console", "components", "program-revision-workspace.tsx")
+  read("apps", "console", "components", "program-revision-workspace.tsx"),
+  read("apps", "console", "app", "api", "v1", "live-runs", "[runId]", "lifecycle", "route.ts")
 ]);
 
 for (const source of ["show_program_change_status", "show_program_change_requests_one_active_run_idx", "tenant_isolation_show_program_change_requests", "show_program_change_requests_governed_mutation", "Candidate show revision bindings are immutable", "draft revision request", "live_runs_governed_show_revision_rebind", "old.state not in ('APPROVED', 'PREFLIGHT')"]) {
@@ -30,7 +31,13 @@ if ((service.match(/runtime_script, runtime_script_variants, is_fallback/g) ?? [
 for (const [source, role] of [[listRoute, 'requireRole(actor, ["admin", "operator", "reviewer", "analyst"])'], [changeRoute, 'requireRole(actor, ["admin", "operator"])'], [submitRoute, 'requireRole(actor, ["admin", "operator"])'], [approveRoute, 'requireRole(actor, ["admin", "reviewer"])'], [rejectRoute, 'requireRole(actor, ["admin", "reviewer"])']]) {
   if (!source.includes("requestContextFrom(request)") || !source.includes(role)) throw new Error(`Program revision route must enforce database-backed role: ${role}`);
 }
-if (!page.includes("ProgramRevisionWorkspace") || !workspace.includes("受控节目修订")) throw new Error("Program revision operator workspace must be mounted on the show program page");
+// Script checks of submission and approval (088): the refused-script 422 carries its failures to the response body.
+for (const source of ["checkProgramScripts", "freezeRevisionLexiconInTransaction", "show_revision.prohibited_terms_frozen"]) {
+  if (!service.includes(source)) throw new Error(`Program revision service must check scripts and freeze the lexicon: ${source}`);
+}
+for (const [name, source] of [["submit", submitRoute], ["approve", approveRoute], ["lifecycle", lifecycleRoute]]) {
+  if (!source.includes('error.statusText === "program_script_policy_blocked") return error;')) throw new Error(`The ${name} route must return the refused-script 422 with its failures array as it is`);
+}if (!page.includes("ProgramRevisionWorkspace") || !workspace.includes("受控节目修订")) throw new Error("Program revision operator workspace must be mounted on the show program page");
 if (workspace.includes("window.prompt")) throw new Error("Program revision review reasons must use the bounded workspace input, not browser prompts");
 
 console.log("PASS  governed program revisions require a cloned, sealed candidate, independent review, pre-arm rebind, and renewed manifest/preflight");

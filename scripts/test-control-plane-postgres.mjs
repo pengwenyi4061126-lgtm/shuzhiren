@@ -387,6 +387,14 @@ try {
   assert.notEqual(reboundRun.rows[0].show_revision_id, sourceRevisionId, "the original approved revision remains intact after rebind");
   const reboundManifest = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/release-manifest`, { headers: requestHeaders });
   assert.equal((await reboundManifest.json()).data.frozenSnapshotVerified, true, "the replacement revision must receive a sealed release manifest snapshot");
+  // Arming needs the tenant's approved AI identity disclosure rule (preflight check ai_disclosure_rule). Only that rule is approved;
+  // the other default rules stay pending and never fire.
+  const defaultRules = await fetch(`http://127.0.0.1:${consolePort}/api/v1/interaction-rules/defaults`, { method: "POST", headers: operatorRequestHeaders });
+  assert.ok([200, 201].includes(defaultRules.status), "the operator should create the default interaction rules");
+  const disclosureRule = (await client.query("select id from interaction_rules where tenant_id = $1 and default_key = 'ai_disclosure'", [tenantId])).rows[0];
+  assert.ok(disclosureRule, "the default rules include the AI identity disclosure rule");
+  const disclosureApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/interaction-rules/${disclosureRule.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(disclosureApproval.status, 200, "the reviewer should approve the AI identity disclosure rule");
   for (const [action, expectedState] of [["begin_preflight", "PREFLIGHT"], ["arm", "ARMED"]]) {
     const lifecycleResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action }) });
     assert.equal(lifecycleResponse.status, 200, `lifecycle action ${action} should advance a fully governed run`);
@@ -1308,8 +1316,14 @@ async function seedProgramTransitionRun({ state = "LIVE", scheduledAt, voice = t
     await client.query("insert into media_assets (id, tenant_id, kind, name, object_key, checksum, rights_scope, source_ref, approval_status, approved_by, approved_at, runtime_voice_id, verified_object_version, verified_bytes, verified_content_type, verification_evidence_ref, verified_at) values ($1, $2, 'voice', $3, $4, $5, 'Integration approved rights', 'evidence://integration/media-asset', 'approved', $6, now(), $7, 'integration-seed-v1', 1024, 'audio/wav', 'evidence://integration/media-content', now())", [voiceAssetId, tenantId, `Program voice ${runId}`, `assets/${tenantId}/program-voice-${runId}`, voiceBinding.voiceChecksum, approver.rows[0].id, voiceBinding.runtimeVoiceId]);
     await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, 'voice')", [tenantId, revisionId, voiceAssetId]);
   }
+  // Script dispatch checks the scripts against the run's bound policy profile (scriptGuardContextInTransaction), so a
+  // profile is bound before the live run seals the revision's bindings.
+  const policyProfileId = randomUUID();
+  await client.query("insert into policy_profiles (id, tenant_id, name, version, rules, evidence_ref, validation_summary, approval_status, approved_by, approved_at) values ($1, $2, $3, '1.0.0', '[]'::jsonb, 'evidence://integration/program-seed', 'Seeded binding for program transition validation.', 'approved', $4, now())", [policyProfileId, tenantId, `Program transition policy ${runId}`, approver.rows[0].id]);
+  await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
   await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id, runtime_session_id) values ($1, $2, $3, 'DRAFT', $4, $5)", [runId, tenantId, revisionId, `trace_${runId}`, `session_program_${runId}`]);
   await client.query("insert into show_revision_segments (id, tenant_id, show_revision_id, position, kind, title, purpose, duration_seconds, runtime_script) values ($1, $2, $3, 1, 'prepared_product', '主节目', '受审核主节目内容', 120, $4), ($5, $2, $3, 2, 'interactive', '限时插播', '受审核插播内容', 60, $6)", [primarySegmentId, tenantId, revisionId, primaryScript, insertSegmentId, insertScript]);
+  await client.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'integration-seed', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
   await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, approver.rows[0].id]);
   await client.query("update live_runs set state = $2::live_run_state, scheduled_at = $3::timestamptz, active_program_segment_id = case when $2::live_run_state = 'LIVE' then $4::uuid else null end where id = $1", [runId, state, scheduledAt ?? null, primarySegmentId]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, runId]);

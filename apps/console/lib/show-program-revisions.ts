@@ -1,9 +1,11 @@
 import type { PoolClient } from "pg";
-import { recordAuditEventInTransaction } from "@/lib/audit";
+import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { assertProgramScriptsAllowed, boundPolicyProfileIdInTransaction, currentLexiconInTransaction, freezeRevisionLexiconInTransaction, frozenLexiconAuditDetail, policyRulesForRevisionInTransaction, programScriptCount, programScriptPolicyAuditDetail } from "@/lib/prohibited-terms";
 import { createReleaseManifestSnapshotInTransaction } from "@/lib/release-manifest";
+import { lexiconSha256 } from "@/lib/shared/prohibited-terms.mjs";
 import { normalizeScriptVariants } from "@/lib/shared/script-rotation.mjs";
 import { normalizeProgramSegments, programHash, type ProgramSegment, type ProgramSegmentInput, type ShowProgram } from "@/lib/show-program";
 
@@ -71,32 +73,49 @@ export async function replaceProgramRevisionRequest(context: RequestContext, run
 export async function submitProgramRevisionRequest(context: RequestContext, runId: string, requestId: string) {
   await assertLiveRunAccess(context, runId);
   requirePostgres();
-  return withTenantTransaction(context.tenantId, async (client) => {
+  let candidateRevisionId: string | null = null;
+  try {
+    return await withTenantTransaction(context.tenantId, async (client) => {
     const request = await loadRequest(client, requestId, true);
     const run = await loadRun(client, runId, true);
     if (!request || !run || request.live_run_id !== run.id) throw new Response("Program revision request not found", { status: 404 });
+    candidateRevisionId = request.candidate_revision_id;
     const actorId = await actorDatabaseId(client, context);
     if (request.status !== "draft" || request.created_by_id !== actorId || !canRevise(run.state) || !run.product_version_id) throw new Response("Program revision draft is not submittable", { status: 409 });
     const segments = await loadSegments(client, request.candidate_revision_id);
     assertStoredProgram(segments, run.product_version_id);
+    const scripts = await checkProgramScripts(client, request.candidate_revision_id, segments);
     const submitted = await client.query("update show_program_change_requests set status = 'pending_approval', proposed_program = $2::jsonb, proposed_program_sha256 = $3, submitted_at = now() where id = $1 and status = 'draft' returning id", [request.id, JSON.stringify(segments), programHash(segments)]);
     if (!submitted.rows[0]) throw new Response("Program revision draft changed before submission", { status: 409 });
-    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.submitted", resource: "show_program_change_request", resourceId: request.id, detail: { runId, candidateRevisionId: request.candidate_revision_id, proposedProgramSha256: programHash(segments), segmentCount: segments.length } });
+    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.submitted", resource: "show_program_change_request", resourceId: request.id, detail: { runId, candidateRevisionId: request.candidate_revision_id, proposedProgramSha256: programHash(segments), segmentCount: segments.length, scriptCount: scripts.scriptCount, policyProfileId: scripts.policyProfileId, lexiconSha256: scripts.lexiconSha256 } });
     return persistentRequest(client, context.tenantId, await loadRequestRow(client, request.id));
-  });
+    });
+  } catch (error) {
+    if (error instanceof Response && error.statusText === "program_script_policy_blocked" && candidateRevisionId) {
+      await recordAuditEvent(context, { type: "show_program.script_policy_blocked", resource: "show_revision", resourceId: candidateRevisionId, detail: await programScriptPolicyAuditDetail(runId, error) });
+    }
+    throw error;
+  }
 }
 
 export async function approveProgramRevisionRequest(context: RequestContext, runId: string, requestId: string) {
   await assertLiveRunAccess(context, runId);
   requirePostgres();
-  return withTenantTransaction(context.tenantId, async (client) => {
+  let candidateRevisionId: string | null = null;
+  try {
+    return await withTenantTransaction(context.tenantId, async (client) => {
     const request = await loadRequest(client, requestId, true);
     const run = await loadRun(client, runId, true);
     if (!request || !run || request.live_run_id !== run.id) throw new Response("Program revision request not found", { status: 404 });
+    candidateRevisionId = request.candidate_revision_id;
     const actorId = await actorDatabaseId(client, context);
     if (request.status !== "pending_approval" || request.created_by_id === actorId || !canRevise(run.state) || !run.product_version_id) throw new Response("Program revision request is not approvable", { status: 409 });
     const segments = await loadSegments(client, request.candidate_revision_id);
     assertStoredProgram(segments, run.product_version_id);
+    // The scripts are checked first, then the lexicon they passed against is frozen into the candidate, and only then is it approved.
+    const scripts = await checkProgramScripts(client, request.candidate_revision_id, segments);
+    const frozen = await freezeRevisionLexiconInTransaction(client, request.candidate_revision_id, scripts.lexicon);
+    await recordAuditEventInTransaction(client, context, { type: "show_revision.prohibited_terms_frozen", resource: "show_revision", resourceId: request.candidate_revision_id, detail: frozenLexiconAuditDetail(frozen, { scriptCount: scripts.scriptCount, policyProfileId: scripts.policyProfileId }) });
     const candidate = await client.query<{ id: string }>("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 and approval_status = 'draft' returning id", [request.candidate_revision_id, actorId]);
     if (!candidate.rows[0]) throw new Response("Candidate program revision is not a draft", { status: 409 });
     await client.query("update show_program_change_requests set status = 'approved', approved_by = $2, approved_at = now() where id = $1 and status = 'pending_approval'", [request.id, actorId]);
@@ -104,9 +123,15 @@ export async function approveProgramRevisionRequest(context: RequestContext, run
     if (!rebound.rows[0]) throw new Response("Live run changed before revision apply", { status: 409 });
     await createReleaseManifestSnapshotInTransaction(client, { tenantId: context.tenantId, revisionId: request.candidate_revision_id, runId: run.id });
     await client.query("update show_program_change_requests set status = 'applied', applied_at = now() where id = $1 and status = 'approved'", [request.id]);
-    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.applied", resource: "show_program_change_request", resourceId: request.id, detail: { runId, sourceRevisionId: request.source_revision_id, candidateRevisionId: request.candidate_revision_id, proposedProgramSha256: programHash(segments), previousState: run.state, state: "APPROVED" } });
+    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.applied", resource: "show_program_change_request", resourceId: request.id, detail: { runId, sourceRevisionId: request.source_revision_id, candidateRevisionId: request.candidate_revision_id, proposedProgramSha256: programHash(segments), previousState: run.state, state: "APPROVED", scriptCount: scripts.scriptCount, policyProfileId: scripts.policyProfileId, lexiconSha256: frozen.lexiconSha256 } });
     return persistentRequest(client, context.tenantId, await loadRequestRow(client, request.id));
-  });
+    });
+  } catch (error) {
+    if (error instanceof Response && error.statusText === "program_script_policy_blocked" && candidateRevisionId) {
+      await recordAuditEvent(context, { type: "show_program.script_policy_blocked", resource: "show_revision", resourceId: candidateRevisionId, detail: await programScriptPolicyAuditDetail(runId, error) });
+    }
+    throw error;
+  }
 }
 
 export async function rejectProgramRevisionRequest(context: RequestContext, runId: string, requestId: string, reason: string) {
@@ -125,6 +150,12 @@ export async function rejectProgramRevisionRequest(context: RequestContext, runI
   });
 }
 
+/** Every version of every runnable script of the candidate against the broadcast guard (its bound policy rules and the lexicon in force now); throws 422 program_script_policy_blocked. */
+async function checkProgramScripts(client: PoolClient, revisionId: string, segments: ProgramSegment[]) {
+  const lexicon = await currentLexiconInTransaction(client);
+  assertProgramScriptsAllowed(segments, { policyRules: await policyRulesForRevisionInTransaction(client, revisionId), lexicon });
+  return { lexicon, scriptCount: programScriptCount(segments), policyProfileId: await boundPolicyProfileIdInTransaction(client, revisionId), lexiconSha256: lexiconSha256(lexicon) };
+}
 function requirePostgres() { if (!databasePool()) throw new Response("Governed program revisions require PostgreSQL", { status: 409 }); }
 function canRevise(state: string) { return state === "APPROVED" || state === "PREFLIGHT"; }
 

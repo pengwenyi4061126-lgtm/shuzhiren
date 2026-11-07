@@ -58,6 +58,7 @@ async function fixture() {
   for (const product of [...products, null]) {
     const { revisionId } = await seed.revision({ tenantId, approver: memberId, bindings: "none", approve: false });
     if (product) await admin.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [tenantId, revisionId, product.productVersionId]);
+    await admin.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'integration-seed', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
     await admin.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, memberId]);
     runs.push(await seed.liveRun({ tenantId, revisionId, state: "LIVE", productVersionId: product?.productVersionId ?? null }));
   }

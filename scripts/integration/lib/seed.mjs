@@ -100,7 +100,11 @@ export function createSeed(defaultClient) {
         await q(client, "insert into show_revision_segments (id, tenant_id, show_revision_id, position, kind, title, purpose, duration_seconds, runtime_script, is_fallback) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", [segmentId, tenantId, revisionId, index + 1, segment.kind, segment.title ?? `Segment ${index + 1}`, segment.purpose ?? "Integration segment", segment.durationSeconds ?? 60, segment.runtimeScript ?? null, segment.kind === "fallback"]);
         result.segmentIds.push(segmentId);
       }
-      if (approve) await q(client, "update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, approver]);
+      if (approve) {
+        // Migration 088: a revision is approved only with a frozen prohibited-term lexicon snapshot.
+        await q(client, "insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'integration-seed', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
+        await q(client, "update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, approver]);
+      }
       return result;
     },
 

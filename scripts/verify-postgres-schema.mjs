@@ -79,6 +79,14 @@ requiredSecurityDefinerFunctions.push("knowledge_answer_candidates");
 requiredConstraints.set("interaction_rules_default_key_check", true);
 requiredConstraints.set("interaction_rules_faq_shape_check", true);
 requiredConstraints.set("interaction_rules_faq_default_check", true);
+// 088: tenant changes to the prohibited-term lexicon, their approvals, and the lexicon frozen into each approved show revision.
+requiredTables.push("tenant_prohibited_terms", "tenant_prohibited_term_revisions", "show_revision_prohibited_term_snapshots");
+requiredColumns.tenant_prohibited_terms = ["kind", "builtin_term_id", "term", "normalized_term", "category", "approved_revision", "severity", "suggestions", "disabled", "active", "approved_at", "created_by"];
+requiredColumns.tenant_prohibited_term_revisions = ["term_id", "revision", "severity", "suggestions", "disabled", "active", "loosening", "reason", "status", "requested_by", "decided_by", "decided_at"];
+requiredColumns.show_revision_prohibited_term_snapshots = ["show_revision_id", "builtin_version", "lexicon", "lexicon_sha256", "term_count"];
+requiredIndexes.push("tenant_prohibited_terms_custom_idx", "tenant_prohibited_terms_override_idx", "tenant_prohibited_term_revisions_pending_idx");
+requiredPolicies.push("tenant_isolation_tenant_prohibited_terms", "tenant_isolation_tenant_prohibited_term_revisions", "tenant_isolation_show_revision_prohibited_term_snapshots");
+requiredTriggers.push("tenant_prohibited_terms_governed_mutation", "tenant_prohibited_term_revisions_governed_mutation", "show_revision_prohibited_term_snapshots_governed", "show_revisions_require_lexicon_snapshot");
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.
@@ -293,12 +301,17 @@ async function verifyGovernedEvidenceImmutability() {
 
     await client.query("insert into shows (id, tenant_id, name) values ($1, $2, 'Governed evidence show')", [showId, tenantId]);
     await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 1, '{}'::jsonb, 'draft')", [revisionId, tenantId, showId]);
+    // 088: a revision is approved only with a frozen lexicon snapshot, which is written while the revision is still a draft.
+    await expectImmutableRejection("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, actorId], "无词表快照的节目修订不得批准");
+    await client.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'verify-1', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
     await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, actorId]);
+    await expectImmutableRejection("update show_revision_prohibited_term_snapshots set builtin_version = 'verify-2' where show_revision_id = $1", [revisionId], "词表快照不得改写");
     await expectImmutableRejection("update show_revisions set plan = '{\"changed\":true}'::jsonb where id = $1", [revisionId], "节目修订不得改写");
     await client.query("insert into show_revisions (id, tenant_id, show_id, revision, plan, approval_status) values ($1, $2, $3, 2, '{}'::jsonb, 'draft')", [draftRevisionId, tenantId, showId]);
     await client.query("insert into live_runs (id, tenant_id, show_revision_id, state, trace_id) values ($1, $2, $3, 'DRAFT', $4)", [draftRunId, tenantId, draftRevisionId, `governed-draft-${draftRunId}`]);
     await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, purpose, is_fallback) values ($1, $2, 1, 'fallback', 'Draft fallback', 30, 'Draft edit verifier', true)", [tenantId, draftRevisionId]);
     await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, purpose, is_fallback) values ($1, $2, 2, 'prepared_product', 'Draft runnable', 30, 'Runtime script gate verifier', false)", [tenantId, draftRevisionId]);
+    await client.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'verify-1', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, draftRevisionId]);
     await expectImmutableRejection("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [draftRevisionId, actorId], "缺少冻结脚本的可运行节目不得批准");
     await client.query("update show_revision_segments set title = 'Draft fallback edited' where show_revision_id = $1", [draftRevisionId]);
     await client.query("update live_runs set state = 'REVIEW' where id = $1", [draftRunId]);
@@ -477,7 +490,7 @@ async function expectImmutableRejection(statement, parameters, label) {
     await client.query(statement, parameters);
     errors.push(`${label}未被数据库触发器拒绝`);
   } catch (error) {
-    if (!(error instanceof Error) || !/immutable|only permits|editable only|runtime scripts|channel reply|channel connection|channel verification|settlement|recording evidence/i.test(error.message)) errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
+    if (!(error instanceof Error) || !/immutable|only permits|editable only|runtime scripts|channel reply|channel connection|channel verification|settlement|recording evidence|lexicon snapshot|prohibited term snapshots/i.test(error.message)) errors.push(`${label}返回了非预期错误：${error instanceof Error ? error.message : "unknown"}`);
   } finally {
     await client.query("rollback to savepoint governed_evidence_mutation");
     await client.query("release savepoint governed_evidence_mutation");

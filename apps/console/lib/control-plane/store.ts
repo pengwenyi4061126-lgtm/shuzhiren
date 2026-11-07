@@ -21,6 +21,7 @@ import { activePolicyProfileStatusForRun, activePolicyProfileStatusForRunInTrans
 import { createReleaseManifestSnapshotInTransaction, frozenAigcLabelTextInTransaction } from "@/lib/release-manifest";
 import { aigcLabelText, evaluateAigcLabelReadiness } from "@/lib/aigc-label";
 import { aiDisclosureRuleStatus, aiDisclosureRuleStatusInTransaction } from "@/lib/interaction-rules";
+import { programScriptPolicyAuditDetail } from "@/lib/prohibited-terms";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { demoScriptGuardContext, frozenScripts, recordDemoScriptPlay, recordScriptPlayInTransaction, scriptGuardContextInTransaction, selectDemoScriptForDispatch, selectScriptForDispatch, type FrozenRuntimeSegment, type ScriptDispatchAction, type SelectedScript } from "@/lib/script-plays";
 
@@ -184,13 +185,24 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     const next = lifecycleTarget(run.state, action);
     if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
     if (reservesRuntimeSession(next) && run.runtimeSessionId && [...store().runs.values()].some((candidate) => candidate.id !== run.id && candidate.tenantId === context.tenantId && candidate.runtimeSessionId === run.runtimeSessionId && reservesRuntimeSession(candidate.state))) throw new Response("Runtime session is already reserved by another active run", { status: 409 });
-    if (action === "submit_review" || action === "approve") updateDemoProgramLifecycle(run.id, action);
+    if (action === "submit_review" || action === "approve") {
+      try {
+        updateDemoProgramLifecycle(run.id, action);
+      } catch (error) {
+        if (error instanceof Response && error.statusText === "program_script_policy_blocked") {
+          await recordAuditEvent(context, { type: "show_program.script_policy_blocked", resource: "show_revision", resourceId: run.revisionId, detail: await programScriptPolicyAuditDetail(run.id, error) });
+        }
+        throw error;
+      }
+    }
     run.state = next;
     if (action === "approve") run.hasFallbackProgram = true;
     await recordAuditEvent(context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: run.state } });
     return run;
   }
-  return withTenantTransaction(context.tenantId, async (client) => {
+  let revisionId: string | null = null;
+  try {
+    return await withTenantTransaction(context.tenantId, async (client) => {
     if (action === "disarm") {
       const disarmed = await disarmPersistentRun(client, context, runId);
       await recordAuditEventInTransaction(client, context, { type: "live_run.disarm", resource: "live_run", resourceId: disarmed.id, detail: { state: disarmed.state } });
@@ -198,6 +210,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     }
     const run = await loadAuthorizedPersistentRun(client, context, runId, true);
     if (!run) throw new Response("Live run not found", { status: 404 });
+    revisionId = run.revisionId;
     const next = lifecycleTarget(run.state, action);
     if (action === "submit_review") await validateShowProgramInTransaction(client, run.id, run.revisionId, run.productVersionId);
     if (action === "approve") await approveShowProgramInTransaction(client, context, run.id, run.revisionId, run.productVersionId);
@@ -211,7 +224,13 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     const updated = { ...run, state: next, hasFallbackProgram: action === "approve" ? true : run.hasFallbackProgram };
     await recordAuditEventInTransaction(client, context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: next } });
     return updated;
-  });
+    });
+  } catch (error) {
+    if (error instanceof Response && error.statusText === "program_script_policy_blocked" && revisionId) {
+      await recordAuditEvent(context, { type: "show_program.script_policy_blocked", resource: "show_revision", resourceId: revisionId, detail: await programScriptPolicyAuditDetail(runId, error) });
+    }
+    throw error;
+  }
 }
 
 function lifecycleTarget(state: LiveRunState, action: RunLifecycleAction): LiveRunState {

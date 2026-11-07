@@ -58,6 +58,7 @@ async function fixture({ policyRules = [{ id: "tenant_terms", terms: ["绝对安
   await admin.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) values ($1, $2, $3, 'voice')", [tenantId, revisionId, voiceAssetId]);
   const policyProfileId = await seed.policyProfile({ tenantId, approver: memberId, rules: policyRules });
   await admin.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
+  await admin.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'integration-seed', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
   await admin.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, memberId]);
   const channelId = await seed.channelConnection({ tenantId, verifier: memberId });
   const sessionId = `it_rules_${randomUUID().slice(0, 8)}`;

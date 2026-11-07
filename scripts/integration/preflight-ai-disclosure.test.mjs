@@ -66,6 +66,7 @@ async function fixture({ state = "PREFLIGHT" } = {}) {
   }
   const policyProfileId = await seed.policyProfile({ tenantId, approver: memberId });
   await admin.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
+  await admin.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'integration-seed', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
   await admin.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, memberId]);
   const channelId = await seed.channelConnection({ tenantId, verifier: memberId, capabilities: CHANNEL_CAPABILITIES });
   const runId = await seed.liveRun({ tenantId, revisionId, state, channelId, productVersionId });

@@ -2,6 +2,9 @@ import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plan
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
+export type AuditDetailValue = string | number | boolean | null | AuditDetailValue[] | { [key: string]: AuditDetailValue };
+export type AuditDetail = Record<string, AuditDetailValue>;
+
 export type AuditEvent = {
   id: string;
   tenantId: string;
@@ -11,7 +14,7 @@ export type AuditEvent = {
   actorId: string;
   actorName: string;
   occurredAt: string;
-  detail: Record<string, string | number | boolean | null>;
+  detail: AuditDetail;
 };
 export type AuditEventInput = Omit<AuditEvent, "id" | "tenantId" | "actorId" | "actorName" | "occurredAt">;
 export type AuditChainVerification = { verified: boolean; sealedEvents: number; legacyEvents: number; detail: string };

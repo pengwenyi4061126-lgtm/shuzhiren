@@ -77,3 +77,8 @@ grant select, insert on live_run_script_plays to shuzhiren_runtime_worker;
 -- but the one of the caller's transaction. Writing the snapshot id into interaction_rule_firings.knowledge_approval_id
 -- needs no new grant (the insert grant above is table-wide).
 grant execute on function knowledge_answer_candidates(uuid, uuid, text[], integer) to shuzhiren_runtime_worker;
+-- Prohibited terms (088): the worker reads the lexicon frozen into the run's show revision and the tenant's current
+-- approved term values, by column. Requests, reasons and who decided them (tenant_prohibited_term_revisions) are
+-- not readable by the worker. Row level security limits every read to the tenant of the worker's transaction.
+grant select (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256) on show_revision_prohibited_term_snapshots to shuzhiren_runtime_worker;
+grant select (tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision, severity, suggestions, disabled, active) on tenant_prohibited_terms to shuzhiren_runtime_worker;

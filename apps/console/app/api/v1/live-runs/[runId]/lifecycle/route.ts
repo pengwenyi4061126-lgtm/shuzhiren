@@ -17,5 +17,10 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
     const { runId } = await context.params;
     const run = await advanceRunLifecycle(actor, runId, action as RunLifecycleAction);
     return Response.json({ data: run });
-  } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "lifecycle_conflict" }, { status: error.status }); throw error; }
+  } catch (error) {
+    // The refused-script answer already carries the failures (position, version index, reasons); every other Response is reduced to its error code.
+    if (error instanceof Response && error.statusText === "program_script_policy_blocked") return error;
+    if (error instanceof Response) return Response.json({ error: error.statusText || "lifecycle_conflict" }, { status: error.status });
+    throw error;
+  }
 }

@@ -1,4 +1,4 @@
-import { listAuditEventsForRun } from "@/lib/audit";
+import { listAuditEventsForRun, type AuditDetail } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { getRun } from "@/lib/control-plane/store";
@@ -96,7 +96,7 @@ function mediaTitleForAction(action: string) {
   return ({ START: "启动节目", RECOVER: "恢复节目", SCHEDULED_START: "计划启动节目", INSERT_PROGRAM: "插播节目", ROLLBACK_PROGRAM: "回退节目" } as Record<string, string>)[action] ?? action;
 }
 
-function formatAuditDetail(detail: Record<string, string | number | boolean | null>) {
-  const values = Object.entries(detail).filter(([, value]) => value !== null).map(([key, value]) => `${key}=${String(value)}`);
+function formatAuditDetail(detail: AuditDetail) {
+  const values = Object.entries(detail).filter(([, value]) => value !== null).map(([key, value]) => `${key}=${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
   return values.length ? values.join(" · ") : "无附加字段";
 }

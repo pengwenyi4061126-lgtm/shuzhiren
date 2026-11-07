@@ -54,6 +54,22 @@ try {
     const knowledgeFunction = await client.query("select has_function_privilege($1, 'knowledge_answer_candidates(uuid,uuid,text[],integer)', 'execute') as allowed", [principal]);
     assert.equal(knowledgeFunction.rows[0].allowed, expected, `${principal} must${expected ? "" : " not"} execute knowledge_answer_candidates`);
   }
+  // 088: the worker reads the frozen lexicon of a show revision and the tenant's approved term values by column only. It cannot
+  // read the change requests (tenant_prohibited_term_revisions: reasons and approvers) and changes none of the three tables.
+  for (const table of ["tenant_prohibited_term_revisions", "show_revision_prohibited_term_snapshots", "tenant_prohibited_terms"]) {
+    for (const privilege of ["select", "insert", "update", "delete", "truncate"]) await expectTable("shuzhiren_runtime_worker", table, privilege, false);
+    for (const principal of ["shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) for (const privilege of ["select", "insert", "update", "delete"]) await expectTable(principal, table, privilege, false);
+  }
+  for (const [table, columns] of [
+    ["show_revision_prohibited_term_snapshots", ["tenant_id", "show_revision_id", "builtin_version", "lexicon", "lexicon_sha256"]],
+    ["tenant_prohibited_terms", ["tenant_id", "kind", "builtin_term_id", "term", "normalized_term", "category", "approved_revision", "severity", "suggestions", "disabled", "active"]]
+  ]) {
+    for (const column of columns) await expectColumn("shuzhiren_runtime_worker", table, column, true);
+    for (const principal of ["shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) await expectColumn(principal, table, columns[0], false);
+  }
+  for (const column of ["id", "approved_at", "created_by", "created_at"]) await expectColumn("shuzhiren_runtime_worker", "tenant_prohibited_terms", column, false);
+  for (const column of ["term_count", "created_at"]) await expectColumn("shuzhiren_runtime_worker", "show_revision_prohibited_term_snapshots", column, false);
+  for (const column of ["reason", "requested_by", "decided_by", "severity"]) await expectColumn("shuzhiren_runtime_worker", "tenant_prohibited_term_revisions", column, false);
   await expectTable("shuzhiren_backup", "audit_events", "select", true);
   await expectTable("shuzhiren_backup", "audit_events", "update", false);
   await expectTable("shuzhiren_backup", "live_runs", "select", true);

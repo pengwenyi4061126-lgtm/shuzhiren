@@ -33,8 +33,11 @@ async function draftRevision(ctx) {
   const { revisionId } = await ctx.seed.revision({ tenantId, approver: memberId, segments: [], approve: false });
   return { tenantId, memberId, revisionId };
 }
-const approveRevision = ({ client }, { revisionId, memberId }) =>
-  client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, memberId]);
+const approveRevision = async ({ client }, { tenantId, revisionId, memberId }) => {
+  // Migration 088: a revision is approved only with a frozen prohibited-term lexicon snapshot.
+  await client.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'integration-seed', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
+  await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, memberId]);
+};
 
 /**
  * An approved revision with a runnable segment (main script plus two variants) and a non-runnable fallback

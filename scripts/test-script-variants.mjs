@@ -501,3 +501,120 @@ test("the worker never forwards scriptVariantIndex to the Gateway and imports sh
   assert.deepEqual(sharedImports.filter((specifier) => !/^\.\.\/console\/lib\/shared\/[a-z-]+\.mjs$/.test(specifier)), []);
   assert.ok(sharedImports.length >= 5);
 });
+// ---- Task 8.1 (demo mode): submission and approval check every script version and freeze the lexicon ----
+// Demo-mode lifecycle goes through updateDemoProgramLifecycle (what advanceRunLifecycle calls in demo mode). The script check is
+// the same pure function the PostgreSQL path uses, so the 422 body is read from the thrown Response.
+const { updateDemoProgramLifecycle } = await import("../apps/console/lib/show-program.ts");
+const demoTerms = await import("../apps/console/lib/prohibited-terms.ts");
+const demoBuiltin = await import("../apps/console/lib/shared/prohibited-terms-builtin.mjs");
+const demoLexiconModule = await import("../apps/console/lib/shared/prohibited-terms.mjs");
+const { listAuditEvents } = await import("../apps/console/lib/audit.ts");
+let approvalCounter = 0;
+/** A draft demo program with one runnable segment (primary text and `variants`), a fallback and a human handoff. */
+function draftDemoProgram(primary, variants) {
+  approvalCounter += 1;
+  const runId = `run_variant_approval_${approvalCounter}`;
+  const revisionId = `show_revision_variant_approval_${approvalCounter}`;
+  registerDemoProgram({
+    runId, tenantId: operator.tenantId, revisionId, status: "draft", editable: true,
+    segments: [
+      runnable(segmentIds.first, 1, "prepared_product", primary, variants),
+      { id: segmentIds.second, position: 2, kind: "fallback", title: "兜底", durationSeconds: 30, productVersionId: "pv_a102_v1", purpose: "兜底", fallback: true },
+      { id: "20000000-0000-4000-8000-00000000000b", position: 3, kind: "human_handoff", title: "转人工", durationSeconds: 0, purpose: "转人工", fallback: true }
+    ]
+  });
+  return { runId, revisionId, program: () => globalThis.shuzhirenProgramStore.programs.get(runId) };
+}
+const thrownResponse = (action) => {
+  try {
+    action();
+  } catch (error) {
+    assert.ok(error instanceof Response, "a Response is thrown");
+    return error;
+  }
+  assert.fail("expected a Response to be thrown");
+};
+test("demo submit_review refuses a blocked extra version with 422 and the position and version index, and leaves the program editable", async () => {
+  const draft = draftDemoProgram("主版本话术", ["变体一话术", "全网最低价，欢迎选购"]);
+  const response = thrownResponse(() => updateDemoProgramLifecycle(draft.runId, "submit_review"));
+  assert.equal(response.status, 422);
+  assert.equal(response.statusText, "program_script_policy_blocked");
+  const body = await response.json();
+  assert.equal(body.error, "program_script_policy_blocked");
+  assert.equal(body.failures.length, 1);
+  const [failure] = body.failures;
+  assert.deepEqual([failure.position, failure.variantIndex, failure.text], [1, 2, "全网最低价，欢迎选购"]);
+  assert.ok(failure.reasons.some((reason) => reason.startsWith("lexicon:extreme:")));
+  assert.ok(failure.findings.length >= 1 && failure.findings.every((finding) => finding.severity === "block"));
+  assert.equal(draft.program().editable, true, "the program is not locked after a refused submission");
+});
+test("demo approval checks the primary script too (Q3) and freezes nothing when it is refused", async () => {
+  const draft = draftDemoProgram("这款产品治疗皮肤问题", []);
+  const response = thrownResponse(() => updateDemoProgramLifecycle(draft.runId, "approve"));
+  assert.equal(response.status, 422);
+  assert.deepEqual((await response.json()).failures.map((failure) => [failure.position, failure.variantIndex]), [[1, 0]]);
+  assert.equal(draft.program().status, "draft");
+  assert.equal(demoTerms.demoLexiconSnapshot(draft.revisionId), null);
+});
+test("demo approval of a clean program writes the lexicon snapshot and approves the program", () => {
+  const draft = draftDemoProgram("主版本话术", ["变体一话术"]);
+  updateDemoProgramLifecycle(draft.runId, "submit_review");
+  assert.equal(draft.program().editable, false);
+  updateDemoProgramLifecycle(draft.runId, "approve");
+  assert.equal(draft.program().status, "approved");
+  const snapshot = demoTerms.demoLexiconSnapshot(draft.revisionId);
+  const current = demoTerms.currentDemoLexicon(operator.tenantId);
+  assert.equal(snapshot.builtinVersion, demoBuiltin.BUILTIN_LEXICON_VERSION);
+  assert.equal(snapshot.termCount, current.length);
+  assert.equal(snapshot.lexiconSha256, demoLexiconModule.lexiconSha256(current));
+  assert.ok(snapshot.termCount > 0);
+  // Approving again keeps the first snapshot: a revision is frozen once.
+  updateDemoProgramLifecycle(draft.runId, "approve");
+  assert.deepEqual(demoTerms.demoLexiconSnapshot(draft.revisionId), snapshot);
+});
+test("demo run lexicon is the snapshot united with the current lexicon, and a revision without a snapshot uses the current one", () => {
+  const draft = draftDemoProgram("主版本话术", []);
+  updateDemoProgramLifecycle(draft.runId, "approve");
+  const runLexicon = demoTerms.demoRunLexicon(operator.tenantId, draft.revisionId);
+  assert.deepEqual(runLexicon.map((term) => term.id), demoTerms.currentDemoLexicon(operator.tenantId).map((term) => term.id));
+  assert.deepEqual(demoTerms.demoRunLexicon(operator.tenantId, "show_revision_without_snapshot").map((term) => term.id), runLexicon.map((term) => term.id));
+  assert.equal(demoTerms.demoRunLexicon("tenant_other", draft.revisionId).length, demoTerms.currentDemoLexicon("tenant_other").length, "another tenant's snapshot is never read");
+});
+// The lifecycle route returns the 422 answer as it is, so the caller sees which position and version was refused and why (Requirement 3.4).
+const { POST: lifecycleRoute } = await import("../apps/console/app/api/v1/live-runs/[runId]/lifecycle/route.ts");
+test("lifecycle route submit_review forwards the refused-script failures instead of only the error code", async () => {
+  const runId = await demoRunWith("DRAFT", fixedProgram([]), segmentIds.first);
+  const run = globalThis.shuzhirenControlStore.runs.get(runId);
+  const segments = [
+    runnable(segmentIds.first, 1, "prepared_product", "主版本话术", ["变体一话术", "全网最低价，欢迎选购"]),
+    { id: segmentIds.second, position: 2, kind: "fallback", title: "兜底", durationSeconds: 30, productVersionId: "pv_a102_v1", purpose: "兜底", fallback: true },
+    { id: "20000000-0000-4000-8000-00000000000b", position: 3, kind: "human_handoff", title: "转人工", durationSeconds: 0, purpose: "转人工", fallback: true }
+  ];
+  registerDemoProgram({ runId, tenantId: operator.tenantId, revisionId: run.revisionId, status: "draft", editable: true, segments });
+  const saved = { identity: process.env.CONTROL_PLANE_DEV_HEADER_IDENTITY, hostname: process.env.HOSTNAME };
+  process.env.CONTROL_PLANE_DEV_HEADER_IDENTITY = "true";
+  process.env.HOSTNAME = "127.0.0.1";
+  let response;
+  try {
+    response = await lifecycleRoute(
+      new Request(`http://console.test/api/v1/live-runs/${runId}/lifecycle`, { method: "POST", headers: { "x-tenant-id": operator.tenantId, "x-actor-id": "route-test", "x-actor-name": "Route Test", "x-actor-role": "operator", "content-type": "application/json" }, body: JSON.stringify({ action: "submit_review" }) }),
+      { params: Promise.resolve({ runId }) }
+    );
+  } finally {
+    for (const [key, value] of [["CONTROL_PLANE_DEV_HEADER_IDENTITY", saved.identity], ["HOSTNAME", saved.hostname]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+  const body = await response.json();
+  assert.equal(response.status, 422, JSON.stringify(body));
+  assert.equal(body.error, "program_script_policy_blocked");
+  assert.equal(body.failures.length, 1);
+  assert.deepEqual([body.failures[0].position, body.failures[0].variantIndex, body.failures[0].text], [1, 2, "全网最低价，欢迎选购"]);
+  assert.ok(body.failures[0].reasons.length >= 1);
+  assert.equal(run.state, "DRAFT", "a refused submission does not advance the run");
+  const auditEvents = await listAuditEvents({ ...operator, actorId: "audit-reviewer", actorName: "Audit Reviewer", role: "admin" });
+  const [blockedEvent] = auditEvents.filter((event) => event.type === "show_program.script_policy_blocked" && event.resourceId === run.revisionId);
+  assert.ok(blockedEvent, "the refused lifecycle action records a separate audit event");
+  assert.deepEqual(blockedEvent.detail, { runId, failureCount: 1, failures: [{ position: 1, variantIndex: 2, textSha256: createHash("sha256").update("全网最低价，欢迎选购").digest("hex") }] });
+  assert.ok(!JSON.stringify(blockedEvent.detail).includes("全网最低价，欢迎选购"));
+});

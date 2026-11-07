@@ -33,11 +33,13 @@ for (const source of [
   "grant insert on audit_events to shuzhiren_runtime_worker",
   "grant execute on function runtime_worker_actor(uuid, text) to shuzhiren_runtime_worker",
   "grant select, insert on live_run_script_plays to shuzhiren_runtime_worker",
-  "grant execute on function knowledge_answer_candidates(uuid, uuid, text[], integer) to shuzhiren_runtime_worker"
+  "grant execute on function knowledge_answer_candidates(uuid, uuid, text[], integer) to shuzhiren_runtime_worker",
+  "grant select (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256) on show_revision_prohibited_term_snapshots to shuzhiren_runtime_worker",
+  "grant select (tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision, severity, suggestions, disabled, active) on tenant_prohibited_terms to shuzhiren_runtime_worker"
 ]) if (!grants.includes(source)) throw new Error(`Service principal grants missing: ${source}`);
 // The worker reads the voice binding by column only; a table-wide grant would expose asset evidence.
 for (const forbidden of ["grant select on media_assets", "grant select on show_revision_media_assets"]) if (grants.toLowerCase().includes(forbidden)) throw new Error(`Service principal grants must stay column-scoped: ${forbidden}`);
-for (const forbidden of ["grant all", "grant delete", " on memberships to shuzhiren_", " on users to shuzhiren_", " on products to shuzhiren_", " on show_revisions to shuzhiren_", " on audit_chain_heads to shuzhiren_"]) {
+for (const forbidden of ["grant all", "grant delete", " on memberships to shuzhiren_", " on users to shuzhiren_", " on products to shuzhiren_", " on show_revisions to shuzhiren_", " on audit_chain_heads to shuzhiren_", " on tenant_prohibited_term_revisions to shuzhiren_"]) {
   if (grants.toLowerCase().includes(forbidden)) throw new Error(`Service principal grants must not include: ${forbidden}`);
 }
 // D4: the control-plane account owns nothing; control-plane-principal.sql grants it DML through the only psql

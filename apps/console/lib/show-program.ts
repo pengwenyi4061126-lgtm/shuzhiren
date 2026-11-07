@@ -4,6 +4,8 @@ import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess, assertLiveRunAccessInTransaction } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { assertProgramScriptsAllowed, boundPolicyProfileIdInTransaction, currentDemoLexicon, currentLexiconInTransaction, freezeDemoRevisionLexicon, freezeRevisionLexiconInTransaction, frozenLexiconAuditDetail, policyRulesForRevisionInTransaction, programScriptCount } from "@/lib/prohibited-terms";
+import { lexiconSha256 } from "@/lib/shared/prohibited-terms.mjs";
 import { normalizeScriptVariants, scriptVariantsProblem } from "@/lib/shared/script-rotation.mjs";
 
 export type ProgramSegmentKind = "prepared_product" | "interactive" | "fallback" | "human_handoff";
@@ -134,9 +136,16 @@ export function updateDemoProgramLifecycle(runId: string, action: "submit_review
   if (!program) return;
   if (action === "submit_review") {
     validateStoredProgramSegments(program.segments, program.segments.find((segment) => segment.productVersionId)?.productVersionId);
+    // Every version of every runnable script passes the broadcast guard before review (demo mode has no policy profile binding).
+    assertProgramScriptsAllowed(program.segments, { policyRules: [], lexicon: currentDemoLexicon(program.tenantId) });
     program.editable = false;
   }
-  if (action === "approve") program.status = "approved";
+  if (action === "approve") {
+    // The same check again against the lexicon in force at approval, then the lexicon is frozen into the revision.
+    assertProgramScriptsAllowed(program.segments, { policyRules: [], lexicon: currentDemoLexicon(program.tenantId) });
+    freezeDemoRevisionLexicon(program.tenantId, program.revisionId);
+    program.status = "approved";
+  }
 }
 
 export async function hasApprovedFallbackProgram(context: RequestContext, runId: string) {
@@ -152,7 +161,11 @@ function hasApprovedFallback(program: ShowProgram | null) {
 }
 
 export async function approveShowProgramInTransaction(client: PoolClient, context: RequestContext, runId: string, revisionId: string, productVersionId?: string) {
-  const evidence = await validateShowProgramInTransaction(client, runId, revisionId, productVersionId);
+  const checked = await checkShowProgramInTransaction(client, runId, revisionId, productVersionId);
+  // The scripts passed the broadcast guard above; the lexicon they passed against is frozen into the revision before it is approved.
+  const frozen = await freezeRevisionLexiconInTransaction(client, revisionId, checked.lexicon);
+  await recordAuditEventInTransaction(client, context, { type: "show_revision.prohibited_terms_frozen", resource: "show_revision", resourceId: revisionId, detail: frozenLexiconAuditDetail(frozen, { scriptCount: checked.evidence.scriptCount, policyProfileId: checked.policyProfileId }) });
+  const evidence = checked.evidence;
   const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
   const updated = await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 and approval_status = 'draft' returning id", [revisionId, actor.rows[0].id]);
   if (!updated.rows[0]) throw new Response("Show program is not awaiting approval", { status: 409 });
@@ -160,9 +173,21 @@ export async function approveShowProgramInTransaction(client: PoolClient, contex
 }
 
 export async function validateShowProgramInTransaction(client: PoolClient, runId: string, revisionId: string, productVersionId?: string) {
+  return (await checkShowProgramInTransaction(client, runId, revisionId, productVersionId)).evidence;
+}
+
+/**
+ * The program checks of submission and approval: bindings and shape, then every version of every runnable script against
+ * the broadcast guard (the revision-bound policy rules and the lexicon in force now). Throws 422 program_script_policy_blocked.
+ */
+async function checkShowProgramInTransaction(client: PoolClient, runId: string, revisionId: string, productVersionId?: string) {
   const segments = await loadSegments(client, revisionId);
   validateStoredProgramSegments(segments, productVersionId);
-  return { runId, segmentCount: segments.length, sha256: programHash(segments) };
+  const lexicon = await currentLexiconInTransaction(client);
+  assertProgramScriptsAllowed(segments, { policyRules: await policyRulesForRevisionInTransaction(client, revisionId), lexicon });
+  const policyProfileId = await boundPolicyProfileIdInTransaction(client, revisionId);
+  const scriptCount = programScriptCount(segments);
+  return { evidence: { runId, segmentCount: segments.length, sha256: programHash(segments), scriptCount, policyProfileId, lexiconSha256: lexiconSha256(lexicon) }, lexicon, policyProfileId };
 }
 
 function persistentProgram(rows: PersistentProgramRow[]): ShowProgram {
