@@ -38,7 +38,8 @@ const navigation: NavigationItem[] = [
   { icon: Send, label: "投递队列", href: "/outbox" },
   { icon: FileText, label: "审计中心", href: "/audit" },
   { icon: SquareStack, label: "渠道设置", href: "/channels" },
-  { icon: UsersRound, label: "人员权限", href: "/memberships" }
+  { icon: UsersRound, label: "人员权限", href: "/memberships" },
+  { icon: BookOpenCheck, label: "知识库", href: "/knowledge" }
 ];
 const stateLabel: Record<LiveRunState, string> = { DRAFT: "草稿", REVIEW: "审核中", APPROVED: "已批准", PREFLIGHT: "预检", ARMED: "待开播", LIVE: "直播中", DEGRADED: "降级运行", ENDED: "已结束", ARCHIVED: "已归档" };
 const confirmationActions = new Set<LiveCommand["action"]>(["START", "PAUSE", "HANDOFF", "END", "INSERT_PROGRAM", "ROLLBACK_PROGRAM"]);

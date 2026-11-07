@@ -32,7 +32,7 @@ for (const [service, functions] of Object.entries(serviceRequirements)) {
   }
 }
 
-for (const page of ["assets", "products", "releases", "policy", "usage", "audit", "interaction-rules", "prohibited-terms"]) {
+for (const page of ["assets", "products", "releases", "policy", "usage", "audit", "interaction-rules", "prohibited-terms", "knowledge"]) {
   const source = await read("apps", "console", "app", page, "page.tsx");
   if (!source.includes("tenantWide: true")) throw new Error(`tenant-wide governance page lacks access denial: ${page}`);
 }
