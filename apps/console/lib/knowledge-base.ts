@@ -7,14 +7,16 @@ import { findProduct } from "@/lib/catalog";
 import { latestApprovedPolicyProfile } from "@/lib/policy-profiles";
 import { currentDemoLexicon, currentLexiconInTransaction } from "@/lib/prohibited-terms";
 import { guardBroadcastText } from "@/lib/shared/broadcast-guard.mjs";
-import { knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry, type KnowledgeRankReason } from "@/lib/shared/knowledge-match.mjs";
+import { chunkKnowledgeDocument, knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry, type KnowledgeRankReason } from "@/lib/shared/knowledge-match.mjs";
 import { lexiconSha256, type LexiconTerm } from "@/lib/shared/prohibited-terms.mjs";
 import type { PolicyRule } from "@/lib/policy-engine";
 
 export type KnowledgeEntryInput = { kind: "faq"; question: string; aliasQuestions: string[]; answer: string; keywords: string[]; productId?: string };
 export type KnowledgeEntryPatch = Partial<KnowledgeEntryInput>;
+export type KnowledgeDocumentInput = { title: string; sourceRef: string; body: string };
+export type KnowledgeDocument = { id: string; tenantId: string; title: string; sourceRef: string; bodySha256: string; chunkCount: number; createdBy: string; createdAt: string };
 export type KnowledgeEntry = {
-  id: string; tenantId: string; kind: "faq"; question: string; aliasQuestions: string[]; answer: string; keywords: string[];
+  id: string; tenantId: string; kind: "faq" | "document_chunk"; question: string; aliasQuestions: string[]; answer: string; keywords: string[];
   productId?: string; searchTerms: string[]; revision: number; status: "pending" | "approved" | "retired";
   approvedApprovalId?: string; createdBy: string; updatedBy: string; createdAt: string; updatedAt: string; retiredAt?: string;
 };
@@ -28,19 +30,20 @@ export type KnowledgeSearchInput = { question: string; productId?: string; minSc
 export type KnowledgeSearchResult = { hit: KnowledgeHit | null; reason: KnowledgeRankReason; candidates: KnowledgeHit[] };
 export type KnowledgeEntryInputIssue = { field: string; reason: string; value?: string };
 export type KnowledgePolicyFailure = { field: "question" | "aliasQuestions" | "answer"; aliasIndex?: number; text: string; decision: string; reasons: string[]; findings: ReturnType<typeof guardBroadcastText>["findings"] };
-type KnowledgeStore = { entries: Map<string, KnowledgeEntry>; approvals: Map<string, KnowledgeEntryApproval> };
+type KnowledgeStore = { entries: Map<string, KnowledgeEntry>; approvals: Map<string, KnowledgeEntryApproval>; documents: Map<string, KnowledgeDocument> };
 type PersistentEntryRow = {
-  id: string; tenant_id: string; kind: "faq"; question: string; alias_questions: unknown; answer: string; keywords: unknown;
+  id: string; tenant_id: string; kind: "faq" | "document_chunk"; question: string; alias_questions: unknown; answer: string; keywords: unknown;
   product_id: string | null; search_terms: string[]; revision: number; status: "pending" | "approved" | "retired";
   approved_approval_id: string | null; created_by: string; updated_by: string; created_at: Date | string; updated_at: Date | string; retired_at: Date | string | null;
 };
 type PersistentApprovalRow = { id: string; approved_at: Date | string };
 type KnowledgeCandidate = { approval_id: string; entry_id: string; revision: number; question: string; alias_questions: unknown; answer: string; keywords: unknown; search_terms: string[]; answer_sha256: string; product_id?: string | null };
+type PersistentDocumentRow = { id: string; tenant_id: string; title: string; source_ref: string; body_sha256: string; chunk_count: number; created_by: string; created_at: Date | string };
 
 declare global { var shuzhirenKnowledgeStore: KnowledgeStore | undefined; }
 
 function store(): KnowledgeStore {
-  globalThis.shuzhirenKnowledgeStore ??= { entries: new Map(), approvals: new Map() };
+  globalThis.shuzhirenKnowledgeStore ??= { entries: new Map(), approvals: new Map(), documents: new Map() };
   return globalThis.shuzhirenKnowledgeStore;
 }
 
@@ -89,6 +92,73 @@ export async function listKnowledgeEntries(context: RequestContext): Promise<Kno
   return withTenantTransaction(context.tenantId, async (client) => (await client.query<PersistentEntryRow>(`select ${columns} from knowledge_entries order by updated_at desc, id`)).rows.map(persistentEntry));
 }
 
+export async function listKnowledgeDocuments(context: RequestContext): Promise<KnowledgeDocument[]> {
+  requireTenantWideAccess(context);
+  if (!databasePool()) return [...store().documents.values()].filter((document) => document.tenantId === context.tenantId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return withTenantTransaction(context.tenantId, async (client) => (await client.query<PersistentDocumentRow>(
+    "select id, tenant_id, title, source_ref, body_sha256, chunk_count, created_by::text as created_by, created_at from knowledge_documents order by created_at desc, id"
+  )).rows.map(persistentDocument));
+}
+
+export function parseKnowledgeDocumentInput(value: unknown): KnowledgeDocumentInput | null {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["title", "sourceRef", "body"].includes(key))) return null;
+  if (typeof value.title !== "string" || typeof value.sourceRef !== "string" || typeof value.body !== "string") return null;
+  return { title: value.title, sourceRef: value.sourceRef, body: value.body };
+}
+
+export async function importKnowledgeDocument(context: RequestContext, input: KnowledgeDocumentInput): Promise<{ document: KnowledgeDocument; created: KnowledgeEntry[] }> {
+  requireTenantWideAccess(context);
+  if (context.role !== "admin" && context.role !== "operator") throw new Response("Knowledge document import requires admin or operator", { status: 403, statusText: "knowledge_document_forbidden" });
+  const title = input.title.trim();
+  const sourceRef = input.sourceRef.trim();
+  const body = input.body;
+  const bodyLength = Array.from(body).length;
+  if (Array.from(title).length < 1 || Array.from(title).length > 120) throw new Response("Title must contain 1 to 120 characters", { status: 400, statusText: "knowledge_document_title_invalid" });
+  if (sourceRef.length > 300 || !/^(?:evidence:\/\/[A-Za-z0-9][A-Za-z0-9._:/-]*|urn:[A-Za-z0-9][A-Za-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9._:/-]*)$/.test(sourceRef)) throw new Response("Source must be a controlled evidence:// or urn: reference", { status: 400, statusText: "knowledge_document_reference_invalid" });
+  if (bodyLength < 1 || bodyLength > 50_000 || !body.trim()) throw new Response("Body must contain 1 to 50000 characters", { status: 400, statusText: "knowledge_document_body_invalid" });
+
+  let chunks: string[];
+  try { chunks = chunkKnowledgeDocument(body); }
+  catch (error) {
+    const reason = error && typeof error === "object" && "reason" in error ? String(error.reason) : "invalid_document";
+    throw new Response(reason, { status: 400, statusText: `knowledge_document_${reason}` });
+  }
+  if (!chunks.length || chunks.some((answer) => !knowledgeSearchTerms({ question: firstSentence(answer), aliasQuestions: [], keywords: [] }).length)) {
+    throw new Response("Document chunks must contain searchable text", { status: 400, statusText: "knowledge_document_no_search_terms" });
+  }
+  const bodySha256 = sha256(body);
+  if (!databasePool()) {
+    const document: KnowledgeDocument = { id: `knowledge_document_${randomUUID()}`, tenantId: context.tenantId, title, sourceRef, bodySha256, chunkCount: chunks.length, createdBy: context.actorId, createdAt: new Date().toISOString() };
+    const created = chunks.map((answer) => {
+      const question = firstSentence(answer);
+      return { id: `knowledge_${randomUUID()}`, tenantId: context.tenantId, kind: "document_chunk" as const, question, aliasQuestions: [], answer, keywords: [], searchTerms: knowledgeSearchTerms({ question, aliasQuestions: [], keywords: [] }), revision: 1, status: "pending" as const, createdBy: context.actorId, updatedBy: context.actorId, createdAt: document.createdAt, updatedAt: document.createdAt };
+    });
+    await recordAuditEvent(context, { type: "knowledge_document.imported", resource: "knowledge_document", resourceId: document.id, detail: { documentId: document.id, bodySha256, chunkCount: chunks.length } });
+    store().documents.set(document.id, document);
+    for (const entry of created) store().entries.set(entry.id, entry);
+    return { document, created };
+  }
+
+  return mapDatabaseErrors(() => withTenantTransaction(context.tenantId, async (client) => {
+    const actor = await syncActor(client, context);
+    const row = (await client.query<PersistentDocumentRow>(`insert into knowledge_documents (tenant_id, title, source_ref, body, body_sha256, chunk_count, created_by)
+      values ($1, $2, $3, $4, $5, $6, $7) returning id, tenant_id, title, source_ref, body_sha256, chunk_count, created_by::text as created_by, created_at`,
+    [context.tenantId, title, sourceRef, body, bodySha256, chunks.length, actor])).rows[0];
+    const document = persistentDocument(row);
+    const created: KnowledgeEntry[] = [];
+    for (const answer of chunks) {
+      const question = firstSentence(answer);
+      const searchTerms = knowledgeSearchTerms({ question, aliasQuestions: [], keywords: [] });
+      const entry = (await client.query<PersistentEntryRow>(`insert into knowledge_entries (tenant_id, kind, question, alias_questions, answer, keywords, search_terms, source_document_id, created_by, updated_by)
+        values ($1, 'document_chunk', $2, '[]'::jsonb, $3, '[]'::jsonb, $4::text[], $5, $6, $6) returning ${columns}`,
+      [context.tenantId, question, answer, searchTerms, document.id, actor])).rows[0];
+      created.push(persistentEntry(entry));
+    }
+    await recordAuditEventInTransaction(client, context, { type: "knowledge_document.imported", resource: "knowledge_document", resourceId: document.id, detail: { documentId: document.id, bodySha256, chunkCount: chunks.length } });
+    return { document, created };
+  }));
+}
+
 export async function getKnowledgeEntry(context: RequestContext, entryId: string): Promise<KnowledgeEntry> {
   requireTenantWideAccess(context);
   if (!databasePool()) return demoEntry(context, entryId);
@@ -131,7 +201,7 @@ export async function updateKnowledgeEntry(context: RequestContext, entryId: str
   if (!databasePool()) {
     const existing = demoEntry(context, entryId);
     if (existing.status === "retired") throw new Response("Retired knowledge entries cannot be changed", { status: 409, statusText: "knowledge_entry_retired" });
-    const nextInput = normalizedInput({ ...existing, ...patch });
+    const nextInput = normalizedInput({ ...existing, ...patch, kind: "faq" });
     assertValidEntry(nextInput);
     await assertDemoProduct(context, nextInput.productId);
     const changed = contentChanged(existing, nextInput);
@@ -146,7 +216,7 @@ export async function updateKnowledgeEntry(context: RequestContext, entryId: str
     if (!row) throw entryNotFound();
     const existing = persistentEntry(row);
     if (existing.status === "retired") throw new Response("Retired knowledge entries cannot be changed", { status: 409, statusText: "knowledge_entry_retired" });
-    const nextInput = normalizedInput({ ...existing, ...patch });
+    const nextInput = normalizedInput({ ...existing, ...patch, kind: "faq" });
     assertValidEntry(nextInput);
     await assertProductInTransaction(client, context, nextInput.productId);
     const reset = contentChanged(existing, nextInput);
@@ -375,7 +445,17 @@ function rawSearchTermCount(input: KnowledgeEntryInput) {
 function persistentEntry(row: PersistentEntryRow): KnowledgeEntry {
   const aliases = jsonValue(row.alias_questions);
   const keywords = jsonValue(row.keywords);
-  return { id: row.id, tenantId: row.tenant_id, kind: "faq", question: row.question, aliasQuestions: asStringArray(aliases), answer: row.answer, keywords: asStringArray(keywords), ...(row.product_id ? { productId: row.product_id } : {}), searchTerms: row.search_terms, revision: row.revision, status: row.status, ...(row.approved_approval_id ? { approvedApprovalId: row.approved_approval_id } : {}), createdBy: row.created_by, updatedBy: row.updated_by, createdAt: iso(row.created_at)!, updatedAt: iso(row.updated_at)!, ...(row.retired_at ? { retiredAt: iso(row.retired_at) } : {}) };
+  return { id: row.id, tenantId: row.tenant_id, kind: row.kind, question: row.question, aliasQuestions: asStringArray(aliases), answer: row.answer, keywords: asStringArray(keywords), ...(row.product_id ? { productId: row.product_id } : {}), searchTerms: row.search_terms, revision: row.revision, status: row.status, ...(row.approved_approval_id ? { approvedApprovalId: row.approved_approval_id } : {}), createdBy: row.created_by, updatedBy: row.updated_by, createdAt: iso(row.created_at)!, updatedAt: iso(row.updated_at)!, ...(row.retired_at ? { retiredAt: iso(row.retired_at) } : {}) };
+}
+
+function persistentDocument(row: PersistentDocumentRow): KnowledgeDocument {
+  return { id: row.id, tenantId: row.tenant_id, title: row.title, sourceRef: row.source_ref, bodySha256: row.body_sha256.trim(), chunkCount: row.chunk_count, createdBy: row.created_by, createdAt: iso(row.created_at)! };
+}
+
+function firstSentence(text: string) {
+  const chars = Array.from(text);
+  const end = chars.findIndex((char) => SENTENCE_END_CHARS.has(char));
+  return chars.slice(0, end < 0 ? 200 : Math.min(end + 1, 200)).join("").trim();
 }
 
 function demoEntry(context: RequestContext, entryId: string) {
@@ -388,6 +468,7 @@ function entryNotFound() { return new Response("Knowledge entry not found", { st
 function secondApproverRequired() { return new Response("A different admin or reviewer must approve the last editor's entry", { status: 409, statusText: "knowledge_entry_second_approver_required" }); }
 function policyBlocked(failures: KnowledgePolicyFailure[]) { return new KnowledgePolicyError(failures); }
 function sha256(value: string) { return createHash("sha256").update(value, "utf8").digest("hex"); }
+const SENTENCE_END_CHARS = new Set(["。", "！", "？", "!", "?", ".", "；", ";"]);
 function isUuid(value: string) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
 
 async function assertDemoProduct(context: RequestContext, productId?: string) {

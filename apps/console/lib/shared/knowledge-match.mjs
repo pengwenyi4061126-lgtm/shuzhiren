@@ -6,8 +6,12 @@ import { normalizePolicyText } from "./policy-engine.mjs";
 const MAX_NORMALIZE_PASSES = 8;
 const MAX_SEARCH_TERMS = 2000;
 const DEFAULT_AMBIGUITY_MARGIN_PERMILLE = 50;
+const MAX_DOCUMENT_CHARACTERS = 50_000;
+const MAX_DOCUMENT_CHUNK_CHARACTERS = 300;
+const MAX_DOCUMENT_CHUNKS = 200;
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 const ASCII_ALNUM = /[a-z0-9]/;
+const SENTENCE_END = new Set(["。", "！", "？", "!", "?", ".", "；", ";"]);
 
 /**
  * normalizePolicyText applied until the result stops changing (at most 8 passes). A single pass is not
@@ -113,4 +117,49 @@ export function rankKnowledgeHits(question, candidates, options) {
   const second = ranked.find((candidate) => candidate.entryId !== best.entryId);
   if (second && best.scorePermille - second.scorePermille < margin) return { hit: null, reason: "ambiguous" };
   return { hit: best, reason: "matched" };
+}
+
+/** Split a plain-text knowledge document into ordered, non-empty chunks of at most 300 code points. */
+export function chunkKnowledgeDocument(body) {
+  if (typeof body !== "string") throw Object.assign(new TypeError("document body must be text"), { reason: "invalid_body" });
+  if (Array.from(body).length > MAX_DOCUMENT_CHARACTERS) throw Object.assign(new RangeError("document body exceeds 50000 characters"), { reason: "body_too_large" });
+
+  const chunks = [];
+  for (const rawParagraph of body.split(/\r?\n[\t ]*\r?\n/)) {
+    const paragraph = rawParagraph.trim();
+    if (!paragraph) continue;
+    const chars = Array.from(paragraph);
+    const sentences = [];
+    let start = 0;
+    for (let index = 0; index < chars.length; index += 1) {
+      if (!SENTENCE_END.has(chars[index])) continue;
+      while (index + 1 < chars.length && SENTENCE_END.has(chars[index + 1])) index += 1;
+      const sentence = chars.slice(start, index + 1).join("").trim();
+      if (sentence) sentences.push(sentence);
+      start = index + 1;
+    }
+    const tail = chars.slice(start).join("").trim();
+    if (tail) sentences.push(tail);
+
+    let current = "";
+    const flush = () => { if (current) chunks.push(current); current = ""; };
+    for (const sentence of sentences) {
+      let remaining = Array.from(sentence);
+      while (remaining.length) {
+        const separator = current ? " " : "";
+        const available = MAX_DOCUMENT_CHUNK_CHARACTERS - Array.from(current).length - Array.from(separator).length;
+        if (remaining.length <= available) {
+          current += separator + remaining.join("");
+          remaining = [];
+        } else if (current) {
+          flush();
+        } else {
+          chunks.push(remaining.splice(0, MAX_DOCUMENT_CHUNK_CHARACTERS).join(""));
+        }
+      }
+    }
+    flush();
+    if (chunks.length > MAX_DOCUMENT_CHUNKS) throw Object.assign(new RangeError("document exceeds 200 chunks"), { reason: "too_many_chunks" });
+  }
+  return chunks;
 }

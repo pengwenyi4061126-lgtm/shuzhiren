@@ -9,7 +9,7 @@ import { describe, test } from "node:test";
 import fc from "fast-check";
 import * as interactionRules from "../apps/runtime-worker/interaction-rules.mjs";
 import { normalizePolicyText } from "../apps/console/lib/shared/policy-engine.mjs";
-import { knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry } from "../apps/console/lib/shared/knowledge-match.mjs";
+import { chunkKnowledgeDocument, knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry } from "../apps/console/lib/shared/knowledge-match.mjs";
 register("./lib/console-ts-loader.mjs", import.meta.url);
 for (const name of ["DATABASE_URL", "CONTROL_PLANE_DEMO_MODE"]) delete process.env[name];
 Object.assign(process.env, { CONTROL_PLANE_DEV_HEADER_IDENTITY: "true", NODE_ENV: "development", HOSTNAME: "127.0.0.1" });
@@ -20,6 +20,7 @@ const knowledgeRoutes = {
   approve: await import("../apps/console/app/api/v1/knowledge-entries/[entryId]/approve/route.ts"),
   search: await import("../apps/console/app/api/v1/knowledge-entries/search/route.ts")
 };
+const knowledgeDocumentsRoute = await import("../apps/console/app/api/v1/knowledge-documents/route.ts");
 const responseDraftRoute = await import("../apps/console/app/api/v1/live-runs/[runId]/response-drafts/route.ts");
 const replyDraftRoute = await import("../apps/console/app/api/v1/live-runs/[runId]/reply-drafts/route.ts");
 const channelInteractions = await import("../apps/console/lib/interactions.ts");
@@ -47,6 +48,35 @@ const normalizeStable = (value) => {
 };
 
 const entry = (overrides = {}) => ({ entryId: "00000000-0000-4000-8000-000000000001", question: "什么时候发货", aliasQuestions: [], keywords: ["发货"], ...overrides });
+
+describe("chunkKnowledgeDocument", () => {
+  test("drops whitespace, preserves non-whitespace order, and stays within 300 code points", () => {
+    assert.deepEqual(chunkKnowledgeDocument(" \n\t\n "), []);
+    const body = "第一句说明。第二句继续！\n仍在本段。\n\n新段落，文本保持。";
+    const chunks = chunkKnowledgeDocument(body);
+    assert.equal(chunks.join("").replace(/\s/gu, ""), body.replace(/\s/gu, ""));
+    assert.ok(chunks.every((chunk) => Array.from(chunk).length <= 300));
+    assert.ok(chunks.every((chunk) => chunk.trim().length > 0));
+  });
+
+  test("accepts 50000 characters and rejects 50001 with a reason", () => {
+    assert.ok(chunkKnowledgeDocument("发".repeat(50_000)).length > 0);
+    assert.throws(() => chunkKnowledgeDocument("发".repeat(50_001)), (error) => error.reason === "body_too_large");
+  });
+
+  test("accepts 200 chunks and rejects 201 chunks with a reason", () => {
+    assert.equal(chunkKnowledgeDocument(Array.from({ length: 200 }, (_, index) => `段落${index}。`).join("\n\n")).length, 200);
+    assert.throws(() => chunkKnowledgeDocument(Array.from({ length: 201 }, (_, index) => `段落${index}。`).join("\n\n")), (error) => error.reason === "too_many_chunks");
+  });
+
+  test("splits a single long sentence without losing characters", () => {
+    const body = "长".repeat(901);
+    const chunks = chunkKnowledgeDocument(body);
+    assert.equal(chunks.length, 4);
+    assert.ok(chunks.every((chunk) => Array.from(chunk).length <= 300));
+    assert.equal(chunks.join(""), body);
+  });
+});
 
 describe("knowledgeQueryTerms", () => {
   test("splits Chinese into adjacent bigrams", () => {
@@ -862,5 +892,46 @@ describe("worker FAQ rules", () => {
         }
       }), { seed: 11014, numRuns: 100 });
     for (const branch of Object.keys(seen)) assert.ok(seen[branch] > 0, `Property 14 did not exercise ${branch}`);
+  });
+});
+
+describe("plain-text knowledge document import", () => {
+  test("imports pending searchable chunks, lists documents, and enforces role and input limits", async () => {
+    const tenantId = "tenant_knowledge_documents_demo";
+    const body = "退货规则是什么？支持七天内申请退货。\n\n发货规则是什么？订单通常在二十四小时内发货。";
+    const post = (input, role = "operator") => callKnowledgeRoute(knowledgeDocumentsRoute.POST, "/api/v1/knowledge-documents", { method: "POST", role, tenantId, actorId: `kb-document-${role}`, body: input });
+    assert.equal((await knowledgeDocumentsRoute.GET(new Request("http://127.0.0.1/api/v1/knowledge-documents", { headers: knowledgeHeaders("admin", "kb-document-admin", tenantId) }))).status, 200);
+    assert.equal((await post({ title: "规则文档", sourceRef: "evidence://handbook/returns", body }, "reviewer")).status, 403);
+    assert.equal((await post({ title: "规则文档", sourceRef: "evidence://handbook/returns", body }, "analyst")).status, 403);
+    assert.equal((await post({ title: "规则文档", sourceRef: "https://example.invalid/doc", body })).status, 400);
+    assert.equal((await post({ title: "管理员导入", sourceRef: "evidence://handbook/admin", body }, "admin")).status, 201);
+
+    const imported = await post({ title: "售后与发货规则", sourceRef: "urn:handbook:returns-v1", body });
+    assert.equal(imported.status, 201, JSON.stringify(imported.body));
+    assert.equal(imported.body.data.document.title, "售后与发货规则");
+    assert.equal(imported.body.data.document.sourceRef, "urn:handbook:returns-v1");
+    assert.match(imported.body.data.document.bodySha256, /^[0-9a-f]{64}$/);
+    assert.equal(imported.body.data.document.chunkCount, imported.body.data.created.length);
+    assert.ok(imported.body.data.created.length > 0);
+    assert.ok(imported.body.data.created.every((entry) => entry.kind === "document_chunk" && entry.status === "pending" && !entry.keywords.length));
+
+    const listed = await callKnowledgeRoute(knowledgeDocumentsRoute.GET, "/api/v1/knowledge-documents", { role: "analyst", actorId: "kb-document-analyst", tenantId });
+    assert.equal(listed.status, 200);
+    assert.ok(listed.body.data.some((document) => document.id === imported.body.data.document.id));
+    const preview = await callKnowledgeRoute(knowledgeRoutes.search.POST, "/api/v1/knowledge-entries/search", { method: "POST", role: "analyst", actorId: "kb-document-reader", tenantId, body: { question: imported.body.data.created[0].question } });
+    assert.equal(preview.body.data.reason, "no_candidates", "pending imported chunks must not enter search");
+
+    const context = { tenantId, actorId: "kb-document-admin", actorName: "Admin", role: "admin" };
+    const beforeDocuments = (await knowledgeService.listKnowledgeDocuments(context)).length;
+    const beforeEntries = (await knowledgeService.listKnowledgeEntries(context)).length;
+    assert.equal((await post({ title: "超长正文", sourceRef: "evidence://handbook/oversized", body: "退".repeat(50_001) })).status, 400);
+    assert.equal((await post({ title: "超多片段", sourceRef: "evidence://handbook/chunks", body: Array.from({ length: 201 }, (_, index) => `规则${index}。`).join("\n\n") })).status, 400);
+    assert.equal((await knowledgeService.listKnowledgeDocuments(context)).length, beforeDocuments);
+    assert.equal((await knowledgeService.listKnowledgeEntries(context)).length, beforeEntries);
+
+    const audit = globalThis.shuzhirenAuditStore.events.find((event) => event.resourceId === imported.body.data.document.id);
+    assert.equal(audit.type, "knowledge_document.imported");
+    assert.equal(audit.detail.bodySha256, imported.body.data.document.bodySha256);
+    assert.equal(audit.detail.chunkCount, imported.body.data.document.chunkCount);
   });
 });

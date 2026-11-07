@@ -4,7 +4,8 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Archive, BadgeCheck, CircleAlert, ClipboardCheck, Pencil, Plus, Search, X } from "lucide-react";
 import { clientFetch } from "@/lib/client-request";
 import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
-import type { KnowledgeEntry, KnowledgeSearchResult } from "@/lib/knowledge-base";
+import { KnowledgeImportPanel } from "@/components/knowledge-import-panel";
+import type { KnowledgeDocument, KnowledgeEntry, KnowledgeSearchResult } from "@/lib/knowledge-base";
 import styles from "./knowledge-workspace.module.css";
 
 type ProductOption = { id: string; name: string; externalSku: string };
@@ -17,14 +18,16 @@ const reasonLabel: Record<KnowledgeSearchResult["reason"], string> = { matched: 
 
 function lines(value: string) { return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean); }
 
-export function KnowledgeWorkspace({ initialEntries, products, actorId, canManage, canApprove }: {
+export function KnowledgeWorkspace({ initialEntries, initialDocuments, products, actorId, canManage, canApprove }: {
   initialEntries: KnowledgeEntry[];
+  initialDocuments: KnowledgeDocument[];
   products: ProductOption[];
   actorId: string;
   canManage: boolean;
   canApprove: boolean;
 }) {
   const [entries, setEntries] = useState(initialEntries);
+  const [documents, setDocuments] = useState(initialDocuments);
   const [draft, setDraft] = useState<EntryDraft>(emptyDraft);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | KnowledgeEntry["status"]>("all");
@@ -44,10 +47,16 @@ export function KnowledgeWorkspace({ initialEntries, products, actorId, canManag
   ), [entries, filter, query]);
 
   async function reload() {
-    const response = await clientFetch("/api/v1/knowledge-entries", { cache: "no-store" });
-    const payload = await response.json().catch(() => null) as ApiPayload<KnowledgeEntry[]> | null;
-    if (!response.ok || !Array.isArray(payload?.data)) throw new Error(payload?.error ?? "知识条目读取失败");
-    setEntries(payload.data);
+    const [entryResponse, documentResponse] = await Promise.all([
+      clientFetch("/api/v1/knowledge-entries", { cache: "no-store" }),
+      clientFetch("/api/v1/knowledge-documents", { cache: "no-store" })
+    ]);
+    const entryPayload = await entryResponse.json().catch(() => null) as ApiPayload<KnowledgeEntry[]> | null;
+    const documentPayload = await documentResponse.json().catch(() => null) as ApiPayload<KnowledgeDocument[]> | null;
+    if (!entryResponse.ok || !Array.isArray(entryPayload?.data)) throw new Error(entryPayload?.error ?? "知识条目读取失败");
+    if (!documentResponse.ok || !Array.isArray(documentPayload?.data)) throw new Error(documentPayload?.error ?? "文档列表读取失败");
+    setEntries(entryPayload.data);
+    setDocuments(documentPayload.data);
   }
 
   function startEdit(entry: KnowledgeEntry) {
@@ -138,6 +147,8 @@ export function KnowledgeWorkspace({ initialEntries, products, actorId, canManag
         <div className={styles.formActions}><button className={styles.primary} type="submit" disabled={busy === "save"}>{busy === "save" ? "保存中" : editingId ? "保存修改" : <><Plus size={15} />创建待审批条目</>}</button>{editingId ? <button className={styles.secondary} type="button" onClick={clearDraft}>取消</button> : null}</div>
       </form>
     </section> : null}
+
+    {canManage ? <KnowledgeImportPanel documents={documents} onImported={reload} /> : null}
 
     <section className={styles.entries} aria-label="知识条目">
       <div className={styles.sectionHead}>

@@ -14,7 +14,7 @@ const serviceRequirements = {
   "control-plane/store.ts": ["createLiveRun"],
   "interaction-rules.ts": ["listInteractionRules", "getInteractionRule", "createInteractionRule", "updateInteractionRule", "disableInteractionRule", "approveInteractionRule", "createDefaultInteractionRules"],
   "prohibited-terms.ts": ["listProhibitedTerms", "createProhibitedTerm", "updateProhibitedTerm", "retireProhibitedTerm", "requestBuiltinTermOverride", "approveProhibitedTermRevision"],
-  "knowledge-base.ts": ["listKnowledgeEntries", "getKnowledgeEntry", "createKnowledgeEntry", "updateKnowledgeEntry", "retireKnowledgeEntry", "approveKnowledgeEntry", "searchKnowledgeEntries"],
+  "knowledge-base.ts": ["listKnowledgeEntries", "getKnowledgeEntry", "createKnowledgeEntry", "updateKnowledgeEntry", "retireKnowledgeEntry", "approveKnowledgeEntry", "searchKnowledgeEntries", "listKnowledgeDocuments", "importKnowledgeDocument"],
   "presets.ts": ["adoptPreset"]
 };
 
