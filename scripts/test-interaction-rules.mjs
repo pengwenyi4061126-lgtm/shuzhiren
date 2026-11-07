@@ -570,7 +570,7 @@ describe("Property 2: an unready AI disclosure rule always blocks preflight", ()
     hasApprovedPolicyProfile: true, policyProfileDetail: "policy ok", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "sku ok",
     hasFallbackProgram: true, channelReady: true, channelDetail: "channel ok", outputReady: true, outputDetail: "output ok",
     runtimeSessionReady: true, runtimeSessionDetail: "session ok", aiDisclosureEnabled: true, aiDisclosureRuleReady: true,
-    aiDisclosureRuleDetail: "rule ok", aigcLabelReady: true, aigcLabelDetail: "label ok"
+    aiDisclosureRuleDetail: "rule ok", aigcLabelReady: true, aigcLabelDetail: "label ok", overlayReady: true, overlayDetail: "overlay ok"
   };
   const detailArbitrary = fc.oneof(fc.string({ minLength: 1, maxLength: 80 }), fc.string({ unit: "grapheme", minLength: 1, maxLength: 40 })).filter((text) => text.length > 0);
 
