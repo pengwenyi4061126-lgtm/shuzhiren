@@ -163,6 +163,11 @@ export async function findApprovedProductVersion(context: RequestContext, versio
   });
 }
 
+export async function findProductIdForVersion(context: RequestContext, versionId: string) {
+  if (!databasePool()) return demoProducts(context).find((product) => product.versions.some((version) => version.id === versionId))?.id;
+  return withTenantTransaction(context.tenantId, async (client) => (await client.query<{ product_id: string }>("select product_id from product_versions where id = $1", [versionId])).rows[0]?.product_id);
+}
+
 export async function frozenProductVersionStatusForRun(context: RequestContext, runId: string, expectedVersionId?: string): Promise<FrozenProductVersionStatus> {
   if (!databasePool()) {
     const runVersion = expectedVersionId ?? (runId === "run_20261101_001" ? "pv_a102_v1" : undefined);

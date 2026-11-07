@@ -238,7 +238,7 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
     setDraftLoading(true);
     setCommandError(null);
     try {
-      const response = await fetch(`/api/v1/live-runs/${encodeURIComponent(run.id)}/response-drafts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: selectedInteraction.text }) });
+      const response = await fetch(`/api/v1/live-runs/${encodeURIComponent(run.id)}/response-drafts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: selectedInteraction.text, interactionIds: [selectedInteraction.id] }) });
       const payload = await response.json().catch(() => null) as { data?: { status: string; text?: string } } | { error?: string } | null;
       if (!response.ok || !payload || !("data" in payload) || !payload.data) throw new Error(payload && "error" in payload ? payload.error : "回复草稿生成失败");
       setDraftReply(payload.data.status === "ready" ? payload.data.text ?? "未生成可播报文案" : "此问题需要人工接管，系统不会生成自动播报文案。");

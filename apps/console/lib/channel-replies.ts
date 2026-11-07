@@ -10,6 +10,7 @@ import { listInteractions, type LiveInteraction } from "@/lib/interactions";
 import { policyRulesForRunInTransaction } from "@/lib/policy-profiles";
 import { demoRunLexicon, runLexiconInTransaction } from "@/lib/prohibited-terms";
 import { guardBroadcastText } from "@/lib/shared/broadcast-guard.mjs";
+import { knowledgeEvidenceForApproval } from "@/lib/knowledge-base";
 
 export type ChannelReplyStatus = "draft" | "pending_approval" | "approved" | "sending" | "sent" | "failed" | "rejected";
 export type ChannelReplyDraft = {
@@ -30,7 +31,7 @@ type PersistentReplyRow = {
   created_at: Date | string; updated_at: Date | string;
 };
 type ReplyStore = { drafts: Map<string, ChannelReplyDraft> };
-type DraftInput = { body: string; channelConnectionId?: string };
+type DraftInput = { body: string; channelConnectionId?: string; knowledgeApprovalId?: string };
 declare global { var shuzhirenChannelReplyStore: ReplyStore | undefined; }
 function replyStore() { globalThis.shuzhirenChannelReplyStore ??= { drafts: new Map() }; return globalThis.shuzhirenChannelReplyStore; }
 
@@ -63,7 +64,8 @@ export async function createChannelReplyDraft(context: RequestContext, runId: st
     const channel = await assertReplyChannel(client, channelConnectionId, interaction.channel_connection_id ?? undefined);
     const product = await productEvidence(client, runId);
     const actorId = await actorDatabaseId(client, context);
-    const evidenceSnapshot = [{ type: "interaction_evidence", ids: jsonStringArray(interaction.evidence_ids) }, ...(product.id ? [{ type: "product_version", id: product.id, revision: product.revision }] : [])];
+    const knowledgeEvidence = input.knowledgeApprovalId ? await knowledgeEvidenceForApproval(context, input.knowledgeApprovalId, interaction.question_text, client) : undefined;
+    const evidenceSnapshot = [{ type: "interaction_evidence", ids: jsonStringArray(interaction.evidence_ids) }, ...(knowledgeEvidence ? [knowledgeEvidence] : []), ...(product.id ? [{ type: "product_version", id: product.id, revision: product.revision }] : [])];
     const inserted = await client.query<{ id: string }>(
       `insert into channel_reply_drafts (tenant_id, live_run_id, interaction_id, channel_connection_id, body, body_sha256, policy_action, evidence_snapshot, product_version_id, product_revision, created_by)
        values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::uuid, $10, $11::uuid) returning id`,
@@ -180,7 +182,7 @@ async function transitionReply(context: RequestContext, runId: string, draftId: 
 }
 
 async function lockedInteraction(client: PoolClient, runId: string, interactionId: string) {
-  const result = await client.query<{ id: string; channel_connection_id: string | null; policy_action: LiveInteraction["decision"]; evidence_ids: unknown; status: LiveInteraction["status"] }>("select id, channel_connection_id, policy_action, evidence_ids, status from live_interactions where id = $1 and live_run_id = $2 for update", [interactionId, runId]);
+  const result = await client.query<{ id: string; channel_connection_id: string | null; policy_action: LiveInteraction["decision"]; evidence_ids: unknown; status: LiveInteraction["status"]; question_text: string }>("select id, channel_connection_id, policy_action, evidence_ids, status, question_text from live_interactions where id = $1 and live_run_id = $2 for update", [interactionId, runId]);
   const interaction = result.rows[0];
   if (!interaction) throw new Response("Interaction not found", { status: 404 });
   if (interaction.status !== "queued") throw new Response("Interaction is already handled", { status: 409 });
@@ -214,8 +216,9 @@ async function createDemoDraft(context: RequestContext, runId: string, interacti
   const channelConnectionId = input.channelConnectionId ?? interaction.channelConnectionId;
   const channel = await assertDemoReplyChannel(context, channelConnectionId, interaction.channelConnectionId);
   if ([...replyStore().drafts.values()].some((item) => item.interactionId === interactionId && item.tenantId === context.tenantId)) throw new Response("Interaction already has a channel reply draft", { status: 409 });
+  const knowledgeEvidence = input.knowledgeApprovalId ? await knowledgeEvidenceForApproval(context, input.knowledgeApprovalId, interaction.text) : undefined;
   const now = new Date().toISOString();
-  const draft: ChannelReplyDraft = { id: `reply_${crypto.randomUUID()}`, tenantId: context.tenantId, runId, interactionId, channelConnectionId: channel.id, body: input.body, bodySha256: sha256(input.body), status: "draft", policyAction: interaction.decision, evidenceSnapshot: [{ type: "interaction_evidence", ids: interaction.evidenceIds }], createdBy: context.actorId, createdAt: now, updatedAt: now };
+  const draft: ChannelReplyDraft = { id: `reply_${crypto.randomUUID()}`, tenantId: context.tenantId, runId, interactionId, channelConnectionId: channel.id, body: input.body, bodySha256: sha256(input.body), status: "draft", policyAction: interaction.decision, evidenceSnapshot: [{ type: "interaction_evidence", ids: interaction.evidenceIds }, ...(knowledgeEvidence ? [knowledgeEvidence] : [])], createdBy: context.actorId, createdAt: now, updatedAt: now };
   replyStore().drafts.set(draft.id, draft);
   await recordAuditEvent(context, { type: "channel_reply.draft_created", resource: "channel_reply_draft", resourceId: draft.id, detail: { runId, interactionId, channelConnectionId: draft.channelConnectionId, bodySha256: draft.bodySha256, policyAction: draft.policyAction } });
   return draft;

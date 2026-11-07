@@ -20,6 +20,11 @@ const knowledgeRoutes = {
   approve: await import("../apps/console/app/api/v1/knowledge-entries/[entryId]/approve/route.ts"),
   search: await import("../apps/console/app/api/v1/knowledge-entries/search/route.ts")
 };
+const responseDraftRoute = await import("../apps/console/app/api/v1/live-runs/[runId]/response-drafts/route.ts");
+const replyDraftRoute = await import("../apps/console/app/api/v1/live-runs/[runId]/reply-drafts/route.ts");
+const channelInteractions = await import("../apps/console/lib/interactions.ts");
+const channels = await import("../apps/console/lib/channels.ts");
+const controlPlaneStore = await import("../apps/console/lib/control-plane/store.ts");
 const knowledgeHeaders = (role = "admin", actorId = `knowledge-test-${role}`, tenantId = "tenant_demo") => ({ "x-tenant-id": tenantId, "x-actor-id": actorId, "x-actor-name": "Knowledge API Test", "x-actor-role": role, "content-type": "application/json" });
 const callKnowledgeRoute = async (handler, url, { method = "GET", body, role = "admin", actorId, tenantId, params = {} } = {}) => {
   const response = await handler(new Request(`http://127.0.0.1${url}`, { method, headers: knowledgeHeaders(role, actorId, tenantId), body: body === undefined ? undefined : JSON.stringify(body) }), { params: Promise.resolve(params) });
@@ -471,6 +476,79 @@ describe("knowledge entry console routes", () => {
     assert.equal(single[0].scorePermille, 900);
     assert.equal((await knowledgeService.knowledgeHitsForRunInTransaction(fakeClient([row("00000000-0000-4000-8000-000000000014"), row("00000000-0000-4000-8000-000000000015")]), runId, "售后维修流程要怎样申请？")).length, 0);
     await assert.rejects(knowledgeService.knowledgeHitsForRunInTransaction(fakeClient([], new Error("candidate function failed")), runId, "售后维修流程要怎样申请？"), /candidate function failed/);
+  });
+
+  test("response and channel reply drafts retain current approved knowledge evidence", async () => {
+    const question = "如何申请直播专用退货服务？";
+    const created = await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "operator", actorId: "draft-knowledge-author", body: validKnowledgeEntry({ question, aliasQuestions: [], answer: "请在签收后联系客服办理退货服务。", keywords: ["退货"] }) });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const entryId = created.body.data.id;
+    const approved = await callKnowledgeApproval(entryId, { role: "admin", actorId: "draft-knowledge-approver" });
+    assert.equal(approved.status, 200, JSON.stringify(approved.body));
+    const approvalId = approved.body.data.approvedApprovalId;
+    const responseContext = { tenantId: "tenant_demo", actorId: "draft-response-operator", actorName: "Draft Test", role: "operator", accessScope: "tenant" };
+    const demoRun = await controlPlaneStore.getRun(responseContext, "run_20261101_001");
+    const runId = "10000000-0000-4000-8000-000000000012";
+    globalThis.shuzhirenControlStore.runs.set(runId, { ...demoRun, id: runId });
+    const sourceInteraction = await channelInteractions.createInteraction(responseContext, { runId, question, evidenceIds: [] });
+    const draft = await callKnowledgeRoute(responseDraftRoute.POST, `/api/v1/live-runs/${runId}/response-drafts`, { method: "POST", body: { question, interactionIds: [sourceInteraction.id] }, params: { runId } });
+    assert.equal(draft.status, 200, JSON.stringify(draft.body));
+    assert.equal(draft.body.data.text, "请在签收后联系客服办理退货服务。");
+    const responseKnowledgeEvidence = draft.body.data.evidence.find((item) => item.type === "knowledge_entry");
+    assert.deepEqual(draft.body.data.evidence, [
+      { type: "interaction_evidence", ids: [sourceInteraction.id] },
+      responseKnowledgeEvidence,
+      { type: "product_version", id: "pv_a102_v1", revision: 1 }
+    ]);
+    assert.equal(responseKnowledgeEvidence.approvalId, approvalId);
+    assert.equal(responseKnowledgeEvidence.entryId, entryId);
+    assert.equal(responseKnowledgeEvidence.revision, 1);
+    assert.match(responseKnowledgeEvidence.answerSha256, /^[0-9a-f]{64}$/);
+    assert.equal(responseKnowledgeEvidence.scorePermille, 900);
+    const badInteractionReference = await callKnowledgeRoute(responseDraftRoute.POST, `/api/v1/live-runs/${runId}/response-drafts`, { method: "POST", body: { question, interactionIds: ["not-a-run-interaction"] }, params: { runId } });
+    assert.equal(badInteractionReference.status, 400);
+    const fallback = await callKnowledgeRoute(responseDraftRoute.POST, `/api/v1/live-runs/${runId}/response-drafts`, { method: "POST", body: { question: "直播结束后如何收纳桌面补光灯？" }, params: { runId } });
+    assert.equal(fallback.status, 200);
+    assert.equal(fallback.body.data.evidence.some((item) => item.type === "knowledge_entry"), false);
+    const approvedSnapshot = globalThis.shuzhirenKnowledgeStore.approvals.get(approvalId);
+    const originalAnswer = approvedSnapshot.answer;
+    approvedSnapshot.answer = "答".repeat(801);
+    const blockedRoute = await callKnowledgeRoute(responseDraftRoute.POST, `/api/v1/live-runs/${runId}/response-drafts`, { method: "POST", body: { question }, params: { runId } });
+    approvedSnapshot.answer = originalAnswer;
+    assert.equal(blockedRoute.status, 202);
+    assert.equal(blockedRoute.body.data.status, "handoff");
+    const context = { tenantId: "tenant_demo", actorId: "draft-reply-operator", actorName: "Draft Test", role: "operator", accessScope: "tenant" };
+    await channels.getChannelConnection(context, "channel_demo");
+    globalThis.shuzhirenChannelStore.connections.get("channel_demo").lastVerifiedAt = new Date().toISOString();
+    const firstInteraction = await channelInteractions.createChannelInteraction(context, { runId, question, source: "viewer", channelConnectionId: "channel_demo", evidenceIds: [] });
+    const callReply = (body, overrides = {}) => callKnowledgeRoute(replyDraftRoute.POST, `/api/v1/live-runs/${runId}/reply-drafts`, { method: "POST", role: "operator", actorId: context.actorId, body: { interactionId: firstInteraction.id, channelConnectionId: "channel_demo", body: "请联系客服办理。", ...body }, params: { runId }, ...overrides });
+    const reply = await callReply({ knowledgeApprovalId: approvalId });
+    assert.equal(reply.status, 201, JSON.stringify(reply.body));
+    const replyKnowledgeEvidence = reply.body.data.evidenceSnapshot.find((item) => item.type === "knowledge_entry");
+    assert.deepEqual(replyKnowledgeEvidence, { type: "knowledge_entry", approvalId, entryId, revision: 1, answerSha256: responseKnowledgeEvidence.answerSha256, scorePermille: responseKnowledgeEvidence.scorePermille });
+
+    const secondInteraction = await channelInteractions.createChannelInteraction({ ...context, actorId: "draft-reply-operator-2" }, { runId, question, source: "viewer", channelConnectionId: "channel_demo", evidenceIds: [] });
+    const secondReply = (knowledgeApprovalId, tenantId = "tenant_demo") => callKnowledgeRoute(replyDraftRoute.POST, `/api/v1/live-runs/${runId}/reply-drafts`, { method: "POST", role: "operator", actorId: "draft-reply-operator-2", tenantId, body: { interactionId: secondInteraction.id, channelConnectionId: "channel_demo", body: "请联系客服办理。", knowledgeApprovalId }, params: { runId } });
+    const missing = await secondReply("missing-approval-id");
+    assert.equal(missing.status, 409);
+    assert.equal(missing.body.error, "knowledge_approval_not_current");
+
+    const foreign = await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "operator", actorId: "foreign-draft-author", tenantId: "tenant_other", body: validKnowledgeEntry({ question: "异租户专用退货流程怎么申请？", aliasQuestions: [], keywords: ["退货"] }) });
+    assert.equal(foreign.status, 201);
+    const foreignApproved = await callKnowledgeApproval(foreign.body.data.id, { role: "admin", actorId: "foreign-draft-approver", tenantId: "tenant_other" });
+    assert.equal(foreignApproved.status, 200);
+    const crossTenant = await secondReply(foreignApproved.body.data.approvedApprovalId);
+    assert.equal(crossTenant.status, 409);
+    assert.equal(crossTenant.body.error, "knowledge_approval_not_current");
+
+    const stale = await callKnowledgeItem("PUT", entryId, { role: "operator", actorId: "draft-knowledge-editor", body: { answer: "更新后的退货办理答复。" } });
+    assert.equal(stale.status, 200);
+    const expired = await secondReply(approvalId);
+    assert.equal(expired.status, 409);
+    assert.equal(expired.body.error, "knowledge_approval_not_current");
+    const unchanged = await secondReply(undefined);
+    assert.equal(unchanged.status, 201, JSON.stringify(unchanged.body));
+    assert.equal(unchanged.body.data.evidenceSnapshot.some((item) => item.type === "knowledge_entry"), false);
   });
 });
 

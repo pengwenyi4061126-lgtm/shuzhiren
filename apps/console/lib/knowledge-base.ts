@@ -23,6 +23,7 @@ export type KnowledgeEntryApproval = {
   searchTerms: string[]; productId?: string; answerSha256: string; policyProfileId: string | null; lexiconSha256: string; approvedBy: string; approvedAt: string;
 };
 export type KnowledgeHit = { approvalId: string; entryId: string; revision: number; question: string; answer: string; answerSha256: string; scorePermille: number; keywordHits: number };
+export type KnowledgeEvidence = { type: "knowledge_entry"; approvalId: string; entryId: string; revision: number; answerSha256: string; scorePermille: number };
 export type KnowledgeSearchInput = { question: string; productId?: string; minScorePermille?: number };
 export type KnowledgeSearchResult = { hit: KnowledgeHit | null; reason: KnowledgeRankReason; candidates: KnowledgeHit[] };
 export type KnowledgeEntryInputIssue = { field: string; reason: string; value?: string };
@@ -274,6 +275,46 @@ export async function knowledgeHitsForRunInTransaction(client: PoolClient, runId
   if (result.reason !== "matched" || !result.hit) return [];
   const hit = result.hit;
   return [{ approvalId: hit.approvalId, entryId: hit.entryId, revision: hit.revision, question: hit.question, answer: hit.answer, answerSha256: hit.answerSha256, scorePermille: hit.scorePermille, keywordHits: hit.keywordHits }];
+}
+
+export async function knowledgeHitsForRun(context: RequestContext, runId: string, question: string, productId?: string): Promise<KnowledgeHit[]> {
+  if (databasePool()) return withTenantTransaction(context.tenantId, (client) => knowledgeHitsForRunInTransaction(client, runId, question), { readOnly: true });
+  const queryTerms = knowledgeQueryTerms(question);
+  if (!queryTerms.length) return [];
+  const candidates = [...store().entries.values()]
+    .filter((entry) => entry.tenantId === context.tenantId && entry.status === "approved" && (!entry.productId || entry.productId === productId) && entry.searchTerms.some((term) => queryTerms.includes(term)))
+    .flatMap((entry) => {
+      const approval = entry.approvedApprovalId ? store().approvals.get(entry.approvedApprovalId) : undefined;
+      return approval ? [{ entryId: entry.id, question: approval.question, aliasQuestions: approval.aliasQuestions, keywords: approval.keywords, approvalId: approval.id, revision: approval.revision, answer: approval.answer, answerSha256: approval.answerSha256 }] : [];
+    });
+  const result = rankKnowledgeHits(question, candidates, { minScorePermille: 600 });
+  if (!result.hit) return [];
+  const hit = result.hit;
+  const score = scoreKnowledgeEntry(question, { question: hit.question, aliasQuestions: hit.aliasQuestions, keywords: hit.keywords });
+  return [{ approvalId: hit.approvalId, entryId: hit.entryId, revision: hit.revision, question: hit.question, answer: hit.answer, answerSha256: hit.answerSha256, ...score }];
+}
+
+export async function knowledgeEvidenceForApproval(context: RequestContext, approvalId: string, question: string, client?: PoolClient): Promise<KnowledgeEvidence> {
+  const evidence = async (transaction: PoolClient) => {
+    const row = (await transaction.query<{ id: string; entry_id: string; revision: number; question: string; alias_questions: unknown; keywords: unknown; answer_sha256: string }>(
+      `select approval.id, approval.entry_id, approval.revision, approval.question, approval.alias_questions, approval.keywords, approval.answer_sha256::text as answer_sha256
+       from knowledge_entry_approvals approval join knowledge_entries entry on entry.tenant_id = approval.tenant_id and entry.id = approval.entry_id
+       where approval.id = $1 and approval.tenant_id = $2 and entry.status = 'approved' and entry.approved_approval_id = approval.id`,
+      [approvalId, context.tenantId]
+    )).rows[0];
+    if (!row) throw new Response("Knowledge approval is not current", { status: 409, statusText: "knowledge_approval_not_current" });
+    const { scorePermille } = scoreKnowledgeEntry(question, { question: row.question, aliasQuestions: asStringArray(jsonValue(row.alias_questions)), keywords: asStringArray(jsonValue(row.keywords)) });
+    return { type: "knowledge_entry" as const, approvalId: row.id, entryId: row.entry_id, revision: row.revision, answerSha256: row.answer_sha256.trim(), scorePermille };
+  };
+  if (client) return evidence(client);
+  if (!databasePool()) {
+    const approval = store().approvals.get(approvalId);
+    const entry = approval ? store().entries.get(approval.entryId) : undefined;
+    if (!approval || !entry || entry.tenantId !== context.tenantId || entry.status !== "approved" || entry.approvedApprovalId !== approval.id) throw new Response("Knowledge approval is not current", { status: 409, statusText: "knowledge_approval_not_current" });
+    const { scorePermille } = scoreKnowledgeEntry(question, { question: approval.question, aliasQuestions: approval.aliasQuestions, keywords: approval.keywords });
+    return { type: "knowledge_entry", approvalId: approval.id, entryId: entry.id, revision: approval.revision, answerSha256: approval.answerSha256, scorePermille };
+  }
+  return withTenantTransaction(context.tenantId, evidence, { readOnly: true });
 }
 
 export async function knowledgeEntryErrorResponse(error: unknown, fallback = "knowledge_entry_rejected") {

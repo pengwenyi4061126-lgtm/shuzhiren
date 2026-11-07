@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { recordAuditEvent } from "@/lib/audit";
-import { findApprovedProductVersion } from "@/lib/catalog";
+import { findApprovedProductVersion, findProductIdForVersion } from "@/lib/catalog";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { getRun } from "@/lib/control-plane/store";
 import { policyRulesForRun } from "@/lib/policy-profiles";
@@ -8,6 +8,8 @@ import { isControlledPolicyQuestion } from "@/lib/policy-engine";
 import { readBoundedJson } from "@/lib/bounded-json";
 import { createGroundedResponseDraft } from "@/lib/response-draft";
 import { runLexiconForContext } from "@/lib/prohibited-terms";
+import { knowledgeHitsForRun } from "@/lib/knowledge-base";
+import { listInteractions } from "@/lib/interactions";
 
 export const dynamic = "force-dynamic";
 
@@ -23,9 +25,19 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   if (!run.productVersionId) return Response.json({ error: "approved_product_version_required" }, { status: 409 });
   const version = await findApprovedProductVersion(actor, run.productVersionId);
   if (!version) return Response.json({ error: "approved_product_version_required" }, { status: 409 });
-  const [policyRules, lexicon] = await Promise.all([policyRulesForRun(actor, run.id), runLexiconForContext(actor, run.id, run.revisionId)]);
-  const draft = createGroundedResponseDraft(body.question.trim(), version, policyRules, lexicon);
-  await recordAuditEvent(actor, { type: draft.status === "ready" ? "response_draft.created" : "response_draft.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: createHash("sha256").update(body.question.trim()).digest("hex") } });
+  const productId = await findProductIdForVersion(actor, run.productVersionId);
+  const question = body.question.trim();
+  const requestedInteractionIds = body.interactionIds ?? [];
+  const [policyRules, lexicon, hits, interactions] = await Promise.all([
+    policyRulesForRun(actor, run.id),
+    runLexiconForContext(actor, run.id, run.revisionId),
+    knowledgeHitsForRun(actor, run.id, question, productId),
+    requestedInteractionIds.length ? listInteractions(actor, run.id) : Promise.resolve([])
+  ]);
+  const interactionIds = requestedInteractionIds.filter((id) => interactions.some((interaction) => interaction.id === id));
+  if (interactionIds.length !== requestedInteractionIds.length) return Response.json({ error: "interaction_evidence_not_found" }, { status: 400 });
+  const draft = createGroundedResponseDraft(question, version, policyRules, lexicon, hits[0], interactionIds);
+  await recordAuditEvent(actor, { type: draft.status === "ready" ? "response_draft.created" : "response_draft.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, knowledgeApprovalId: hits[0]?.approvalId, interactionIds, decision: draft.decision.action, questionSha256: createHash("sha256").update(question).digest("hex") } });
   return Response.json({ data: draft }, { status: draft.status === "ready" ? 200 : 202 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "response_draft_rejected" }, { status: error.status });
@@ -33,6 +45,9 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   }
 }
 
-function isDraftInput(value: unknown): value is { question: string } {
-  return Boolean(value) && typeof value === "object" && typeof (value as Record<string, unknown>).question === "string" && isControlledPolicyQuestion((value as Record<string, string>).question);
+function isDraftInput(value: unknown): value is { question: string; interactionIds?: string[] } {
+  if (!value || typeof value !== "object") return false;
+  const input = value as Record<string, unknown>;
+  return typeof input.question === "string" && isControlledPolicyQuestion(input.question)
+    && (input.interactionIds === undefined || (Array.isArray(input.interactionIds) && input.interactionIds.length <= 20 && input.interactionIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 200)));
 }

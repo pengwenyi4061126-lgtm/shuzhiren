@@ -30,11 +30,12 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/live
   }
 }
 
-function isDraftInput(value: unknown): value is { interactionId: string; body: string; channelConnectionId?: string } {
+function isDraftInput(value: unknown): value is { interactionId: string; body: string; channelConnectionId?: string; knowledgeApprovalId?: string } {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
   return typeof input.interactionId === "string" && input.interactionId.length > 0
     && typeof input.body === "string" && input.body.trim().length > 0 && input.body.length <= 1000
     && (input.channelConnectionId === undefined || (typeof input.channelConnectionId === "string" && input.channelConnectionId.length > 0))
-    && Object.keys(input).every((key) => ["interactionId", "body", "channelConnectionId"].includes(key));
+    && (input.knowledgeApprovalId === undefined || (typeof input.knowledgeApprovalId === "string" && input.knowledgeApprovalId.length > 0 && input.knowledgeApprovalId.length <= 200))
+    && Object.keys(input).every((key) => ["interactionId", "body", "channelConnectionId", "knowledgeApprovalId"].includes(key));
 }
