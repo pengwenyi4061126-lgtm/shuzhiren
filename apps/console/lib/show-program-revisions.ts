@@ -8,6 +8,7 @@ import { createReleaseManifestSnapshotInTransaction } from "@/lib/release-manife
 import { lexiconSha256 } from "@/lib/shared/prohibited-terms.mjs";
 import { normalizeScriptVariants } from "@/lib/shared/script-rotation.mjs";
 import { normalizeProgramSegments, programHash, type ProgramSegment, type ProgramSegmentInput, type ShowProgram } from "@/lib/show-program";
+import { freezeOverlaySceneInTransaction } from "@/lib/overlay-scene";
 
 export type ProgramRevisionRequestStatus = "draft" | "pending_approval" | "approved" | "rejected" | "applied";
 export type ProgramRevisionRequest = {
@@ -116,6 +117,7 @@ export async function approveProgramRevisionRequest(context: RequestContext, run
     const scripts = await checkProgramScripts(client, request.candidate_revision_id, segments);
     const frozen = await freezeRevisionLexiconInTransaction(client, request.candidate_revision_id, scripts.lexicon);
     await recordAuditEventInTransaction(client, context, { type: "show_revision.prohibited_terms_frozen", resource: "show_revision", resourceId: request.candidate_revision_id, detail: frozenLexiconAuditDetail(frozen, { scriptCount: scripts.scriptCount, policyProfileId: scripts.policyProfileId }) });
+    const overlayFrozen = await freezeOverlaySceneInTransaction(client, request.candidate_revision_id);
     const candidate = await client.query<{ id: string }>("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 and approval_status = 'draft' returning id", [request.candidate_revision_id, actorId]);
     if (!candidate.rows[0]) throw new Response("Candidate program revision is not a draft", { status: 409 });
     await client.query("update show_program_change_requests set status = 'approved', approved_by = $2, approved_at = now() where id = $1 and status = 'pending_approval'", [request.id, actorId]);
@@ -123,7 +125,7 @@ export async function approveProgramRevisionRequest(context: RequestContext, run
     if (!rebound.rows[0]) throw new Response("Live run changed before revision apply", { status: 409 });
     await createReleaseManifestSnapshotInTransaction(client, { tenantId: context.tenantId, revisionId: request.candidate_revision_id, runId: run.id });
     await client.query("update show_program_change_requests set status = 'applied', applied_at = now() where id = $1 and status = 'approved'", [request.id]);
-    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.applied", resource: "show_program_change_request", resourceId: request.id, detail: { runId, sourceRevisionId: request.source_revision_id, candidateRevisionId: request.candidate_revision_id, proposedProgramSha256: programHash(segments), previousState: run.state, state: "APPROVED", scriptCount: scripts.scriptCount, policyProfileId: scripts.policyProfileId, lexiconSha256: frozen.lexiconSha256 } });
+    await recordAuditEventInTransaction(client, context, { type: "show_program_revision.applied", resource: "show_program_change_request", resourceId: request.id, detail: { runId, sourceRevisionId: request.source_revision_id, candidateRevisionId: request.candidate_revision_id, proposedProgramSha256: programHash(segments), previousState: run.state, state: "APPROVED", scriptCount: scripts.scriptCount, policyProfileId: scripts.policyProfileId, lexiconSha256: frozen.lexiconSha256, overlaySceneSha256: overlayFrozen?.sceneSha256 ?? null } });
     return persistentRequest(client, context.tenantId, await loadRequestRow(client, request.id));
     });
   } catch (error) {
@@ -202,6 +204,12 @@ async function cloneRevisionBindings(client: PoolClient, tenantId: string, sourc
   await client.query("insert into show_revision_model_releases (tenant_id, show_revision_id, model_release_id, component) select $1, $3, model_release_id, component from show_revision_model_releases where show_revision_id = $2", [tenantId, sourceRevisionId, candidateRevisionId]);
   await client.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) select $1, $3, policy_profile_id from show_revision_policy_profiles where show_revision_id = $2", [tenantId, sourceRevisionId, candidateRevisionId]);
   await client.query("insert into show_revision_media_assets (tenant_id, show_revision_id, media_asset_id, kind) select $1, $3, media_asset_id, kind from show_revision_media_assets where show_revision_id = $2", [tenantId, sourceRevisionId, candidateRevisionId]);
+  await client.query(
+    `insert into show_revision_overlays (tenant_id, show_revision_id, caption_enabled, caption_position, product_card_enabled, product_card_anchor, price_sticker_enabled, background_mode, background_media_asset_id, background_options, updated_by)
+     select tenant_id, $3, caption_enabled, caption_position, product_card_enabled, product_card_anchor, price_sticker_enabled, background_mode, background_media_asset_id, background_options, updated_by
+     from show_revision_overlays where tenant_id = $1 and show_revision_id = $2`,
+    [tenantId, sourceRevisionId, candidateRevisionId]
+  );
 }
 async function insertSegments(client: PoolClient, tenantId: string, revisionId: string, segments: ProgramSegment[]) {
   for (const segment of segments) await client.query("insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, runtime_script_variants, is_fallback) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)", [tenantId, revisionId, segment.position, segment.kind, segment.title, segment.durationSeconds, segment.productVersionId ?? null, segment.purpose, segment.runtimeScript ?? null, JSON.stringify(segment.runtimeScriptVariants ?? []), segment.fallback]);

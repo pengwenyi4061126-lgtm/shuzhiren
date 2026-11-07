@@ -7,6 +7,9 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 import { assertProgramScriptsAllowed, boundPolicyProfileIdInTransaction, currentDemoLexicon, currentLexiconInTransaction, demoLexiconSnapshot, freezeDemoRevisionLexicon, freezeRevisionLexiconInTransaction, frozenLexiconAuditDetail, policyRulesForRevisionInTransaction, programScriptCount } from "@/lib/prohibited-terms";
 import { lexiconSha256 } from "@/lib/shared/prohibited-terms.mjs";
 import { normalizeScriptVariants, scriptVariantsProblem } from "@/lib/shared/script-rotation.mjs";
+import { findApprovedProductVersion, findProduct, findProductIdForVersion } from "@/lib/catalog";
+import { listAssets, type MediaAsset } from "@/lib/assets";
+import { cloneDemoOverlayConfig, freezeDemoOverlayScene, freezeOverlaySceneInTransaction, getDemoOverlayConfig, registerDemoOverlayConfig, setDemoOverlayEditable, type OverlayConfig } from "@/lib/overlay-scene";
 
 export type ProgramSegmentKind = "prepared_product" | "interactive" | "fallback" | "human_handoff";
 export type ProgramSegment = {
@@ -30,7 +33,7 @@ export interface ScriptVariantSuggester {
   suggest(input: { script: string; productVersionId: string; maxVariants: number }): Promise<string[]>;
 }
 
-export type ShowProgram = { runId: string; tenantId: string; revisionId: string; status: "draft" | "approved" | "rejected"; editable: boolean; segments: ProgramSegment[] };
+export type ShowProgram = { runId: string; tenantId: string; revisionId: string; status: "draft" | "approved" | "rejected"; editable: boolean; segments: ProgramSegment[]; overlayConfig?: OverlayConfig; overlaySceneSha256?: string | null };
 type ProgramStore = { programs: Map<string, ShowProgram> };
 type PersistentProgramRow = {
   run_id: string;
@@ -101,6 +104,12 @@ async function loadPersistentProgram(client: PoolClient, runId: string) {
 
 export function registerDemoProgram(program: ShowProgram) {
   programStore().programs.set(program.runId, program);
+  if (program.overlayConfig) registerDemoOverlayConfig(program.runId, program.tenantId, program.revisionId, program.overlayConfig, program.editable);
+}
+
+export function cloneDemoProgramRevision(source: ShowProgram, targetRevisionId: string) {
+  const overlayConfig = cloneDemoOverlayConfig(source.revisionId, targetRevisionId, source.runId, source.tenantId) ?? undefined;
+  return { ...source, revisionId: targetRevisionId, status: "draft" as const, editable: true, overlayConfig, overlaySceneSha256: null };
 }
 
 export async function replaceShowProgram(context: RequestContext, runId: string, input: ProgramSegmentInput[]) {
@@ -133,12 +142,13 @@ export async function replaceShowProgram(context: RequestContext, runId: string,
 
 export async function updateDemoProgramLifecycle(runId: string, action: "submit_review" | "approve", context: RequestContext) {
   const program = programStore().programs.get(runId);
-  if (!program) return;
+  if (!program) return null;
   if (action === "submit_review") {
     validateStoredProgramSegments(program.segments, program.segments.find((segment) => segment.productVersionId)?.productVersionId);
     // Every version of every runnable script passes the broadcast guard before review (demo mode has no policy profile binding).
     assertProgramScriptsAllowed(program.segments, { policyRules: [], lexicon: currentDemoLexicon(program.tenantId) });
     program.editable = false;
+    setDemoOverlayEditable(program.revisionId, false);
   }
   if (action === "approve") {
     // The same check again against the lexicon in force at approval, then the lexicon is frozen into the revision.
@@ -146,8 +156,33 @@ export async function updateDemoProgramLifecycle(runId: string, action: "submit_
     const alreadyFrozen = demoLexiconSnapshot(program.revisionId);
     const frozen = freezeDemoRevisionLexicon(program.tenantId, program.revisionId);
     if (!alreadyFrozen) await recordAuditEvent(context, { type: "show_revision.prohibited_terms_frozen", resource: "show_revision", resourceId: program.revisionId, detail: frozenLexiconAuditDetail(frozen, { scriptCount: programScriptCount(program.segments), policyProfileId: null }) });
+    const productVersionId = program.segments.find((segment) => segment.productVersionId)?.productVersionId;
+    const productVersion = productVersionId ? await findApprovedProductVersion(context, productVersionId) : null;
+    const productId = productVersionId ? await findProductIdForVersion(context, productVersionId) : undefined;
+    const productRecord = productId ? await findProduct(context, productId) : null;
+    const overlayProduct = productVersion && productRecord ? {
+      id: productVersion.id,
+      revision: productVersion.revision,
+      name: productRecord.name,
+      priceCent: productVersion.facts.priceCent,
+      validUntil: productVersion.facts.validUntil ?? null
+    } : null;
+    const configuredOverlay = program.overlayConfig ?? getDemoOverlayConfig(program.revisionId);
+    const overlayAsset = configuredOverlay?.backgroundMode !== "none" && configuredOverlay?.backgroundMediaAssetId
+      ? (await listAssets(context)).find((asset) => asset.id === configuredOverlay.backgroundMediaAssetId) as (MediaAsset & { kind: string }) | undefined
+      : undefined;
+    const overlayFrozen = freezeDemoOverlayScene(runId, program.tenantId, program.revisionId, overlayProduct, overlayAsset ? {
+      id: overlayAsset.id,
+      checksum: overlayAsset.checksum,
+      approval: overlayAsset.approval,
+      expiresAt: overlayAsset.expiresAt
+    } : null);
+    program.overlaySceneSha256 = overlayFrozen?.sceneSha256 ?? null;
     program.status = "approved";
+    setDemoOverlayEditable(program.revisionId, false);
+    return program.overlaySceneSha256;
   }
+  return null;
 }
 
 export async function hasApprovedFallbackProgram(context: RequestContext, runId: string) {
@@ -167,11 +202,12 @@ export async function approveShowProgramInTransaction(client: PoolClient, contex
   // The scripts passed the broadcast guard above; the lexicon they passed against is frozen into the revision before it is approved.
   const frozen = await freezeRevisionLexiconInTransaction(client, revisionId, checked.lexicon);
   await recordAuditEventInTransaction(client, context, { type: "show_revision.prohibited_terms_frozen", resource: "show_revision", resourceId: revisionId, detail: frozenLexiconAuditDetail(frozen, { scriptCount: checked.evidence.scriptCount, policyProfileId: checked.policyProfileId }) });
+  const overlayFrozen = await freezeOverlaySceneInTransaction(client, revisionId);
   const evidence = checked.evidence;
   const actor = await client.query<{ id: string }>("select sync_control_plane_actor($1::uuid, $2, $3, $4::membership_role) as id", [context.tenantId, context.actorId, context.actorName, context.role]);
   const updated = await client.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1 and approval_status = 'draft' returning id", [revisionId, actor.rows[0].id]);
   if (!updated.rows[0]) throw new Response("Show program is not awaiting approval", { status: 409 });
-  return evidence;
+  return { ...evidence, overlaySceneSha256: overlayFrozen?.sceneSha256 ?? null };
 }
 
 export async function validateShowProgramInTransaction(client: PoolClient, runId: string, revisionId: string, productVersionId?: string) {

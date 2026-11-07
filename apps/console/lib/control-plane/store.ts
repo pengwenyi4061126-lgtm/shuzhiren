@@ -185,9 +185,10 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     const next = lifecycleTarget(run.state, action);
     if (action === "arm" && !(await evaluateRunPreflight(context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
     if (reservesRuntimeSession(next) && run.runtimeSessionId && [...store().runs.values()].some((candidate) => candidate.id !== run.id && candidate.tenantId === context.tenantId && candidate.runtimeSessionId === run.runtimeSessionId && reservesRuntimeSession(candidate.state))) throw new Response("Runtime session is already reserved by another active run", { status: 409 });
+    let overlaySceneSha256: string | null = null;
     if (action === "submit_review" || action === "approve") {
       try {
-        await updateDemoProgramLifecycle(run.id, action, context);
+        overlaySceneSha256 = await updateDemoProgramLifecycle(run.id, action, context) ?? null;
       } catch (error) {
         if (error instanceof Response && error.statusText === "program_script_policy_blocked") {
           await recordAuditEvent(context, { type: "show_program.script_policy_blocked", resource: "show_revision", resourceId: run.revisionId, detail: await programScriptPolicyAuditDetail(run.id, error) });
@@ -197,7 +198,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     }
     run.state = next;
     if (action === "approve") run.hasFallbackProgram = true;
-    await recordAuditEvent(context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: run.state } });
+    await recordAuditEvent(context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: run.state, ...(action === "approve" ? { overlaySceneSha256 } : {}) } });
     return run;
   }
   let revisionId: string | null = null;
@@ -213,7 +214,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     revisionId = run.revisionId;
     const next = lifecycleTarget(run.state, action);
     if (action === "submit_review") await validateShowProgramInTransaction(client, run.id, run.revisionId, run.productVersionId);
-    if (action === "approve") await approveShowProgramInTransaction(client, context, run.id, run.revisionId, run.productVersionId);
+    const approval = action === "approve" ? await approveShowProgramInTransaction(client, context, run.id, run.revisionId, run.productVersionId) : null;
     if (action === "arm" && !(await evaluateRunPreflightInTransaction(client, context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
     try {
       await client.query("update live_runs set state = $2, has_fallback_program = case when $3 then true else has_fallback_program end, updated_at = now() where id = $1", [run.id, next, action === "approve"]);
@@ -222,7 +223,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
       throw error;
     }
     const updated = { ...run, state: next, hasFallbackProgram: action === "approve" ? true : run.hasFallbackProgram };
-    await recordAuditEventInTransaction(client, context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: next } });
+    await recordAuditEventInTransaction(client, context, { type: `live_run.${action}`, resource: "live_run", resourceId: run.id, detail: { state: next, ...(action === "approve" ? { overlaySceneSha256: approval?.overlaySceneSha256 ?? null } : {}) } });
     return updated;
     });
   } catch (error) {

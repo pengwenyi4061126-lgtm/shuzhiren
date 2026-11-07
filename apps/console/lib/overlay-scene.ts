@@ -29,7 +29,7 @@ export type OverlayConfig = {
   backgroundOptions: OverlayBackgroundOptions;
 };
 export type OverlayProductVersion = { id: string; revision: number; name: string; priceCent: number; validUntil: string | null };
-export type OverlayBackgroundAsset = { id: string; checksum: string };
+export type OverlayBackgroundAsset = { id: string; checksum: string; approval?: string; expiresAt?: string };
 export type OverlayScene = {
   version: 1;
   revisionId: string;
@@ -334,6 +334,98 @@ export async function freezeOverlaySceneInTransaction(client: PoolClient, revisi
   );
   if (!frozen.rows[0]) throw new Response("Overlay configuration changed before it could be frozen", { status: 409, statusText: "overlay_config_changed" });
   return { sceneJson, sceneSha256, frozenAt: new Date(frozen.rows[0].frozen_at).toISOString() };
+}
+
+export function freezeDemoOverlayScene(
+  runId: string,
+  tenantId: string,
+  revisionId: string,
+  product: OverlayProductVersion | null,
+  asset: OverlayBackgroundAsset | null
+) {
+  const store = overlayStore();
+  const revision = store.revisions.get(revisionId);
+  const record = store.overlays.get(revisionId);
+  if (!record) return null;
+  if (!revision || revision.runId !== runId || revision.tenantId !== tenantId) throw new Response("Overlay configuration is not editable", { status: 409, statusText: "overlay_not_editable" });
+  if (record.sceneJson && record.sceneSha256 && record.frozenAt) return { sceneJson: record.sceneJson, sceneSha256: record.sceneSha256, frozenAt: record.frozenAt };
+  if (record.sceneJson || record.sceneSha256 || record.frozenAt) throw overlayUnavailable();
+  const config = parseOverlayConfigInput(record);
+  if (!config) throw overlayUnavailable();
+  if (!isEnabled(config)) return null;
+  if ((config.productCardEnabled || config.priceStickerEnabled) && !product) throw overlayUnavailable();
+  if (config.backgroundMode !== "none") {
+    const expiresAt = asset?.expiresAt ? new Date(asset.expiresAt) : null;
+    const expired = expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() < startOfUtcDay(new Date()).getTime());
+    if (!asset || asset.id !== config.backgroundMediaAssetId || asset.approval !== "approved" || expired || !/^sha256:[0-9a-f]{64}$/i.test(asset.checksum)) throw overlayUnavailable();
+  }
+  const lexicon = currentDemoLexicon(tenantId);
+  if (product && config.productCardEnabled) checkOverlayText(product.name, 120, [], lexicon);
+  if (product && config.priceStickerEnabled) {
+    checkOverlayText(formatPriceCent(product.priceCent), 16, [], lexicon);
+    checkOverlayText(PRICE_STICKER_NOTE, 40, [], lexicon);
+  }
+  let sceneJson: string;
+  try {
+    sceneJson = canonicalJson(buildOverlayScene(revisionId, config, product, asset));
+  } catch {
+    throw overlayUnavailable();
+  }
+  if (sceneJson.length > 8192) throw overlayUnavailable();
+  const sceneSha256 = createHash("sha256").update(sceneJson, "utf8").digest("hex");
+  const frozenAt = new Date().toISOString();
+  store.overlays.set(revisionId, { ...config, sceneJson, sceneSha256, frozenAt });
+  return { sceneJson, sceneSha256, frozenAt };
+}
+
+export function cloneDemoOverlayConfig(sourceRevisionId: string, targetRevisionId: string, runId: string, tenantId: string) {
+  const store = overlayStore();
+  const sourceRevision = store.revisions.get(sourceRevisionId);
+  const source = store.overlays.get(sourceRevisionId);
+  if (!source || !sourceRevision || sourceRevision.runId !== runId || sourceRevision.tenantId !== tenantId) return null;
+  store.revisions.set(targetRevisionId, { runId, tenantId, editable: true });
+  const config: OverlayConfig = {
+    captionEnabled: source.captionEnabled,
+    captionPosition: source.captionPosition,
+    productCardEnabled: source.productCardEnabled,
+    productCardAnchor: source.productCardAnchor,
+    priceStickerEnabled: source.priceStickerEnabled,
+    backgroundMode: source.backgroundMode,
+    backgroundMediaAssetId: source.backgroundMediaAssetId,
+    backgroundOptions: source.backgroundOptions
+  };
+  store.overlays.set(targetRevisionId, { ...config, backgroundOptions: { ...config.backgroundOptions }, sceneJson: null, sceneSha256: null, frozenAt: null });
+  return { ...config, backgroundOptions: { ...config.backgroundOptions } };
+}
+
+export function registerDemoOverlayConfig(runId: string, tenantId: string, revisionId: string, config: OverlayConfig, editable: boolean) {
+  const store = overlayStore();
+  store.revisions.set(revisionId, { runId, tenantId, editable });
+  store.overlays.set(revisionId, { ...config, backgroundOptions: { ...config.backgroundOptions }, sceneJson: null, sceneSha256: null, frozenAt: null });
+}
+
+export function setDemoOverlayEditable(revisionId: string, editable: boolean) {
+  const revision = overlayStore().revisions.get(revisionId);
+  if (revision) overlayStore().revisions.set(revisionId, { ...revision, editable });
+}
+
+export function getDemoOverlayConfig(revisionId: string): OverlayConfig | null {
+  const record = overlayStore().overlays.get(revisionId);
+  return record ? overlayConfigFromRow({
+    tenant_id: "",
+    show_revision_id: revisionId,
+    caption_enabled: record.captionEnabled,
+    caption_position: record.captionPosition,
+    product_card_enabled: record.productCardEnabled,
+    product_card_anchor: record.productCardAnchor,
+    price_sticker_enabled: record.priceStickerEnabled,
+    background_mode: record.backgroundMode,
+    background_media_asset_id: record.backgroundMediaAssetId,
+    background_options: record.backgroundOptions,
+    scene_json: null,
+    scene_sha256: null,
+    frozen_at: null
+  }) : null;
 }
 
 const OVERLAY_COLUMNS = "tenant_id, show_revision_id, caption_enabled, caption_position, product_card_enabled, product_card_anchor, price_sticker_enabled, background_mode, background_media_asset_id, background_options, null::text as scene_json, null::text as scene_sha256, null::timestamptz as frozen_at";

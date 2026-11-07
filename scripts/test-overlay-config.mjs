@@ -177,3 +177,69 @@ test("freezing disabled or absent overlay configuration writes no scene", async 
   const absent = freezeClient({ row: null });
   assert.equal(await overlay.freezeOverlaySceneInTransaction(absent, "revision-1"), null);
 });
+
+const { cloneDemoProgramRevision, registerDemoProgram, updateDemoProgramLifecycle } = await import("../apps/console/lib/show-program.ts");
+const { listAssets } = await import("../apps/console/lib/assets.ts");
+const demoContext = { tenantId: "tenant_demo", actorId: "overlay-reviewer", actorName: "Overlay Reviewer", role: "operator", accessScope: "tenant" };
+let demoCounter = 0;
+function demoProgram(overlayConfig) {
+  demoCounter += 1;
+  const runId = `run_overlay_demo_${demoCounter}`;
+  const revisionId = `show_revision_overlay_demo_${demoCounter}`;
+  const program = {
+    runId,
+    tenantId: demoContext.tenantId,
+    revisionId,
+    status: "draft",
+    editable: true,
+    overlayConfig,
+    segments: [
+      { id: `segment_overlay_${demoCounter}`, position: 1, kind: "prepared_product", title: "商品讲解", durationSeconds: 90, productVersionId: "pv_a102_v1", purpose: "已审核商品讲解", runtimeScript: "介绍已审核商品信息。", fallback: false },
+      { id: `fallback_overlay_${demoCounter}`, position: 2, kind: "fallback", title: "备用", durationSeconds: 30, productVersionId: "pv_a102_v1", purpose: "故障降级", fallback: true },
+      { id: `handoff_overlay_${demoCounter}`, position: 3, kind: "human_handoff", title: "转人工", durationSeconds: 0, purpose: "人工接管", fallback: true }
+    ]
+  };
+  registerDemoProgram(program);
+  return program;
+}
+
+test("demo approval freezes configured overlay and its summary hash, and a cloned revision clears frozen fields", async () => {
+  const program = demoProgram({ ...baseConfig, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} });
+  await updateDemoProgramLifecycle(program.runId, "submit_review", demoContext);
+  const sceneSha256 = await updateDemoProgramLifecycle(program.runId, "approve", demoContext);
+  const frozen = globalThis.shuzhirenOverlayStore.overlays.get(program.revisionId);
+  assert.equal(program.status, "approved");
+  assert.equal(frozen.sceneSha256, sceneSha256);
+  assert.equal(frozen.sceneSha256, digest(frozen.sceneJson));
+  assert.equal(globalThis.shuzhirenOverlayStore.revisions.get(program.revisionId).editable, false);
+  assert.equal((await updateDemoProgramLifecycle(program.runId, "approve", demoContext)), sceneSha256);
+  const cloned = cloneDemoProgramRevision(program, `${program.revisionId}_candidate`);
+  assert.deepEqual(cloned.overlayConfig, { ...baseConfig, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} });
+  assert.equal(cloned.overlaySceneSha256, null);
+  assert.deepEqual(
+    (({ sceneJson, sceneSha256: hash, frozenAt }) => ({ sceneJson, sceneSha256: hash, frozenAt }))(globalThis.shuzhirenOverlayStore.overlays.get(`${program.revisionId}_candidate`)),
+    { sceneJson: null, sceneSha256: null, frozenAt: null }
+  );
+});
+
+test("demo approval fails closed on unapproved background and blocked product title without approving", async () => {
+  const pendingBackground = { ...baseConfig, backgroundMode: "canvas", backgroundMediaAssetId: "asset_overlay_pending", backgroundOptions: { avatarAnchor: "left", avatarScalePermille: 800 } };
+  const blockedBackground = demoProgram(pendingBackground);
+  await listAssets(demoContext);
+  globalThis.shuzhirenAssetStore.assets.set("asset_overlay_pending", { id: "asset_overlay_pending", tenantId: demoContext.tenantId, kind: "overlay_background", name: "Pending background", approval: "pending", checksum: asset.checksum });
+  await updateDemoProgramLifecycle(blockedBackground.runId, "submit_review", demoContext);
+  await assert.rejects(updateDemoProgramLifecycle(blockedBackground.runId, "approve", demoContext), (error) => error instanceof Response && error.status === 422 && error.statusText === "overlay_scene_unavailable");
+  assert.equal(blockedBackground.status, "draft");
+
+  const blockedText = demoProgram({ ...baseConfig, productCardEnabled: true, priceStickerEnabled: true, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} });
+  const productRecord = globalThis.shuzhirenCatalog.products.get("product_a102");
+  const originalName = productRecord.name;
+  productRecord.name = "全网最低洁面慕斯";
+  try {
+    await updateDemoProgramLifecycle(blockedText.runId, "submit_review", demoContext);
+    await assert.rejects(updateDemoProgramLifecycle(blockedText.runId, "approve", demoContext), (error) => error instanceof Response && error.status === 422 && error.statusText === "overlay_text_policy_blocked");
+    assert.equal(blockedText.status, "draft");
+  } finally {
+    productRecord.name = originalName;
+  }
+});
