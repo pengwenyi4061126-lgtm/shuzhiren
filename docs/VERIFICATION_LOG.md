@@ -4073,3 +4073,27 @@ skipped 步骤数: "0"
     未执行的 CI 检查:
       - { job: postgres-integration, 名称: GitHub Actions 中的 postgres:integration, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
 ```
+
+## V-20261108-03 演示模式词表冻结审计通过本机验证
+
+```yaml
+编号: V-20261108-03
+类型: 结论
+结论: 演示模式批准会记录与 PostgreSQL 一致的词表冻结摘要审计；审计仅含哈希、版本、数量和策略标识，不含话术全文
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 855fe4d7f27f466b9444245a46c6c56e9a7b0910
+    检查:
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: program:variants:test, 标签: behavioral }
+      - { 名称: interaction-rules:test, 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: GitHub Actions, 名称: 本提交对应的 CI_Pipeline 运行, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+```
