@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import { describe, test } from "node:test";
 import fc from "fast-check";
+import * as interactionRules from "../apps/runtime-worker/interaction-rules.mjs";
 import { normalizePolicyText } from "../apps/console/lib/shared/policy-engine.mjs";
 import { knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry } from "../apps/console/lib/shared/knowledge-match.mjs";
 register("./lib/console-ts-loader.mjs", import.meta.url);
@@ -603,5 +604,125 @@ describe("knowledge retrieval prefilter property", () => {
       assert.ok(scoreKnowledgeEntry(asked, candidate).scorePermille > 0, `${name} scores above 0`);
     }
     assert.equal(scoreKnowledgeEntry(asked, unrelated).scorePermille, 0);
+  });
+});
+
+describe("worker FAQ rules", () => {
+  const tenantId = "10000000-0000-4000-8000-000000000091";
+  const run = { id: "10000000-0000-4000-8000-000000000092", tenant_id: tenantId, show_revision_id: "10000000-0000-4000-8000-000000000093", trace_id: "knowledge-test", runtime_session_id: "knowledge-session", pending_program_transition_event_id: null, pending_media_event_id: null, scheduled_start_event_id: null, now_epoch: 1200 };
+  const approvalId = "20000000-0000-4000-8000-000000000001";
+  const entryId = "20000000-0000-4000-8000-000000000002";
+  const comment = (overrides = {}) => ({ id: "20000000-0000-4000-8000-000000000003", interaction_kind: "comment", question_text: "什么时候发货", policy_action: "answer", viewer_ref: null, viewer_nickname: "小明", gift_value_cents: null, channel_connection_id: "20000000-0000-4000-8000-000000000004", ...overrides });
+  const faqRule = (overrides = {}) => ({ id: "20000000-0000-4000-8000-000000000005", name: "FAQ", trigger_type: "faq", match_config: { minScorePermille: 600 }, templates: ["{faq_answer}"], action: "reply_draft", cooldown_seconds: 30, interval_seconds: null, priority: 50, default_key: "faq_answer", ...overrides });
+  const keywordRule = (overrides = {}) => ({ id: "20000000-0000-4000-8000-000000000006", name: "Keyword", trigger_type: "keyword", match_config: { keywords: ["发货"] }, templates: ["关键词答复"], action: "reply_draft", cooldown_seconds: 30, interval_seconds: null, priority: 100, default_key: null, ...overrides });
+  const knowledgeCandidate = (overrides = {}) => ({ approval_id: approvalId, entry_id: entryId, revision: 2, question: "什么时候发货", alias_questions: [], answer: "付款后尽快发货。", keywords: ["发货"], search_terms: ["发货", "时候", "时发", "什么"], answer_sha256: "a".repeat(64), ...overrides });
+
+  async function evaluateWorker({ rules, interactions = [comment()], candidates = [knowledgeCandidate()], lookupError = false, draftExists = false, terms = [], cooledRuleIds = [] }) {
+    const queries = [];
+    const logs = [];
+    const client = {
+      async query(text, params = []) {
+        const sql = text.replace(/\s+/g, " ").trim();
+        queries.push({ sql, params });
+        if (sql.startsWith("select r.id from live_runs r")) return { rows: [{ id: run.id }] };
+        if (sql.startsWith("select id, tenant_id, show_revision_id, trace_id")) return { rows: [run] };
+        if (sql.startsWith("select id, name, trigger_type")) return { rows: [...rules].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id)) };
+        if (sql.startsWith("select id, interaction_kind")) return { rows: interactions };
+        if (sql.startsWith("select approval_id, entry_id, revision")) {
+          if (lookupError) throw new Error("candidate lookup failed");
+          return { rows: candidates };
+        }
+        if (sql.startsWith("select lexicon from show_revision_prohibited_term_snapshots")) return { rows: [] };
+        if (sql.startsWith("select tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision")) return { rows: terms };
+        if (sql.includes("from show_revision_policy_profiles binding")) return { rows: [{ rules: [], evidence_ref: "evidence://worker-test/policy", validation_summary: "approved fixture", approval_status: "approved" }] };
+        if (sql.includes("interaction_rule_product_context")) return { rows: [] };
+        if (sql.startsWith("select template_index")) return { rows: cooledRuleIds.includes(params[1]) ? [{ template_index: 0, age_seconds: 0 }] : [] };
+        if (sql.startsWith("select 1 from interaction_rule_firings")) return { rows: [] };
+        if (sql.startsWith("insert into channel_reply_drafts")) return { rows: draftExists ? [] : [{ id: "20000000-0000-4000-8000-000000000007" }] };
+        if (sql.startsWith("insert into interaction_rule_firings")) {
+          if (sql.includes("returning id")) return { rows: [{ id: params[0] }] };
+          return { rows: [] };
+        }
+        if (sql.startsWith("select runtime_worker_actor")) return { rows: [{ id: "20000000-0000-4000-8000-000000000008" }] };
+        if (sql.startsWith("insert into audit_events") || sql.startsWith("update live_interactions")) return { rows: [] };
+        throw new Error(`unexpected worker FAQ query: ${sql}`);
+      }
+    };
+    const evaluator = interactionRules.createInteractionRuleEvaluator({
+      tenantIds: async () => [tenantId],
+      inTenantTransaction: async (_tenantId, operation) => operation(client),
+      config: { ...interactionRules.interactionRuleConfig({}), viewerCooldownSeconds: 0 },
+      maxOutboxAttempts: 6,
+      log: (event, fields) => logs.push({ event, fields })
+    });
+    const summary = await evaluator.runOnce();
+    return { summary, queries, logs };
+  }
+
+  test("keyword outranks the default FAQ rule, while an explicitly higher FAQ rule renders its answer", async () => {
+    const lowerFaq = await evaluateWorker({ rules: [keywordRule(), faqRule()] });
+    assert.equal(lowerFaq.summary.replyDrafted, 1);
+    assert.equal(lowerFaq.queries.find((query) => query.sql.startsWith("insert into channel_reply_drafts")).params[4], "关键词答复");
+    const higherFaq = await evaluateWorker({ rules: [keywordRule(), faqRule({ priority: 200 })] });
+    const draft = higherFaq.queries.find((query) => query.sql.startsWith("insert into channel_reply_drafts"));
+    assert.equal(draft.params[4], "付款后尽快发货。");
+    const evidence = JSON.parse(draft.params[6]);
+    assert.deepEqual(evidence[1], { type: "knowledge_entry", approvalId, entryId, revision: 2, answerSha256: "a".repeat(64), scorePermille: 900 });
+    const firing = higherFaq.queries.find((query) => query.sql.startsWith("insert into interaction_rule_firings") && !query.sql.includes("returning id"));
+    assert.match(firing.sql, /knowledge_approval_id/);
+    assert.equal(firing.params.at(-1), approvalId);
+  });
+
+  test("ambiguous FAQ is suppressed, but a matching keyword rule remains eligible", async () => {
+    const ambiguous = await evaluateWorker({ rules: [faqRule()], candidates: [knowledgeCandidate(), knowledgeCandidate({ entry_id: "20000000-0000-4000-8000-000000000009" })] });
+    const firing = ambiguous.queries.find((query) => query.sql.startsWith("insert into interaction_rule_firings") && query.sql.includes("returning id"));
+    assert.equal(firing.params[9], "suppressed");
+    assert.equal(firing.params[10], "faq_ambiguous");
+    const fallback = await evaluateWorker({ rules: [faqRule({ priority: 200 }), keywordRule()], candidates: [knowledgeCandidate(), knowledgeCandidate({ entry_id: "20000000-0000-4000-8000-000000000009" })] });
+    assert.equal(fallback.summary.replyDrafted, 1);
+    assert.equal(fallback.queries.find((query) => query.sql.startsWith("insert into channel_reply_drafts")).params[4], "关键词答复");
+    const cooledKeyword = await evaluateWorker({ rules: [faqRule({ priority: 200 }), keywordRule()], candidates: [knowledgeCandidate(), knowledgeCandidate({ entry_id: "20000000-0000-4000-8000-000000000009" })], cooledRuleIds: [keywordRule().id] });
+    const cooledFiring = cooledKeyword.queries.find((query) => query.sql.startsWith("insert into interaction_rule_firings") && query.sql.includes("returning id"));
+    assert.equal(cooledFiring.params[2], faqRule().id);
+    assert.equal(cooledFiring.params[10], "faq_ambiguous");
+  });
+
+  test("lookup errors disable FAQ only; malformed rows, draft conflicts and blocked answers are recorded", async () => {
+    const failed = await evaluateWorker({ rules: [faqRule(), keywordRule()], lookupError: true });
+    assert.equal(failed.summary.replyDrafted, 1);
+    assert.ok(failed.logs.some((item) => item.event === "interaction_rules.knowledge_lookup_failed"));
+    const malformed = await evaluateWorker({ rules: [faqRule()], candidates: [knowledgeCandidate({ answer_sha256: "bad" })] });
+    assert.equal(malformed.summary.replyDrafted, 0);
+    assert.equal(malformed.queries.some((query) => query.sql.startsWith("insert into interaction_rule_firings") && query.params[9] === "suppressed"), false);
+    const duplicate = await evaluateWorker({ rules: [faqRule()], draftExists: true });
+    const duplicateFiring = duplicate.queries.find((query) => query.sql.startsWith("insert into interaction_rule_firings") && query.sql.includes("returning id"));
+    assert.equal(duplicateFiring.params[9], "suppressed");
+    assert.equal(duplicateFiring.params[10], "reply_draft_exists");
+    const blocked = await evaluateWorker({ rules: [faqRule({ priority: 200 })], terms: [{ kind: "custom", term: "尽快发货", normalized_term: "尽快发货", category: "custom", approved_revision: 1, severity: "block", suggestions: [], disabled: false, active: true }] });
+    const blockedFiring = blocked.queries.find((query) => query.sql.startsWith("insert into interaction_rule_firings") && query.sql.includes("returning id"));
+    assert.ok(blockedFiring, JSON.stringify({ summary: blocked.summary, logs: blocked.logs, queries: blocked.queries.map((query) => query.sql) }));
+    assert.equal(blockedFiring.params[9], "policy_blocked");
+    assert.match(blockedFiring.params[10], /^lexicon:|^policy:/);
+    assert.equal(blockedFiring.params.at(-1), approvalId);
+  });
+
+  test("FAQ candidates are queried only for answerable comments with an FAQ rule", async () => {
+    for (const scenario of [
+      { rules: [keywordRule()], interactions: [comment()] },
+      { rules: [faqRule()], interactions: [comment({ interaction_kind: "follow" })] },
+      { rules: [faqRule()], interactions: [comment({ policy_action: "human_review" })] }
+    ]) {
+      const result = await evaluateWorker(scenario);
+      assert.equal(result.queries.some((query) => query.sql.startsWith("select approval_id, entry_id")), false);
+    }
+  });
+
+  test("FAQ rule and template shape rejects invalid thresholds and slots", () => {
+    const parse = (overrides = {}) => interactionRules.parseRule(faqRule(overrides));
+    for (const threshold of [undefined, 299, 1001, 600.5]) assert.equal(parse({ match_config: { minScorePermille: threshold } }), null);
+    for (const templates of [["answer"], ["{faq_answer}{faq_answer}"], ["{faq_answer}{price}"]]) assert.equal(parse({ templates }), null);
+    assert.equal(interactionRules.parseRule({ ...keywordRule(), templates: ["{faq_answer}"] }), null);
+    assert.equal(parse().minScorePermille, 600);
+    assert.deepEqual(interactionRules.renderTemplate("{faq_answer}", { faq_answer: "答案中保留 {price}" }), { text: "答案中保留 {price}", missing: [] });
   });
 });

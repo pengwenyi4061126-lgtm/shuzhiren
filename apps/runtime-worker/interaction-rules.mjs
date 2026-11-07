@@ -16,11 +16,12 @@ import { normalizePolicyText, parsePolicyRules } from "../console/lib/shared/pol
 import { guardBroadcastText } from "../console/lib/shared/broadcast-guard.mjs";
 import { BUILTIN_LEXICON } from "../console/lib/shared/prohibited-terms-builtin.mjs";
 import { compileLexicon, effectiveLexicon, runtimeLexicon } from "../console/lib/shared/prohibited-terms.mjs";
+import { knowledgeQueryTerms, rankKnowledgeHits } from "../console/lib/shared/knowledge-match.mjs";
 
-export const TRIGGER_TYPES = Object.freeze(["viewer_enter", "follow", "gift", "keyword", "timed", "idle_comment"]);
+export const TRIGGER_TYPES = Object.freeze(["viewer_enter", "follow", "gift", "keyword", "faq", "timed", "idle_comment"]);
 export const TIMER_TRIGGERS = Object.freeze(["timed", "idle_comment"]);
 export const RULE_ACTIONS = Object.freeze(["speak", "reply_draft"]);
-export const TEMPLATE_SLOTS = Object.freeze(["nickname", "product_name", "price"]);
+export const TEMPLATE_SLOTS = Object.freeze(["nickname", "product_name", "price", "faq_answer"]);
 export const NEUTRAL_NICKNAME = "这位朋友";
 export const MAX_TEMPLATE_LENGTH = 200;
 export const MAX_SPEECH_TEXT_LENGTH = 800;
@@ -79,6 +80,12 @@ export function parseRule(row) {
   const match = row.match_config && typeof row.match_config === "object" && !Array.isArray(row.match_config) ? row.match_config : {};
   const keywords = Array.isArray(match.keywords) ? match.keywords.filter((keyword) => typeof keyword === "string" && normalizeMatchText(keyword).length > 0).map(normalizeMatchText) : [];
   if (row.trigger_type === "keyword" && keywords.length === 0) return null;
+  const minScorePermille = match.minScorePermille;
+  if (row.trigger_type === "faq" && (!Number.isInteger(minScorePermille) || minScorePermille < 300 || minScorePermille > 1000)) return null;
+  if (row.trigger_type !== "faq" && templates.some((template) => template.includes("{faq_answer}"))) return null;
+  if (row.trigger_type === "faq" && (row.interval_seconds !== null && row.interval_seconds !== undefined
+      || templates.some((template) => (template.match(/\{faq_answer\}/g) ?? []).length !== 1
+        || /\{(?:product_name|price)\}/.test(template)))) return null;
   const minGiftValueCents = Number.isSafeInteger(match.minGiftValueCents) && match.minGiftValueCents >= 0 ? match.minGiftValueCents : 0;
   if (TIMER_TRIGGERS.includes(row.trigger_type) && !(Number.isInteger(row.interval_seconds) && row.interval_seconds >= 60)) return null;
   if (row.action === "reply_draft" && TIMER_TRIGGERS.includes(row.trigger_type)) return null;
@@ -89,6 +96,7 @@ export function parseRule(row) {
     action: row.action,
     templates,
     keywords,
+    minScorePermille: row.trigger_type === "faq" ? minScorePermille : null,
     minGiftValueCents,
     cooldownSeconds: Number.isInteger(row.cooldown_seconds) && row.cooldown_seconds >= 0 ? row.cooldown_seconds : 60,
     intervalSeconds: row.interval_seconds ?? null,
@@ -102,15 +110,30 @@ export function isValidTemplate(template) {
   if (typeof template !== "string") return false;
   const trimmed = template.trim();
   if (!trimmed || template.length > MAX_TEMPLATE_LENGTH) return false;
-  return !/[{}]/.test(trimmed.replace(/\{(nickname|product_name|price)\}/g, ""));
+  return !/[{}]/.test(trimmed.replace(/\{(nickname|product_name|price|faq_answer)\}/g, ""));
 }
 
 export function templateSlots(template) {
-  return new Set([...String(template).matchAll(/\{(nickname|product_name|price)\}/g)].map((match) => match[1]));
+  return new Set([...String(template).matchAll(/\{(nickname|product_name|price|faq_answer)\}/g)].map((match) => match[1]));
+}
+
+function isValidKnowledgeCandidate(row) {
+  const aliases = Array.isArray(row?.alias_questions) ? row.alias_questions : null;
+  const keywords = Array.isArray(row?.keywords) ? row.keywords : null;
+  return row && typeof row.approval_id === "string" && /^[0-9a-f-]{36}$/i.test(row.approval_id)
+    && typeof row.entry_id === "string" && /^[0-9a-f-]{36}$/i.test(row.entry_id)
+    && Number.isInteger(row.revision) && row.revision > 0
+    && typeof row.question === "string" && row.question.length > 0
+    && aliases?.every((value) => typeof value === "string")
+    && typeof row.answer === "string" && row.answer.length > 0
+    && keywords?.every((value) => typeof value === "string")
+    && Array.isArray(row.search_terms) && row.search_terms.every((value) => typeof value === "string")
+    && typeof row.answer_sha256 === "string" && /^[0-9a-f]{64}$/i.test(row.answer_sha256.trim());
 }
 
 /** Whether a rule answers this interaction (kind, keywords, gift value, the interaction's own policy decision). */
-export function ruleMatchesInteraction(rule, interaction) {
+export function ruleMatchesInteraction(rule, interaction, faqHit = null) {
+  if (rule.triggerType === "faq") return interaction.interaction_kind === "comment" && interaction.policy_action === "answer" && faqHit !== null;
   if (INTERACTION_TRIGGER[interaction.interaction_kind] !== rule.triggerType) return false;
   if (rule.triggerType === "gift") return Number(interaction.gift_value_cents ?? -1) >= rule.minGiftValueCents;
   if (rule.triggerType === "keyword") {
@@ -154,7 +177,7 @@ export function formatPrice(priceCent) {
 /** Replaces the slots in one pass, so a slot value is never expanded again. Missing values are reported. */
 export function renderTemplate(template, slots) {
   const missing = new Set();
-  const text = String(template).replace(/\{(nickname|product_name|price)\}/g, (match, name) => {
+  const text = String(template).replace(/\{(nickname|product_name|price|faq_answer)\}/g, (match, name) => {
     const value = slots[name];
     if (typeof value !== "string" || !value) { missing.add(name); return match; }
     return value;
@@ -270,10 +293,35 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
       const slot = timerSlot(nowEpoch, rule.intervalSeconds);
       candidates.push({ kind: "timer", rule, triggerKey: `${rule.triggerType === "timed" ? "slot" : "idle"}:${slot}`, priority: rule.priority, order: 0 });
     }
-    interactions.forEach((interaction, index) => {
-      const matching = rules.filter((rule) => !TIMER_TRIGGERS.includes(rule.triggerType) && ruleMatchesInteraction(rule, interaction));
-      if (matching.length) candidates.push({ kind: "interaction", interaction, matching, triggerKey: `interaction:${interaction.id}`, priority: matching[0].priority, order: index + 1 });
-    });
+    for (const [index, interaction] of interactions.entries()) {
+      const faqRules = rules.filter((rule) => rule.triggerType === "faq");
+      let faqHits = new Map();
+      let ambiguousFaqRules = [];
+      if (faqRules.length && interaction.interaction_kind === "comment" && interaction.policy_action === "answer") {
+        try {
+          const queryTerms = knowledgeQueryTerms(interaction.question_text ?? "");
+          const rows = queryTerms.length ? (await client.query("select approval_id, entry_id, revision, question, alias_questions, answer, keywords, search_terms, answer_sha256 from knowledge_answer_candidates($1::uuid, $2::uuid, $3::text[], 20)", [tenantId, run.id, queryTerms])).rows : [];
+          const candidates = rows.filter(isValidKnowledgeCandidate).map((row) => ({
+            entryId: row.entry_id, question: row.question, aliasQuestions: row.alias_questions,
+            keywords: row.keywords, approvalId: row.approval_id, revision: row.revision,
+            answer: row.answer, answerSha256: row.answer_sha256.trim()
+          }));
+          for (const rule of faqRules) {
+            const ranked = rankKnowledgeHits(interaction.question_text ?? "", candidates, { minScorePermille: rule.minScorePermille });
+            if (ranked.reason === "matched") faqHits.set(rule.id, ranked.hit);
+            else if (ranked.reason === "ambiguous") ambiguousFaqRules.push(rule);
+          }
+        } catch (error) {
+          log("interaction_rules.knowledge_lookup_failed", { tenantId, runId: run.id, interactionId: interaction.id, error: error instanceof Error ? error.message : "unknown" });
+        }
+      }
+      const matching = rules.filter((rule) => !TIMER_TRIGGERS.includes(rule.triggerType)
+        && ruleMatchesInteraction(rule, interaction, faqHits.get(rule.id) ?? null));
+      if (matching.length || ambiguousFaqRules.length) {
+        candidates.push({ kind: "interaction", interaction, matching, faqHits, ambiguousFaqRules,
+          triggerKey: `interaction:${interaction.id}`, priority: matching[0]?.priority ?? Math.max(...ambiguousFaqRules.map((rule) => rule.priority)), order: index + 1 });
+      }
+    }
     candidates.sort((left, right) => right.priority - left.priority || left.order - right.order);
 
     for (const candidate of candidates) {
@@ -309,13 +357,20 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
     const recordSuppressed = (rule, why) => recordFiring(client, run, { rule, triggerKey, interaction, outcome: "suppressed", outcomeReason: why });
     // The first matching rule (by priority) outside its cooldown answers; when all are cooling down the
     // suppression is recorded on the highest-priority rule.
+    if (!candidate.matching.length) {
+      const ambiguous = [...candidate.ambiguousFaqRules].sort((a, b) => b.priority - a.priority || String(a.id).localeCompare(String(b.id)))[0];
+      return recordSuppressed(ambiguous, "faq_ambiguous");
+    }
     let chosen = null;
     let chosenLast = null;
     for (const rule of candidate.matching) {
       const last = await lastSuccess(client, run.id, rule.id);
       if (!last || last.age_seconds >= effectiveCooldownSeconds(rule)) { chosen = rule; chosenLast = last; break; }
     }
-    if (!chosen) return recordSuppressed(candidate.matching[0], "rule_cooldown");
+    if (!chosen) {
+      const ambiguous = [...candidate.ambiguousFaqRules].sort((a, b) => b.priority - a.priority || String(a.id).localeCompare(String(b.id)))[0];
+      return ambiguous ? recordSuppressed(ambiguous, "faq_ambiguous") : recordSuppressed(candidate.matching[0], "rule_cooldown");
+    }
     if (interaction.viewer_ref && config.viewerCooldownSeconds > 0) {
       const recent = await client.query(`select 1 from interaction_rule_firings where live_run_id = $1 and viewer_ref = $2 and outcome = any($3::text[])
         and created_at > now() - make_interval(secs => $4) limit 1`, [run.id, interaction.viewer_ref, SUCCESS_OUTCOMES, config.viewerCooldownSeconds]);
@@ -329,7 +384,7 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
     }
     const [policy, lexicon] = await Promise.all([context.policy(), context.lexicon()]);
     const nickname = sanitizeNickname(interaction.viewer_nickname, policy.active ? policy.rules : [], config.nicknameMaxLength, lexicon);
-    return speakOrDraft(client, run, { rule: chosen, triggerKey, interaction, last: chosenLast, nickname }, context, state, nowEpoch);
+    return speakOrDraft(client, run, { rule: chosen, triggerKey, interaction, last: chosenLast, nickname, knowledgeHit: candidate.faqHits?.get(chosen.id) ?? null }, context, state, nowEpoch);
   }
 
   async function speakOrDraft(client, run, firing, context, state, nowEpoch) {
@@ -347,7 +402,8 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
     const rendered = renderTemplate(template, {
       nickname: firing.nickname?.nickname ?? NEUTRAL_NICKNAME,
       product_name: product?.product_name ?? undefined,
-      price: product ? formatPrice(Number(product.price_cent)) ?? undefined : undefined
+      price: product ? formatPrice(Number(product.price_cent)) ?? undefined : undefined,
+      faq_answer: firing.knowledgeHit?.answer
     });
     if (rendered.missing.length) return recordFiring(client, run, { ...firing, outcome: "unavailable", outcomeReason: `missing_slot:${rendered.missing.join(",")}`, templateIndex });
     const maxLength = rule.action === "speak" ? MAX_SPEECH_TEXT_LENGTH : MAX_REPLY_TEXT_LENGTH;
@@ -367,12 +423,12 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
       const outboxEventId = event.rows[0].id;
       await insertFiring(client, run, { ...firing, id: firingId, outcome: "speech_queued", templateIndex, textSha256, cooldownBucket: bucket, outboxEventId, product });
       state.spokenThisPass = true;
-      await audit(client, run, "interaction_rule.speech_queued", firingId, { runId: run.id, ruleId: rule.id, triggerKey: firing.triggerKey, outboxEventId, speechCommandId: command.id, textSha256, templateIndex, productVersionId: product.product_version_id, neutralNickname: firing.nickname?.neutral ?? null });
+      await audit(client, run, "interaction_rule.speech_queued", firingId, { runId: run.id, ruleId: rule.id, triggerKey: firing.triggerKey, outboxEventId, speechCommandId: command.id, textSha256, templateIndex, productVersionId: product.product_version_id, neutralNickname: firing.nickname?.neutral ?? null, knowledgeApprovalId: firing.knowledgeHit?.approvalId ?? null });
       log("interaction_rules.speech_queued", { tenantId: run.tenant_id, runId: run.id, ruleId: rule.id, triggerKey: firing.triggerKey, outboxEventId });
       return "speech_queued";
     }
     const actor = (await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [run.tenant_id])).rows[0].id;
-    const evidenceSnapshot = [{ type: "interaction_rule", ruleId: rule.id, templateIndex }, ...(product ? [{ type: "product_version", id: product.product_version_id, revision: Number(product.product_revision) }] : [])];
+    const evidenceSnapshot = [{ type: "interaction_rule", ruleId: rule.id, templateIndex }, ...(firing.knowledgeHit ? [{ type: "knowledge_entry", approvalId: firing.knowledgeHit.approvalId, entryId: firing.knowledgeHit.entryId, revision: firing.knowledgeHit.revision, answerSha256: firing.knowledgeHit.answerSha256, scorePermille: firing.knowledgeHit.scorePermille }] : []), ...(product ? [{ type: "product_version", id: product.product_version_id, revision: Number(product.product_revision) }] : [])];
     const draft = await client.query(`insert into channel_reply_drafts (tenant_id, live_run_id, interaction_id, channel_connection_id, body, body_sha256, policy_action, evidence_snapshot, product_version_id, product_revision, created_by)
       values ($1, $2, $3, $4, $5, $6, 'answer', $7::jsonb, $8::uuid, $9, $10) on conflict (interaction_id) do nothing returning id`,
     [run.tenant_id, run.id, interaction.id, interaction.channel_connection_id, rendered.text, textSha256, JSON.stringify(evidenceSnapshot), product?.product_version_id ?? null, product ? Number(product.product_revision) : null, actor]);
@@ -409,10 +465,10 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
   /** Records a terminal decision that queued nothing. A concurrent identical record wins; nothing is overwritten. */
   async function recordFiring(client, run, firing) {
     const id = randomUUID();
-    const inserted = await client.query(`insert into interaction_rule_firings (id, tenant_id, rule_id, live_run_id, interaction_id, trigger_key, viewer_ref, template_index, rendered_text_sha256, outcome, outcome_reason, product_version_id, product_revision)
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    const inserted = await client.query(`insert into interaction_rule_firings (id, tenant_id, rule_id, live_run_id, interaction_id, trigger_key, viewer_ref, template_index, rendered_text_sha256, outcome, outcome_reason, product_version_id, product_revision, knowledge_approval_id)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       on conflict (tenant_id, live_run_id, rule_id, trigger_key) do nothing returning id`,
-    [id, run.tenant_id, firing.rule.id, run.id, firing.interaction?.id ?? null, firing.triggerKey, firing.interaction?.viewer_ref ?? null, firing.templateIndex ?? null, firing.textSha256 ?? null, firing.outcome, firing.outcomeReason ? reason(firing.outcomeReason) : null, firing.product?.product_version_id ?? null, firing.product ? Number(firing.product.product_revision) : null]);
+    [id, run.tenant_id, firing.rule.id, run.id, firing.interaction?.id ?? null, firing.triggerKey, firing.interaction?.viewer_ref ?? null, firing.templateIndex ?? null, firing.textSha256 ?? null, firing.outcome, firing.outcomeReason ? reason(firing.outcomeReason) : null, firing.product?.product_version_id ?? null, firing.product ? Number(firing.product.product_revision) : null, firing.knowledgeHit?.approvalId ?? null]);
     if (!inserted.rows[0]) return null;
     log("interaction_rules.recorded", { tenantId: run.tenant_id, runId: run.id, ruleId: firing.rule.id, triggerKey: firing.triggerKey, outcome: firing.outcome, reason: firing.outcomeReason ?? null });
     if (firing.outcome === "policy_blocked") await audit(client, run, "interaction_rule.policy_blocked", id, { runId: run.id, ruleId: firing.rule.id, triggerKey: firing.triggerKey, textSha256: firing.textSha256 ?? null, reason: firing.outcomeReason ?? null });
@@ -421,9 +477,9 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
 
   /** Records a firing that queued speech or a draft; a conflict rolls back the whole transaction with the command. */
   async function insertFiring(client, run, firing) {
-    await client.query(`insert into interaction_rule_firings (id, tenant_id, rule_id, live_run_id, interaction_id, trigger_key, viewer_ref, template_index, rendered_text_sha256, outcome, cooldown_bucket, outbox_event_id, product_version_id, product_revision)
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-    [firing.id, run.tenant_id, firing.rule.id, run.id, firing.interaction?.id ?? null, firing.triggerKey, firing.interaction?.viewer_ref ?? null, firing.templateIndex, firing.textSha256, firing.outcome, firing.cooldownBucket, firing.outboxEventId ?? null, firing.product?.product_version_id ?? null, firing.product ? Number(firing.product.product_revision) : null]);
+    await client.query(`insert into interaction_rule_firings (id, tenant_id, rule_id, live_run_id, interaction_id, trigger_key, viewer_ref, template_index, rendered_text_sha256, outcome, cooldown_bucket, outbox_event_id, product_version_id, product_revision, knowledge_approval_id)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+    [firing.id, run.tenant_id, firing.rule.id, run.id, firing.interaction?.id ?? null, firing.triggerKey, firing.interaction?.viewer_ref ?? null, firing.templateIndex, firing.textSha256, firing.outcome, firing.cooldownBucket, firing.outboxEventId ?? null, firing.product?.product_version_id ?? null, firing.product ? Number(firing.product.product_revision) : null, firing.knowledgeHit?.approvalId ?? null]);
   }
 
   async function audit(client, run, eventType, resourceId, detail, resourceType = "interaction_rule_firing") {
