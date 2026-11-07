@@ -405,6 +405,15 @@ test("overlay routes keep the read and edit role matrix, validate input, and ret
       const response = await putProgramOverlay(request(role, programRunId, "PUT", baseConfig), { params: Promise.resolve({ runId: programRunId }) });
       assert.equal(response.status, 200, `${role} can edit the draft program overlay`);
     }
+    const overlayAudit = globalThis.shuzhirenAuditStore.events.filter((event) => event.type === "show_overlay.updated" && event.resourceId === "50000000-0000-4000-8000-000000000011");
+    assert.equal(overlayAudit.length, 2);
+    for (const event of overlayAudit) {
+      assert.deepEqual(Object.keys(event.detail).sort(), ["configSha256", "enabled", "revisionId", "runId"]);
+      assert.match(event.detail.configSha256, /^[0-9a-f]{64}$/);
+      assert.equal(event.detail.runId, programRunId);
+      assert.equal(event.detail.revisionId, "50000000-0000-4000-8000-000000000011");
+      assert.equal(JSON.stringify(event.detail).includes("sceneJson"), false);
+    }
     for (const role of ["reviewer", "analyst"]) {
       const response = await putProgramOverlay(request(role, programRunId, "PUT", baseConfig), { params: Promise.resolve({ runId: programRunId }) });
       assert.equal(response.status, 403, `${role} cannot edit the program overlay`);
