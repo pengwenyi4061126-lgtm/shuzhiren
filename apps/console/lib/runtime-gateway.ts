@@ -101,6 +101,10 @@ function requestSignal(config: RuntimeGatewayConfig, options?: DispatchOptions) 
 export async function dispatchMediaCommand(command: MediaCommand, sessionId: string, options?: DispatchOptions) {
   const config = runtimeGatewayConfig();
   if (config.demoMode) return { delivery: "demo" as const, provider: { accepted: true, command_id: command.id, session_id: sessionId, action: command.type, receipt: { command_id: command.id, session_id: sessionId, action: command.type, accepted_at: new Date().toISOString(), evidence: "demo_gateway" } } };
+  const overlaySceneJson = command.payload.overlaySceneJson;
+  const overlaySceneSha256 = command.payload.overlaySceneSha256;
+  if ((overlaySceneJson === undefined) !== (overlaySceneSha256 === undefined)) throw new Error("Overlay scene JSON and SHA-256 must be provided together");
+  if (overlaySceneJson !== undefined && (command.type !== "start_program" || createHash("sha256").update(overlaySceneJson, "utf8").digest("hex") !== overlaySceneSha256)) throw new Error("Overlay scene hash does not match the start command");
   const programSegmentId = command.payload.programSegmentId;
   const runtimeScript = command.payload.runtimeScript;
   const scriptSha256 = command.payload.scriptSha256;
@@ -117,7 +121,7 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
   const response = await fetch(`${config.url}/v1/media`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeScript ? { runtime_voice_id: runtimeVoiceId, voice_checksum: voiceChecksum } : {}) }),
+    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeScript ? { runtime_voice_id: runtimeVoiceId, voice_checksum: voiceChecksum } : {}), ...(overlaySceneJson !== undefined ? { overlay_scene_json: overlaySceneJson, overlay_scene_sha256: overlaySceneSha256 } : {}) }),
     signal: requestSignal(config, options)
   });
   if (!response.ok) throw await gatewayError(response, "Runtime gateway rejected media command");
@@ -141,6 +145,7 @@ function assertMediaGatewayReceipt(value: unknown, command: MediaCommand, sessio
   const acceptedAt = typeof fields.accepted_at === "string" ? new Date(fields.accepted_at) : undefined;
   if ((value as { accepted?: unknown }).accepted !== true || fields.command_id !== command.id || fields.session_id !== sessionId || fields.action !== command.type || !acceptedAt || Number.isNaN(acceptedAt.getTime()) || !receiptTimeAcceptable(acceptedAt, notBefore)) throw new Error("Runtime gateway receipt does not bind the media command");
   if (command.payload.programSegmentId && fields.program_segment_id !== command.payload.programSegmentId) throw new Error("Runtime gateway receipt does not bind the program segment");
+  if (command.payload.overlaySceneSha256 && fields.overlay_scene_sha256 !== command.payload.overlaySceneSha256) throw new Error("Runtime gateway receipt does not bind the media command");
 }
 
 function programSegmentIdValid(value: unknown) {

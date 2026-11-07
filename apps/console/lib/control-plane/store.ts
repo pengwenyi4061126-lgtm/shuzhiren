@@ -13,7 +13,7 @@ import { evaluateRuntimeReadiness, evaluateRuntimeReadinessInTransaction } from 
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { enqueueMediaCommand, enqueueMediaCommandInTransaction, enqueueSpeechCommand, enqueueSpeechCommandInTransaction, type SpeechOutboxEvent } from "@/lib/control-plane/outbox";
-import { createMediaCommand, type MediaCommand } from "@/lib/media-protocol";
+import { createMediaCommand, type MediaCommand, type MediaCommandPayload } from "@/lib/media-protocol";
 import { createGroundedResponseDraft, type ResponseDraft } from "@/lib/response-draft";
 import { createSpeechCommand } from "@/lib/speech-protocol";
 import { assertLiveActivationAllowed } from "@/lib/entitlements";
@@ -456,7 +456,8 @@ export async function issueCommand(context: RequestContext, runId: string, input
       [context.tenantId, run.id, actor.rows[0].id, input.idempotencyKey, input.expectedState, input.action, JSON.stringify({ status: "accepted", programSegmentId: programTransition?.target?.id ?? activationProgram?.id ?? null, sourceProgramSegmentId: programTransition?.source?.id ?? null }), context.actorName]
     );
     const command = persistentCommand(inserted.rows[0]);
-    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript)), run.runtimeSessionId);
+    const overlayScene = input.action === "START" || input.action === "RECOVER" ? await overlaySceneForRunInTransaction(client, run) : undefined;
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript, overlayScene)), run.runtimeSessionId);
     // The command, its outbox event, the rotation ledger row and their audit events commit together: a failed
     // write rolls back the command instead of leaving an unaudited command queued for the runtime.
     for (const event of commandAuditEvents(runId, input, command, mediaEvent)) await recordAuditEventInTransaction(client, context, event);
@@ -613,7 +614,8 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
   };
   const dispatchSegment = programTransition?.target ?? activationProgram;
   const selectedScript = dispatchSegment ? selectDemoScriptForDispatch(run, dispatchSegment, input.action as ScriptDispatchAction, demoScriptGuardContext(context.tenantId, run.revisionId)) : undefined;
-  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript), sessionId: run.runtimeSessionId });
+  const overlayScene = input.action === "START" || input.action === "RECOVER" ? demoOverlaySceneForRun(run) : undefined;
+  const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript, overlayScene), sessionId: run.runtimeSessionId });
   if (selectedScript) await recordDemoScriptPlay(context, run, selectedScript, mediaEvent.id);
   if (programTransition) {
     run.activeProgramSegmentId = programTransition.target?.id;
@@ -659,7 +661,36 @@ async function resolveDemoActivationProgram(context: RequestContext, run: Stored
   return demoFrozenSegment(target);
 }
 
-function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment, voice?: RuntimeVoiceBinding, selected?: SelectedScript): Omit<MediaCommand, "id" | "issuedAt"> {
+async function overlaySceneForRunInTransaction(client: PoolClient, run: StoredRun) {
+  const result = await client.query<{ caption_enabled: boolean; product_card_enabled: boolean; price_sticker_enabled: boolean; background_mode: string; scene_json: string | null; scene_sha256: string | null }>(
+    "select o.caption_enabled, o.product_card_enabled, o.price_sticker_enabled, o.background_mode, o.scene_json, o.scene_sha256 from show_revision_overlays o where o.tenant_id = $1 and o.show_revision_id = $2",
+    [run.tenantId, run.revisionId]
+  );
+  const row = result.rows[0];
+  if (!row) return undefined;
+  const enabled = row.caption_enabled || row.product_card_enabled || row.price_sticker_enabled || row.background_mode !== "none";
+  if (!row.scene_json && !row.scene_sha256) {
+    if (enabled) throw new Response("Frozen overlay scene is unavailable", { status: 409, statusText: "overlay_scene_unavailable" });
+    return undefined;
+  }
+  const sceneSha256 = row.scene_sha256?.trimEnd();
+  if (!row.scene_json || !sceneSha256 || createHash("sha256").update(row.scene_json, "utf8").digest("hex") !== sceneSha256) throw new Response("Frozen overlay scene hash is invalid", { status: 409, statusText: "overlay_scene_hash_invalid" });
+  return { sceneJson: row.scene_json, sceneSha256 };
+}
+
+function demoOverlaySceneForRun(run: StoredRun) {
+  const record = (globalThis as typeof globalThis & { shuzhirenOverlayStore?: { overlays: Map<string, { captionEnabled: boolean; productCardEnabled: boolean; priceStickerEnabled: boolean; backgroundMode: string; sceneJson: string | null; sceneSha256: string | null }> } }).shuzhirenOverlayStore?.overlays.get(run.revisionId);
+  if (!record) return undefined;
+  const enabled = record.captionEnabled || record.productCardEnabled || record.priceStickerEnabled || record.backgroundMode !== "none";
+  if (!record.sceneJson && !record.sceneSha256) {
+    if (enabled) throw new Response("Frozen overlay scene is unavailable", { status: 409, statusText: "overlay_scene_unavailable" });
+    return undefined;
+  }
+  if (!record.sceneJson || !record.sceneSha256 || createHash("sha256").update(record.sceneJson, "utf8").digest("hex") !== record.sceneSha256) throw new Response("Frozen overlay scene hash is invalid", { status: 409, statusText: "overlay_scene_hash_invalid" });
+  return { sceneJson: record.sceneJson, sceneSha256: record.sceneSha256 };
+}
+
+export function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment, voice?: RuntimeVoiceBinding, selected?: SelectedScript, overlayScene?: { sceneJson: string; sceneSha256: string }): Omit<MediaCommand, "id" | "issuedAt"> {
   const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program", INSERT_PROGRAM: "insert_program", ROLLBACK_PROGRAM: "resume_program" } as const;
   // START/RECOVER carry the activation baseline segment and INSERT/ROLLBACK their target, each with the
   // frozen voice that the Gateway synthesizes the script with.
@@ -669,7 +700,8 @@ function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?:
   // The script is the version selected for this dispatch (selectScriptForDispatch), never the primary by default.
   if (segment && (!selected || selected.segmentId !== segment.id)) throw new Error("A dispatched program segment requires its selected script version");
   const segmentPayload: Record<string, string> = segment && selected && voice ? { programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtimeVoiceId, voiceChecksum: voice.voiceChecksum } : {};
-  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...transitionPayload, ...segmentPayload } };
+  const overlayPayload: MediaCommandPayload = (action === "START" || action === "RECOVER") && overlayScene ? { overlaySceneJson: overlayScene.sceneJson, overlaySceneSha256: overlayScene.sceneSha256 } : {};
+  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...transitionPayload, ...segmentPayload, ...overlayPayload } };
 }
 
 export async function bindRuntimeSession(context: RequestContext, runId: string, runtimeSessionId: string) {

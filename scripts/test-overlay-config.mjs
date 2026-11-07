@@ -7,6 +7,8 @@ import test from "node:test";
 register("./lib/console-ts-loader.mjs", import.meta.url);
 const overlay = await import("../apps/console/lib/overlay-scene.ts");
 const { canonicalJson } = await import("../apps/console/lib/canonical-json.mjs");
+const { createMediaCommand } = await import("../apps/console/lib/media-protocol.ts");
+const runtimeGateway = await import("../apps/console/lib/runtime-gateway.ts");
 
 const baseConfig = {
   captionEnabled: true,
@@ -130,6 +132,32 @@ test("run readiness permits a valid run with no overlay row on its existing data
   } finally { if (previousMode === undefined) delete process.env.RUNTIME_GATEWAY_DEMO_MODE; else process.env.RUNTIME_GATEWAY_DEMO_MODE = previousMode; }
 });
 
+test("Gateway receives frozen overlay fields and receipts must bind the matching scene hash", async () => {
+  const saved = { url: process.env.RUNTIME_GATEWAY_URL, token: process.env.RUNTIME_SHARED_TOKEN, demo: process.env.RUNTIME_GATEWAY_DEMO_MODE, fetch: globalThis.fetch };
+  process.env.RUNTIME_GATEWAY_URL = "http://gateway.test"; process.env.RUNTIME_SHARED_TOKEN = "x".repeat(48); process.env.RUNTIME_GATEWAY_DEMO_MODE = "false";
+  const sceneJson = canonicalJson({ version: 1 }); const sceneSha256 = digest(sceneJson); let received;
+  const command = createMediaCommand({ runId: "00000000-0000-4000-8000-000000000099", traceId: "trace-overlay", type: "start_program", payload: { controlAction: "START", overlaySceneJson: sceneJson, overlaySceneSha256: sceneSha256 } });
+  assert.throws(() => createMediaCommand({ runId: command.runId, traceId: command.traceId, type: "start_program", payload: { controlAction: "START", overlaySceneJson: sceneJson } }), /provided together/);
+  globalThis.fetch = async (_url, options) => {
+    received = JSON.parse(options.body);
+    return Response.json({ accepted: true, command_id: command.id, session_id: "session-overlay", action: command.type, receipt: { command_id: command.id, session_id: "session-overlay", action: command.type, accepted_at: new Date().toISOString(), overlay_scene_sha256: received.receiptHash } });
+  };
+  try {
+    for (const receiptHash of [undefined, "0".repeat(64)]) {
+      received = undefined;
+      globalThis.fetch = async (_url, options) => { received = JSON.parse(options.body); return Response.json({ accepted: true, receipt: { command_id: command.id, session_id: "session-overlay", action: command.type, accepted_at: new Date().toISOString(), ...(receiptHash ? { overlay_scene_sha256: receiptHash } : {}) } }); };
+      await assert.rejects(runtimeGateway.dispatchMediaCommand(command, "session-overlay"), /receipt does not bind the media command/);
+      assert.equal(received.overlay_scene_json, sceneJson);
+      assert.equal(received.overlay_scene_sha256, sceneSha256);
+    }
+    globalThis.fetch = async (_url, options) => { received = JSON.parse(options.body); return Response.json({ accepted: true, receipt: { command_id: command.id, session_id: "session-overlay", action: command.type, accepted_at: new Date().toISOString(), overlay_scene_sha256: sceneSha256 } }); };
+    assert.equal((await runtimeGateway.dispatchMediaCommand(command, "session-overlay")).delivery, "accepted");
+  } finally {
+    globalThis.fetch = saved.fetch;
+    for (const [key, value] of [["RUNTIME_GATEWAY_URL", saved.url], ["RUNTIME_SHARED_TOKEN", saved.token], ["RUNTIME_GATEWAY_DEMO_MODE", saved.demo]]) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
+});
+
 function overlayRow(config = baseConfig) {
   return {
     tenant_id: "tenant-1",
@@ -199,6 +227,7 @@ test("freezing disabled or absent overlay configuration writes no scene", async 
 });
 
 const { cloneDemoProgramRevision, registerDemoProgram, updateDemoProgramLifecycle } = await import("../apps/console/lib/show-program.ts");
+const { issueCommand, mediaCommandFor } = await import("../apps/console/lib/control-plane/store.ts");
 const { listAssets } = await import("../apps/console/lib/assets.ts");
 const demoContext = { tenantId: "tenant_demo", actorId: "overlay-reviewer", actorName: "Overlay Reviewer", role: "operator", accessScope: "tenant" };
 let demoCounter = 0;
@@ -222,6 +251,54 @@ function demoProgram(overlayConfig) {
   registerDemoProgram(program);
   return program;
 }
+
+test("START and RECOVER dispatch only verified frozen scenes and never bind overlays to program transitions", async () => {
+  const run = { id: "run_overlay_dispatch_unit", tenantId: demoContext.tenantId, revisionId: "revision_overlay_dispatch_unit", traceId: "trace_overlay_dispatch_unit", state: "LIVE", channelConnectionId: "channel_demo", productVersionId: "pv_a102_v1", hasOperator: true, hasApprovedRights: true, hasApprovedSkuVersion: true, hasFallbackProgram: true, channelReady: true, outputReady: true, aiDisclosureEnabled: true, runtimeSessionId: "session_overlay_dispatch_unit", commandHistory: [], questions: [] };
+  const sceneJson = canonicalJson({ version: 1 }); const sceneSha256 = digest(sceneJson);
+  for (const action of ["START", "RECOVER"]) {
+    const command = mediaCommandFor(run, action, undefined, undefined, undefined, undefined, { sceneJson, sceneSha256 });
+    assert.deepEqual({ scene: command.payload.overlaySceneJson, hash: command.payload.overlaySceneSha256 }, { scene: sceneJson, hash: sceneSha256 });
+  }
+  for (const action of ["INSERT_PROGRAM", "ROLLBACK_PROGRAM"]) {
+    const command = mediaCommandFor(run, action, { kind: action === "INSERT_PROGRAM" ? "insert" : "rollback" });
+    assert.equal(command.payload.overlaySceneJson, undefined);
+    assert.equal(command.payload.overlaySceneSha256, undefined);
+  }
+  assert.deepEqual(mediaCommandFor(run, "START").payload, { controlAction: "START" }, "a run with no overlay keeps its legacy payload unchanged");
+
+  const controls = globalThis.shuzhirenControlStore ??= { runs: new Map(), idempotency: new Map() };
+  const telemetry = globalThis.shuzhirenMonitoringStore ??= { telemetry: new Map(), alerts: new Map() };
+  const outbox = globalThis.shuzhirenOutboxStore ??= { events: new Map(), speechCommandEvents: new Map() };
+  const program = demoProgram({ ...baseConfig, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} });
+  const generatedRunId = program.runId; program.runId = crypto.randomUUID(); globalThis.shuzhirenProgramStore.programs.delete(generatedRunId); registerDemoProgram(program);
+  const demoRun = { ...run, id: program.runId, revisionId: program.revisionId, state: "DEGRADED", traceId: program.runId, runtimeSessionId: `${program.runId}_session`, activeProgramSegmentId: program.segments[0].id };
+  controls.runs.set(demoRun.id, demoRun);
+  telemetry.telemetry.set(demoRun.id, { runId: demoRun.id, tenantId: demoContext.tenantId, sampledAt: new Date().toISOString(), outputConnected: true, inferenceFps: 30, outputFps: 30, avSyncMs: 20, bitrateMbps: 4, gpuUtilization: 50, gpuMemoryMiB: 8000, audioActive: true, fallbackReady: true });
+  await updateDemoProgramLifecycle(program.runId, "submit_review", demoContext);
+  await updateDemoProgramLifecycle(program.runId, "approve", demoContext);
+  const frozen = globalThis.shuzhirenOverlayStore.overlays.get(program.revisionId);
+  const before = [...outbox.events.values()].filter((event) => event.type === "media.dispatch" && event.command.runId === demoRun.id).length;
+  try {
+    await issueCommand(demoContext, demoRun.id, { action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: `${demoRun.id}_recover_valid` });
+  } catch (error) { throw error; }
+  const dispatched = [...outbox.events.values()].find((event) => event.type === "media.dispatch" && event.command.runId === demoRun.id);
+  assert.equal(dispatched.command.payload.overlaySceneJson, frozen.sceneJson);
+  assert.equal(dispatched.command.payload.overlaySceneSha256, digest(frozen.sceneJson));
+  assert.equal(dispatched.command.type, "start_program");
+  assert.equal([...outbox.events.values()].filter((event) => event.type === "media.dispatch" && event.command.runId === demoRun.id).length, before + 1);
+
+  const corrupt = demoProgram({ ...baseConfig, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} });
+  const oldId = corrupt.runId; corrupt.runId = crypto.randomUUID(); globalThis.shuzhirenProgramStore.programs.delete(oldId); registerDemoProgram(corrupt);
+  const corruptRun = { ...demoRun, id: corrupt.runId, revisionId: corrupt.revisionId, traceId: corrupt.runId, state: "DEGRADED", commandHistory: [] };
+  controls.runs.set(corruptRun.id, corruptRun);
+  telemetry.telemetry.set(corruptRun.id, { runId: corruptRun.id, tenantId: demoContext.tenantId, sampledAt: new Date().toISOString(), outputConnected: true, inferenceFps: 30, outputFps: 30, avSyncMs: 20, bitrateMbps: 4, gpuUtilization: 50, gpuMemoryMiB: 8000, audioActive: true, fallbackReady: true });
+  await updateDemoProgramLifecycle(corrupt.runId, "submit_review", demoContext); await updateDemoProgramLifecycle(corrupt.runId, "approve", demoContext);
+  globalThis.shuzhirenOverlayStore.overlays.get(corrupt.revisionId).sceneSha256 = "0".repeat(64);
+  const corruptCount = [...outbox.events.values()].filter((event) => event.type === "media.dispatch" && event.command.runId === corruptRun.id).length;
+  await assert.rejects(issueCommand(demoContext, corruptRun.id, { action: "RECOVER", expectedState: "DEGRADED", idempotencyKey: `${corruptRun.id}_recover_corrupt` }), (error) => error instanceof Response && error.status === 409 && error.statusText === "overlay_scene_hash_invalid");
+  assert.equal(corruptRun.commandHistory.length, 0);
+  assert.equal([...outbox.events.values()].filter((event) => event.type === "media.dispatch" && event.command.runId === corruptRun.id).length, corruptCount, "hash failure must not queue a media dispatch");
+});
 
 test("demo run preflight blocks unfrozen or damaged scenes, expired prices, and revoked backgrounds", async () => {
   const previousMode = process.env.RUNTIME_GATEWAY_DEMO_MODE;
