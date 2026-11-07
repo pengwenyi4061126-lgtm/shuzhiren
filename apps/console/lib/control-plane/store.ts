@@ -21,6 +21,7 @@ import { activePolicyProfileStatusForRun, activePolicyProfileStatusForRunInTrans
 import { createReleaseManifestSnapshotInTransaction, frozenAigcLabelTextInTransaction } from "@/lib/release-manifest";
 import { aigcLabelText, evaluateAigcLabelReadiness } from "@/lib/aigc-label";
 import { aiDisclosureRuleStatus, aiDisclosureRuleStatusInTransaction } from "@/lib/interaction-rules";
+import { evaluateOverlayReadinessForRun } from "@/lib/overlay-scene";
 import { demoRunLexicon, programScriptPolicyAuditDetail, runLexiconInTransaction } from "@/lib/prohibited-terms";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { demoScriptGuardContext, frozenScripts, recordDemoScriptPlay, recordScriptPlayInTransaction, scriptGuardContextInTransaction, selectDemoScriptForDispatch, selectScriptForDispatch, type FrozenRuntimeSegment, type ScriptDispatchAction, type SelectedScript } from "@/lib/script-plays";
@@ -285,7 +286,7 @@ function getDemoRun(context: RequestContext, runId: string) {
 
 export async function evaluateRunPreflight(context: RequestContext, run: StoredRun) {
   if (databasePool()) return withTenantTransaction(context.tenantId, async (client) => evaluateRunPreflightInTransaction(client, context, run), { readOnly: true });
-  const [channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel] = await Promise.all([
+  const [channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay] = await Promise.all([
     validateChannelConnection(context, run.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: run.aiDisclosureEnabled }),
     evaluateRuntimeReadiness(context, run.id),
     activePolicyProfileStatusForRun(context, run.id),
@@ -293,9 +294,10 @@ export async function evaluateRunPreflight(context: RequestContext, run: StoredR
     activeMediaAssetStatus(context, run.revisionId),
     frozenProductVersionStatusForRun(context, run.id, run.productVersionId),
     aiDisclosureRuleStatus(context),
-    evaluateAigcLabelReadiness()
+    evaluateAigcLabelReadiness(),
+    evaluateOverlayReadinessForRun(null, run.id, run.revisionId)
   ]);
-  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id) });
+  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay, hasFallbackProgram: await hasApprovedFallbackProgram(context, run.id) });
 }
 
 // Reads every preflight input on the caller's client, one query at a time, so
@@ -314,7 +316,8 @@ export async function evaluateRunPreflightInTransaction(client: PoolClient, cont
   const aiDisclosureRule = await aiDisclosureRuleStatusInTransaction(client);
   // The run's sealed label text (release manifest snapshot), then the Gateway health with a bounded timeout.
   const aigcLabel = await evaluateAigcLabelReadiness(await frozenAigcLabelTextInTransaction(client, run.id) ?? aigcLabelText());
-  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, hasFallbackProgram });
+  const overlay = await evaluateOverlayReadinessForRun(client, run.id);
+  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay, hasFallbackProgram });
 }
 
 type RunPreflightInputs = {
@@ -326,10 +329,11 @@ type RunPreflightInputs = {
   product: { active: boolean; detail: string };
   aiDisclosureRule: { passed: boolean; detail: string };
   aigcLabel: { passed: boolean; detail: string };
+  overlay: { passed: boolean; detail: string };
   hasFallbackProgram: boolean;
 };
 
-function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, hasFallbackProgram }: RunPreflightInputs) {
+function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay, hasFallbackProgram }: RunPreflightInputs) {
   return evaluatePreflight({
     ...run,
     hasApprovedRights: mediaAssets.active,
@@ -352,7 +356,9 @@ function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, 
     aiDisclosureRuleReady: aiDisclosureRule.passed,
     aiDisclosureRuleDetail: aiDisclosureRule.detail,
     aigcLabelReady: aigcLabel.passed,
-    aigcLabelDetail: aigcLabel.detail
+    aigcLabelDetail: aigcLabel.detail,
+    overlayReady: overlay.passed,
+    overlayDetail: overlay.detail
   });
 }
 

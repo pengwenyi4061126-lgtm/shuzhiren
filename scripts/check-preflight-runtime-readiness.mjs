@@ -13,6 +13,7 @@ const preflightSection = source.slice(source.indexOf("export async function eval
 
 if (!preflightSection.includes("outputReady: runtime.passed")) throw new Error("Preflight must use fresh runtime telemetry as the output readiness source");
 if (preflightSection.includes("run.outputReady && runtime.passed")) throw new Error("Legacy output_ready flag must not permanently block a healthy runtime");
+if (!preflightSection.includes("overlayReady: overlay.passed") || !preflightSection.includes("evaluateOverlayReadinessForRun(client, run.id)")) throw new Error("Preflight must evaluate overlay readiness on the caller's existing connection");
 
 console.log("PASS  preflight output readiness derives from fresh runtime telemetry");
 
@@ -132,6 +133,7 @@ function preflightClient(state, { failOn } = {}) {
       client.statements.push(sql);
       await new Promise((resolve) => setImmediate(resolve));
       if (failOn && sql.includes(failOn)) throw new Error(`injected failure for ${failOn}`);
+      if (sql.includes("from live_runs r left join show_revision_overlays")) return { rows: [{ tenant_id: tenantId, run_revision_id: "00000000-0000-4000-8000-000000000003", show_revision_id: "00000000-0000-4000-8000-000000000003", background_mode: null, scene_json: null, scene_sha256: null, background_approval: null, background_expires_at: null, price_valid_until: null }] };
       if (sql.includes("for update of r")) return { rows: [{ id: runId, tenant_id: tenantId, show_revision_id: "00000000-0000-4000-8000-000000000003", show_name: "Preflight check", state, trace_id: "trace", channel_connection_id: "00000000-0000-4000-8000-000000000004", product_version_id: "00000000-0000-4000-8000-000000000005", has_operator: true, rights_approved: true, has_approved_sku_version: true, has_fallback_program: true, channel_ready: true, output_ready: true, ai_disclosure_enabled: true, runtime_session_id: "session-preflight-check", scheduled_at: null, active_program_segment_id: null, active_insert_source_segment_id: null, active_insert_program_segment_id: null, pending_program_transition_event_id: null }] };
       if (sql.includes("select id from live_runs where id = $1::uuid")) return { rows: [{ id: runId }] };
       return { rows: [] };
@@ -194,11 +196,13 @@ if (!preflightSection.includes("aigcLabelReady: aigcLabel.passed") || !preflight
   }
   assert.match(aigc.evaluateAigcLabelReport(health(enabled), { ...expected, contentProducer: null }).detail, /未配置 AIGC_CONTENT_PRODUCER/);
   assert.equal(aigc.evaluateAigcLabelReport(health({ ...enabled, text: "欢迎" }), { ...expected, text: "欢迎" }).passed, false, "a label text that does not say AI blocks");
-  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true, aiDisclosureRuleReady: true, aiDisclosureRuleDetail: "ok" };
+  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true, aiDisclosureRuleReady: true, aiDisclosureRuleDetail: "ok", overlayReady: true, overlayDetail: "未启用画面层" };
   assert.equal(evaluatePreflight({ ...base, aigcLabelReady: true, aigcLabelDetail: "ok" }).passed, true);
   const blocked = evaluatePreflight({ ...base, aigcLabelReady: false, aigcLabelDetail: "LiveTalking 未启用 AIGC 画面标识" });
   assert.equal(blocked.passed, false, "a disabled AIGC label must block arm and START");
   assert.deepEqual(blocked.checks.find((check) => check.id === "aigc_label"), { id: "aigc_label", label: "AIGC 标识已启用", status: "blocked", detail: "LiveTalking 未启用 AIGC 画面标识" });
+  const overlayBlocked = evaluatePreflight({ ...base, aigcLabelReady: true, aigcLabelDetail: "ok", overlayReady: false, overlayDetail: "画面层配置未冻结或已损坏" });
+  assert.deepEqual(overlayBlocked.checks.find((check) => check.id === "overlay"), { id: "overlay", label: "画面层", status: "blocked", detail: "画面层配置未冻结或已损坏" });
   assert.equal(aigc.aigcLabelMetadata("00000000-0000-4000-8000-000000000002").contentId, "live-run:00000000-0000-4000-8000-000000000002");
 
   // Through a Gateway: 200 and 503 (degraded) bodies are evaluated, anything else or no answer blocks.
@@ -253,13 +257,14 @@ console.log("PASS  preflight blocks arm and START unless the Gateway reports the
     ["interval missing", { ...valid, interval_seconds: null }, "AI 身份提示规则形状无效"]
   ]) assert.deepEqual(rules.evaluateAiDisclosureRule(row), { passed: false, detail }, name);
 
-  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true, aigcLabelReady: true, aigcLabelDetail: "ok" };
+  const base = { hasApprovedRights: true, rightsDetail: "", hasApprovedModelReleases: true, modelReleaseDetail: "", hasApprovedPolicyProfile: true, policyProfileDetail: "", hasOperator: true, hasApprovedSkuVersion: true, skuDetail: "", hasFallbackProgram: true, channelReady: true, channelDetail: "", outputReady: true, outputDetail: "", runtimeSessionReady: true, runtimeSessionDetail: "", aiDisclosureEnabled: true, aigcLabelReady: true, aigcLabelDetail: "ok", overlayReady: true, overlayDetail: "未启用画面层" };
   const blocked = evaluatePreflight({ ...base, aiDisclosureRuleReady: false, aiDisclosureRuleDetail: "AI 身份提示规则待审批" });
   assert.equal(blocked.passed, false, "an unready AI disclosure rule must block arm and START");
   assert.deepEqual(blocked.checks.find((check) => check.id === "ai_disclosure_rule"), { id: "ai_disclosure_rule", label: "AI 身份口播规则", status: "blocked", detail: "AI 身份提示规则待审批" });
   const ids = blocked.checks.map((check) => check.id);
   assert.equal(ids.indexOf("ai_disclosure_rule"), ids.indexOf("disclosure") + 1, "the check follows disclosure");
   assert.equal(ids.indexOf("aigc_label"), ids.indexOf("ai_disclosure_rule") + 1, "the check precedes aigc_label");
+  assert.equal(ids.indexOf("overlay"), ids.indexOf("aigc_label") + 1, "overlay follows the AIGC label check");
   const passed = evaluatePreflight({ ...base, aiDisclosureRuleReady: true, aiDisclosureRuleDetail: "已批准，每 600 秒口播一次" });
   assert.equal(passed.checks.find((check) => check.id === "ai_disclosure_rule").status, "passed");
 

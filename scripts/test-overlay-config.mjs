@@ -110,6 +110,26 @@ test("overlay readiness returns the eight F.4 outcomes and exact details", () =>
   assert.deepEqual(overlay.evaluateOverlayReadiness({ ...valid, sceneJson: `${sceneJson} ` }), { passed: false, detail: "画面层配置未冻结或已损坏" });
 });
 
+test("overlay Gateway report fails closed and detects the frozen AIGC corner conflict", () => {
+  const sceneJson = JSON.stringify({ version: 1 });
+  const expected = { config: baseConfig, sceneJson, sceneSha256: digest(sceneJson), backgroundApproval: "approved", backgroundExpiresAt: "2026-11-30", priceValidUntil: "2026-11-30T16:00:00.000Z", now: new Date("2026-11-08T12:00:00.000Z") };
+  const readiness = (position) => ({ status: "ok", dependencies: { livetalking: { overlay: { supported: true, aigc_position: position } } } });
+  const missing = overlay.evaluateOverlayReport({ status: "ok", dependencies: { livetalking: {} } }, expected);
+  assert.deepEqual(missing, { passed: false, detail: "运行时未报告画面层能力（LiveTalking 镜像可能缺少画面层补丁）" });
+  assert.equal(overlay.evaluateOverlayReport({ status: "ok", dependencies: { livetalking: { overlay: { supported: false, aigc_position: "top-right" } } } }, expected).passed, false);
+  assert.deepEqual(overlay.evaluateOverlayReport(readiness("bottom-right"), expected), { passed: false, detail: "画面层位置与 AIGC 角标位置冲突" });
+  assert.deepEqual(overlay.evaluateOverlayReport(readiness("top-right"), expected), { passed: true, detail: "画面层已冻结（字幕、商品卡、背景）" });
+});
+
+test("run readiness permits a valid run with no overlay row on its existing database client", async () => {
+  const previousMode = process.env.RUNTIME_GATEWAY_DEMO_MODE;
+  process.env.RUNTIME_GATEWAY_DEMO_MODE = "true";
+  try {
+    const client = { query: async () => ({ rows: [{ run_revision_id: "revision-no-overlay", show_revision_id: null, background_mode: null, scene_json: null, scene_sha256: null, background_approval: null, background_expires_at: null, price_valid_until: null }] }) };
+    assert.deepEqual(await overlay.evaluateOverlayReadinessForRun(client, "run-no-overlay"), { passed: true, detail: "未启用画面层" });
+  } finally { if (previousMode === undefined) delete process.env.RUNTIME_GATEWAY_DEMO_MODE; else process.env.RUNTIME_GATEWAY_DEMO_MODE = previousMode; }
+});
+
 function overlayRow(config = baseConfig) {
   return {
     tenant_id: "tenant-1",
@@ -202,6 +222,33 @@ function demoProgram(overlayConfig) {
   registerDemoProgram(program);
   return program;
 }
+
+test("demo run preflight blocks unfrozen or damaged scenes, expired prices, and revoked backgrounds", async () => {
+  const previousMode = process.env.RUNTIME_GATEWAY_DEMO_MODE;
+  process.env.RUNTIME_GATEWAY_DEMO_MODE = "true";
+  const plain = { ...baseConfig, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} };
+  async function freeze(config) { const program = demoProgram(config); await updateDemoProgramLifecycle(program.runId, "submit_review", demoContext); await updateDemoProgramLifecycle(program.runId, "approve", demoContext); return program; }
+  try {
+    const pending = demoProgram(plain);
+    assert.deepEqual(await overlay.evaluateOverlayReadinessForRun(null, pending.runId), { passed: false, detail: "画面层配置未冻结或已损坏" });
+    const damaged = await freeze(plain);
+    globalThis.shuzhirenOverlayStore.overlays.get(damaged.revisionId).sceneSha256 = "f".repeat(64);
+    assert.deepEqual(await overlay.evaluateOverlayReadinessForRun(null, damaged.runId), { passed: false, detail: "画面层配置未冻结或已损坏" });
+    const expired = await freeze(plain);
+    const version = [...globalThis.shuzhirenCatalog.products.values()].flatMap((p) => p.versions).find((v) => v.id === "pv_a102_v1");
+    const previousValidUntil = version.facts.validUntil;
+    version.facts.validUntil = "2026-11-06T23:59:59.000Z";
+    try { assert.deepEqual(await overlay.evaluateOverlayReadinessForRun(null, expired.runId), { passed: false, detail: "商品价格有效期已过，请发起节目变更" }); }
+    finally { version.facts.validUntil = previousValidUntil; }
+    await listAssets(demoContext);
+    const assetId = `overlay_readiness_asset_${demoCounter}`;
+    globalThis.shuzhirenAssetStore.assets.set(assetId, { id: assetId, tenantId: demoContext.tenantId, kind: "overlay_background", name: "测试背景", approval: "approved", expiresAt: "2026-11-30", rightsScope: "场景测试", source: "场景测试", objectKey: `demo/${assetId}.png`, checksum: `sha256:${"b".repeat(64)}` });
+    const background = await freeze({ ...baseConfig, backgroundMediaAssetId: assetId });
+    globalThis.shuzhirenAssetStore.assets.get(assetId).approval = "revoked";
+    assert.deepEqual(await overlay.evaluateOverlayReadinessForRun(null, background.runId), { passed: false, detail: "背景素材授权无效" });
+    globalThis.shuzhirenAssetStore.assets.delete(assetId);
+  } finally { if (previousMode === undefined) delete process.env.RUNTIME_GATEWAY_DEMO_MODE; else process.env.RUNTIME_GATEWAY_DEMO_MODE = previousMode; }
+});
 
 test("demo approval freezes configured overlay and its summary hash, and a cloned revision clears frozen fields", async () => {
   const program = demoProgram({ ...baseConfig, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} });

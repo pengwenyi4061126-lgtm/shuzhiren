@@ -7,6 +7,7 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 import { currentDemoLexicon, currentLexiconInTransaction, policyRulesForRevisionInTransaction } from "@/lib/prohibited-terms";
 import { canonicalJson } from "@/lib/canonical-json.mjs";
 import { guardBroadcastText } from "@/lib/shared/broadcast-guard.mjs";
+import { runtimeGatewayDemoMode, runtimeGatewayHealth } from "@/lib/runtime-gateway";
 
 export const OVERLAY_CAPTION_POSITIONS = ["bottom_band", "top_band"] as const;
 export const OVERLAY_PRODUCT_CARD_ANCHORS = ["top-left", "top-right", "bottom-left", "bottom-right", "middle-left", "middle-right"] as const;
@@ -242,6 +243,44 @@ export function evaluateOverlayReadiness(input: OverlayReadinessInput): OverlayR
   if (!input.gatewayOverlay || input.gatewayOverlay.supported !== true || !isOneOf(input.gatewayOverlay.aigcPosition, AIGC_LABEL_POSITIONS)) return { passed: false, detail: "运行时未报告画面层能力（LiveTalking 镜像可能缺少画面层补丁）" };
   if (overlayAigcConflicts(config, input.gatewayOverlay.aigcPosition)) return { passed: false, detail: "画面层位置与 AIGC 角标位置冲突" };
   return { passed: true, detail: "画面层已冻结（字幕、商品卡、背景）" };
+}
+
+export function evaluateOverlayReport(health: unknown, expected: Omit<OverlayReadinessInput, "gatewayOverlay">): OverlayReadiness {
+  if (!health || typeof health !== "object") return { passed: false, detail: "运行时未报告画面层能力（LiveTalking 镜像可能缺少画面层补丁）" };
+  const overlay = (health as { dependencies?: { livetalking?: { overlay?: { supported?: unknown; aigc_position?: unknown } } } }).dependencies?.livetalking?.overlay;
+  if (!overlay || overlay.supported !== true) return { passed: false, detail: "运行时未报告画面层能力（LiveTalking 镜像可能缺少画面层补丁）" };
+  return evaluateOverlayReadiness({ ...expected, gatewayOverlay: { supported: overlay.supported, aigcPosition: overlay.aigc_position } });
+}
+
+export async function evaluateOverlayReadinessForRun(client: PoolClient | null, runId: string, demoRevisionId?: string): Promise<OverlayReadiness> {
+  let expected: Omit<OverlayReadinessInput, "gatewayOverlay">;
+  if (client) {
+    const result = await client.query<OverlayRow & { run_revision_id: string; background_approval: string | null; background_expires_at: Date | string | null; price_valid_until: string | null }>(
+      `select r.show_revision_id as run_revision_id, o.*, asset.approval_status as background_approval, asset.expires_at as background_expires_at, pv.facts->>'validUntil' as price_valid_until
+       from live_runs r left join show_revision_overlays o on o.show_revision_id = r.show_revision_id and o.tenant_id = r.tenant_id
+       left join media_assets asset on asset.id = o.background_media_asset_id
+       left join show_revision_product_versions binding on binding.show_revision_id = r.show_revision_id and binding.tenant_id = r.tenant_id and binding.slot_key = 'primary'
+       left join product_versions pv on pv.id = binding.product_version_id and pv.tenant_id = binding.tenant_id where r.id = $1`, [runId]);
+    const row = result.rows[0];
+    if (!row || !row.run_revision_id) return { passed: false, detail: "Live run not found" };
+    expected = { config: row.background_mode === null ? null : overlayConfigFromRow(row), overlayPresent: row.background_mode !== null, sceneJson: row.scene_json, sceneSha256: row.scene_sha256, backgroundApproval: row.background_approval, backgroundExpiresAt: row.background_expires_at, priceValidUntil: row.price_valid_until };
+  } else {
+    const program = demoProgramRevision(runId);
+    const revisionId = demoRevisionId ?? program?.revisionId;
+    if (!revisionId) return { passed: true, detail: "未启用画面层" };
+    const record = overlayStore().overlays.get(revisionId);
+    const config = getDemoOverlayConfig(revisionId);
+    const versionId = (globalThis as typeof globalThis & { shuzhirenProgramStore?: { programs: Map<string, { segments?: Array<{ productVersionId?: string }> }> } }).shuzhirenProgramStore?.programs.get(runId)?.segments?.find((segment) => segment.productVersionId)?.productVersionId;
+    const versions = (globalThis as typeof globalThis & { shuzhirenCatalog?: { products: Map<string, { versions: Array<{ id: string; facts: { validUntil?: string } }> }> } }).shuzhirenCatalog?.products;
+    const version = [...(versions?.values() ?? [])].flatMap((product) => product.versions).find((item) => item.id === versionId);
+    const asset = record?.backgroundMediaAssetId ? (globalThis as typeof globalThis & { shuzhirenAssetStore?: { assets: Map<string, { approval: string; expiresAt?: string }> } }).shuzhirenAssetStore?.assets.get(record.backgroundMediaAssetId) : undefined;
+    expected = { config, overlayPresent: Boolean(record), sceneJson: record?.sceneJson, sceneSha256: record?.sceneSha256, backgroundApproval: asset?.approval, backgroundExpiresAt: asset?.expiresAt, priceValidUntil: version?.facts.validUntil };
+  }
+  const ready = evaluateOverlayReadiness(expected);
+  if (!ready.passed || ready.detail === "未启用画面层") return ready;
+  if (runtimeGatewayDemoMode()) return evaluateOverlayReadiness({ ...expected, demoGateway: true });
+  try { return evaluateOverlayReport(await runtimeGatewayHealth({ timeoutMs: 5_000, acceptDegraded: true }), expected); }
+  catch { return { passed: false, detail: "运行时未报告画面层能力（LiveTalking 镜像可能缺少画面层补丁）" }; }
 }
 
 function startOfUtcDay(value: Date) {

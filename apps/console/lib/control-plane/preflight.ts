@@ -5,7 +5,7 @@ export type PreflightCheck = {
   detail: string;
 };
 
-export function evaluatePreflight(input: { hasApprovedRights: boolean; rightsDetail: string; hasApprovedModelReleases: boolean; modelReleaseDetail: string; hasApprovedPolicyProfile: boolean; policyProfileDetail: string; hasOperator: boolean; hasApprovedSkuVersion: boolean; skuDetail: string; hasFallbackProgram: boolean; channelReady: boolean; channelDetail: string; outputReady: boolean; outputDetail: string; runtimeSessionReady: boolean; runtimeSessionDetail: string; aiDisclosureEnabled: boolean; aiDisclosureRuleReady: boolean; aiDisclosureRuleDetail: string; aigcLabelReady: boolean; aigcLabelDetail: string }) {
+export function evaluatePreflight(input: { hasApprovedRights: boolean; rightsDetail: string; hasApprovedModelReleases: boolean; modelReleaseDetail: string; hasApprovedPolicyProfile: boolean; policyProfileDetail: string; hasOperator: boolean; hasApprovedSkuVersion: boolean; skuDetail: string; hasFallbackProgram: boolean; channelReady: boolean; channelDetail: string; outputReady: boolean; outputDetail: string; runtimeSessionReady: boolean; runtimeSessionDetail: string; aiDisclosureEnabled: boolean; aiDisclosureRuleReady: boolean; aiDisclosureRuleDetail: string; aigcLabelReady: boolean; aigcLabelDetail: string; overlayReady: boolean; overlayDetail: string }) {
   const checks: PreflightCheck[] = [
     { id: "rights", label: "人物与声音授权", status: input.hasApprovedRights ? "passed" : "blocked", detail: input.rightsDetail },
     { id: "model_release", label: "模型与运行时发布包", status: input.hasApprovedModelReleases ? "passed" : "blocked", detail: input.modelReleaseDetail },
@@ -19,7 +19,8 @@ export function evaluatePreflight(input: { hasApprovedRights: boolean; rightsDet
     { id: "disclosure", label: "AI 标识", status: input.aiDisclosureEnabled ? "passed" : "blocked", detail: input.aiDisclosureEnabled ? "已启用" : "AI 标识未启用" },
     { id: "ai_disclosure_rule", label: "AI 身份口播规则", status: input.aiDisclosureRuleReady ? "passed" : "blocked", detail: input.aiDisclosureRuleDetail },
     // 人工智能生成合成内容标识办法: LiveTalking must report the on-screen AIGC label enabled with the run's text.
-    { id: "aigc_label", label: "AIGC 标识已启用", status: input.aigcLabelReady ? "passed" : "blocked", detail: input.aigcLabelDetail }
+    { id: "aigc_label", label: "AIGC 标识已启用", status: input.aigcLabelReady ? "passed" : "blocked", detail: input.aigcLabelDetail },
+    { id: "overlay", label: "画面层", status: input.overlayReady ? "passed" : "blocked", detail: input.overlayDetail }
   ];
 
   return { passed: checks.every((check) => check.status === "passed"), checks };
