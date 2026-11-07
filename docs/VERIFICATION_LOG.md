@@ -4258,3 +4258,32 @@ skipped 步骤数: "0"
   - { 门禁: channel:verification:check, 行为测试: [无] }
   - { 门禁: membership:scopes:check, 行为测试: [无] }
 ```
+
+## V-20261108-10 知识库页面与导航通过本机验证
+
+```yaml
+编号: V-20261108-10
+类型: 结论
+结论: 任务 10.13 知识库页面、编辑提示、审批与检索预览通过本机整体验证；PostgreSQL 集成待计划中的任务 14.1 CI
+判定: 静态检查
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 2bf736306a6e8edfc37c18a3d77f3909d0cb846d
+    检查:
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: console:page-auth:check, 标签: static }
+      - { 名称: console:client-requests:check, 标签: static }
+      - { 名称: governance:tenant-scope:check, 标签: static }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: npm run postgres:integration, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+静态门禁覆盖:
+  - { 门禁: console:page-auth:check, 行为测试: [无] }
+  - { 门禁: console:client-requests:check, 行为测试: [无] }
+  - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
+```
