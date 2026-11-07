@@ -4287,3 +4287,31 @@ skipped 步骤数: "0"
   - { 门禁: console:client-requests:check, 行为测试: [无] }
   - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
 ```
+
+## V-20261108-11 纯文本文档导入通过本机验证
+
+```yaml
+编号: V-20261108-11
+类型: 结论
+结论: 任务 10.14 文档分块、租户级导入、待审批条目、演示模式与接口角色路径通过本机验证；PostgreSQL 集成待计划中的任务 14.1 CI
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 4ece9b1563a04c76eaa1974ef9aab736f7059ee3
+    检查:
+      - { 名称: knowledge:test, 标签: behavioral }
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: shared:modules:check, 标签: static }
+      - { 名称: governance:tenant-scope:check, 标签: static }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: knowledge-documents.test.mjs, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+静态门禁覆盖:
+  - { 门禁: shared:modules:check, 行为测试: [无] }
+  - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
+```
