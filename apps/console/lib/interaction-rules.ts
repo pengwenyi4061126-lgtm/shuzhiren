@@ -3,8 +3,11 @@ import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plan
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
-import { evaluatePolicy, type PolicyDecision, type PolicyRule } from "@/lib/policy-engine";
+import { type PolicyDecision, type PolicyRule } from "@/lib/policy-engine";
 import { latestApprovedPolicyProfile } from "@/lib/policy-profiles";
+import { currentDemoLexicon, currentLexiconInTransaction } from "@/lib/prohibited-terms";
+import { guardBroadcastText } from "@/lib/shared/broadcast-guard.mjs";
+import type { LexiconTerm } from "@/lib/shared/prohibited-terms.mjs";
 
 // Live interaction rules (migration 084). The console manages and approves rules; apps/runtime-worker/
 // interaction-rules.mjs evaluates approved, enabled rules during LIVE runs and queues their lines through the
@@ -31,7 +34,7 @@ export type InteractionRuleFiring = {
   id: string; ruleId: string; ruleName: string; runId: string; interactionId?: string; triggerKey: string; templateIndex?: number;
   renderedTextSha256?: string; outcome: InteractionRuleFiringOutcome; outcomeReason?: string; outboxEventId?: string; createdAt: string;
 };
-export type TemplatePolicyFailure = { index: number; text: string; decision: PolicyDecision["action"]; reasons: string[] };
+export type TemplatePolicyFailure = { index: number; text: string; decision: PolicyDecision["action"]; reasons: string[]; findings: ReturnType<typeof guardBroadcastText>["findings"] };
 
 export const interactionRuleTriggers: InteractionRuleTrigger[] = ["viewer_enter", "follow", "gift", "keyword", "timed", "idle_comment"];
 export const timerTriggers: InteractionRuleTrigger[] = ["timed", "idle_comment"];
@@ -148,11 +151,11 @@ export function renderTemplate(template: string, slots: Record<string, string>) 
 }
 
 /** Renders every template with the approval sample values and runs the policy engine; returns the failures. */
-export function templatePolicyFailures(templates: string[], policyRules: PolicyRule[]): TemplatePolicyFailure[] {
+export function templatePolicyFailures(templates: string[], policyRules: PolicyRule[], lexicon: readonly LexiconTerm[] = []): TemplatePolicyFailure[] {
   return templates.flatMap((template, index) => {
     const text = renderTemplate(template, approvalSampleSlots);
-    const decision = evaluatePolicy(text, ["product_version"], policyRules);
-    return decision.action === "answer" ? [] : [{ index, text, decision: decision.action, reasons: decision.reasons }];
+    const checked = guardBroadcastText(text, { policyRules, lexicon, maxLength: maxTemplateLength });
+    return checked.allowed ? [] : [{ index, text, decision: checked.decision.action, reasons: checked.reasons, findings: checked.findings }];
   });
 }
 
@@ -257,7 +260,7 @@ export async function approveInteractionRule(context: RequestContext, ruleId: st
   if (!databasePool()) {
     const existing = demoRule(context, ruleId);
     if (existing.approval !== "pending") throw new Response("Interaction rule is not pending approval", { status: 409 });
-    const failures = templatePolicyFailures(existing.templates, []);
+    const failures = templatePolicyFailures(existing.templates, [], currentDemoLexicon(context.tenantId));
     if (failures.length) throw new TemplatePolicyError(failures);
     const approved = { ...existing, approval: "approved" as const, approvedAt: new Date().toISOString() };
     ruleStore().rules.set(ruleId, approved);
@@ -272,7 +275,7 @@ export async function approveInteractionRule(context: RequestContext, ruleId: st
     // The tenant's newest approved policy profile; each run checks the rendered line again with its bound profile.
     const profile = await latestApprovedPolicyProfile(client);
     const existing = persistentRule(row);
-    const failures = templatePolicyFailures(existing.templates, profile?.rules ?? []);
+    const failures = templatePolicyFailures(existing.templates, profile?.rules ?? [], await currentLexiconInTransaction(client));
     if (failures.length) throw new TemplatePolicyError(failures);
     const actor = await syncActor(client, context);
     const rule = persistentRule((await client.query<PersistentRuleRow>(`update interaction_rules set approval_status = 'approved', approved_by = $2, approved_at = now(), updated_at = now() where id = $1 and approval_status = 'pending' returning ${columns}`, [ruleId, actor])).rows[0]);

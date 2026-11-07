@@ -4,8 +4,12 @@ import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { channelVerificationStatus, getChannelConnection } from "@/lib/channels";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess } from "@/lib/control-plane/run-access";
+import { getRun } from "@/lib/control-plane/store";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { listInteractions, type LiveInteraction } from "@/lib/interactions";
+import { policyRulesForRunInTransaction } from "@/lib/policy-profiles";
+import { demoRunLexicon, runLexiconInTransaction } from "@/lib/prohibited-terms";
+import { guardBroadcastText } from "@/lib/shared/broadcast-guard.mjs";
 
 export type ChannelReplyStatus = "draft" | "pending_approval" | "approved" | "sending" | "sent" | "failed" | "rejected";
 export type ChannelReplyDraft = {
@@ -136,6 +140,7 @@ export async function enqueueChannelReplyDelivery(context: RequestContext, runId
   return withTenantTransaction(context.tenantId, async (client) => {
     const draft = await replyForUpdate(client, runId, draftId);
     if (draft.status !== "approved") throw new Response("Channel reply draft is not approved", { status: 409 });
+    assertReplyBodyAllowed(draft.body, await runLexiconInTransaction(client, runId), await policyRulesForRunInTransaction(client, runId));
     await assertReplyChannel(client, draft.channelConnectionId, draft.channelConnectionId);
     const event = await client.query<{ id: string }>(
       `insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
@@ -164,6 +169,7 @@ async function transitionReply(context: RequestContext, runId: string, draftId: 
       if (existing.status !== "pending_approval") throw new Response("Channel reply draft is not pending approval", { status: 409 });
       if (existing.createdBy === actorId) throw new Response("Reply creator cannot approve the same reply", { status: 409 });
     }
+    assertReplyBodyAllowed(existing.body, await runLexiconInTransaction(client, runId), await policyRulesForRunInTransaction(client, runId));
     const result = action === "submit"
       ? await client.query<PersistentReplyRow>(`update channel_reply_drafts draft set status = 'pending_approval', submitted_at = now(), updated_at = now() where draft.id = $1 and draft.live_run_id = $2 and draft.tenant_id = $3 returning ${replyReturning()}`, [draftId, runId, context.tenantId])
       : await client.query<PersistentReplyRow>(`update channel_reply_drafts draft set status = 'approved', approved_by = $4, approved_at = now(), updated_at = now() where draft.id = $1 and draft.live_run_id = $2 and draft.tenant_id = $3 returning ${replyReturning()}`, [draftId, runId, context.tenantId, actorId]);
@@ -228,6 +234,9 @@ async function transitionDemoReply(context: RequestContext, runId: string, draft
   const draft = demoReply(context, runId, draftId);
   if (action === "submit" && draft.status !== "draft") throw new Response("Channel reply draft is not a draft", { status: 409 });
   if (action === "approve" && (draft.status !== "pending_approval" || draft.createdBy === context.actorId)) throw new Response("Channel reply approval is not allowed", { status: 409 });
+  const run = await getRun(context, runId);
+  if (!run) throw new Response("Live run not found", { status: 404 });
+  assertReplyBodyAllowed(draft.body, demoRunLexicon(context.tenantId, run.revisionId), []);
   const now = new Date().toISOString();
   const updated = action === "submit" ? { ...draft, status: "pending_approval" as const, submittedAt: now, updatedAt: now } : { ...draft, status: "approved" as const, approvedBy: context.actorId, approvedAt: now, updatedAt: now };
   replyStore().drafts.set(draftId, updated);
@@ -257,6 +266,9 @@ async function retryDemoDraft(context: RequestContext, runId: string, draftId: s
 async function enqueueDemoDelivery(context: RequestContext, runId: string, draftId: string) {
   const draft = demoReply(context, runId, draftId);
   if (draft.status !== "approved") throw new Response("Channel reply draft is not approved", { status: 409 });
+  const run = await getRun(context, runId);
+  if (!run) throw new Response("Live run not found", { status: 404 });
+  assertReplyBodyAllowed(draft.body, demoRunLexicon(context.tenantId, run.revisionId), []);
   const updated = { ...draft, status: "sending" as const, outboxEventId: `outbox_${crypto.randomUUID()}`, updatedAt: new Date().toISOString() };
   replyStore().drafts.set(draftId, updated);
   await recordAuditEvent(context, { type: "channel_reply.delivery_enqueued", resource: "channel_reply_draft", resourceId: draftId, detail: { runId, interactionId: draft.interactionId, channelConnectionId: draft.channelConnectionId, outboxEventId: updated.outboxEventId, bodySha256: draft.bodySha256 } });
@@ -264,4 +276,8 @@ async function enqueueDemoDelivery(context: RequestContext, runId: string, draft
 }
 
 function demoReply(context: RequestContext, runId: string, draftId: string) { const draft = replyStore().drafts.get(draftId); if (!draft || draft.tenantId !== context.tenantId || draft.runId !== runId) throw new Response("Channel reply draft not found", { status: 404 }); return draft; }
+function assertReplyBodyAllowed(body: string, lexicon: Parameters<typeof guardBroadcastText>[1]["lexicon"], policyRules: Parameters<typeof guardBroadcastText>[1]["policyRules"]) {
+  const result = guardBroadcastText(body, { lexicon, policyRules, maxLength: 1000 });
+  if (!result.allowed) throw new Response("Channel reply text is blocked by the broadcast guard", { status: 422, statusText: "channel_reply_policy_blocked" });
+}
 async function assertDemoReplyChannel(context: RequestContext, requested: string | undefined, source: string | undefined) { if (!requested || requested !== source) throw new Response("Channel reply must use the interaction source channel", { status: 409 }); const channel = await getChannelConnection(context, requested); if (!channel || !channelVerificationStatus(channel).active || !supportsOutboundReplyCapability(channel.capability)) throw new Response("Channel does not support outbound replies", { status: 409 }); return channel; }

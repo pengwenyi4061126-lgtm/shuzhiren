@@ -16,6 +16,11 @@ register("./lib/console-ts-loader.mjs", import.meta.url);
 for (const name of ["DATABASE_URL", "CONTROL_PLANE_DEMO_MODE"]) delete process.env[name];
 Object.assign(process.env, { CONTROL_PLANE_DEV_HEADER_IDENTITY: "true", NODE_ENV: "development", HOSTNAME: "127.0.0.1" });
 const consoleRules = await import("../apps/console/lib/interaction-rules.ts");
+const prohibitedTerms = await import("../apps/console/lib/prohibited-terms.ts");
+const channelReplies = await import("../apps/console/lib/channel-replies.ts");
+const responseDrafts = await import("../apps/console/lib/response-draft.ts");
+const scriptPlays = await import("../apps/console/lib/script-plays.ts");
+const controlStore = await import("../apps/console/lib/control-plane/store.ts");
 const routes = {
   list: await import("../apps/console/app/api/v1/interaction-rules/route.ts"),
   item: await import("../apps/console/app/api/v1/interaction-rules/[ruleId]/route.ts"),
@@ -232,6 +237,7 @@ describe("console API (demo mode)", () => {
     assert.equal(refused.status, 422);
     assert.equal(refused.body.error, "interaction_rule_template_policy_blocked");
     assert.deepEqual(refused.body.failures.map((failure) => failure.index), [0]);
+    assert.ok(refused.body.failures[0].findings.some((finding) => finding.termId === "builtin:extreme:001"));
     const fixed = await call(routes.item.PATCH, "/x", { method: "PATCH", params: { ruleId: created.body.data.id }, body: { templates: ["正在介绍{product_name}，当前价格{price}元"] } });
     assert.equal(fixed.body.data.approval, "pending");
     const approved = await call(routes.approve.POST, "/approve", { method: "POST", params: { ruleId: created.body.data.id } });
@@ -246,6 +252,108 @@ describe("console API (demo mode)", () => {
     assert.deepEqual(await call(routes.list.POST, "/api/v1/interaction-rules", { method: "POST", role: "reviewer", body: {} }), { status: 403, body: { error: "interaction_rule_rejected" } });
     assert.deepEqual(await call(routes.approve.POST, "/approve", { method: "POST", role: "operator", params: { ruleId: "x" } }), { status: 403, body: { error: "interaction_rule_approval_rejected" } });
     assert.equal((await call(routes.list.POST, "/api/v1/interaction-rules", { method: "POST", body: { name: "x" } })).status, 400);
+  });
+});
+
+describe("console broadcast guard and runtime lexicon", () => {
+  const tenantId = "tenant_rules_broadcast_guard";
+  const runId = "00000000-0000-4000-8000-0000000000e1";
+  const context = { tenantId, actorId: "broadcast-author", actorName: "Broadcast Author", role: "operator", accessScope: "tenant" };
+  const reviewer = { ...context, actorId: "broadcast-reviewer", actorName: "Broadcast Reviewer", role: "reviewer" };
+  const blockedResponse = async (action) => {
+    try { await action(); } catch (error) { assert.ok(error instanceof Response); return error; }
+    assert.fail("expected broadcast guard to reject the text");
+  };
+  const makeReply = (id, body, status, createdBy = context.actorId) => ({
+    id, tenantId, runId, interactionId: `interaction-${id}`, channelConnectionId: "channel_demo", body, bodySha256: "0".repeat(64), status,
+    policyAction: "answer", evidenceSnapshot: [], createdBy, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  });
+  const ensureRun = async () => {
+    await controlStore.listRuns(context);
+    globalThis.shuzhirenControlStore.runs.set(runId, {
+      id: runId, tenantId, revisionId: "show_revision_broadcast_guard", channelConnectionId: "channel_demo", productVersionId: "pv_a102_v1",
+      showName: "回复词表守卫测试", state: "LIVE", traceId: runId, hasOperator: true, hasApprovedRights: true, hasApprovedSkuVersion: true,
+      hasFallbackProgram: true, channelReady: true, outputReady: true, aiDisclosureEnabled: true, runtimeSessionId: "session_reply_guard",
+      commandHistory: [], questions: []
+    });
+  };
+
+  test("channel reply submit and approval refuse blocked text without advancing the draft", async () => {
+    await ensureRun();
+    globalThis.shuzhirenChannelReplyStore ??= { drafts: new Map() };
+    const submitDraft = makeReply("reply-blocked-submit", "全网最低价", "draft");
+    globalThis.shuzhirenChannelReplyStore.drafts.set(submitDraft.id, submitDraft);
+    const submitError = await blockedResponse(() => channelReplies.submitChannelReplyDraft(context, runId, submitDraft.id));
+    assert.deepEqual([submitError.status, submitError.statusText], [422, "channel_reply_policy_blocked"]);
+    assert.equal(globalThis.shuzhirenChannelReplyStore.drafts.get(submitDraft.id).status, "draft");
+
+    const approvalDraft = makeReply("reply-blocked-approve", "全网最低价", "pending_approval");
+    globalThis.shuzhirenChannelReplyStore.drafts.set(approvalDraft.id, approvalDraft);
+    const approvalError = await blockedResponse(() => channelReplies.approveChannelReplyDraft(reviewer, runId, approvalDraft.id));
+    assert.deepEqual([approvalError.status, approvalError.statusText], [422, "channel_reply_policy_blocked"]);
+    assert.equal(globalThis.shuzhirenChannelReplyStore.drafts.get(approvalDraft.id).status, "pending_approval");
+  });
+
+  test("reply delivery rechecks the current lexicon after approval", async () => {
+    await ensureRun();
+    globalThis.shuzhirenChannelReplyStore ??= { drafts: new Map() };
+    const draft = makeReply("reply-lexicon-changed", "新规专属词的信息以商品页为准", "draft");
+    globalThis.shuzhirenChannelReplyStore.drafts.set(draft.id, draft);
+    await channelReplies.submitChannelReplyDraft(context, runId, draft.id);
+    await channelReplies.approveChannelReplyDraft(reviewer, runId, draft.id);
+
+    const term = await prohibitedTerms.createProhibitedTerm(context, { term: "新规专属词", severity: "block", suggestions: ["商品信息以页面为准"] });
+    await prohibitedTerms.approveProhibitedTermRevision(context, term.id);
+    const error = await blockedResponse(() => channelReplies.enqueueChannelReplyDelivery(reviewer, runId, draft.id));
+    assert.deepEqual([error.status, error.statusText], [422, "channel_reply_policy_blocked"]);
+    assert.equal(globalThis.shuzhirenChannelReplyStore.drafts.get(draft.id).status, "approved", "blocked text is not queued for delivery");
+  });
+
+  test("grounded response draft hands off when approved product facts contain a block term", async () => {
+    const term = await prohibitedTerms.createProhibitedTerm(context, { term: "草稿拦截专属词", severity: "block", suggestions: ["商品信息以页面为准"] });
+    await prohibitedTerms.approveProhibitedTermRevision(context, term.id);
+    const draft = responseDrafts.createGroundedResponseDraft("赠品有什么？", {
+      id: "pv_guard_test", revision: 1, status: "approved", createdAt: new Date().toISOString(),
+      facts: { priceCent: 1000, stock: 10, highlights: [], faq: ["赠品说明：草稿拦截专属词"], sourceRef: "evidence://guard-test", sourceSyncedAt: new Date().toISOString(), validFrom: new Date(Date.now() - 1000).toISOString() }
+    }, [], prohibitedTerms.currentDemoLexicon(tenantId));
+    assert.equal(draft.status, "handoff");
+    assert.equal(draft.blockedByLexicon, true);
+    assert.ok(draft.findings.some((finding) => finding.termId === "custom:草稿拦截专属词"));
+  });
+
+  test("grounded speech dispatch rejects a lexicon-blocked draft before adding an outbox event", async () => {
+    const speechContext = { tenantId: "tenant_demo", actorId: "speech-operator", actorName: "Speech Operator", role: "operator", accessScope: "tenant" };
+    const term = await prohibitedTerms.createProhibitedTerm(speechContext, { term: "旅行装三件套", severity: "block", suggestions: ["商品信息以页面为准"] });
+    await prohibitedTerms.approveProhibitedTermRevision(speechContext, term.id);
+    await controlStore.listRuns(speechContext);
+    const speechRunId = "00000000-0000-4000-8000-0000000000e2";
+    globalThis.shuzhirenControlStore.runs.set(speechRunId, {
+      id: speechRunId, tenantId: speechContext.tenantId, revisionId: "show_revision_demo_v1", channelConnectionId: "channel_demo",
+      productVersionId: "pv_a102_v1", showName: "词表守卫测试", state: "LIVE", traceId: speechRunId,
+      hasOperator: true, hasApprovedRights: true, hasApprovedSkuVersion: true, hasFallbackProgram: true, channelReady: true,
+      outputReady: true, aiDisclosureEnabled: true, runtimeSessionId: "session_guard_test", commandHistory: [], questions: []
+    });
+    const before = globalThis.shuzhirenOutboxStore?.events.size ?? 0;
+    const error = await blockedResponse(() => controlStore.enqueueGroundedSpeech(speechContext, speechRunId, "赠品有什么？", "speech-guard-blocked"));
+    assert.deepEqual([error.status, error.statusText], [409, "speech_text_blocked"]);
+    assert.equal(globalThis.shuzhirenOutboxStore?.events.size ?? 0, before);
+  });
+
+  test("dispatch guard retains a disabled term from the run's frozen revision snapshot", async () => {
+    const termContext = { tenantId: "tenant_demo", actorId: "script-operator", actorName: "Script Operator", role: "operator", accessScope: "tenant" };
+    const term = await prohibitedTerms.createProhibitedTerm(termContext, { term: "修订冻结专属词", severity: "block", suggestions: ["商品信息以页面为准"] });
+    await prohibitedTerms.approveProhibitedTermRevision(termContext, term.id);
+    const revisionId = "show_revision_script_lexicon_test";
+    prohibitedTerms.freezeDemoRevisionLexicon(termContext.tenantId, revisionId);
+    await prohibitedTerms.updateProhibitedTerm(termContext, term.id, { active: false, reason: "测试已批准修订的冻结语义" });
+    await prohibitedTerms.approveProhibitedTermRevision({ ...termContext, actorId: "script-reviewer", actorName: "Script Reviewer", role: "reviewer" }, term.id);
+    assert.equal(prohibitedTerms.currentDemoLexicon(termContext.tenantId).some((entry) => entry.id === "custom:修订冻结专属词"), false);
+    assert.equal(prohibitedTerms.demoRunLexicon(termContext.tenantId, revisionId).some((entry) => entry.id === "custom:修订冻结专属词"), true);
+
+    const run = { id: runId, tenantId: termContext.tenantId, revisionId };
+    const segment = { id: "segment-script-lexicon-test", scripts: ["修订冻结专属词"] };
+    const error = await blockedResponse(() => scriptPlays.selectDemoScriptForDispatch(run, segment, "START", scriptPlays.demoScriptGuardContext(termContext.tenantId, revisionId)));
+    assert.deepEqual([error.status, error.statusText], [409, "program_script_policy_blocked"]);
   });
 });
 

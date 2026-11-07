@@ -356,6 +356,12 @@ export async function runLexiconInTransaction(client: PoolClient, runId: string)
   return runtimeLexicon(frozen ? parseFrozenLexicon(frozen.lexicon) : null, await currentLexiconInTransaction(client));
 }
 
+/** Reads a run's frozen/current Runtime_Lexicon outside an existing transaction. */
+export async function runLexiconForContext(context: RequestContext, runId: string, revisionId: string): Promise<LexiconTerm[]> {
+  if (!databasePool()) return demoRunLexicon(context.tenantId, revisionId);
+  return withTenantTransaction(context.tenantId, (client) => runLexiconInTransaction(client, runId), { readOnly: true });
+}
+
 /**
  * Reads a stored lexicon value (an array, or its JSON text). Elements that cannot be compiled are dropped and counted in
  * the log line, never thrown: one bad element must not switch the whole check off.

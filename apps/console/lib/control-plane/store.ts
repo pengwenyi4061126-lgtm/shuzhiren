@@ -21,7 +21,7 @@ import { activePolicyProfileStatusForRun, activePolicyProfileStatusForRunInTrans
 import { createReleaseManifestSnapshotInTransaction, frozenAigcLabelTextInTransaction } from "@/lib/release-manifest";
 import { aigcLabelText, evaluateAigcLabelReadiness } from "@/lib/aigc-label";
 import { aiDisclosureRuleStatus, aiDisclosureRuleStatusInTransaction } from "@/lib/interaction-rules";
-import { programScriptPolicyAuditDetail } from "@/lib/prohibited-terms";
+import { demoRunLexicon, programScriptPolicyAuditDetail, runLexiconInTransaction } from "@/lib/prohibited-terms";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { demoScriptGuardContext, frozenScripts, recordDemoScriptPlay, recordScriptPlayInTransaction, scriptGuardContextInTransaction, selectDemoScriptForDispatch, selectScriptForDispatch, type FrozenRuntimeSegment, type ScriptDispatchAction, type SelectedScript } from "@/lib/script-plays";
 
@@ -534,7 +534,8 @@ export async function enqueueGroundedSpeech(context: RequestContext, runId: stri
 
 async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun, version: ProductVersion, question: string, voice: RuntimeVoiceBinding, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
   assertSpeechReadyRun(run);
-  const draft = createGroundedResponseDraft(question, version, policyRules);
+  const draft = createGroundedResponseDraft(question, version, policyRules, demoRunLexicon(context.tenantId, run.revisionId));
+  if (draft.blockedByLexicon) throw new Response("Grounded speech text is blocked by the prohibited-term lexicon", { status: 409, statusText: "speech_text_blocked" });
   if (draft.status !== "ready" || !draft.text) {
     await recordAuditEvent(context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
@@ -546,7 +547,8 @@ async function enqueueDemoGroundedSpeech(context: RequestContext, run: StoredRun
 
 async function enqueueGroundedSpeechInTransaction(client: PoolClient, context: RequestContext, run: StoredRun, version: ProductVersion, question: string, voice: RuntimeVoiceBinding, idempotencyKey: string, policyRules: PolicyRule[]): Promise<GroundedSpeechDispatch> {
   assertSpeechReadyRun(run);
-  const draft = createGroundedResponseDraft(question, version, policyRules);
+  const draft = createGroundedResponseDraft(question, version, policyRules, await runLexiconInTransaction(client, run.id));
+  if (draft.blockedByLexicon) throw new Response("Grounded speech text is blocked by the prohibited-term lexicon", { status: 409, statusText: "speech_text_blocked" });
   if (draft.status !== "ready" || !draft.text) {
     await recordAuditEventInTransaction(client, context, { type: "speech_dispatch.handoff_required", resource: "live_run", resourceId: run.id, detail: { productVersionId: version.id, revision: version.revision, decision: draft.decision.action, questionSha256: questionHash(question) } });
     return { status: "handoff", draft };
@@ -603,7 +605,7 @@ async function issueDemoCommand(context: RequestContext, runId: string, input: C
     programSegmentId: programTransition?.target?.id ?? activationProgram?.id
   };
   const dispatchSegment = programTransition?.target ?? activationProgram;
-  const selectedScript = dispatchSegment ? selectDemoScriptForDispatch(run, dispatchSegment, input.action as ScriptDispatchAction, demoScriptGuardContext()) : undefined;
+  const selectedScript = dispatchSegment ? selectDemoScriptForDispatch(run, dispatchSegment, input.action as ScriptDispatchAction, demoScriptGuardContext(context.tenantId, run.revisionId)) : undefined;
   const mediaEvent = await enqueueMediaCommand(context, { ...mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript), sessionId: run.runtimeSessionId });
   if (selectedScript) await recordDemoScriptPlay(context, run, selectedScript, mediaEvent.id);
   if (programTransition) {

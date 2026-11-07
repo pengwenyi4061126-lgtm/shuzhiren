@@ -8,8 +8,8 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 import { policyRulesForRunInTransaction } from "@/lib/policy-profiles";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { guardBroadcastText } from "@/lib/shared/broadcast-guard.mjs";
-import { BUILTIN_LEXICON } from "@/lib/shared/prohibited-terms-builtin.mjs";
-import { effectiveLexicon, type LexiconTerm } from "@/lib/shared/prohibited-terms.mjs";
+import type { LexiconTerm } from "@/lib/shared/prohibited-terms.mjs";
+import { demoRunLexicon, runLexiconInTransaction } from "@/lib/prohibited-terms";
 import { chooseScriptVariant, scriptVariantsProblem } from "@/lib/shared/script-rotation.mjs";
 
 // Script rotation for dispatched program scripts (design.md module C, K4). Version 0 of a segment is its runtime
@@ -84,15 +84,15 @@ export function frozenScripts(primaryScript: string, rawVariants: unknown): stri
 /**
  * The run's policy rules (from the frozen policy profile) and the lexicon the pre-broadcast check uses. Until the
  * tenant lexicon is wired in (design.md module E), the lexicon is the built-in list. A run without an active
- * policy profile is refused by policyRulesForRunInTransaction.
+ * policy profile is refused by policyRulesForRunInTransaction; the lexicon is the run snapshot union the current tenant lexicon.
  */
 export async function scriptGuardContextInTransaction(client: PoolClient, run: StoredRun): Promise<ScriptGuardContext> {
-  return { policyRules: await policyRulesForRunInTransaction(client, run.id), lexicon: effectiveLexicon(BUILTIN_LEXICON, []) };
+  return { policyRules: await policyRulesForRunInTransaction(client, run.id), lexicon: await runLexiconInTransaction(client, run.id) };
 }
 
-/** Demo mode has no policy profile binding (policyRulesForRun returns no rules there) and no tenant lexicon. */
-export function demoScriptGuardContext(): ScriptGuardContext {
-  return { policyRules: [], lexicon: effectiveLexicon(BUILTIN_LEXICON, []) };
+/** Demo mode has no policy profile binding, but checks the revision snapshot union the current tenant lexicon. */
+export function demoScriptGuardContext(tenantId: string, revisionId?: string): ScriptGuardContext {
+  return { policyRules: [], lexicon: demoRunLexicon(tenantId, revisionId ?? "") };
 }
 
 /**
