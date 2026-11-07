@@ -16,7 +16,8 @@ const knowledgeService = await import("../apps/console/lib/knowledge-base.ts");
 const knowledgeRoutes = {
   list: await import("../apps/console/app/api/v1/knowledge-entries/route.ts"),
   item: await import("../apps/console/app/api/v1/knowledge-entries/[entryId]/route.ts"),
-  approve: await import("../apps/console/app/api/v1/knowledge-entries/[entryId]/approve/route.ts")
+  approve: await import("../apps/console/app/api/v1/knowledge-entries/[entryId]/approve/route.ts"),
+  search: await import("../apps/console/app/api/v1/knowledge-entries/search/route.ts")
 };
 const knowledgeHeaders = (role = "admin", actorId = `knowledge-test-${role}`, tenantId = "tenant_demo") => ({ "x-tenant-id": tenantId, "x-actor-id": actorId, "x-actor-name": "Knowledge API Test", "x-actor-role": role, "content-type": "application/json" });
 const callKnowledgeRoute = async (handler, url, { method = "GET", body, role = "admin", actorId, tenantId, params = {} } = {}) => {
@@ -409,6 +410,66 @@ describe("knowledge entry console routes", () => {
     const restricted = { tenantId: "tenant_knowledge_restricted", actorId: "restricted-operator", actorName: "Restricted", role: "operator", accessScope: "restricted" };
     await assert.rejects(knowledgeService.listKnowledgeEntries(restricted), (error) => error instanceof Response && error.status === 403);
     assert.equal((await callKnowledgeRoute(knowledgeRoutes.list.GET, "/api/v1/knowledge-entries", { role: "admin", actorId: "other-tenant-admin", tenantId: "tenant_knowledge_other" })).body.data.some((entry) => entry.id === created.body.data.id), false);
+  });
+
+  test("search preview returns approved snapshots, respects product binding, ambiguity and score bounds", async () => {
+    const search = (question, { role = "analyst", actorId, ...bodyOptions } = {}) => callKnowledgeRoute(knowledgeRoutes.search.POST, "/api/v1/knowledge-entries/search", { method: "POST", body: { question, ...bodyOptions }, role, actorId });
+    const question = "售后维修流程要怎样申请？";
+    const createAndApprove = async (answer, { productId, author, reviewer } = {}) => {
+      const created = await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "operator", actorId: author, body: validKnowledgeEntry({ question, aliasQuestions: [], answer, keywords: ["售后维修"], ...(productId ? { productId } : {}) }) });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      return { created, approved: await callKnowledgeApproval(created.body.data.id, { role: "reviewer", actorId: reviewer }) };
+    };
+
+    const pending = await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "operator", actorId: "kb-search-pending", body: validKnowledgeEntry({ question, aliasQuestions: [], answer: "待批准内容。", keywords: ["售后维修"] }) });
+    assert.equal(pending.status, 201);
+    assert.equal((await search(question)).body.data.reason, "no_candidates");
+
+    const first = await createAndApprove("先联系售后服务申请维修。", { author: "kb-search-author-1", reviewer: "kb-search-reviewer-1" });
+    assert.equal(first.approved.status, 200, JSON.stringify(first.approved.body));
+    const matched = await search(question);
+    assert.equal(matched.status, 200, JSON.stringify(matched.body));
+    assert.equal(matched.body.data.reason, "matched");
+    assert.equal(matched.body.data.hit.entryId, first.created.body.data.id);
+    assert.equal(matched.body.data.hit.scorePermille, 900);
+    assert.equal(matched.body.data.candidates[0].answerSha256.length, 64);
+
+    const productSpecific = await createAndApprove("商品专属维修答复。", { productId: "product_a102", author: "kb-product-author", reviewer: "kb-product-reviewer" });
+    assert.equal(productSpecific.approved.status, 200, JSON.stringify(productSpecific.approved.body));
+    const bound = await search(question, { productId: "product_a102" });
+    assert.equal(bound.body.data.reason, "ambiguous", "global and matching product-specific answers remain distinct candidates");
+    assert.equal((await search(question, { productId: "product_missing" })).status, 422);
+
+    const invalidThresholdLow = await callKnowledgeRoute(knowledgeRoutes.search.POST, "/api/v1/knowledge-entries/search", { method: "POST", body: { question, minScorePermille: 299 } });
+    const invalidThresholdHigh = await callKnowledgeRoute(knowledgeRoutes.search.POST, "/api/v1/knowledge-entries/search", { method: "POST", body: { question, minScorePermille: 1001 } });
+    assert.equal(invalidThresholdLow.status, 400);
+    assert.equal(invalidThresholdHigh.status, 400);
+    for (const role of ["admin", "operator", "reviewer", "analyst"]) assert.equal((await search(question, { role })).status, 200, `${role} can preview`);
+    assert.equal((await callKnowledgeRoute(knowledgeRoutes.search.POST, "/api/v1/knowledge-entries/search", { method: "POST", role: "invalid", body: { question } })).status, 403);
+
+    const retired = await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "operator", actorId: "kb-search-retired-author", body: validKnowledgeEntry({ question: "寄件包装破损理赔如何申请？", aliasQuestions: [], answer: "下线内容。", keywords: ["破损理赔"] }) });
+    assert.equal(retired.status, 201);
+    assert.equal((await callKnowledgeItem("DELETE", retired.body.data.id, { role: "admin" })).status, 200);
+    const retiredSearch = await search("寄件包装破损理赔如何申请？");
+    assert.equal(retiredSearch.body.data.hit, null);
+    assert.equal(retiredSearch.body.data.candidates.some((candidate) => candidate.entryId === retired.body.data.id), false);
+  });
+
+  test("worker hit lookup returns only a unique matched candidate and propagates SQL errors", async () => {
+    const tenantId = "00000000-0000-4000-8000-000000000011";
+    const runId = "00000000-0000-4000-8000-000000000012";
+    const row = (entryId, answer = "请联系售后服务申请维修。") => ({ approval_id: `00000000-0000-4000-8000-000000000013`, entry_id: entryId, revision: 1, question: "售后维修流程要怎样申请？", alias_questions: [], answer, keywords: ["售后维修"], search_terms: ["售后", "后维", "维修"], answer_sha256: "a".repeat(64) });
+    const fakeClient = (rows, failure) => ({ query: async (sql) => {
+      if (sql.includes("current_setting")) return { rows: [{ tenant_id: tenantId }] };
+      if (failure) throw failure;
+      assert.match(sql, /knowledge_answer_candidates\([\s\S]*20\)/);
+      return { rows };
+    } });
+    const single = await knowledgeService.knowledgeHitsForRunInTransaction(fakeClient([row("00000000-0000-4000-8000-000000000014")]), runId, "售后维修流程要怎样申请？");
+    assert.equal(single.length, 1);
+    assert.equal(single[0].scorePermille, 900);
+    assert.equal((await knowledgeService.knowledgeHitsForRunInTransaction(fakeClient([row("00000000-0000-4000-8000-000000000014"), row("00000000-0000-4000-8000-000000000015")]), runId, "售后维修流程要怎样申请？")).length, 0);
+    await assert.rejects(knowledgeService.knowledgeHitsForRunInTransaction(fakeClient([], new Error("candidate function failed")), runId, "售后维修流程要怎样申请？"), /candidate function failed/);
   });
 });
 

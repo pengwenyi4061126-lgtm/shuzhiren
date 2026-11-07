@@ -7,8 +7,7 @@ import { findProduct } from "@/lib/catalog";
 import { latestApprovedPolicyProfile } from "@/lib/policy-profiles";
 import { currentDemoLexicon, currentLexiconInTransaction } from "@/lib/prohibited-terms";
 import { guardBroadcastText } from "@/lib/shared/broadcast-guard.mjs";
-import { knowledgeSearchTerms } from "@/lib/shared/knowledge-match.mjs";
-import { knowledgeQueryTerms } from "@/lib/shared/knowledge-match.mjs";
+import { knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry, type KnowledgeRankReason } from "@/lib/shared/knowledge-match.mjs";
 import { lexiconSha256, type LexiconTerm } from "@/lib/shared/prohibited-terms.mjs";
 import type { PolicyRule } from "@/lib/policy-engine";
 
@@ -23,6 +22,9 @@ export type KnowledgeEntryApproval = {
   id: string; entryId: string; revision: number; question: string; aliasQuestions: string[]; answer: string; keywords: string[];
   searchTerms: string[]; productId?: string; answerSha256: string; policyProfileId: string | null; lexiconSha256: string; approvedBy: string; approvedAt: string;
 };
+export type KnowledgeHit = { approvalId: string; entryId: string; revision: number; question: string; answer: string; answerSha256: string; scorePermille: number; keywordHits: number };
+export type KnowledgeSearchInput = { question: string; productId?: string; minScorePermille?: number };
+export type KnowledgeSearchResult = { hit: KnowledgeHit | null; reason: KnowledgeRankReason; candidates: KnowledgeHit[] };
 export type KnowledgeEntryInputIssue = { field: string; reason: string; value?: string };
 export type KnowledgePolicyFailure = { field: "question" | "aliasQuestions" | "answer"; aliasIndex?: number; text: string; decision: string; reasons: string[]; findings: ReturnType<typeof guardBroadcastText>["findings"] };
 type KnowledgeStore = { entries: Map<string, KnowledgeEntry>; approvals: Map<string, KnowledgeEntryApproval> };
@@ -32,6 +34,7 @@ type PersistentEntryRow = {
   approved_approval_id: string | null; created_by: string; updated_by: string; created_at: Date | string; updated_at: Date | string; retired_at: Date | string | null;
 };
 type PersistentApprovalRow = { id: string; approved_at: Date | string };
+type KnowledgeCandidate = { approval_id: string; entry_id: string; revision: number; question: string; alias_questions: unknown; answer: string; keywords: unknown; search_terms: string[]; answer_sha256: string; product_id?: string | null };
 
 declare global { var shuzhirenKnowledgeStore: KnowledgeStore | undefined; }
 
@@ -214,6 +217,63 @@ export async function approveKnowledgeEntry(context: RequestContext, entryId: st
     await recordAuditEventInTransaction(client, context, approvalAudit(approved, { id: approval.id, entryId, revision: entry.revision, question: entry.question, aliasQuestions: entry.aliasQuestions, answer: entry.answer, keywords: entry.keywords, searchTerms: entry.searchTerms, productId: entry.productId, answerSha256, policyProfileId: profile?.id ?? null, lexiconSha256: lexiconSha256(lexicon), approvedBy: actor, approvedAt: new Date(approval.approved_at).toISOString() }));
     return approved;
   });
+}
+
+export function parseKnowledgeSearchInput(value: unknown): KnowledgeSearchInput | null {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["question", "productId", "minScorePermille"].includes(key)) || typeof value.question !== "string" || length(value.question.trim()) < 1 || length(value.question) > 500) return null;
+  if (value.productId !== undefined && (typeof value.productId !== "string" || value.productId.trim() === "")) return null;
+  if (value.minScorePermille !== undefined && (!Number.isInteger(value.minScorePermille) || (value.minScorePermille as number) < 300 || (value.minScorePermille as number) > 1000)) return null;
+  return { question: value.question.trim(), ...(typeof value.productId === "string" ? { productId: value.productId } : {}), ...(typeof value.minScorePermille === "number" ? { minScorePermille: value.minScorePermille } : {}) };
+}
+
+export async function searchKnowledgeEntries(context: RequestContext, input: KnowledgeSearchInput): Promise<KnowledgeSearchResult> {
+  requireTenantWideAccess(context);
+  const terms = knowledgeQueryTerms(input.question);
+  const minScorePermille = input.minScorePermille ?? 600;
+  if (input.productId) {
+    if (!databasePool()) await assertDemoProduct(context, input.productId);
+    else if (!isUuid(input.productId)) throw new Response("Product does not belong to this tenant", { status: 400, statusText: "knowledge_search_product_invalid" });
+  }
+  let candidates: KnowledgeCandidate[];
+  if (!databasePool()) {
+    const entries = [...store().entries.values()].filter((entry) => entry.tenantId === context.tenantId && entry.status === "approved" && (!input.productId || !entry.productId || entry.productId === input.productId) && entry.searchTerms.some((term) => terms.includes(term)));
+    candidates = entries.flatMap((entry) => {
+      const approval = entry.approvedApprovalId ? store().approvals.get(entry.approvedApprovalId) : undefined;
+      return approval ? [{ approval_id: approval.id, entry_id: entry.id, revision: approval.revision, question: approval.question, alias_questions: approval.aliasQuestions, answer: approval.answer, keywords: approval.keywords, search_terms: approval.searchTerms, answer_sha256: approval.answerSha256, product_id: approval.productId ?? null }] : [];
+    }).sort((a, b) => a.entry_id.localeCompare(b.entry_id)).slice(0, 50);
+  } else {
+    candidates = await withTenantTransaction(context.tenantId, async (client) => {
+      if (input.productId && !(await client.query("select 1 from products where tenant_id = $1 and id = $2", [context.tenantId, input.productId])).rowCount) throw new Response("Product does not belong to this tenant", { status: 400, statusText: "knowledge_search_product_invalid" });
+      return (await client.query<KnowledgeCandidate>(`select a.id as approval_id, a.entry_id, a.revision, a.question, a.alias_questions, a.answer, a.keywords, a.search_terms, a.answer_sha256::text as answer_sha256, a.product_id
+        from knowledge_entries e join knowledge_entry_approvals a on a.tenant_id = e.tenant_id and a.id = e.approved_approval_id
+        where e.status = 'approved' and a.search_terms && $1::text[] and ($2::uuid is null or a.product_id is null or a.product_id = $2::uuid)
+        order by a.id limit 50`, [terms, input.productId ?? null])).rows;
+    });
+  }
+  const ranked = candidates.map((candidate) => {
+    const aliasQuestions = asStringArray(jsonValue(candidate.alias_questions));
+    const keywords = asStringArray(jsonValue(candidate.keywords));
+    const score = scoreKnowledgeEntry(input.question, { question: candidate.question, aliasQuestions, keywords });
+    return { approvalId: candidate.approval_id, entryId: candidate.entry_id, revision: candidate.revision, question: candidate.question, answer: candidate.answer, answerSha256: candidate.answer_sha256.trim(), ...score, aliasQuestions, keywords };
+  }).sort((a, b) => b.scorePermille - a.scorePermille || b.keywordHits - a.keywordHits || a.entryId.localeCompare(b.entryId));
+  const result = rankKnowledgeHits(input.question, candidates.map((candidate) => ({ entryId: candidate.entry_id, question: candidate.question, aliasQuestions: asStringArray(jsonValue(candidate.alias_questions)), keywords: asStringArray(jsonValue(candidate.keywords)), approvalId: candidate.approval_id, revision: candidate.revision, answer: candidate.answer, answerSha256: candidate.answer_sha256.trim() })), { minScorePermille });
+  const toHit = (candidate: (typeof ranked)[number]): KnowledgeHit => ({ approvalId: candidate.approvalId, entryId: candidate.entryId, revision: candidate.revision, question: candidate.question, answer: candidate.answer, answerSha256: candidate.answerSha256, scorePermille: candidate.scorePermille, keywordHits: candidate.keywordHits });
+  const hit = result.hit ? ranked.find((candidate) => candidate.entryId === result.hit!.entryId) : undefined;
+  return { hit: hit ? toHit(hit) : null, reason: result.reason, candidates: ranked.map(toHit) };
+}
+
+export async function knowledgeHitsForRunInTransaction(client: PoolClient, runId: string, question: string): Promise<KnowledgeHit[]> {
+  if (!isUuid(runId)) return [];
+  const queryTerms = knowledgeQueryTerms(question);
+  if (!queryTerms.length) return [];
+  const tenantId = (await client.query<{ tenant_id: string | null }>("select current_setting('app.tenant_id', true) as tenant_id")).rows[0]?.tenant_id;
+  if (!tenantId || !isUuid(tenantId)) throw new Error("Knowledge lookup requires an active tenant transaction");
+  const rows = (await client.query<KnowledgeCandidate>("select approval_id, entry_id, revision, question, alias_questions, answer, keywords, search_terms, answer_sha256 from knowledge_answer_candidates($1::uuid, $2::uuid, $3::text[], 20)", [tenantId, runId, queryTerms])).rows;
+  const candidates = rows.map((row) => ({ entryId: row.entry_id, question: row.question, aliasQuestions: asStringArray(jsonValue(row.alias_questions)), keywords: asStringArray(jsonValue(row.keywords)), approvalId: row.approval_id, revision: row.revision, answer: row.answer, answerSha256: row.answer_sha256.trim() }));
+  const result = rankKnowledgeHits(question, candidates, { minScorePermille: 600 });
+  if (result.reason !== "matched" || !result.hit) return [];
+  const hit = result.hit;
+  return [{ approvalId: hit.approvalId, entryId: hit.entryId, revision: hit.revision, question: hit.question, answer: hit.answer, answerSha256: hit.answerSha256, scorePermille: hit.scorePermille, keywordHits: hit.keywordHits }];
 }
 
 export async function knowledgeEntryErrorResponse(error: unknown, fallback = "knowledge_entry_rejected") {
