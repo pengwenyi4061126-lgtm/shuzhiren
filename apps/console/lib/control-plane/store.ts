@@ -187,7 +187,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     if (reservesRuntimeSession(next) && run.runtimeSessionId && [...store().runs.values()].some((candidate) => candidate.id !== run.id && candidate.tenantId === context.tenantId && candidate.runtimeSessionId === run.runtimeSessionId && reservesRuntimeSession(candidate.state))) throw new Response("Runtime session is already reserved by another active run", { status: 409 });
     if (action === "submit_review" || action === "approve") {
       try {
-        updateDemoProgramLifecycle(run.id, action);
+        await updateDemoProgramLifecycle(run.id, action, context);
       } catch (error) {
         if (error instanceof Response && error.statusText === "program_script_policy_blocked") {
           await recordAuditEvent(context, { type: "show_program.script_policy_blocked", resource: "show_revision", resourceId: run.revisionId, detail: await programScriptPolicyAuditDetail(run.id, error) });

@@ -271,6 +271,7 @@ test("demo dispatch rotates START-less transitions through INSERT_PROGRAM, ROLLB
   assert.deepEqual(events.find((event) => event.detail.variantIndex === 2).detail, {
     segmentId: segmentIds.first, variantIndex: 2, variantCount: 3, scriptSha256: sha256Hex("变体二话术"), playSeq: 3, outboxEventId: plays[0].outboxEventId, skippedVariantIndexes: "", controlAction: "RECOVER"
   });
+  assert.ok(!JSON.stringify(events.find((event) => event.detail.variantIndex === 2).detail).includes("变体二话术"), "variant audit detail never contains the script text");
 });
 
 test("the media command carries the hash of the selected version", async () => {
@@ -544,9 +545,9 @@ function draftDemoProgram(primary, variants) {
   });
   return { runId, revisionId, program: () => globalThis.shuzhirenProgramStore.programs.get(runId) };
 }
-const thrownResponse = (action) => {
+const thrownResponse = async (action) => {
   try {
-    action();
+    await action();
   } catch (error) {
     assert.ok(error instanceof Response, "a Response is thrown");
     return error;
@@ -555,7 +556,7 @@ const thrownResponse = (action) => {
 };
 test("demo submit_review refuses a blocked extra version with 422 and the position and version index, and leaves the program editable", async () => {
   const draft = draftDemoProgram("主版本话术", ["变体一话术", "全网最低价，欢迎选购"]);
-  const response = thrownResponse(() => updateDemoProgramLifecycle(draft.runId, "submit_review"));
+  const response = await thrownResponse(() => updateDemoProgramLifecycle(draft.runId, "submit_review", operator));
   assert.equal(response.status, 422);
   assert.equal(response.statusText, "program_script_policy_blocked");
   const body = await response.json();
@@ -569,17 +570,17 @@ test("demo submit_review refuses a blocked extra version with 422 and the positi
 });
 test("demo approval checks the primary script too (Q3) and freezes nothing when it is refused", async () => {
   const draft = draftDemoProgram("这款产品治疗皮肤问题", []);
-  const response = thrownResponse(() => updateDemoProgramLifecycle(draft.runId, "approve"));
+  const response = await thrownResponse(() => updateDemoProgramLifecycle(draft.runId, "approve", operator));
   assert.equal(response.status, 422);
   assert.deepEqual((await response.json()).failures.map((failure) => [failure.position, failure.variantIndex]), [[1, 0]]);
   assert.equal(draft.program().status, "draft");
   assert.equal(demoTerms.demoLexiconSnapshot(draft.revisionId), null);
 });
-test("demo approval of a clean program writes the lexicon snapshot and approves the program", () => {
+test("demo approval of a clean program writes the lexicon snapshot and summary-only audit event", async () => {
   const draft = draftDemoProgram("主版本话术", ["变体一话术"]);
-  updateDemoProgramLifecycle(draft.runId, "submit_review");
+  await updateDemoProgramLifecycle(draft.runId, "submit_review", operator);
   assert.equal(draft.program().editable, false);
-  updateDemoProgramLifecycle(draft.runId, "approve");
+  await updateDemoProgramLifecycle(draft.runId, "approve", operator);
   assert.equal(draft.program().status, "approved");
   const snapshot = demoTerms.demoLexiconSnapshot(draft.revisionId);
   const current = demoTerms.currentDemoLexicon(operator.tenantId);
@@ -587,13 +588,17 @@ test("demo approval of a clean program writes the lexicon snapshot and approves 
   assert.equal(snapshot.termCount, current.length);
   assert.equal(snapshot.lexiconSha256, demoLexiconModule.lexiconSha256(current));
   assert.ok(snapshot.termCount > 0);
+  const [frozenEvent] = (await listAuditEvents(operator)).filter((event) => event.type === "show_revision.prohibited_terms_frozen" && event.resourceId === draft.revisionId);
+  assert.deepEqual(frozenEvent.detail, { revisionId: draft.revisionId, lexiconSha256: snapshot.lexiconSha256, builtinVersion: snapshot.builtinVersion, termCount: snapshot.termCount, scriptCount: 2, policyProfileId: null });
+  assert.ok(!JSON.stringify(frozenEvent.detail).includes("主版本话术"));
   // Approving again keeps the first snapshot: a revision is frozen once.
-  updateDemoProgramLifecycle(draft.runId, "approve");
+  await updateDemoProgramLifecycle(draft.runId, "approve", operator);
   assert.deepEqual(demoTerms.demoLexiconSnapshot(draft.revisionId), snapshot);
+  assert.equal((await listAuditEvents(operator)).filter((event) => event.type === "show_revision.prohibited_terms_frozen" && event.resourceId === draft.revisionId).length, 1);
 });
-test("demo run lexicon is the snapshot united with the current lexicon, and a revision without a snapshot uses the current one", () => {
+test("demo run lexicon is the snapshot united with the current lexicon, and a revision without a snapshot uses the current one", async () => {
   const draft = draftDemoProgram("主版本话术", []);
-  updateDemoProgramLifecycle(draft.runId, "approve");
+  await updateDemoProgramLifecycle(draft.runId, "approve", operator);
   const runLexicon = demoTerms.demoRunLexicon(operator.tenantId, draft.revisionId);
   assert.deepEqual(runLexicon.map((term) => term.id), demoTerms.currentDemoLexicon(operator.tenantId).map((term) => term.id));
   assert.deepEqual(demoTerms.demoRunLexicon(operator.tenantId, "show_revision_without_snapshot").map((term) => term.id), runLexicon.map((term) => term.id));

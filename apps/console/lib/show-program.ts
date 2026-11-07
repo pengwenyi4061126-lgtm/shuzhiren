@@ -4,7 +4,7 @@ import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { assertLiveRunAccess, assertLiveRunAccessInTransaction } from "@/lib/control-plane/run-access";
 import { databasePool, withTenantTransaction } from "@/lib/database";
-import { assertProgramScriptsAllowed, boundPolicyProfileIdInTransaction, currentDemoLexicon, currentLexiconInTransaction, freezeDemoRevisionLexicon, freezeRevisionLexiconInTransaction, frozenLexiconAuditDetail, policyRulesForRevisionInTransaction, programScriptCount } from "@/lib/prohibited-terms";
+import { assertProgramScriptsAllowed, boundPolicyProfileIdInTransaction, currentDemoLexicon, currentLexiconInTransaction, demoLexiconSnapshot, freezeDemoRevisionLexicon, freezeRevisionLexiconInTransaction, frozenLexiconAuditDetail, policyRulesForRevisionInTransaction, programScriptCount } from "@/lib/prohibited-terms";
 import { lexiconSha256 } from "@/lib/shared/prohibited-terms.mjs";
 import { normalizeScriptVariants, scriptVariantsProblem } from "@/lib/shared/script-rotation.mjs";
 
@@ -131,7 +131,7 @@ export async function replaceShowProgram(context: RequestContext, runId: string,
   });
 }
 
-export function updateDemoProgramLifecycle(runId: string, action: "submit_review" | "approve") {
+export async function updateDemoProgramLifecycle(runId: string, action: "submit_review" | "approve", context: RequestContext) {
   const program = programStore().programs.get(runId);
   if (!program) return;
   if (action === "submit_review") {
@@ -143,7 +143,9 @@ export function updateDemoProgramLifecycle(runId: string, action: "submit_review
   if (action === "approve") {
     // The same check again against the lexicon in force at approval, then the lexicon is frozen into the revision.
     assertProgramScriptsAllowed(program.segments, { policyRules: [], lexicon: currentDemoLexicon(program.tenantId) });
-    freezeDemoRevisionLexicon(program.tenantId, program.revisionId);
+    const alreadyFrozen = demoLexiconSnapshot(program.revisionId);
+    const frozen = freezeDemoRevisionLexicon(program.tenantId, program.revisionId);
+    if (!alreadyFrozen) await recordAuditEvent(context, { type: "show_revision.prohibited_terms_frozen", resource: "show_revision", resourceId: program.revisionId, detail: frozenLexiconAuditDetail(frozen, { scriptCount: programScriptCount(program.segments), policyProfileId: null }) });
     program.status = "approved";
   }
 }
