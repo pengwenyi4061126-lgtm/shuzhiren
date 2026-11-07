@@ -169,6 +169,83 @@ describe("policy interception and product facts", () => {
   });
 });
 
+const workerTestTenant = "10000000-0000-4000-8000-000000000091";
+const workerTestRun = {
+  id: "10000000-0000-4000-8000-000000000092", tenant_id: workerTestTenant, show_revision_id: "10000000-0000-4000-8000-000000000093",
+  trace_id: "worker-test-trace", runtime_session_id: "worker-test-session", pending_program_transition_event_id: null,
+  pending_media_event_id: null, scheduled_start_event_id: null, now_epoch: 1200
+};
+function workerTestRule(overrides = {}) {
+  return { id: "10000000-0000-4000-8000-000000000094", name: "worker guard", trigger_type: "timed", match_config: {}, templates: ["安全话术"], action: "speak", cooldown_seconds: 300, interval_seconds: 300, priority: 100, default_key: null, ...overrides };
+}
+async function runWorkerInteraction({ rule = workerTestRule(), interaction = null, terms = [], snapshot = null } = {}) {
+  const queries = [];
+  const logs = [];
+  const product = { product_name: "洁面商品", price_cent: 9900, product_version_id: "10000000-0000-4000-8000-000000000095", product_revision: 1, source_ref: "evidence://worker-test", source_synced_at: new Date().toISOString(), valid_from: new Date(Date.now() - 60_000).toISOString(), valid_until: null };
+  const client = {
+    async query(text, params = []) {
+      const sql = text.replace(/\s+/g, " ").trim();
+      queries.push({ sql, params });
+      if (sql.startsWith("select r.id from live_runs r")) return { rows: [{ id: workerTestRun.id }] };
+      if (sql.startsWith("select id, tenant_id, show_revision_id, trace_id")) return { rows: [workerTestRun] };
+      if (sql.startsWith("select id, name, trigger_type")) return { rows: [rule] };
+      if (sql.startsWith("select id, interaction_kind")) return { rows: interaction ? [interaction] : [] };
+      if (sql.startsWith("select lexicon from show_revision_prohibited_term_snapshots")) return { rows: snapshot === null ? [] : [{ lexicon: snapshot }] };
+      if (sql.startsWith("select tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision")) return { rows: terms };
+      if (sql.includes("from show_revision_policy_profiles binding")) return { rows: [{ rules: [], evidence_ref: "evidence://worker-test/policy", validation_summary: "approved fixture", approval_status: "approved" }] };
+      if (sql.includes("interaction_rule_product_context")) return { rows: [product] };
+      if (sql.includes("from show_revision_media_assets binding")) return { rows: [{ runtime_voice_id: "worker_test_voice", checksum: `sha256:${"a".repeat(64)}` }] };
+      if (sql.startsWith("select 1 from interaction_rule_firings") || sql.startsWith("select template_index")) return { rows: [] };
+      if (sql.startsWith("select exists (select 1 from outbox_events")) return { rows: [{ pending_speech: false, pending_media: false, last_speech_age_seconds: null }] };
+      if (sql.startsWith("insert into interaction_rule_firings")) {
+        if (sql.includes("returning id")) return { rows: [{ id: params[0] }] };
+        return { rows: [] };
+      }
+      if (sql.startsWith("insert into outbox_events")) return { rows: [{ id: "10000000-0000-4000-8000-000000000096" }] };
+      if (sql.startsWith("select runtime_worker_actor")) return { rows: [{ id: "10000000-0000-4000-8000-000000000097" }] };
+      if (sql.startsWith("insert into audit_events") || sql.startsWith("update live_interactions")) return { rows: [] };
+      throw new Error(`unexpected worker interaction query: ${sql}`);
+    }
+  };
+  const evaluator = rules.createInteractionRuleEvaluator({
+    tenantIds: async () => [workerTestTenant],
+    inTenantTransaction: async (_tenantId, operation) => operation(client),
+    config: { ...rules.interactionRuleConfig({}), viewerCooldownSeconds: 0 },
+    maxOutboxAttempts: 6,
+    random: () => 0,
+    log: (event, fields) => logs.push({ event, fields })
+  });
+  const summary = await evaluator.runOnce();
+  return { summary, queries, logs, command: queries.find((query) => query.sql.startsWith("insert into outbox_events"))?.params[2] ? JSON.parse(queries.find((query) => query.sql.startsWith("insert into outbox_events")).params[2]).command : null };
+}
+describe("worker Runtime_Lexicon", () => {
+  test("a rendered block term is recorded as policy_blocked with the lexicon reason", async () => {
+    const term = { kind: "custom", term: "worker播报禁词", normalized_term: "worker播报禁词", category: "custom", approved_revision: 1, severity: "block", suggestions: [], disabled: false, active: true };
+    const { summary, queries, command } = await runWorkerInteraction({ rule: workerTestRule({ templates: ["worker播报禁词"] }), terms: [term] });
+    const firing = queries.find((query) => query.sql.startsWith("insert into interaction_rule_firings") && query.sql.includes("returning id"));
+    assert.deepEqual([summary.recorded, firing.params[9], firing.params[10]], [1, "policy_blocked", "lexicon:custom:custom:worker播报禁词"]);
+    assert.equal(command, null, "blocked speech never enters the outbox");
+  });
+
+  test("a block term in the sanitized nickname is replaced by the neutral address", async () => {
+    const term = { kind: "custom", term: "昵称专属拦截词", normalized_term: "昵称专属拦截词", category: "custom", approved_revision: 1, severity: "block", suggestions: [], disabled: false, active: true };
+    const interaction = { id: "10000000-0000-4000-8000-000000000098", interaction_kind: "viewer_enter", question_text: "观众进入直播间", policy_action: "answer", viewer_ref: null, viewer_nickname: "昵称专属拦截词", gift_value_cents: null, channel_connection_id: null };
+    const { command } = await runWorkerInteraction({ rule: workerTestRule({ trigger_type: "viewer_enter", interval_seconds: null, templates: ["欢迎{nickname}"] }), interaction, terms: [term] });
+    assert.equal(command.text, `欢迎${rules.NEUTRAL_NICKNAME}`);
+  });
+
+  test("warn-only terms remain answerable and malformed snapshot elements are dropped", async () => {
+    const warn = { id: "custom:worker-warn-term", term: "清风标记", category: "custom", severity: "warn", suggestions: [] };
+    const { summary, command, logs } = await runWorkerInteraction({
+      rule: workerTestRule({ templates: ["清风标记已记录"] }),
+      snapshot: [warn, { id: "malformed-worker-snapshot-term", term: 42 }]
+    });
+    assert.equal(summary.speechQueued, 1);
+    assert.equal(command.text, "清风标记已记录");
+    assert.ok(logs.some((entry) => entry.event === "prohibited_terms.snapshot_elements_dropped"));
+  });
+});
+
 describe("console rule validation and approval", () => {
   const input = (overrides = {}) => consoleRules.parseInteractionRuleInput({ name: "欢迎", triggerType: "viewer_enter", action: "speak", templates: ["欢迎{nickname}"], ...overrides });
   test("create input parsing and cross-field rules", () => {
@@ -538,13 +615,15 @@ describe("Property 3: the policy engine has a single implementation", () => {
     if (entry.isDirectory()) return entry.name === "node_modules" ? [] : mjsFiles(full);
     return entry.name.endsWith(".mjs") ? [full] : [];
   });
-  // Resolves the module that `file` imports or re-exports `evaluatePolicy` from, using the loader's resolve hook.
-  const policyEngineUrlFrom = async (file) => {
+  // Resolves the policy engine reached through the module's direct import or its shared broadcast guard.
+  const policyEngineUrlFrom = async (file, symbol = "evaluatePolicy") => {
     const source = stripComments(readFileSync(file, "utf8"));
-    const statement = [...source.matchAll(/(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)].find((match) => /\bevaluatePolicy\b/.test(match[1]));
-    assert.ok(statement, `${nodePath.relative(repoRoot, file)} imports or re-exports evaluatePolicy`);
+    const statement = [...source.matchAll(/(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)].find((match) => new RegExp(`\\b${symbol}\\b`).test(match[1]));
+    assert.ok(statement, `${nodePath.relative(repoRoot, file)} imports or re-exports ${symbol}`);
     const nextResolve = (specifier, context) => ({ url: new URL(specifier, context.parentURL).href });
-    return (await resolveWithConsoleLoader(statement[2], { parentURL: pathToFileURL(file).href }, nextResolve)).url;
+    const resolved = (await resolveWithConsoleLoader(statement[2], { parentURL: pathToFileURL(file).href }, nextResolve)).url;
+    if (symbol === "guardBroadcastText") return policyEngineUrlFrom(fileURLToPath(resolved));
+    return resolved;
   };
   test("no .mjs file in apps/runtime-worker defines evaluatePolicy, and the old copy is gone", () => {
     const definition = /\bfunction\s*\*?\s*evaluatePolicy\b|\b(?:const|let|var)\s+evaluatePolicy\b|\bexport\s+function\s+evaluatePolicy\b/;
@@ -554,7 +633,7 @@ describe("Property 3: the policy engine has a single implementation", () => {
     assert.equal(existsSync(nodePath.join(workerDir, "policy-engine.mjs")), false);
   });
   test("worker and console resolve evaluatePolicy to the same module file", async () => {
-    const workerUrl = await policyEngineUrlFrom(nodePath.join(workerDir, "interaction-rules.mjs"));
+    const workerUrl = await policyEngineUrlFrom(nodePath.join(workerDir, "interaction-rules.mjs"), "guardBroadcastText");
     const consoleUrl = await policyEngineUrlFrom(nodePath.join(repoRoot, "apps", "console", "lib", "policy-engine.ts"));
     assert.equal(workerUrl, consoleUrl);
     assert.equal(workerUrl, pathToFileURL(nodePath.join(repoRoot, "apps", "console", "lib", "shared", "policy-engine.mjs")).href);

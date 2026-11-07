@@ -5,7 +5,7 @@ import { createInteractionRuleEvaluator, interactionRuleConfig } from "./interac
 import { guardBroadcastText } from "../console/lib/shared/broadcast-guard.mjs";
 import { parsePolicyRules } from "../console/lib/shared/policy-engine.mjs";
 import { BUILTIN_LEXICON } from "../console/lib/shared/prohibited-terms-builtin.mjs";
-import { effectiveLexicon } from "../console/lib/shared/prohibited-terms.mjs";
+import { compileLexicon, effectiveLexicon, runtimeLexicon } from "../console/lib/shared/prohibited-terms.mjs";
 import { chooseScriptVariant, scriptVariantsProblem } from "../console/lib/shared/script-rotation.mjs";
 
 const databaseUrl = required("DATABASE_URL");
@@ -161,16 +161,35 @@ function frozenScripts(primaryScript, rawVariants) {
   if (scriptVariantsProblem(variants, primaryScript) !== null) return null;
   return [primaryScript, ...variants];
 }
-// The rules of the run's frozen policy profile plus the built-in lexicon, the same guard context as the console
-// (the tenant lexicon follows in task 8.4). A revision without an approved, evidence-backed profile has no rules to
-// check against, so nothing may be said: null means every version is refused.
-async function scheduledScriptGuardContext(client, showRevisionId) {
+// The run's frozen policy profile and Runtime_Lexicon. A revision without an approved, evidence-backed profile has
+// no rules to check against, so nothing may be said: null means every version is refused.
+async function scheduledScriptGuardContext(client, tenantId, showRevisionId) {
   const profile = (await client.query(`select profile.rules, profile.evidence_ref, profile.validation_summary, profile.approval_status
     from show_revision_policy_profiles binding join policy_profiles profile on profile.id = binding.policy_profile_id
     where binding.show_revision_id = $1`, [showRevisionId])).rows[0];
   const evidence = profile?.evidence_ref;
   const active = Boolean(profile && profile.approval_status === "approved" && typeof evidence === "string" && evidence.length > 0 && evidence.length <= 300 && CONTROLLED_EVIDENCE_REF.test(evidence) && String(profile.validation_summary ?? "").trim());
-  return active ? { policyRules: parsePolicyRules(profile.rules), lexicon: effectiveLexicon(BUILTIN_LEXICON, []) } : null;
+  if (!active) return null;
+  const [snapshot, terms] = await Promise.all([
+    client.query("select lexicon from show_revision_prohibited_term_snapshots where tenant_id = $1 and show_revision_id = $2", [tenantId, showRevisionId]),
+    client.query(`select tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision, severity, suggestions, disabled, active
+      from tenant_prohibited_terms where approved_revision is not null`)
+  ]);
+  const frozen = snapshot.rows[0] ? parseScheduledRuntimeLexicon(snapshot.rows[0].lexicon) : null;
+  return { policyRules: parsePolicyRules(profile.rules), lexicon: runtimeLexicon(frozen, effectiveLexicon(BUILTIN_LEXICON, terms.rows)) };
+}
+function parseScheduledRuntimeLexicon(value) {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { parsed = null; }
+  }
+  if (!Array.isArray(parsed)) {
+    log("prohibited_terms.snapshot_unreadable");
+    return [];
+  }
+  const compiled = compileLexicon(parsed);
+  if (compiled.length < parsed.length) log("prohibited_terms.snapshot_elements_dropped", { dropped: parsed.length - compiled.length });
+  return compiled;
 }
 // The version to dispatch next: the one after the segment's last ledger row, skipping versions the broadcast guard
 // refuses. The caller holds the live_runs row lock. Returns null when every version is refused. Writes nothing.
@@ -273,7 +292,7 @@ async function scheduleDueRun() {
       }
       const segment = initialProgram.rows[0];
       // Version rotation: the same selection as the console's dispatch, in this transaction under the live_runs row lock.
-      const selected = await selectScheduledScript(client, run, segment.id, initialScripts, await scheduledScriptGuardContext(client, run.show_revision_id));
+      const selected = await selectScheduledScript(client, run, segment.id, initialScripts, await scheduledScriptGuardContext(client, run.tenant_id, run.show_revision_id));
       if (!selected) {
         // Every version is refused by the pre-broadcast check: nothing is dispatched, the schedule is cleared and an operator is alerted.
         await client.query("update live_runs set scheduled_at = null, updated_at = now() where id = $1 and scheduled_at is not null", [run.id]);

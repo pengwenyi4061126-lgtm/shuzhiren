@@ -12,7 +12,10 @@
 // Every decision on a matched trigger is recorded once in interaction_rule_firings; the unique keys of that table
 // keep evaluation idempotent when several workers run.
 import { createHash, randomUUID } from "node:crypto";
-import { evaluatePolicy, normalizePolicyText, parsePolicyRules } from "../console/lib/shared/policy-engine.mjs";
+import { normalizePolicyText, parsePolicyRules } from "../console/lib/shared/policy-engine.mjs";
+import { guardBroadcastText } from "../console/lib/shared/broadcast-guard.mjs";
+import { BUILTIN_LEXICON } from "../console/lib/shared/prohibited-terms-builtin.mjs";
+import { compileLexicon, effectiveLexicon, runtimeLexicon } from "../console/lib/shared/prohibited-terms.mjs";
 
 export const TRIGGER_TYPES = Object.freeze(["viewer_enter", "follow", "gift", "keyword", "timed", "idle_comment"]);
 export const TIMER_TRIGGERS = Object.freeze(["timed", "idle_comment"]);
@@ -27,6 +30,20 @@ const INTERACTION_TRIGGER = { viewer_enter: "viewer_enter", follow: "follow", gi
 const CONTACT_OR_LINK = /https?|www\.|\.com|\.cn|\.net|微信|weixin|v信|vx|wx|qq|加我|私聊|私信|电话|手机|\d{5,}/i;
 const IMPERSONATION = /官方|客服|管理员|平台|主播|抖音|系统/;
 const CONTROLLED_EVIDENCE_REF = /^(?:evidence:\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}|urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255})$/;
+
+function parseFrozenRuntimeLexicon(value, log) {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { parsed = null; }
+  }
+  if (!Array.isArray(parsed)) {
+    log("prohibited_terms.snapshot_unreadable", { service: "runtime-worker" });
+    return [];
+  }
+  const compiled = compileLexicon(parsed);
+  if (compiled.length < parsed.length) log("prohibited_terms.snapshot_elements_dropped", { service: "runtime-worker", dropped: parsed.length - compiled.length });
+  return compiled;
+}
 
 /** Reads the evaluator settings from the environment; an invalid value stops the worker at startup. */
 export function interactionRuleConfig(env = process.env) {
@@ -111,7 +128,7 @@ export function ruleMatchesInteraction(rule, interaction) {
  * `maxLength` characters. A nickname that is empty afterwards, carries a link or contact detail, impersonates the
  * host or platform, or matches any policy rule is replaced by a neutral form of address.
  */
-export function sanitizeNickname(raw, policyRules = [], maxLength = 12) {
+export function sanitizeNickname(raw, policyRules = [], maxLength = 12, lexicon = []) {
   const neutral = (reason) => ({ nickname: NEUTRAL_NICKNAME, neutral: true, reason });
   if (typeof raw !== "string") return neutral("missing");
   const cleaned = raw.normalize("NFKC")
@@ -123,10 +140,11 @@ export function sanitizeNickname(raw, policyRules = [], maxLength = 12) {
   const normalized = normalizePolicyText(cleaned);
   if (CONTACT_OR_LINK.test(normalized)) return neutral("contact_or_link");
   if (IMPERSONATION.test(normalized)) return neutral("impersonation");
-  const decision = evaluatePolicy(cleaned, ["product_version"], policyRules);
-  if (decision.action !== "answer" || decision.reasons.length > 0) return neutral("policy");
   const nickname = Array.from(cleaned).slice(0, maxLength).join("").trim();
-  return nickname ? { nickname, neutral: false } : neutral("empty");
+  if (!nickname) return neutral("empty");
+  const checked = guardBroadcastText(nickname, { policyRules, lexicon, maxLength });
+  if (!checked.allowed) return neutral(checked.findings.some((finding) => finding.severity === "block") ? "prohibited_term" : "policy");
+  return { nickname, neutral: false };
 }
 
 export function formatPrice(priceCent) {
@@ -180,11 +198,9 @@ export function isProductContextCurrent(product, nowMs = Date.now()) {
   return Number.isFinite(validUntil) && validUntil > nowMs;
 }
 
-/** Policy check of the final line: only an "answer" decision with the product version as evidence may be said. */
-export function checkRenderedText(text, policyRules, maxLength) {
-  if (!text || text.length > maxLength) return { allowed: false, reasons: ["渲染文本为空或超过长度限制"] };
-  const decision = evaluatePolicy(text, ["product_version"], policyRules);
-  return decision.action === "answer" ? { allowed: true, decision } : { allowed: false, decision, reasons: decision.reasons };
+/** Checks the final line against the run's policy profile and Runtime_Lexicon. */
+export function checkRenderedText(text, policyRules, maxLength, lexicon = []) {
+  return guardBroadcastText(text, { policyRules, lexicon, maxLength, evidenceIds: ["product_version"] });
 }
 
 export function speechCommandId(firingId) { return `rule_${firingId.replaceAll("-", "")}`; }
@@ -311,8 +327,8 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
     } else if (!interaction.channel_connection_id) {
       return recordSuppressed(chosen, "no_reply_channel");
     }
-    const policy = await context.policy();
-    const nickname = sanitizeNickname(interaction.viewer_nickname, policy.active ? policy.rules : [], config.nicknameMaxLength);
+    const [policy, lexicon] = await Promise.all([context.policy(), context.lexicon()]);
+    const nickname = sanitizeNickname(interaction.viewer_nickname, policy.active ? policy.rules : [], config.nicknameMaxLength, lexicon);
     return speakOrDraft(client, run, { rule: chosen, triggerKey, interaction, last: chosenLast, nickname }, context, state, nowEpoch);
   }
 
@@ -336,8 +352,12 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
     if (rendered.missing.length) return recordFiring(client, run, { ...firing, outcome: "unavailable", outcomeReason: `missing_slot:${rendered.missing.join(",")}`, templateIndex });
     const maxLength = rule.action === "speak" ? MAX_SPEECH_TEXT_LENGTH : MAX_REPLY_TEXT_LENGTH;
     const textSha256 = sha256Hex(rendered.text);
-    const check = checkRenderedText(rendered.text, policy.rules, maxLength);
-    if (!check.allowed) return recordFiring(client, run, { ...firing, outcome: "policy_blocked", outcomeReason: `policy:${(check.reasons ?? []).join(";") || "blocked"}`, templateIndex, textSha256, product });
+    const check = checkRenderedText(rendered.text, policy.rules, maxLength, await context.lexicon());
+    if (!check.allowed) {
+      const blocked = check.findings.find((finding) => finding.severity === "block");
+      const outcomeReason = blocked ? `lexicon:${blocked.category}:${blocked.termId}` : `policy:${(check.reasons ?? []).join(";") || "blocked"}`;
+      return recordFiring(client, run, { ...firing, outcome: "policy_blocked", outcomeReason, templateIndex, textSha256, product });
+    }
     const firingId = randomUUID();
     const bucket = cooldownBucket(nowEpoch, effectiveCooldownSeconds(rule));
     if (rule.action === "speak") {
@@ -422,6 +442,15 @@ export function createInteractionRuleEvaluator({ tenantIds, inTenantTransaction,
         const active = Boolean(profile && profile.approval_status === "approved" && isControlledEvidenceRef(profile.evidence_ref) && String(profile.validation_summary ?? "").trim());
         const rules = active ? parsePolicyRules(profile.rules) : [];
         return { active, rules };
+      }),
+      lexicon: memo(async () => {
+        const [snapshot, terms] = await Promise.all([
+          client.query("select lexicon from show_revision_prohibited_term_snapshots where tenant_id = $1 and show_revision_id = $2", [tenantId, run.show_revision_id]),
+          client.query(`select tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision, severity, suggestions, disabled, active
+            from tenant_prohibited_terms where approved_revision is not null`)
+        ]);
+        const frozen = snapshot.rows[0] ? parseFrozenRuntimeLexicon(snapshot.rows[0].lexicon, log) : null;
+        return runtimeLexicon(frozen, effectiveLexicon(BUILTIN_LEXICON, terms.rows));
       }),
       product: memo(async () => {
         const product = (await client.query("select * from interaction_rule_product_context($1::uuid, $2::uuid)", [tenantId, run.id])).rows[0];

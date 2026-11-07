@@ -377,7 +377,7 @@ const workerPieces = [
   workerSourceText.match(/^function runtimeVoiceIdValid.*$/m)[0],
   workerSourceText.match(/^function voiceChecksumValid.*$/m)[0]
 ].join("\n");
-const buildScheduleDueRun = (deps) => new Function("deps", `const { tenantIds, inTenantTransaction, createHash, guardBroadcastText, parsePolicyRules, BUILTIN_LEXICON, effectiveLexicon, chooseScriptVariant, scriptVariantsProblem } = deps;
+const buildScheduleDueRun = (deps) => new Function("deps", `const { tenantIds, inTenantTransaction, createHash, guardBroadcastText, parsePolicyRules, BUILTIN_LEXICON, effectiveLexicon, compileLexicon, runtimeLexicon, chooseScriptVariant, scriptVariantsProblem } = deps;
 let nextSchedulerTenantCursor = 0;
 ${workerPieces}
 return scheduleDueRun;`)(deps);
@@ -387,7 +387,7 @@ const workerSegment = { id: "10000000-0000-4000-8000-0000000000c1", runtime_scri
 const workerProfile = { rules: [{ id: "r1", terms: ["违规词"], reason: "测试拦截", action: "refuse", riskLevel: "high", requiredEvidence: [] }], evidence_ref: "evidence://probe/policy", validation_summary: "ok", approval_status: "approved" };
 const workerVoice = { runtime_voice_id: "voice_1", checksum: `sha256:${"a".repeat(64)}` };
 // Runs scheduleDueRun once against a fake client; `state` selects what the reads return. Every statement is logged with its transaction.
-async function runWorkerSchedule({ segment = workerSegment, last = null, profile = workerProfile, voice = workerVoice, failOn = null } = {}) {
+async function runWorkerSchedule({ segment = workerSegment, last = null, profile = workerProfile, voice = workerVoice, terms = [], snapshot = null, failOn = null } = {}) {
   const log = [];
   let transactions = 0;
   const client = {
@@ -401,6 +401,8 @@ async function runWorkerSchedule({ segment = workerSegment, last = null, profile
       if (sql.includes("from tenant_entitlements")) return { rows: [] };
       if (sql.startsWith("update runtime_alerts")) return { rows: [] };
       if (sql.includes("from show_revision_policy_profiles binding")) return { rows: profile ? [profile] : [] };
+      if (sql.startsWith("select lexicon from show_revision_prohibited_term_snapshots")) return { rows: snapshot === null ? [] : [{ lexicon: snapshot }] };
+      if (sql.startsWith("select tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision")) return { rows: terms };
       if (sql.startsWith("select variant_index, play_seq from live_run_script_plays")) return { rows: last ? [last] : [] };
       if (sql.startsWith("insert into outbox_events")) return { rows: [{ id: "10000000-0000-4000-8000-0000000000e1" }] };
       if (sql.startsWith("insert into runtime_alerts")) return { rows: [{ id: "alert-1" }] };
@@ -422,6 +424,8 @@ async function runWorkerSchedule({ segment = workerSegment, last = null, profile
     parsePolicyRules: workerPolicyEngine.parsePolicyRules,
     BUILTIN_LEXICON: workerBuiltin.BUILTIN_LEXICON,
     effectiveLexicon: workerLexicon.effectiveLexicon,
+    compileLexicon: workerLexicon.compileLexicon,
+    runtimeLexicon: workerLexicon.runtimeLexicon,
     chooseScriptVariant: workerRotation.chooseScriptVariant,
     scriptVariantsProblem: workerRotation.scriptVariantsProblem
   });
@@ -464,6 +468,21 @@ test("worker scheduled start skips a refused version and records it", async () =
   assert.deepEqual(find("insert into live_run_script_plays")[0].params[9], [1]);
   const audit = find("insert into audit_events").find((entry) => entry.sql.includes("program_script.variant_selected"));
   assert.equal(JSON.parse(audit.params[3]).skippedVariantIndexes, "1");
+});
+test("worker scheduled start checks approved current tenant terms", async () => {
+  const term = { kind: "custom", term: "租户定时脚本禁词", normalized_term: "租户定时脚本禁词", category: "custom", approved_revision: 1, severity: "block", suggestions: [], disabled: false, active: true };
+  const segment = { ...workerSegment, runtime_script: "租户定时脚本禁词", runtime_script_variants: ["合规替代话术"] };
+  const { command, find } = await runWorkerSchedule({ segment, terms: [term] });
+  assert.deepEqual([command.payload.runtimeScript, command.payload.scriptVariantIndex], ["合规替代话术", "1"]);
+  assert.deepEqual(find("insert into live_run_script_plays")[0].params[9], [0]);
+});
+test("worker scheduled start retains a blocking term frozen in the revision after it is disabled", async () => {
+  const term = { id: "custom:冻结定时脚本禁词", term: "冻结定时脚本禁词", normalized: "冻结定时脚本禁词", category: "custom", severity: "block", suggestions: [] };
+  const disabledCurrentTerm = { kind: "custom", term: term.term, normalized_term: term.normalized, category: "custom", approved_revision: 2, severity: "block", suggestions: [], disabled: false, active: false };
+  const segment = { ...workerSegment, runtime_script: term.term, runtime_script_variants: ["合规替代话术"] };
+  const { command, find } = await runWorkerSchedule({ segment, terms: [disabledCurrentTerm], snapshot: [term] });
+  assert.deepEqual([command.payload.runtimeScript, command.payload.scriptVariantIndex], ["合规替代话术", "1"]);
+  assert.deepEqual(find("insert into live_run_script_plays")[0].params[9], [0]);
 });
 test("worker scheduled start with every version refused dispatches nothing and opens program_script_blocked", async () => {
   const segment = { id: workerSegment.id, runtime_script: "含违规词的主话术", runtime_script_variants: ["违规词变体"] };
