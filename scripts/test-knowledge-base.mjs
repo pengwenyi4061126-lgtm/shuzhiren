@@ -620,6 +620,7 @@ describe("worker FAQ rules", () => {
   async function evaluateWorker({ rules, interactions = [comment()], candidates = [knowledgeCandidate()], lookupError = false, draftExists = false, terms = [], cooledRuleIds = [] }) {
     const queries = [];
     const logs = [];
+    const product = { product_name: "洁面商品", price_cent: 9900, product_version_id: "20000000-0000-4000-8000-000000000010", product_revision: 1, source_ref: "evidence://worker-test", source_synced_at: new Date().toISOString(), valid_from: new Date(Date.now() - 60_000).toISOString(), valid_until: null };
     const client = {
       async query(text, params = []) {
         const sql = text.replace(/\s+/g, " ").trim();
@@ -635,9 +636,12 @@ describe("worker FAQ rules", () => {
         if (sql.startsWith("select lexicon from show_revision_prohibited_term_snapshots")) return { rows: [] };
         if (sql.startsWith("select tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision")) return { rows: terms };
         if (sql.includes("from show_revision_policy_profiles binding")) return { rows: [{ rules: [], evidence_ref: "evidence://worker-test/policy", validation_summary: "approved fixture", approval_status: "approved" }] };
-        if (sql.includes("interaction_rule_product_context")) return { rows: [] };
+        if (sql.includes("interaction_rule_product_context")) return { rows: [product] };
+        if (sql.startsWith("select asset.runtime_voice_id")) return { rows: [{ runtime_voice_id: "worker_test_voice", checksum: `sha256:${"a".repeat(64)}` }] };
         if (sql.startsWith("select template_index")) return { rows: cooledRuleIds.includes(params[1]) ? [{ template_index: 0, age_seconds: 0 }] : [] };
         if (sql.startsWith("select 1 from interaction_rule_firings")) return { rows: [] };
+        if (sql.startsWith("select exists (select 1 from outbox_events")) return { rows: [{ pending_speech: false, pending_media: false, last_speech_age_seconds: null }] };
+        if (sql.startsWith("insert into outbox_events")) return { rows: [{ id: "20000000-0000-4000-8000-000000000011" }] };
         if (sql.startsWith("insert into channel_reply_drafts")) return { rows: draftExists ? [] : [{ id: "20000000-0000-4000-8000-000000000007" }] };
         if (sql.startsWith("insert into interaction_rule_firings")) {
           if (sql.includes("returning id")) return { rows: [{ id: params[0] }] };
@@ -724,5 +728,61 @@ describe("worker FAQ rules", () => {
     assert.equal(interactionRules.parseRule({ ...keywordRule(), templates: ["{faq_answer}"] }), null);
     assert.equal(parse().minScorePermille, 600);
     assert.deepEqual(interactionRules.renderTemplate("{faq_answer}", { faq_answer: "答案中保留 {price}" }), { text: "答案中保留 {price}", missing: [] });
+  });
+
+  test("Property 14: one comment produces at most one automatic answer from the highest-priority eligible rule", async () => {
+    const ruleSpec = fc.record({ priority: fc.integer({ min: 0, max: 1000 }), cooled: fc.boolean(), action: fc.constantFrom("reply_draft", "speak") });
+    const extraSpec = fc.record({ triggerType: fc.constantFrom("keyword", "faq"), priority: fc.integer({ min: 0, max: 1000 }), cooled: fc.boolean(), action: fc.constantFrom("reply_draft", "speak") });
+    const generated = fc.tuple(ruleSpec, ruleSpec, fc.array(extraSpec, { maxLength: 6 }))
+      .map(([keyword, faq, rest]) => [{ triggerType: "keyword", ...keyword }, { triggerType: "faq", ...faq }, ...rest]);
+    const scenario = fc.oneof(
+      generated,
+      fc.constant([{ triggerType: "keyword", priority: 500, cooled: false, action: "reply_draft" }, { triggerType: "faq", priority: 500, cooled: false, action: "speak" }]),
+      fc.constant([{ triggerType: "keyword", priority: 200, cooled: true, action: "speak" }, { triggerType: "faq", priority: 100, cooled: true, action: "reply_draft" }]),
+      fc.constant([{ triggerType: "keyword", priority: 500, cooled: false, action: "speak" }, { triggerType: "faq", priority: 100, cooled: false, action: "reply_draft" }]),
+      fc.constant([{ triggerType: "keyword", priority: 100, cooled: true, action: "speak" }, { triggerType: "faq", priority: 500, cooled: false, action: "reply_draft" }])
+    );
+    const seen = { highestTie: 0, allCooled: 0, speech: 0, draft: 0 };
+    await fc.assert(fc.asyncProperty(scenario, async (specs) => {
+        const generatedRules = specs.map((spec, index) => ({
+          id: `30000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+          name: `rule-${index}`,
+          trigger_type: spec.triggerType,
+          match_config: spec.triggerType === "faq" ? { minScorePermille: 300 + (spec.priority % 701) } : { keywords: ["发货"] },
+          templates: spec.triggerType === "faq" ? ["{faq_answer}"] : ["关键词答复"],
+          action: spec.action,
+          cooldown_seconds: 30,
+          interval_seconds: null,
+          priority: spec.priority,
+          default_key: null,
+          cooled: spec.cooled
+        }));
+        const rules = generatedRules.map(({ cooled, ...row }) => row);
+        const cooledRuleIds = generatedRules.filter((rule) => rule.cooled).map((rule) => rule.id);
+        const candidates = [knowledgeCandidate({ keywords: ["发货", "什么时候发货"] })];
+        const result = await evaluateWorker({ rules, candidates, cooledRuleIds });
+        const firingQueries = result.queries.filter((query) => query.sql.startsWith("insert into interaction_rule_firings"));
+        const successes = firingQueries.filter((query) => !query.sql.includes("returning id") && ["speech_queued", "reply_drafted"].includes(query.params[9]));
+        assert.ok(successes.length <= 1, "one comment has at most one successful automatic answer");
+        const expected = [...generatedRules].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id)).find((rule) => !rule.cooled);
+        if (expected) {
+          if (generatedRules.filter((rule) => !rule.cooled && rule.priority === expected.priority).length > 1) seen.highestTie += 1;
+          assert.equal(successes.length, 1);
+          assert.equal(successes[0].params[2], expected.id);
+          assert.equal(successes[0].params[9], expected.action === "speak" ? "speech_queued" : "reply_drafted");
+          assert.equal(result.summary.speechQueued + result.summary.replyDrafted, 1);
+          seen[expected.action === "speak" ? "speech" : "draft"] += 1;
+        } else {
+          seen.allCooled += 1;
+          assert.equal(successes.length, 0);
+          assert.equal(result.summary.speechQueued + result.summary.replyDrafted, 0);
+          const suppressed = firingQueries.find((query) => query.sql.includes("returning id"));
+          const highest = [...generatedRules].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id))[0];
+          assert.equal(suppressed.params[2], highest.id);
+          assert.equal(suppressed.params[9], "suppressed");
+          assert.equal(suppressed.params[10], "rule_cooldown");
+        }
+      }), { seed: 11014, numRuns: 100 });
+    for (const branch of Object.keys(seen)) assert.ok(seen[branch] > 0, `Property 14 did not exercise ${branch}`);
   });
 });
