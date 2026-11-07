@@ -4184,3 +4184,26 @@ skipped 步骤数: "0"
   - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
   - { 门禁: membership:authz:check, 行为测试: [无] }
 ```
+
+## V-20261108-07 FAQ 控制台规则与默认知识库回复草稿通过本机验证
+
+```yaml
+编号: V-20261108-07
+类型: 结论
+结论: 任务 10.10 FAQ 控制台规则、默认草稿规则与批准快照展示通过本机验证；真实 PostgreSQL 集成待计划中的任务 14.1 CI
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 741034f7efaa04e77898e804e17c42ee694677b5
+    检查:
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: interaction-rules:test, 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: interaction-rules.test.mjs, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+```
