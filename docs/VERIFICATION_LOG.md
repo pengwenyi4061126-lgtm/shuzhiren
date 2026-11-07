@@ -4230,3 +4230,31 @@ skipped 步骤数: "0"
     未执行的 CI 检查:
       - { job: postgres-integration, 名称: npm run postgres:integration, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
 ```
+
+## V-20261108-09 回复草稿知识库依据通过本机验证
+
+```yaml
+编号: V-20261108-09
+类型: 结论
+结论: 任务 10.12 回复草稿使用当前批准知识依据，演示模式覆盖命中、无命中、拦截、过期和跨租户快照；本机整体验证通过，PostgreSQL 集成待计划中的任务 14.1 CI
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 985b2fa573fcf19a479fd75e1b6c9516887cad92
+    检查:
+      - { 名称: knowledge:test, 标签: behavioral }
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: channel:verification:check, 标签: static }
+      - { 名称: membership:scopes:check, 标签: static }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: npm run postgres:integration, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+静态门禁覆盖:
+  - { 门禁: channel:verification:check, 行为测试: [无] }
+  - { 门禁: membership:scopes:check, 行为测试: [无] }
+```
