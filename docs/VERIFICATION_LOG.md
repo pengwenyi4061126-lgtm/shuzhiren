@@ -4053,3 +4053,23 @@ skipped 步骤数: "0"
   - { 门禁: console:client-requests:check, 行为测试: [无] }
   - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
 ```
+
+## V-20261108-02 PostgreSQL Property 9 验证轮换账本连续性与话术哈希
+
+```yaml
+编号: V-20261108-02
+类型: 结论
+结论: 任务 7.12 的 Property 9 在同一隔离 PostgreSQL 克隆中为每个随机样本创建新场次，固定种子运行 100 轮；轮换序号、话术 SHA-256 与账本不可变性均通过
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run postgres:integration -- --only scripts/integration/script-variants.test.mjs --concurrency 1
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: d866aa00e8d091f7103f50ae5f015ea0cfa4cfc7
+    检查:
+      - { 名称: npm run postgres:integration, 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: GitHub Actions 中的 postgres:integration, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+```
