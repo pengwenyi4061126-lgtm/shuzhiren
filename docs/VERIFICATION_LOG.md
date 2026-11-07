@@ -4315,3 +4315,40 @@ skipped 步骤数: "0"
   - { 门禁: shared:modules:check, 行为测试: [无] }
   - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
 ```
+
+## V-20261108-12 PostgreSQL 知识问答应用路径回归准备完成
+
+```yaml
+编号: V-20261108-12
+类型: 结论
+结论: 任务 10.15 已补齐知识条目服务审批、快照哈希复算、FAQ 默认规则、worker 依据关联、编辑失效、规则去重及两个回复草稿 API 的隔离 PostgreSQL 集成用例；本机 87 项整体验证通过，真实 PostgreSQL 集成留待任务 14.1 的 CI run
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 35b9015318c9c33a4bc8a66867a9308f21abe59b
+    检查:
+      - { 名称: knowledge:test, 标签: behavioral }
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: shared:modules:check, 标签: static }
+      - { 名称: governance:tenant-scope:check, 标签: static }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: knowledge-base.test.mjs, 原因: 按任务计划在 14.1 推送后采集真实运行结果 }
+  - 类别: 本机运行
+    命令: node --check scripts/integration/knowledge-base.test.mjs
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 35b9015318c9c33a4bc8a66867a9308f21abe59b
+    检查:
+      - { 名称: node --check scripts/integration/knowledge-base.test.mjs, 标签: static }
+    未执行的 CI 检查: [无]
+静态门禁覆盖:
+  - { 门禁: shared:modules:check, 行为测试: [无] }
+  - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
+```
