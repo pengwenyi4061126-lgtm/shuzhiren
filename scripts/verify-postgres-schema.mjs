@@ -87,6 +87,23 @@ requiredColumns.show_revision_prohibited_term_snapshots = ["show_revision_id", "
 requiredIndexes.push("tenant_prohibited_terms_custom_idx", "tenant_prohibited_terms_override_idx", "tenant_prohibited_term_revisions_pending_idx");
 requiredPolicies.push("tenant_isolation_tenant_prohibited_terms", "tenant_isolation_tenant_prohibited_term_revisions", "tenant_isolation_show_revision_prohibited_term_snapshots");
 requiredTriggers.push("tenant_prohibited_terms_governed_mutation", "tenant_prohibited_term_revisions_governed_mutation", "show_revision_prohibited_term_snapshots_governed", "show_revisions_require_lexicon_snapshot");
+// 090: frozen overlay configuration and the scene hash required for approval when a layer is enabled.
+requiredTables.push("show_revision_overlays");
+requiredColumns.show_revision_overlays = ["tenant_id", "show_revision_id", "caption_enabled", "caption_position", "product_card_enabled", "product_card_anchor", "price_sticker_enabled", "background_mode", "background_media_asset_id", "background_options", "scene_json", "scene_sha256", "frozen_at", "updated_by", "updated_at"];
+requiredPolicies.push("tenant_isolation_show_revision_overlays");
+requiredTriggers.push("show_revision_overlays_governed", "show_revisions_require_frozen_overlay");
+for (const constraint of [
+  "show_revision_overlays_caption_position_check",
+  "show_revision_overlays_product_card_anchor_check",
+  "show_revision_overlays_background_mode_check",
+  "show_revision_overlays_background_options_check",
+  "show_revision_overlays_scene_json_check",
+  "show_revision_overlays_scene_sha256_check",
+  "show_revision_overlays_check",
+  "show_revision_overlays_check1",
+  "show_revision_overlays_check2",
+  "show_revision_overlays_check3"
+]) requiredConstraints.set(constraint, true);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.
@@ -176,6 +193,10 @@ try {
   // 086: the "faq" trigger type of interaction rules.
   const interactionRuleTriggers = new Set((await client.query("select e.enumlabel from pg_type t join pg_enum e on e.enumtypid = t.oid where t.typname = 'interaction_rule_trigger'")).rows.map((row) => row.enumlabel));
   if (!interactionRuleTriggers.has("faq")) errors.push("interaction_rule_trigger 缺少类型：faq");
+
+  // 089: the background image is a separately approved media asset kind.
+  const mediaAssetKinds = new Set((await client.query("select e.enumlabel from pg_type t join pg_enum e on e.enumtypid = t.oid where t.typname = 'media_asset_kind'")).rows.map((row) => row.enumlabel));
+  if (!mediaAssetKinds.has("overlay_background")) errors.push("media_asset_kind 缺少类型：overlay_background");
 
   const identity = await client.query("select current_user as role, r.rolsuper, r.rolbypassrls from pg_roles r where r.rolname = current_user");
   if (!allowPrivileged && (identity.rows[0]?.rolsuper || identity.rows[0]?.rolbypassrls)) errors.push(`应用数据库账号 ${identity.rows[0]?.role ?? "unknown"} 可绕过 RLS；请使用非超级、非 BYPASSRLS 的运行时账号`);

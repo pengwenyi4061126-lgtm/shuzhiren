@@ -42,6 +42,7 @@ try {
   assert.equal(adapterFunctionPrivilege.rows[0].allowed, false, "channel adapter must not execute the runtime worker actor function");
   await assertSealedAuditChain();
   await assertWorkerVoiceBindingRead();
+  await assertWorkerOverlayRead();
   // 085: the worker records script rotation in the append-only ledger; it can read and insert, never change it.
   for (const [privilege, expected] of [["select", true], ["insert", true], ["update", false], ["delete", false], ["truncate", false]]) await expectTable("shuzhiren_runtime_worker", "live_run_script_plays", privilege, expected);
   for (const principal of ["shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) for (const privilege of ["select", "insert", "update", "delete"]) await expectTable(principal, "live_run_script_plays", privilege, false);
@@ -197,6 +198,47 @@ async function assertWorkerVoiceBindingRead() {
     await client.query("rollback to savepoint voice_binding_column");
   } finally {
     await client.query("rollback to savepoint voice_binding_read");
+  }
+}
+
+async function assertWorkerOverlayRead() {
+  const worker = "shuzhiren_runtime_worker";
+  await expectTable(worker, "show_revision_overlays", "select", false);
+  for (const column of ["tenant_id", "show_revision_id", "scene_json", "scene_sha256"]) await expectColumn(worker, "show_revision_overlays", column, true);
+  for (const column of ["caption_enabled", "caption_position", "product_card_enabled", "product_card_anchor", "price_sticker_enabled", "background_mode", "background_media_asset_id", "background_options", "frozen_at", "updated_by", "updated_at"]) {
+    await expectColumn(worker, "show_revision_overlays", column, false);
+  }
+  for (const privilege of ["insert", "update", "delete", "truncate"]) await expectTable(worker, "show_revision_overlays", privilege, false);
+  for (const principal of ["shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) {
+    await expectTable(principal, "show_revision_overlays", "select", false);
+    for (const column of ["tenant_id", "show_revision_id", "scene_json", "scene_sha256"]) await expectColumn(principal, "show_revision_overlays", column, false);
+  }
+
+  const tenantId = randomUUID();
+  const otherTenantId = randomUUID();
+  await client.query("insert into tenants (id, slug, name) values ($1, $2, 'Overlay read'), ($3, $4, 'Overlay bystander')", [tenantId, `overlay-read-${tenantId}`, otherTenantId, `overlay-read-${otherTenantId}`]);
+  const createOverlay = async (tenant) => {
+    await client.query("select set_config('app.tenant_id', $1, true)", [tenant]);
+    const actor = (await client.query("select runtime_worker_actor($1::uuid, 'runtime-worker') as id", [tenant])).rows[0].id;
+    const showId = (await client.query("insert into shows (tenant_id, name) values ($1, 'Overlay read') returning id", [tenant])).rows[0].id;
+    const revisionId = (await client.query("insert into show_revisions (tenant_id, show_id, revision, plan, approval_status) values ($1, $2, 1, '{}'::jsonb, 'draft') returning id", [tenant, showId])).rows[0].id;
+    await client.query("insert into show_revision_overlays (tenant_id, show_revision_id, updated_by) values ($1, $2, $3)", [tenant, revisionId, actor]);
+    return revisionId;
+  };
+  const revisionId = await createOverlay(tenantId);
+  const otherRevisionId = await createOverlay(otherTenantId);
+  await client.query("savepoint overlay_worker_read");
+  try {
+    await client.query(`set local role ${worker}`);
+    await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+    const query = "select tenant_id, show_revision_id, scene_json, scene_sha256 from show_revision_overlays where tenant_id = $1 and show_revision_id = $2";
+    assert.deepEqual((await client.query(query, [tenantId, revisionId])).rows, [{ tenant_id: tenantId, show_revision_id: revisionId, scene_json: null, scene_sha256: null }]);
+    assert.deepEqual((await client.query(query, [otherTenantId, otherRevisionId])).rows, [], "RLS must hide overlays from another tenant");
+    await client.query("savepoint overlay_worker_column");
+    await assert.rejects(client.query("select caption_enabled from show_revision_overlays where show_revision_id = $1", [revisionId]), (error) => error.code === "42501");
+    await client.query("rollback to savepoint overlay_worker_column");
+  } finally {
+    await client.query("rollback to savepoint overlay_worker_read");
   }
 }
 // D4 (2026-11-05): a dedicated migration owner (BYPASSRLS) owns every schema object, and the control plane connects

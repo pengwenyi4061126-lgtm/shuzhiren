@@ -82,3 +82,5 @@ grant execute on function knowledge_answer_candidates(uuid, uuid, text[], intege
 -- not readable by the worker. Row level security limits every read to the tenant of the worker's transaction.
 grant select (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256) on show_revision_prohibited_term_snapshots to shuzhiren_runtime_worker;
 grant select (tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision, severity, suggestions, disabled, active) on tenant_prohibited_terms to shuzhiren_runtime_worker;
+-- 090 画面层：scheduleDueRun 读冻结场景。
+grant select (tenant_id, show_revision_id, scene_json, scene_sha256) on show_revision_overlays to shuzhiren_runtime_worker;
