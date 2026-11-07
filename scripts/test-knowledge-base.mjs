@@ -10,6 +10,23 @@ import fc from "fast-check";
 import { normalizePolicyText } from "../apps/console/lib/shared/policy-engine.mjs";
 import { knowledgeQueryTerms, knowledgeSearchTerms, rankKnowledgeHits, scoreKnowledgeEntry } from "../apps/console/lib/shared/knowledge-match.mjs";
 register("./lib/console-ts-loader.mjs", import.meta.url);
+for (const name of ["DATABASE_URL", "CONTROL_PLANE_DEMO_MODE"]) delete process.env[name];
+Object.assign(process.env, { CONTROL_PLANE_DEV_HEADER_IDENTITY: "true", NODE_ENV: "development", HOSTNAME: "127.0.0.1" });
+const knowledgeService = await import("../apps/console/lib/knowledge-base.ts");
+const knowledgeRoutes = {
+  list: await import("../apps/console/app/api/v1/knowledge-entries/route.ts"),
+  item: await import("../apps/console/app/api/v1/knowledge-entries/[entryId]/route.ts"),
+  approve: await import("../apps/console/app/api/v1/knowledge-entries/[entryId]/approve/route.ts")
+};
+const knowledgeHeaders = (role = "admin", actorId = `knowledge-test-${role}`, tenantId = "tenant_demo") => ({ "x-tenant-id": tenantId, "x-actor-id": actorId, "x-actor-name": "Knowledge API Test", "x-actor-role": role, "content-type": "application/json" });
+const callKnowledgeRoute = async (handler, url, { method = "GET", body, role = "admin", actorId, tenantId, params = {} } = {}) => {
+  const response = await handler(new Request(`http://127.0.0.1${url}`, { method, headers: knowledgeHeaders(role, actorId, tenantId), body: body === undefined ? undefined : JSON.stringify(body) }), { params: Promise.resolve(params) });
+  return { status: response.status, body: await response.json() };
+};
+const validKnowledgeEntry = (overrides = {}) => ({ kind: "faq", question: "退货规则是什么？", aliasQuestions: ["如何申请退货？"], answer: "支持七天内申请退货。", keywords: ["退货"], ...overrides });
+const knowledgeEntryPath = (entryId) => `/api/v1/knowledge-entries/${entryId}`;
+const callKnowledgeItem = (method, entryId, options = {}) => callKnowledgeRoute(knowledgeRoutes.item[method], knowledgeEntryPath(entryId), { ...options, method, params: { entryId } });
+const callKnowledgeApproval = (entryId, options = {}) => callKnowledgeRoute(knowledgeRoutes.approve.POST, `${knowledgeEntryPath(entryId)}/approve`, { ...options, method: "POST", params: { entryId } });
 
 // normalizePolicyText applied until it stops changing: one pass is not stable for e + U+200B + U+0301.
 const normalizeStable = (value) => {
@@ -304,6 +321,94 @@ describe("scoreKnowledgeEntry properties", () => {
       { seed: 10403, numRuns: 500 }
     );
     assert.ok(generatedNonHits > 500, `only ${generatedNonHits} non-hit keywords were generated`);
+  });
+});
+
+describe("knowledge entry console routes", () => {
+  test("route roles enforce tenant-wide CRUD and two-person approval", async () => {
+    for (const role of ["admin", "operator", "reviewer", "analyst"]) assert.equal((await callKnowledgeRoute(knowledgeRoutes.list.GET, "/api/v1/knowledge-entries", { role })).status, 200, `${role} can list`);
+    assert.equal((await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "reviewer", body: validKnowledgeEntry() })).status, 403);
+    const created = await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "operator", actorId: "kb-author", body: validKnowledgeEntry() });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.body.data.id;
+    assert.equal(created.body.data.status, "pending");
+    assert.equal((await callKnowledgeItem("GET", id, { role: "analyst" })).status, 200);
+    assert.equal((await callKnowledgeItem("PUT", id, { role: "reviewer", body: { answer: "回复内容更正。" } })).status, 403);
+    assert.equal((await callKnowledgeApproval(id, { role: "operator" })).status, 403);
+    const selfApproval = await callKnowledgeApproval(id, { role: "admin", actorId: "kb-author" });
+    assert.equal(selfApproval.status, 409);
+    assert.equal(selfApproval.body.error, "knowledge_entry_second_approver_required");
+    const approved = await callKnowledgeApproval(id, { role: "reviewer", actorId: "kb-reviewer" });
+    assert.equal(approved.status, 200, JSON.stringify(approved.body));
+    assert.equal(approved.body.data.status, "approved");
+    assert.ok(approved.body.data.approvedApprovalId);
+
+    const edited = await callKnowledgeItem("PUT", id, { role: "operator", actorId: "kb-editor", body: { answer: "支持七天内申请退货，请联系客服办理。" } });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.data.status, "pending");
+    assert.equal(edited.body.data.revision, 2);
+    assert.equal(edited.body.data.approvedApprovalId, undefined);
+    assert.equal((await callKnowledgeApproval(id, { role: "admin", actorId: "kb-editor" })).status, 409);
+    assert.equal((await callKnowledgeApproval(id, { role: "reviewer", actorId: "kb-reviewer-2" })).status, 200);
+
+    const audit = globalThis.shuzhirenAuditStore.events.filter((event) => event.resourceId === id);
+    assert.deepEqual([...audit].reverse().map((event) => event.type), ["knowledge_entry.created", "knowledge_entry.approved", "knowledge_entry.updated", "knowledge_entry.approved"]);
+    const updatedEvent = audit.find((event) => event.type === "knowledge_entry.updated");
+    const approvedEvent = audit.find((event, index) => event.type === "knowledge_entry.approved" && index === 0);
+    assert.equal(updatedEvent.detail.approvalReset, true);
+    assert.ok(approvedEvent.detail.approvalId);
+    assert.match(approvedEvent.detail.answerSha256, /^[0-9a-f]{64}$/);
+    assert.equal(JSON.stringify(approvedEvent.detail).includes("支持七天内申请退货"), false);
+
+    assert.equal((await callKnowledgeItem("DELETE", id, { role: "operator" })).status, 403);
+    const retired = await callKnowledgeItem("DELETE", id, { role: "admin", actorId: "kb-admin" });
+    assert.equal(retired.status, 200);
+    assert.equal(retired.body.data.status, "retired");
+    assert.equal((await callKnowledgeItem("PUT", id, { body: { answer: "不能再改" } })).status, 409);
+    assert.equal((await callKnowledgeApproval(id, { role: "reviewer", actorId: "kb-reviewer-3" })).status, 409);
+  });
+
+  test("creation and update validate boundaries, searchable keywords, term count and product tenant", async () => {
+    const create = (body) => callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", body });
+    for (const invalid of [
+      validKnowledgeEntry({ question: "问".repeat(201) }),
+      validKnowledgeEntry({ aliasQuestions: Array.from({ length: 6 }, () => "别名") }),
+      validKnowledgeEntry({ answer: "答".repeat(301) }),
+      validKnowledgeEntry({ keywords: Array.from({ length: 21 }, (_, index) => `词${index}`) })
+    ]) assert.equal((await create(invalid)).status, 400);
+    for (const keyword of ["a", "！！"]) {
+      const invalid = await create(validKnowledgeEntry({ keywords: [keyword] }));
+      assert.equal(invalid.status, 422, JSON.stringify(invalid.body));
+      assert.ok(invalid.body.detail.issues.some((issue) => issue.value === keyword));
+    }
+    assert.equal((await create(validKnowledgeEntry({ keywords: ["油"] }))).status, 201, "one CJK character remains searchable");
+    const oversizedTerms = knowledgeService.knowledgeEntryInputIssues(validKnowledgeEntry(), 2001);
+    assert.ok(oversizedTerms.some((issue) => issue.field === "searchTerms"));
+    const before = (await knowledgeRoutes.list.GET(new Request("http://127.0.0.1/api/v1/knowledge-entries", { headers: knowledgeHeaders("admin") }))).status;
+    assert.equal(before, 200);
+    const badProduct = await create(validKnowledgeEntry({ productId: "product_not_in_tenant" }));
+    assert.equal(badProduct.status, 422);
+
+    const created = await create(validKnowledgeEntry({ productId: "product_a102" }));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const badUpdate = await callKnowledgeItem("PUT", created.body.data.id, { body: { keywords: ["！！"] } });
+    assert.equal(badUpdate.status, 422);
+    assert.equal((await callKnowledgeItem("PUT", created.body.data.id, { body: { question: "" } })).status, 400);
+  });
+
+  test("blocked text cannot be approved and tenant-wide service methods reject restricted members", async () => {
+    const created = await callKnowledgeRoute(knowledgeRoutes.list.POST, "/api/v1/knowledge-entries", { method: "POST", role: "operator", actorId: "kb-block-author", body: validKnowledgeEntry({ answer: "全网最低价，欢迎选购。" }) });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const refused = await callKnowledgeApproval(created.body.data.id, { role: "reviewer", actorId: "kb-block-reviewer" });
+    assert.equal(refused.status, 422, JSON.stringify(refused.body));
+    assert.equal(refused.body.error, "knowledge_entry_policy_blocked");
+    assert.equal(refused.body.failures[0].field, "answer");
+    assert.ok(refused.body.failures[0].findings.some((finding) => finding.term === "全网最低"));
+    assert.equal((await callKnowledgeItem("GET", created.body.data.id)).body.data.status, "pending");
+
+    const restricted = { tenantId: "tenant_knowledge_restricted", actorId: "restricted-operator", actorName: "Restricted", role: "operator", accessScope: "restricted" };
+    await assert.rejects(knowledgeService.listKnowledgeEntries(restricted), (error) => error instanceof Response && error.status === 403);
+    assert.equal((await callKnowledgeRoute(knowledgeRoutes.list.GET, "/api/v1/knowledge-entries", { role: "admin", actorId: "other-tenant-admin", tenantId: "tenant_knowledge_other" })).body.data.some((entry) => entry.id === created.body.data.id), false);
   });
 });
 
