@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { register } from "node:module";
 import { after, before, describe, test } from "node:test";
+import fc from "fast-check";
 import { BUILTIN_LEXICON_VERSION } from "../../apps/console/lib/shared/prohibited-terms-builtin.mjs";
 import { lexiconSha256 } from "../../apps/console/lib/shared/prohibited-terms.mjs";
 import { createHarness } from "./harness.mjs";
@@ -38,6 +39,8 @@ const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex")
 const SCRIPT_A = "本段只讲解已批准的商品事实。";
 const VARIANTS_A = ["换一种说法讲解商品事实。", "再换一种口吻介绍商品事实。"];
 const SCRIPT_B = "本段只回答低风险且可追溯的问题。";
+const ROTATION_PROPERTY_SEED = 20261108;
+const ROTATION_PROPERTY_RUNS = 100;
 
 before(async () => {
   h = await createHarness(import.meta.url);
@@ -119,7 +122,7 @@ async function fixture({ state = "ARMED", withRules = state === "ARMED" } = {}) 
     const { created } = await rules.createDefaultInteractionRules(adminContext);
     for (const rule of created) await rules.approveInteractionRule(adminContext, rule.id);
   }
-  return { tenantId, memberId, runId, revisionId, productVersionId, segmentIds, context };
+  return { tenantId, memberId, runId, revisionId, productVersionId, channelId, segmentIds, context };
 }
 
 const command = (f, action, expectedState, extra = {}) => store.issueCommand(f.context, f.runId, { action, expectedState, idempotencyKey: `it-sv-${randomUUID()}`, ...extra });
@@ -131,6 +134,13 @@ const confirmInsert = (f, targetId, sourceId) => confirm(f, "update live_runs se
 const confirmRollback = (f, targetId) => confirm(f, "update live_runs set active_program_segment_id = $2::uuid, active_insert_source_segment_id = null, active_insert_program_segment_id = null, pending_program_transition_event_id = null, updated_at = now() where id = $1", [targetId]);
 
 const ledgerRows = (f) => h.snapshot("select p.play_seq, p.variant_index, p.variant_count, p.script_sha256, p.control_action, p.outbox_event_id, p.skipped_variant_indexes, p.segment_id from live_run_script_plays p where p.live_run_id = $1 order by p.created_at, p.play_seq", [f.runId]);
+
+async function nextRotationFixture(base) {
+  const runId = await h.seed.liveRun({ tenantId: base.tenantId, revisionId: base.revisionId, state: "ARMED", channelId: base.channelId, productVersionId: base.productVersionId });
+  await h.admin.query("update live_runs set has_operator = true, rights_approved = true, has_approved_sku_version = true, has_fallback_program = true, channel_ready = true, output_ready = true, ai_disclosure_enabled = true where id = $1", [runId]);
+  await h.seed.healthSample({ tenantId: base.tenantId, liveRunId: runId });
+  return { ...base, runId };
+}
 
 let rotation;
 /** START -> INSERT_PROGRAM -> ROLLBACK_PROGRAM -> PAUSE -> RECOVER -> INSERT_PROGRAM -> ROLLBACK_PROGRAM, run once. */
@@ -228,6 +238,53 @@ describe("rotation across START, INSERT_PROGRAM, ROLLBACK_PROGRAM and RECOVER", 
       const expected = row.segment_id === a ? texts[row.variant_index] : SCRIPT_B;
       assert.equal(row.script_sha256, sha256(expected), `${row.control_action} #${row.play_seq} records the hash of the version it dispatched`);
     }
+  });
+
+  test("Property 9: 100 generated dispatch sequences keep per-segment play_seq and script hashes aligned", async () => {
+    const base = await fixture({ state: "ARMED" });
+    const sequence = fc.array(fc.boolean(), { minLength: 1, maxLength: 5 }).map((recoveries) => [true, ...recoveries.slice(1)]);
+    let firstRun = true;
+
+    await fc.assert(fc.asyncProperty(sequence, async (recoveries) => {
+      const f = firstRun ? base : await nextRotationFixture(base);
+      firstRun = false;
+      const { a, b } = f.segmentIds;
+      const expectedActions = ["START"];
+
+      await command(f, "START", "ARMED");
+      await confirmActivation(f, a);
+      for (const recover of recoveries) {
+        await command(f, "INSERT_PROGRAM", "LIVE", { programSegmentId: b });
+        await confirmInsert(f, b, a);
+        expectedActions.push("INSERT_PROGRAM");
+        await command(f, "ROLLBACK_PROGRAM", "LIVE");
+        await confirmRollback(f, a);
+        expectedActions.push("ROLLBACK_PROGRAM");
+        if (recover) {
+          await command(f, "PAUSE", "LIVE");
+          await h.seed.healthSample({ tenantId: f.tenantId, liveRunId: f.runId });
+          await command(f, "RECOVER", "DEGRADED");
+          await confirmActivation(f, a);
+          expectedActions.push("RECOVER");
+        }
+      }
+
+      const rows = await ledgerRows(f);
+      assert.deepEqual(rows.map((row) => row.control_action), expectedActions);
+      for (const [segmentId, versions] of [[a, [SCRIPT_A, ...VARIANTS_A]], [b, [SCRIPT_B]]]) {
+        const segmentRows = rows.filter((row) => row.segment_id === segmentId).sort((left, right) => left.play_seq - right.play_seq);
+        assert.deepEqual(segmentRows.map((row) => row.play_seq), segmentRows.map((_, index) => index + 1), "play_seq is contiguous per run and segment");
+        for (const row of segmentRows) {
+          assert.equal(row.variant_count, versions.length);
+          assert.equal(row.script_sha256, sha256(versions[row.variant_index]), `${row.control_action} records the selected version hash`);
+        }
+      }
+
+      const before = await ledgerRows(f);
+      await assert.rejects(h.admin.query("update live_run_script_plays set variant_index = variant_index where live_run_id = $1", [f.runId]), (error) => error.code === "P0001" && /append-only/.test(error.message));
+      await assert.rejects(h.admin.query("delete from live_run_script_plays where live_run_id = $1", [f.runId]), (error) => error.code === "P0001" && /append-only/.test(error.message));
+      assert.deepEqual(await ledgerRows(f), before, "rejected UPDATE and DELETE leave the ledger unchanged");
+    }), { seed: ROTATION_PROPERTY_SEED, numRuns: ROTATION_PROPERTY_RUNS });
   });
 
   test("each ledger row belongs to the media.dispatch event that carries the same text, hash and version index", async () => {
