@@ -63,6 +63,7 @@ function validateVerification(value: unknown, input: Pick<CreateMediaAssetInput,
 
 function contentTypeMatches(kind: AssetKind, value: string) {
   const type = normalizedContentType(value);
+  if (kind === "overlay_background") return type === "image/png" || type === "image/jpeg";
   return (kind === "portrait" || kind === "product_clip") ? type.startsWith("video/") : type.startsWith("audio/");
 }
 
@@ -75,5 +76,6 @@ function isOpaqueEvidenceRef(value: string) {
 }
 
 function expectedContentType(kind: AssetKind) {
+  if (kind === "overlay_background") return "image/png";
   return kind === "portrait" || kind === "product_clip" ? "video/mp4" : "audio/wav";
 }

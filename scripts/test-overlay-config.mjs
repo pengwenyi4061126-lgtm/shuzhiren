@@ -243,3 +243,115 @@ test("demo approval fails closed on unapproved background and blocked product ti
     productRecord.name = originalName;
   }
 });
+
+test("overlay routes keep the read and edit role matrix, validate input, and return config without frozen scene fields", async () => {
+  const programRunId = "50000000-0000-4000-8000-000000000001";
+  const revisionRunId = "50000000-0000-4000-8000-000000000002";
+  registerDemoProgram({
+    runId: programRunId,
+    tenantId: demoContext.tenantId,
+    revisionId: "50000000-0000-4000-8000-000000000011",
+    status: "draft",
+    editable: true,
+    overlayConfig: { ...baseConfig, backgroundMode: "none", backgroundMediaAssetId: null, backgroundOptions: {} },
+    segments: []
+  });
+  registerDemoProgram({ runId: revisionRunId, tenantId: demoContext.tenantId, revisionId: "50000000-0000-4000-8000-000000000012", status: "draft", editable: true, segments: [] });
+  const { GET: getProgramOverlay, PUT: putProgramOverlay } = await import("../apps/console/app/api/v1/live-runs/[runId]/program/overlay/route.ts");
+  const { GET: getRevisionOverlay, PUT: putRevisionOverlay } = await import("../apps/console/app/api/v1/live-runs/[runId]/program-revisions/[requestId]/overlay/route.ts");
+  const { POST: createAsset } = await import("../apps/console/app/api/v1/assets/route.ts");
+  const saved = { identity: process.env.CONTROL_PLANE_DEV_HEADER_IDENTITY, hostname: process.env.HOSTNAME, demo: process.env.CONTROL_PLANE_DEMO_MODE };
+  process.env.CONTROL_PLANE_DEV_HEADER_IDENTITY = "true";
+  process.env.HOSTNAME = "127.0.0.1";
+  process.env.CONTROL_PLANE_DEMO_MODE = "true";
+  const request = (role, runId, method = "GET", body) => new Request(`http://console.test/api/v1/live-runs/${runId}/program/overlay`, {
+    method,
+    headers: { "x-tenant-id": demoContext.tenantId, "x-actor-id": `overlay-${role}`, "x-actor-name": "Overlay Test", "x-actor-role": role, "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  try {
+    for (const role of ["admin", "operator", "reviewer", "analyst"]) {
+      const response = await getProgramOverlay(request(role, programRunId), { params: Promise.resolve({ runId: programRunId }) });
+      assert.equal(response.status, 200, `${role} can read the program overlay`);
+      const body = await response.json();
+      assert.ok(body.data);
+      assert.equal("scene_json" in body.data, false);
+    }
+    for (const role of ["admin", "operator"]) {
+      const response = await putProgramOverlay(request(role, programRunId, "PUT", baseConfig), { params: Promise.resolve({ runId: programRunId }) });
+      assert.equal(response.status, 200, `${role} can edit the draft program overlay`);
+    }
+    for (const role of ["reviewer", "analyst"]) {
+      const response = await putProgramOverlay(request(role, programRunId, "PUT", baseConfig), { params: Promise.resolve({ runId: programRunId }) });
+      assert.equal(response.status, 403, `${role} cannot edit the program overlay`);
+    }
+    const invalid = await putProgramOverlay(request("admin", programRunId, "PUT", { ...baseConfig, backgroundMode: "invalid" }), { params: Promise.resolve({ runId: programRunId }) });
+    assert.equal(invalid.status, 400);
+    await assert.rejects(overlay.getOverlayConfig({ ...demoContext, accessScope: "restricted", membershipId: "membership-restricted" }, programRunId), (error) => error instanceof Response && error.status === 404);
+    await assert.rejects(overlay.replaceOverlayConfig({ ...demoContext, accessScope: "restricted", membershipId: "membership-restricted" }, programRunId, baseConfig), (error) => error instanceof Response && error.status === 404);
+
+    for (const role of ["admin", "operator", "reviewer", "analyst"]) {
+      const response = await getRevisionOverlay(request(role, revisionRunId), { params: Promise.resolve({ runId: revisionRunId, requestId: "missing-request" }) });
+      assert.equal(response.status, 404, `${role} is allowed to read but no demo change request exists`);
+    }
+    for (const role of ["admin", "operator"]) {
+      const response = await putRevisionOverlay(request(role, revisionRunId, "PUT", baseConfig), { params: Promise.resolve({ runId: revisionRunId, requestId: "missing-request" }) });
+      assert.equal(response.status, 404, `${role} reaches the revision service but the request is absent`);
+    }
+    for (const role of ["reviewer", "analyst"]) {
+      const response = await putRevisionOverlay(request(role, revisionRunId, "PUT", baseConfig), { params: Promise.resolve({ runId: revisionRunId, requestId: "missing-request" }) });
+      assert.equal(response.status, 403, `${role} cannot edit revision overlays`);
+    }
+    const assetResponse = await createAsset(new Request("http://console.test/api/v1/assets", {
+      method: "POST",
+      headers: { "x-tenant-id": demoContext.tenantId, "x-actor-id": "overlay-operator", "x-actor-name": "Overlay Test", "x-actor-role": "operator", "content-type": "application/json" },
+      body: JSON.stringify({ kind: "overlay_background", name: "背景图片", rightsScope: "直播背景展示", source: "素材授权证明", objectKey: "tenant/backgrounds/scene.png", checksum: `sha256:${"e".repeat(64)}` })
+    }));
+    assert.equal(assetResponse.status, 201);
+    assert.equal((await assetResponse.json()).data.contentVerification.contentType, "image/png");
+  } finally {
+    for (const [key, value] of [["CONTROL_PLANE_DEV_HEADER_IDENTITY", saved.identity], ["HOSTNAME", saved.hostname], ["CONTROL_PLANE_DEMO_MODE", saved.demo]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test("overlay background media verification accepts only PNG/JPEG and does not become a required live asset", async () => {
+  const assets = await import("../apps/console/lib/assets.ts");
+  const { verifyMediaAssetContent } = await import("../apps/console/lib/media-evidence.ts");
+  assert.deepEqual(assets.requiredLiveAssetKinds, ["portrait", "voice", "product_clip", "music"]);
+  const saved = {
+    databaseUrl: process.env.DATABASE_URL,
+    demo: process.env.CONTROL_PLANE_DEMO_MODE,
+    verifierUrl: process.env.MEDIA_EVIDENCE_VERIFIER_URL,
+    verifierToken: process.env.MEDIA_EVIDENCE_VERIFIER_TOKEN,
+    fetch: globalThis.fetch
+  };
+  process.env.DATABASE_URL = "postgres://integration.invalid/control_plane";
+  process.env.CONTROL_PLANE_DEMO_MODE = "false";
+  process.env.MEDIA_EVIDENCE_VERIFIER_URL = "http://127.0.0.1:8080";
+  process.env.MEDIA_EVIDENCE_VERIFIER_TOKEN = "x".repeat(48);
+  let responseContentType = "image/png";
+  globalThis.fetch = async (_url, options) => {
+    const input = JSON.parse(options.body);
+    return Response.json({ objectKey: input.objectKey, checksum: input.expectedChecksum, objectVersion: "overlay-v1", bytes: 128, contentType: responseContentType, evidenceRef: "evidence://overlay/test", verifiedAt: new Date().toISOString() });
+  };
+  try {
+    for (const contentType of ["image/png", "image/jpeg"]) {
+      responseContentType = contentType;
+      const result = await verifyMediaAssetContent(demoContext, { kind: "overlay_background", objectKey: "tenant/backgrounds/scene.png", checksum: `sha256:${"c".repeat(64)}` });
+      assert.equal(result.contentType, contentType);
+    }
+    for (const contentType of ["video/mp4", "audio/wav"]) {
+      responseContentType = contentType;
+      await assert.rejects(verifyMediaAssetContent(demoContext, { kind: "overlay_background", objectKey: "tenant/backgrounds/scene.png", checksum: `sha256:${"c".repeat(64)}` }), (error) => error instanceof Response && error.status === 502);
+    }
+  } finally {
+    for (const [key, value] of [["DATABASE_URL", saved.databaseUrl], ["CONTROL_PLANE_DEMO_MODE", saved.demo], ["MEDIA_EVIDENCE_VERIFIER_URL", saved.verifierUrl], ["MEDIA_EVIDENCE_VERIFIER_TOKEN", saved.verifierToken]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    globalThis.fetch = saved.fetch;
+  }
+  const demoVerification = await verifyMediaAssetContent(demoContext, { kind: "overlay_background", objectKey: "tenant/backgrounds/demo.png", checksum: `sha256:${"d".repeat(64)}` });
+  assert.equal(demoVerification.contentType, "image/png");
+});

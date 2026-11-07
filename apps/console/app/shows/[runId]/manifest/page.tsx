@@ -4,7 +4,7 @@ import { pageRequestContext } from "@/lib/control-plane/page-context";
 import { isProductFactsCurrent } from "@/lib/catalog";
 import { getRunReleaseManifest } from "@/lib/release-manifest";
 
-const labels = { runtime: "运行时", avatar: "形象驱动", lip_sync: "口型驱动", voice: "语音", portrait: "肖像", product_clip: "商品视频", music: "音乐" } as const;
+const labels = { runtime: "运行时", avatar: "形象驱动", lip_sync: "口型驱动", voice: "语音", portrait: "肖像", product_clip: "商品视频", music: "音乐", overlay_background: "画面层背景图" } as const;
 
 export default async function ReleaseManifestPage(props: PageProps<"/shows/[runId]/manifest">) {
   const { runId } = await props.params;

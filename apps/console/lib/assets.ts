@@ -5,7 +5,7 @@ import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput }
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 import { verifyMediaAssetContent, type MediaContentVerification } from "@/lib/media-evidence";
 
-export type AssetKind = "portrait" | "voice" | "product_clip" | "music";
+export type AssetKind = "portrait" | "voice" | "product_clip" | "music" | "overlay_background";
 export type AssetApproval = "pending" | "approved" | "revoked";
 export const requiredLiveAssetKinds: AssetKind[] = ["portrait", "voice", "product_clip", "music"];
 export type MediaAsset = {

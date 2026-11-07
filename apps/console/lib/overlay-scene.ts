@@ -459,6 +459,7 @@ function demoProgramRevision(runId: string) {
 export async function getOverlayConfig(context: RequestContext, runId: string, revisionId?: string): Promise<OverlayConfig | null> {
   await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
+    if (context.accessScope === "restricted") throw new Response("Live run not found", { status: 404 });
     const program = demoProgramRevision(runId);
     const targetId = revisionId ?? program?.revisionId;
     if (!targetId) return null;
@@ -481,6 +482,7 @@ export async function replaceOverlayConfig(context: RequestContext, runId: strin
   const config = parseOverlayConfigInput(input);
   if (!config) throw new Response(overlayConfigProblem(input) ?? "画面层配置无效", { status: 400, statusText: "overlay_config_invalid" });
   if (!databasePool()) {
+    if (context.accessScope === "restricted") throw new Response("Live run not found", { status: 404 });
     const program = demoProgramRevision(runId);
     const targetId = revisionId ?? program?.revisionId;
     if (!targetId) throw new Response("Live run not found", { status: 404 });

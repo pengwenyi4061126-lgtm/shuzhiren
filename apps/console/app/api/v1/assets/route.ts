@@ -36,7 +36,7 @@ export async function POST(request: Request) {
 function isAssetInput(value: unknown): value is CreateMediaAssetInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
-  const kinds = new Set(["portrait", "voice", "product_clip", "music"]);
+  const kinds = new Set(["portrait", "voice", "product_clip", "music", "overlay_background"]);
   return typeof input.kind === "string" && kinds.has(input.kind)
     && ["name", "rightsScope", "source"].every((key) => typeof input[key] === "string" && input[key].trim().length > 0)
     && isSafeObjectKey(input.objectKey) && isSha256Digest(input.checksum)
