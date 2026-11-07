@@ -29,9 +29,9 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 真实开播须同时满足以下两项，缺任一项即不放行：
 
 1. 以 4090 验收证据文件运行 `npm run runtime:acceptance:verify -- --evidence /srv/shuzhiren/evidence/runtime-acceptance.json`，并以退出码 0 结束。
-2. 全部 External_Prerequisite 行（EP-01 至 EP-17）均标为"已满足"。
+2. 全部 External_Prerequisite 行（EP-01 至 EP-19）均标为"已满足"。
 
-截至核对日，EP-12 之外的 16 行都为"未满足"，所以不放行。任何缺失的外部项都是上线阻断，不能通过开发态 fixture、Gateway `/healthz`、容器 `running` 状态或口头确认绕过。
+截至核对日，EP-12 之外的 18 行都为"未满足"，所以不放行。任何缺失的外部项都是上线阻断，不能通过开发态 fixture、Gateway `/healthz`、容器 `running` 状态或口头确认绕过。
 
 ## 外部先决条件
 
@@ -54,6 +54,8 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | EP-15 | AIGC 标识合规确认：法务对显式标识文字、尺寸、位置和隐式标识元数据是否满足《人工智能生成合成内容标识办法》与 GB 45438-2025 的结论，以及抖音平台对数字人直播 AIGC 标识的审核要求 | External_Prerequisite | 未满足 | — | 6, 40 | 仓库中做准备的产物：`livetalking-aigc-label.patch`、开播前检查 `aigc_label`、`deploy:check` 的 `AIGC_LABEL_*` 规则、迁移 083 与 release manifest 的 `aigc` 字段（`docs/DEPLOYMENT_RUNBOOK.md` 第 2.13 节）。隐式标识目前只写入控制面数据库和 release manifest，没有写入推流或录制文件的元数据 |
 | EP-16 | 默认声音和形象素材的商用授权核实：`runtime_presets` 的 `preset-zh-female`、`preset-zh-male`（sft 说话人“中文女”“中文男”所在权重的许可证）与 `preset-avatar-default`（形象素材的肖像授权） | External_Prerequisite | 未满足 | — | 6, 15 | 仓库中做准备的产物：迁移 082 的平台级预设目录（三条种子均为 `unverified`）、`/api/v1/presets` 与采用接口、资产页“商用授权未核实”提示（`docs/DEPLOYMENT_RUNBOOK.md` 第 2.12 节）。仓库不附带任何声音或形象素材；核实后以新迁移把对应预设改为 `verified` 并填写许可来源 |
 | EP-17 | 抖音开放平台直播互动事件接入：观众进场、关注、礼物和评论事件的数据权限（应用审核、主播授权与事件推送） | External_Prerequisite | 未满足 | — | 6, 14, 40 | 仓库中做准备的产物：Channel_Adapter 归一化 Webhook 的 `kind: "viewer_event"`、`/api/v1/runtime/channel-interactions` 的观众事件字段与互动规则引擎（`docs/DEPLOYMENT_RUNBOOK.md` 第 2.14 节）。抖音原生事件的对接代码是 RW-040-02；在取得权限之前只能用归一化 Webhook 模拟 |
+| EP-18 | 违禁词示例词表的法务审定：内置类别、词条、级别与替换建议是否满足《广告法》等规定与企业合规要求的书面结论 | External_Prerequisite | 未满足 | — | 6 | 仓库中做准备的产物：`apps/console/lib/shared/prohibited-terms-builtin.mjs`（标注为示例）、租户覆盖与审批流程 |
+| EP-19 | 抖音平台规则核实：数字人直播的字幕、商品信息与价格贴片、背景素材、自动回复评论的审核要求 | External_Prerequisite | 未满足 | — | 6, 40 | 仓库中做准备的产物：画面层配置与冻结、`faq` 互动规则（默认生成需人工批准的回复草稿） |
 
 ## 仓库交付项
 
@@ -164,6 +166,13 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-000-13 | AIGC 标识开播前检查（`aigc_label`）、`deploy:check` 的标识配置规则与录制留证、release manifest 中的隐式标识元数据（迁移 083） | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`deploy:check:test`（node-unit 安装 numpy、Pillow 与 `fonts-noto-cjk` 并设 `AIGC_LABEL_REQUIRE_IMAGING=true`，`runtime/livetalking/tests/test_aigc_label.py` 的绘制用例不允许 SKIP，见 V-20261106-03）、`runtime:images:licenses:test`、`control-plane:integration`、python-gateway 的 `scripts/test-runtime-gateway-aigc-label.py`；`preflight:check` 为 static。画面标识的实机核验是 RW-000-12，合规结论是 EP-15 |
 | RW-000-14 | 默认预设库：平台级 `runtime_presets`（迁移 082）、`/api/v1/presets` 与 `/api/v1/presets/{presetCode}/adopt`、资产页“从默认库添加”、Gateway `COSYVOICE_SFT_SPEAKER_MAP` | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`scripts/integration/runtime-presets.test.mjs`（`postgres:integration`）、`service-principals:integration`、python-gateway 的 `scripts/test-runtime-gateway-sft-speakers.py`；`presets:test` 为 static。素材商用授权是 EP-16 |
 | RW-000-15 | 互动规则引擎：迁移 084、runtime-worker 评估循环、`/api/v1/interaction-rules/**` 与 `/interaction-rules` 页面、场次触发记录、Channel_Adapter `viewer_event` | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`interaction-rules:test`（含 console 与 worker 策略引擎的一致性）、`scripts/integration/interaction-rules.test.mjs` 与 `trigger-cases/interaction-rules.mjs`（`postgres:integration`）、`channel-adapter:test`。抖音真实事件接入是 EP-17 与 RW-040-02 |
+| RW-000-16 | 开播前检查 `ai_disclosure_rule`：AI 身份提示规则缺失、未启用或未批准时阻止 arm 与 START | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 1。相关检查：`preflight:check`、`interaction-rules:test`、`scripts/integration/preflight-ai-disclosure.test.mjs` |
+| RW-000-17 | 策略引擎单一实现：`apps/console/lib/shared/policy-engine.mjs` 由 console 与 runtime-worker 共用，worker 镜像复制该目录 | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 2。相关检查：`shared:modules:check`、`policy:red-team`、`interaction-rules:test`、docker-build 的镜像冒烟 |
+| RW-000-18 | 话术变体：段落多版本、提交与批准时逐版本检查、下发时确定性轮换与轮换账本（迁移 085） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 3。相关检查：`program:variants:test`、`scripts/integration/script-variants.test.mjs`（`postgres:integration`） |
+| RW-000-19 | 知识库问答：条目审批、中文二元组检索、`faq` 互动规则与回复依据（迁移 086、087） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 4。相关检查：`knowledge:test`、`scripts/integration/knowledge-base.test.mjs`（`postgres:integration`） |
+| RW-000-20 | 违禁词库：内置示例词表、租户覆盖与审批、修订冻结、编辑提示与播报前拦截（迁移 088） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 5。相关检查：`prohibited-terms:test`、`policy:red-team`、`scripts/integration/prohibited-terms.test.mjs`（`postgres:integration`）。词表内容的合规性依赖 EP-18 |
+| RW-000-21 | 画面层代码：`livetalking-overlay.patch`、`shuzhiren_overlay.py`、Gateway 字幕与场景下发、画面层配置冻结与开播前检查（迁移 089、090） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 6。相关检查：`overlay:config:test`、`scripts/integration/overlays.test.mjs`、`scripts/test-runtime-gateway-captions.py`、`runtime/livetalking/tests/test_overlay.py`、docker-build 的 LiveTalking 镜像构建（`postgres:integration`） |
+| RW-000-22 | 4090 实机画面层核验：字幕、商品卡、价格贴片与背景在推流画面和录制文件中的观感，AIGC 角标未被遮挡，字幕与语音同步，全部图层启用时的输出帧率 | 代码已完成但待外部环境验证 | — | 无 | Requirement 6。环境：4090 与抖音观看端。`apps/output-probe` 不读取画面内容，不能代替本项 |
 
 ## 待决策事项
 
