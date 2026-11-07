@@ -274,12 +274,12 @@ export async function approveKnowledgeEntry(context: RequestContext, entryId: st
     const entry = persistentEntry(row);
     if (entry.status === "retired") throw new Response("Retired knowledge entries cannot be approved", { status: 409, statusText: "knowledge_entry_retired" });
     if (entry.status !== "pending") throw new Response("Knowledge entry is not pending approval", { status: 409, statusText: "knowledge_entry_not_pending" });
-    if (entry.updatedBy === context.actorId) throw secondApproverRequired();
+    const actor = await syncActor(client, context);
+    if (entry.updatedBy === actor) throw secondApproverRequired();
     const profile = await latestApprovedPolicyProfile(client);
     const lexicon = await currentLexiconInTransaction(client);
     const failures = policyFailures(entry, profile?.rules ?? [], lexicon);
     if (failures.length) throw policyBlocked(failures);
-    const actor = await syncActor(client, context);
     const answerSha256 = sha256(entry.answer);
     const approval = (await client.query<PersistentApprovalRow>(`insert into knowledge_entry_approvals (tenant_id, entry_id, revision, question, alias_questions, answer, keywords, search_terms, product_id, answer_sha256, policy_profile_id, lexicon_sha256, approved_by)
       values ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8::text[], $9, $10, $11, $12, $13) returning id, approved_at`,

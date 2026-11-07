@@ -5,21 +5,45 @@
 // Application paths (console services, worker rule matching) are covered by tasks that append to this file.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { register } from "node:module";
 import { after, before, describe, test } from "node:test";
 import { createHarness } from "./harness.mjs";
+import { inTenantTransaction } from "../../apps/runtime-worker/db.mjs";
+import { createInteractionRuleEvaluator, interactionRuleConfig } from "../../apps/runtime-worker/interaction-rules.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value, "utf8").digest("hex");
 let h;
 let worker;
 let controlPlane;
+let workerPool;
+let knowledge;
+let rules;
+let prohibitedTerms;
+let policyProfiles;
+let responseDraftRoute;
+let replyDraftRoute;
 
 before(async () => {
   h = await createHarness(import.meta.url);
   worker = await h.connectAs("runtime_worker");
   controlPlane = await h.connectAs("control_plane");
+  workerPool = h.pool("runtime_worker", { max: 4 });
+  for (const name of ["CONTROL_PLANE_DEMO_MODE", "CONTROL_PLANE_DEV_HEADER_IDENTITY"]) delete process.env[name];
+  process.env.DATABASE_URL = h.url("control_plane");
+  register("../lib/console-ts-loader.mjs", import.meta.url);
+  knowledge = await import("../../apps/console/lib/knowledge-base.ts");
+  rules = await import("../../apps/console/lib/interaction-rules.ts");
+  prohibitedTerms = await import("../../apps/console/lib/prohibited-terms.ts");
+  policyProfiles = await import("../../apps/console/lib/policy-profiles.ts");
+  responseDraftRoute = await import("../../apps/console/app/api/v1/live-runs/[runId]/response-drafts/route.ts");
+  replyDraftRoute = await import("../../apps/console/app/api/v1/live-runs/[runId]/reply-drafts/route.ts");
+  process.env.CONTROL_PLANE_DEV_HEADER_IDENTITY = "true";
+  process.env.HOSTNAME = "127.0.0.1";
 });
 
 after(async () => {
+  await globalThis.shuzhirenDatabasePool?.end().catch(() => undefined);
+  await workerPool?.end().catch(() => undefined);
   await worker?.end().catch(() => undefined);
   await controlPlane?.end().catch(() => undefined);
   await h?.close();
@@ -45,8 +69,16 @@ async function rejected(client, sql, params = []) {
 async function fixture() {
   const { seed, admin } = h;
   const tenantId = await seed.tenant();
-  const memberId = await seed.member({ tenantId, role: "admin" });
-  const reviewerId = await seed.member({ tenantId, role: "reviewer" });
+  const subject = `it-kb-${randomUUID()}`;
+  const reviewerSubject = `it-kb-reviewer-${randomUUID()}`;
+  const memberId = await seed.member({ tenantId, role: "admin", subject });
+  const reviewerId = await seed.member({ tenantId, role: "reviewer", subject: reviewerSubject });
+  const channelId = await seed.channelConnection({ tenantId, verifier: memberId });
+  const policyProfileId = await seed.policyProfile({
+    tenantId,
+    approver: memberId,
+    rules: [{ id: "block_term", terms: ["Block_Term"], reason: "集成测试阻断词", action: "refuse", riskLevel: "high", requiredEvidence: [] }]
+  });
   const products = [];
   for (const name of ["洁面慕斯", "防晒霜"]) {
     const productId = randomUUID();
@@ -57,12 +89,51 @@ async function fixture() {
   const runs = [];
   for (const product of [...products, null]) {
     const { revisionId } = await seed.revision({ tenantId, approver: memberId, bindings: "none", approve: false });
+    await admin.query("insert into show_revision_policy_profiles (tenant_id, show_revision_id, policy_profile_id) values ($1, $2, $3)", [tenantId, revisionId, policyProfileId]);
     if (product) await admin.query("insert into show_revision_product_versions (tenant_id, show_revision_id, product_version_id, slot_key) values ($1, $2, $3, 'primary')", [tenantId, revisionId, product.productVersionId]);
     await admin.query("insert into show_revision_prohibited_term_snapshots (tenant_id, show_revision_id, builtin_version, lexicon, lexicon_sha256, term_count) values ($1, $2, 'integration-seed', '[]'::jsonb, repeat('0', 64), 0)", [tenantId, revisionId]);
     await admin.query("update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [revisionId, memberId]);
-    runs.push(await seed.liveRun({ tenantId, revisionId, state: "LIVE", productVersionId: product?.productVersionId ?? null }));
+    runs.push(await seed.liveRun({ tenantId, revisionId, state: "LIVE", channelId, productVersionId: product?.productVersionId ?? null }));
   }
-  return { tenantId, memberId, reviewerId, products, runs: { first: runs[0], second: runs[1], unbound: runs[2] } };
+  return { tenantId, memberId, reviewerId, subject, reviewerSubject, channelId, products, runs: { first: runs[0], second: runs[1], unbound: runs[2] } };
+}
+
+function requestContext(f, role = "admin") {
+  const reviewer = role === "reviewer";
+  return { tenantId: f.tenantId, actorId: reviewer ? f.reviewerSubject : f.subject, actorName: reviewer ? "知识库审核员" : "知识库编辑员", role, accessScope: "tenant" };
+}
+
+function routeRequest(f, body, role = "admin") {
+  const actor = requestContext(f, role);
+  return new Request("http://127.0.0.1/api/v1/test", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-tenant-id": actor.tenantId,
+      "x-actor-id": actor.actorId,
+      "x-actor-name": actor.actorName,
+      "x-actor-role": actor.role
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+function evaluator(tenantId) {
+  return createInteractionRuleEvaluator({
+    tenantIds: async () => [tenantId],
+    inTenantTransaction: (tenant, operation) => inTenantTransaction(workerPool, tenant, operation),
+    config: interactionRuleConfig({}),
+    maxOutboxAttempts: 6,
+    random: () => 0
+  });
+}
+
+async function comment(f, text) {
+  const id = randomUUID();
+  await h.admin.query(`insert into live_interactions (id, tenant_id, live_run_id, source, channel_connection_id, question_text, risk_level, policy_action, interaction_kind, viewer_ref, viewer_nickname, status)
+    values ($1, $2, $3, 'channel:integration', $4, $5, 'low', 'answer', 'comment', $6, '观众甲', 'queued')`,
+  [id, f.tenantId, f.runs.first, (await h.admin.query("select channel_connection_id from live_runs where id = $1", [f.runs.first])).rows[0].channel_connection_id, text, sha256(id)]);
+  return id;
 }
 
 /** An entry that went through the legal path: pending, snapshot of its revision, approved. */
@@ -242,5 +313,96 @@ describe("faq interaction rules", () => {
       const welcome = insertRule(f, { trigger: "viewer_enter", matchConfig: {}, action: "speak", defaultKey: "welcome" });
       assert.equal(await rejected(c, welcome.sql, welcome.params), null);
     });
+  });
+});
+
+describe("knowledge approval and answering application paths", () => {
+  test("service approval snapshots, worker FAQ drafts, and route evidence remain bound to current knowledge", async () => {
+    const f = await fixture();
+    const author = requestContext(f, "admin");
+    const reviewer = requestContext(f, "reviewer");
+    const input = { kind: "faq", question: "退货规则是什么", aliasQuestions: ["如何退货"], answer: "支持七天内申请退货。", keywords: ["退货", "申请"] };
+    let entry = await knowledge.createKnowledgeEntry(author, input);
+    assert.equal(entry.status, "pending");
+    await assert.rejects(knowledge.approveKnowledgeEntry(author, entry.id), (error) => error instanceof Response && error.status === 409);
+    entry = await knowledge.approveKnowledgeEntry(reviewer, entry.id);
+    assert.equal(entry.status, "approved");
+    const firstApproval = (await h.admin.query("select * from knowledge_entry_approvals where id = $1", [entry.approvedApprovalId])).rows[0];
+    await controlPlane.query("begin");
+    try {
+      await controlPlane.query("select set_config('app.tenant_id', $1, true)", [f.tenantId]);
+      const [profile, lexicon] = await Promise.all([
+        policyProfiles.latestApprovedPolicyProfile(controlPlane),
+        prohibitedTerms.currentLexiconInTransaction(controlPlane)
+      ]);
+      const { lexiconSha256 } = await import("../../apps/console/lib/shared/prohibited-terms.mjs");
+      assert.equal(firstApproval.answer_sha256.trim(), sha256(input.answer));
+      assert.equal(firstApproval.policy_profile_id, profile.id);
+      assert.equal(firstApproval.lexicon_sha256.trim(), lexiconSha256(lexicon));
+    } finally {
+      await controlPlane.query("rollback");
+    }
+
+    entry = await knowledge.updateKnowledgeEntry(author, entry.id, { answer: "请在订单页提交退货申请。" });
+    assert.equal(entry.status, "pending");
+    assert.equal(entry.revision, 2);
+    await assert.rejects(knowledge.approveKnowledgeEntry(author, entry.id), (error) => error instanceof Response && error.status === 409);
+    entry = await knowledge.approveKnowledgeEntry(reviewer, entry.id);
+    assert.equal(entry.status, "approved");
+    assert.equal((await h.admin.query("select revision from knowledge_entry_approvals where id = $1", [entry.approvedApprovalId])).rows[0].revision, 2);
+
+    const blocked = await knowledge.createKnowledgeEntry(author, { ...input, question: "特殊规则是什么", answer: "Block_Term" });
+    await assert.rejects(knowledge.approveKnowledgeEntry(reviewer, blocked.id), (error) => error instanceof Response && error.status === 422);
+    assert.equal((await h.admin.query("select count(*)::int as count from knowledge_entry_approvals where entry_id = $1", [blocked.id])).rows[0].count, 0);
+    assert.equal((await h.admin.query("select status from knowledge_entries where id = $1", [blocked.id])).rows[0].status, "pending");
+
+    const defaults = await rules.createDefaultInteractionRules(author);
+    const faqRule = defaults.created.find((rule) => rule.defaultKey === "faq_answer");
+    assert.ok(faqRule, "default FAQ rule is created");
+    assert.equal(faqRule.enabled, true);
+    assert.equal(faqRule.triggerType, "faq");
+    await rules.approveInteractionRule(reviewer, faqRule.id);
+
+    const evalRun = evaluator(f.tenantId);
+    const firstComment = await comment(f, "退货规则是什么");
+    await inTenantTransaction(workerPool, f.tenantId, (client) => evalRun.evaluateRun(client, f.tenantId, f.runs.first));
+    const firstDraft = (await h.admin.query("select id, evidence_snapshot from channel_reply_drafts where interaction_id = $1", [firstComment])).rows[0];
+    assert.ok(firstDraft, "approved FAQ rule creates a reply draft");
+    assert.ok(firstDraft.evidence_snapshot.some((item) => item.type === "knowledge_entry" && item.approvalId === entry.approvedApprovalId));
+    const firstFiring = (await h.admin.query("select knowledge_approval_id from interaction_rule_firings where interaction_id = $1", [firstComment])).rows[0];
+    assert.equal(firstFiring.knowledge_approval_id, entry.approvedApprovalId);
+
+    const revised = await knowledge.updateKnowledgeEntry(author, entry.id, { answer: "该条目尚待重新审核。" });
+    assert.equal(revised.status, "pending");
+    const staleComment = await comment(f, "退货规则是什么");
+    await inTenantTransaction(workerPool, f.tenantId, (client) => evalRun.evaluateRun(client, f.tenantId, f.runs.first));
+    assert.equal((await h.admin.query("select count(*)::int as count from channel_reply_drafts where interaction_id = $1", [staleComment])).rows[0].count, 0);
+    assert.equal((await h.admin.query("select count(*)::int as count from interaction_rule_firings where interaction_id = $1 and knowledge_approval_id is not null", [staleComment])).rows[0].count, 0);
+
+    const current = await knowledge.createKnowledgeEntry(author, { ...input, question: "退货地址在哪里", answer: "请通过订单页面提交退货申请。" });
+    const currentApproved = await knowledge.approveKnowledgeEntry(reviewer, current.id);
+    const keywordRule = await rules.createInteractionRule(author, {
+      name: "退货关键词", triggerType: "keyword", matchConfig: { keywords: ["退货"] }, templates: ["请查看订单中的退货说明。"],
+      action: "reply_draft", cooldownSeconds: 0, priority: 40, enabled: true
+    });
+    await rules.approveInteractionRule(reviewer, keywordRule.id);
+    const duplicateComment = await comment(f, "退货地址在哪里");
+    await inTenantTransaction(workerPool, f.tenantId, (client) => evalRun.evaluateRun(client, f.tenantId, f.runs.first));
+    assert.equal((await h.admin.query("select count(*)::int as count from channel_reply_drafts where interaction_id = $1", [duplicateComment])).rows[0].count, 1, "matching FAQ and keyword rules produce one reply draft");
+
+    const responseRoute = await responseDraftRoute.POST(routeRequest(f, { question: "退货地址在哪里" }), { params: Promise.resolve({ runId: f.runs.first }) });
+    assert.equal(responseRoute.status, 200);
+    const responsePayload = await responseRoute.json();
+    assert.ok(responsePayload.data.evidence.some((item) => item.type === "knowledge_entry" && item.approvalId === currentApproved.approvedApprovalId));
+
+    const routeInteraction = await comment(f, "退货地址在哪里");
+    const replyRoute = await replyDraftRoute.POST(routeRequest(f, {
+      interactionId: routeInteraction,
+      body: "请通过订单页面提交退货申请。",
+      knowledgeApprovalId: currentApproved.approvedApprovalId
+    }), { params: Promise.resolve({ runId: f.runs.first }) });
+    assert.equal(replyRoute.status, 201);
+    const replyPayload = await replyRoute.json();
+    assert.ok(replyPayload.data.evidenceSnapshot.some((item) => item.type === "knowledge_entry" && item.approvalId === currentApproved.approvedApprovalId));
   });
 });
