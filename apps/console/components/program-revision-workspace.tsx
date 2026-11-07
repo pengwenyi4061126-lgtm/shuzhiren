@@ -7,12 +7,14 @@ import type { ProgramSegmentInput } from "@/lib/show-program";
 import type { ProgramRevisionRequest } from "@/lib/show-program-revisions";
 import { ScriptVariantsEditor, variantsForSave } from "@/components/program-workspace";
 import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
+import { OverlayEditor } from "@/components/overlay-editor";
+import type { MediaAsset } from "@/lib/assets";
 
-type Props = { runId: string; requests: ProgramRevisionRequest[]; canManage: boolean; canApprove: boolean; canCreate: boolean };
+type Props = { runId: string; requests: ProgramRevisionRequest[]; canManage: boolean; canApprove: boolean; canCreate: boolean; overlayAssets: MediaAsset[]; overlayPreviewTitle: string; overlayPreviewPrice?: string };
 const kinds: Array<{ value: ProgramSegmentInput["kind"]; label: string }> = [{ value: "prepared_product", label: "预制讲品" }, { value: "interactive", label: "受控互动" }, { value: "fallback", label: "备用节目" }, { value: "human_handoff", label: "人工接管" }];
 const labels = { draft: "草稿", pending_approval: "待审核", approved: "已批准", rejected: "已拒绝", applied: "已应用" } as const;
 
-export function ProgramRevisionWorkspace({ runId, requests, canManage, canApprove, canCreate }: Props) {
+export function ProgramRevisionWorkspace({ runId, requests, canManage, canApprove, canCreate, overlayAssets, overlayPreviewTitle, overlayPreviewPrice }: Props) {
   const [items, setItems] = useState(requests);
   const [selectedId, setSelectedId] = useState(requests[0]?.id);
   const [segments, setSegments] = useState<ProgramSegmentInput[]>(requests[0]?.program.segments.map(toInput) ?? []);
@@ -36,7 +38,7 @@ export function ProgramRevisionWorkspace({ runId, requests, canManage, canApprov
   const base = `/api/v1/live-runs/${runId}/program-revisions`;
   return <article className="program-panel revision-panel"><div className="program-panel-head"><div><h2>受控节目修订</h2><span>开播前候选版本需重新审核与预检，已开播场次不可替换。</span></div>{canManage && canCreate ? <button className="program-revision-create" type="button" disabled={busy} onClick={() => invoke(base, { method: "POST" }, "候选修订已创建")}>{busy ? <LoaderCircle className="button-spinner" size={15} /> : <Plus size={15} />}新建候选修订</button> : null}</div>
     {message ? <p className="program-revision-feedback">{message}</p> : null}
-    <div className="program-revision-body"><aside>{items.length ? items.map((item) => <button type="button" key={item.id} onClick={() => choose(item)} className={item.id === selectedId ? "selected" : ""}><strong>候选 {item.candidateRevisionId.slice(0, 8)}</strong><span>{labels[item.status]}</span><small>{item.createdBy}</small></button>) : <p>暂无候选修订。</p>}</aside><section>{selected ? <Editor selected={selected} segments={segments} editable={editable} canApprove={canApprove} busy={busy} reason={reason} setReason={setReason} update={update} updateVariants={updateVariants} add={add} remove={remove} save={() => invoke(`${base}/${selected.id}`, { method: "PUT", body: JSON.stringify({ segments: segments.map(withSavedVariants) }) }, "候选节目单已保存")} submit={() => invoke(`${base}/${selected.id}/submit`, { method: "POST" }, "候选版本已送审并冻结")} approve={() => invoke(`${base}/${selected.id}/approve`, { method: "POST" }, "候选版本已批准并应用，场次需重新预检")} reject={() => invoke(`${base}/${selected.id}/reject`, { method: "POST", body: JSON.stringify({ reason }) }, "候选版本已拒绝")} /> : <p>创建候选修订后可在此编辑、送审和复核。</p>}</section></div>
+    <div className="program-revision-body"><aside>{items.length ? items.map((item) => <button type="button" key={item.id} onClick={() => choose(item)} className={item.id === selectedId ? "selected" : ""}><strong>候选 {item.candidateRevisionId.slice(0, 8)}</strong><span>{labels[item.status]}</span><small>{item.createdBy}</small></button>) : <p>暂无候选修订。</p>}</aside><section>{selected ? <><Editor selected={selected} segments={segments} editable={editable} canApprove={canApprove} busy={busy} reason={reason} setReason={setReason} update={update} updateVariants={updateVariants} add={add} remove={remove} save={() => invoke(`${base}/${selected.id}`, { method: "PUT", body: JSON.stringify({ segments: segments.map(withSavedVariants) }) }, "候选节目单已保存")} submit={() => invoke(`${base}/${selected.id}/submit`, { method: "POST" }, "候选版本已送审并冻结")} approve={() => invoke(`${base}/${selected.id}/approve`, { method: "POST" }, "候选版本已批准并应用，场次需重新预检")} reject={() => invoke(`${base}/${selected.id}/reject`, { method: "POST", body: JSON.stringify({ reason }) }, "候选版本已拒绝")} /><OverlayEditor runId={runId} requestId={selected.id} editable={editable} assets={overlayAssets} previewTitle={overlayPreviewTitle} previewPrice={overlayPreviewPrice} /></> : <p>创建候选修订后可在此编辑、送审和复核。</p>}</section></div>
   </article>;
 }
 

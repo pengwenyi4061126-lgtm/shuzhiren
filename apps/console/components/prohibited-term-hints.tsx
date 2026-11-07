@@ -8,7 +8,7 @@ type ScanContext = "script" | "template" | "faq" | "overlay" | "reply";
 type ScanResult = { data?: { findings?: Finding[] }; error?: string };
 const categoryLabel = { extreme: "绝对化", medical: "医疗", false_claim: "不实宣称", offsite_trade: "站外交易", custom: "租户自定义" } as const;
 
-export function ProhibitedTermHints({ text, context, onChange }: { text: string; context: ScanContext; onChange: (text: string) => void }) {
+export function ProhibitedTermHints({ text, context, onChange, readOnly = false }: { text: string; context: ScanContext; onChange: (text: string) => void; readOnly?: boolean }) {
   const [result, setResult] = useState<{ text: string; findings: Finding[]; error: string | null } | null>(null);
 
   useEffect(() => {
@@ -36,9 +36,9 @@ export function ProhibitedTermHints({ text, context, onChange }: { text: string;
     {current?.error ? <small role="status" style={{ color: "var(--muted)" }}>{current.error}</small> : null}
     {current?.findings.map((finding, index) => <div key={`${finding.termId}:${finding.start}:${index}`} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: "7px 9px", borderLeft: `3px solid ${finding.severity === "block" ? "var(--red)" : "var(--orange)"}`, background: "var(--surface-subtle)", fontSize: 12 }}>
       <strong>{finding.term}</strong><span>{categoryLabel[finding.category]}</span><span>{finding.severity === "block" ? "拦截" : "提示"}</span>
-      {finding.suggestions.map((suggestion) => <button key={suggestion} type="button" className="icon-button" onClick={() => {
+      {!readOnly ? finding.suggestions.map((suggestion) => <button key={suggestion} type="button" className="icon-button" onClick={() => {
         try { onChange(applySuggestion(text, finding, suggestion)); } catch { setResult({ text, findings: [], error: null }); }
-      }}>{suggestion}</button>)}
+      }}>{suggestion}</button>) : null}
     </div>)}
   </div>;
 }
