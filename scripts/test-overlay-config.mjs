@@ -479,3 +479,98 @@ test("overlay background media verification accepts only PNG/JPEG and does not b
   const demoVerification = await verifyMediaAssetContent(demoContext, { kind: "overlay_background", objectKey: "tenant/backgrounds/demo.png", checksum: `sha256:${"d".repeat(64)}` });
   assert.equal(demoVerification.contentType, "image/png");
 });
+
+test("worker scheduled starts dispatch only hash-verified frozen overlays and bind Gateway receipts", async () => {
+  const workerSource = (await readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+  const workerPolicy = await import("../apps/console/lib/shared/policy-engine.mjs");
+  const workerGuard = await import("../apps/console/lib/shared/broadcast-guard.mjs");
+  const workerBuiltin = await import("../apps/console/lib/shared/prohibited-terms-builtin.mjs");
+  const workerTerms = await import("../apps/console/lib/shared/prohibited-terms.mjs");
+  const workerRotation = await import("../apps/console/lib/shared/script-rotation.mjs");
+  const slice = (startMarker, endMarker) => {
+    const start = workerSource.indexOf(startMarker);
+    const end = workerSource.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start, `worker source contains ${startMarker} before ${endMarker}`);
+    return workerSource.slice(start, end);
+  };
+  const scheduleSource = [
+    slice("function tenantOrder(", "function inTenantTransaction("),
+    slice("// ---- Script version selection for scheduled starts", "async function meterLiveUsage()"),
+    workerSource.match(/^function runtimeVoiceIdValid.*$/m)[0],
+    workerSource.match(/^function voiceChecksumValid.*$/m)[0]
+  ].join("\n");
+  const tenantId = "10000000-0000-4000-8000-000000000001";
+  const run = { id: "10000000-0000-4000-8000-0000000000a1", tenant_id: tenantId, show_revision_id: "10000000-0000-4000-8000-0000000000b1", trace_id: "trace-1", runtime_session_id: "session-1" };
+  const segment = { id: "10000000-0000-4000-8000-0000000000c1", runtime_script: "主版本话术", runtime_script_variants: ["变体话术"] };
+  const overlayJson = '{"caption":{"enabled":true}}';
+  async function schedule(overlayRow) {
+    const log = [];
+    let transaction = 0;
+    const client = { async query(text, params = []) {
+      const sql = text.replace(/\s+/g, " ").trim();
+      log.push({ sql, params, tx: transaction });
+      if (/from live_runs where state = 'ARMED'/.test(sql)) return { rows: [run] };
+      if (sql.startsWith("select id, runtime_script, runtime_script_variants from show_revision_segments")) return { rows: [segment] };
+      if (sql.startsWith("select scene_json, scene_sha256 from show_revision_overlays")) return { rows: overlayRow ? [overlayRow] : [] };
+      if (sql.includes("from show_revision_media_assets binding")) return { rows: [{ runtime_voice_id: "voice_1", checksum: `sha256:${"a".repeat(64)}` }] };
+      if (sql.includes("from tenant_entitlements")) return { rows: [] };
+      if (sql.startsWith("update runtime_alerts")) return { rows: [] };
+      if (sql.includes("from show_revision_policy_profiles binding")) return { rows: [{ rules: [], evidence_ref: "evidence://test", validation_summary: "ok", approval_status: "approved" }] };
+      if (sql.startsWith("select lexicon from show_revision_prohibited_term_snapshots")) return { rows: [] };
+      if (sql.startsWith("select tenant_id, kind, builtin_term_id, term, normalized_term, category, approved_revision")) return { rows: [] };
+      if (sql.startsWith("select variant_index, play_seq from live_run_script_plays")) return { rows: [] };
+      if (sql.startsWith("insert into outbox_events")) return { rows: [{ id: "10000000-0000-4000-8000-0000000000e1" }] };
+      if (sql.startsWith("insert into runtime_alerts")) return { rows: [{ id: "alert-1" }] };
+      if (sql.includes("runtime_worker_actor")) return { rows: [{ id: "actor-1" }] };
+      if (/^(update live_runs|insert into live_run_script_plays|insert into audit_events)/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected worker query: ${sql}`);
+    } };
+    const build = new Function("deps", `const { tenantIds, inTenantTransaction, createHash, guardBroadcastText, parsePolicyRules, BUILTIN_LEXICON, effectiveLexicon, compileLexicon, runtimeLexicon, chooseScriptVariant, scriptVariantsProblem } = deps; let nextSchedulerTenantCursor = 0; ${scheduleSource} return scheduleDueRun;`);
+    const scheduleDueRun = build({
+      tenantIds: async () => [tenantId],
+      inTenantTransaction: async (_tenantId, operation) => { transaction += 1; log.push({ sql: "begin", tx: transaction }); try { const result = await operation(client); log.push({ sql: "commit", tx: transaction }); return result; } catch (error) { log.push({ sql: "rollback", tx: transaction }); throw error; } },
+      createHash, guardBroadcastText: workerGuard.guardBroadcastText, parsePolicyRules: workerPolicy.parsePolicyRules, BUILTIN_LEXICON: workerBuiltin.BUILTIN_LEXICON,
+      effectiveLexicon: workerTerms.effectiveLexicon, compileLexicon: workerTerms.compileLexicon, runtimeLexicon: workerTerms.runtimeLexicon,
+      chooseScriptVariant: workerRotation.chooseScriptVariant, scriptVariantsProblem: workerRotation.scriptVariantsProblem
+    });
+    const result = await scheduleDueRun();
+    const outbox = log.find((entry) => entry.sql.startsWith("insert into outbox_events"));
+    return { result, log, command: outbox ? JSON.parse(outbox.params[2]).command : null };
+  }
+  const frozen = { scene_json: overlayJson, scene_sha256: digest(overlayJson) };
+  const good = await schedule(frozen);
+  assert.equal(good.command.payload.controlAction, "SCHEDULED_START");
+  assert.equal(good.command.payload.overlaySceneJson, overlayJson);
+  assert.equal(good.command.payload.overlaySceneSha256, digest(overlayJson));
+  const sceneQuery = good.log.find((entry) => entry.sql.startsWith("select scene_json, scene_sha256 from show_revision_overlays"));
+  assert.equal(sceneQuery.tx, good.log.find((entry) => entry.sql === "commit").tx, "overlay read shares the scheduling transaction");
+  const absent = await schedule(null);
+  assert.equal("overlaySceneJson" in absent.command.payload, false, "legacy scheduled payload remains unchanged without a frozen scene");
+  const damaged = await schedule({ ...frozen, scene_sha256: "0".repeat(64) });
+  assert.equal(damaged.result, null);
+  assert.equal(damaged.command, null, "damaged scene creates no SCHEDULED_START outbox event");
+  assert.equal(damaged.log.filter((entry) => entry.sql.startsWith("update live_runs set scheduled_at = null")).length, 1);
+
+  const dispatchSource = slice("function deliveryRequest(", "function commandIdValid(");
+  const validators = ["function commandIdValid", "function sessionIdValid", "function runtimeVoiceIdValid", "function voiceChecksumValid", "function programSegmentIdValid"].map((name) => workerSource.match(new RegExp(`^${name}.*$`, "m"))[0]).join("\n");
+  const deliveryRequest = new Function("createHash", `class DeliveryError extends Error {} ${validators} ${dispatchSource} return deliveryRequest;`)(createHash);
+  const event = { event_type: "media.dispatch", payload: { sessionId: "session-1", command: good.command } };
+  const delivery = deliveryRequest(event);
+  assert.equal(delivery.body.overlay_scene_json, overlayJson);
+  assert.equal(delivery.body.overlay_scene_sha256, digest(overlayJson));
+  for (const type of ["insert_program", "resume_program"]) {
+    const transition = { ...event, payload: { sessionId: "session-1", command: { ...good.command, type, payload: { programSegmentId: segment.id, runtimeScript: "话术", scriptSha256: digest("话术"), runtimeVoiceId: "voice_1", voiceChecksum: good.command.payload.voiceChecksum } } } };
+    const body = deliveryRequest(transition).body;
+    assert.equal("overlay_scene_json" in body, false);
+    assert.equal("overlay_scene_sha256" in body, false);
+  }
+  const receiptSource = workerSource.match(/function assertMediaGatewayReceipt\([\s\S]*?\n\}/)[0];
+  const receiptCheck = new Function("DeliveryError", "RECEIPT_CLOCK_SKEW_MS", `${receiptSource}; return assertMediaGatewayReceipt;`)(class extends Error {}, 30_000);
+  const validReceipt = { accepted: true, receipt: { command_id: good.command.id, session_id: "session-1", action: "start_program", accepted_at: new Date().toISOString(), program_segment_id: segment.id, overlay_scene_sha256: digest(overlayJson) } };
+  assert.equal(receiptCheck(validReceipt, good.command, "session-1", new Date(Date.now() - 1000).toISOString()).overlay_scene_sha256, digest(overlayJson));
+  for (const hash of [undefined, "f".repeat(64)]) {
+    const invalid = structuredClone(validReceipt);
+    if (hash === undefined) delete invalid.receipt.overlay_scene_sha256; else invalid.receipt.overlay_scene_sha256 = hash;
+    assert.throws(() => receiptCheck(invalid, good.command, "session-1", new Date(Date.now() - 1000).toISOString()), /does not bind the media command/);
+  }
+});

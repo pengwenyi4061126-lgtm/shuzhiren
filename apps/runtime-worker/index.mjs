@@ -231,9 +231,12 @@ async function scheduleDueRun() {
       const run = due.rows[0];
       if (!run) return null;
       const initialProgram = await client.query("select id, runtime_script, runtime_script_variants from show_revision_segments where tenant_id = $1 and show_revision_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position limit 1", [run.tenant_id, run.show_revision_id]);
+      const overlayResult = await client.query("select scene_json, scene_sha256 from show_revision_overlays where tenant_id = $1 and show_revision_id = $2", [run.tenant_id, run.show_revision_id]);
+      const overlay = overlayResult.rows[0];
+      const overlaySceneValid = !overlay || (!overlay.scene_json && !overlay.scene_sha256) || (typeof overlay.scene_json === "string" && typeof overlay.scene_sha256 === "string" && createHash("sha256").update(overlay.scene_json, "utf8").digest("hex") === overlay.scene_sha256);
       // A stored variant list that breaks the migration 085 shape makes the segment not runnable, like a missing script.
       const initialScripts = initialProgram.rows[0] ? frozenScripts(initialProgram.rows[0].runtime_script, initialProgram.rows[0].runtime_script_variants) : null;
-      if (!initialScripts) {
+      if (!initialScripts || !overlaySceneValid) {
         await client.query("update live_runs set scheduled_at = null, updated_at = now() where id = $1 and scheduled_at is not null", [run.id]);
         const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'program_script_missing', '场次缺少已批准的冻结主节目脚本，已拒绝定时开播', 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id]);
         if (opened.rows[0]) {
@@ -305,7 +308,7 @@ async function scheduleDueRun() {
         return null;
       }
       // scriptVariantIndex stays in the outbox payload for audit; deliveryRequest never sends it to the Gateway.
-      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtime_voice_id, voiceChecksum: voice.checksum } };
+      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtime_voice_id, voiceChecksum: voice.checksum, ...(overlay?.scene_json && overlay.scene_sha256 ? { overlaySceneJson: overlay.scene_json, overlaySceneSha256: overlay.scene_sha256 } : {}) } };
       const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
       values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)
@@ -585,13 +588,17 @@ function deliveryRequest(event) {
     if (command.type === "start_program" && ((typeof runtimeScript === "string" && (!programSegmentIdValid(programSegmentId) || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) || (runtimeScript === undefined && (programSegmentId || scriptSha256)))) throw new Error("Invalid program start command");
     if (command.type === "resume_program" && ((typeof runtimeScript === "string" && (!programSegmentIdValid(programSegmentId) || typeof scriptSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(scriptSha256))) || (runtimeScript === undefined && (programSegmentId || scriptSha256)))) throw new Error("Invalid program resume command");
     if (typeof runtimeScript === "string" && createHash("sha256").update(runtimeScript).digest("hex") !== scriptSha256) throw new Error("Program script hash does not match frozen script");
+    const overlaySceneJson = command.payload?.overlaySceneJson;
+    const overlaySceneSha256 = command.payload?.overlaySceneSha256;
+    if ((overlaySceneJson === undefined) !== (overlaySceneSha256 === undefined)) throw new Error("Overlay scene JSON and SHA-256 must be provided together");
+    if (overlaySceneJson !== undefined && (command.type !== "start_program" || typeof overlaySceneJson !== "string" || createHash("sha256").update(overlaySceneJson, "utf8").digest("hex") !== overlaySceneSha256)) throw new Error("Overlay scene hash does not match the start command");
     if (command.type !== "start_program" && command.type !== "insert_program" && command.type !== "resume_program" && (programSegmentId || runtimeScript || scriptSha256)) throw new Error("Invalid media command payload");
     // Gateway synthesizes the script with this frozen approved voice (CosyVoice) and rejects scripts without it.
     const runtimeVoiceId = command.payload?.runtimeVoiceId;
     const voiceChecksum = command.payload?.voiceChecksum;
     if ((runtimeVoiceId !== undefined && !runtimeVoiceIdValid(runtimeVoiceId)) || (voiceChecksum !== undefined && !voiceChecksumValid(voiceChecksum))) throw new Error("Invalid program voice binding");
     if (typeof runtimeScript !== "string" && (runtimeVoiceId !== undefined || voiceChecksum !== undefined)) throw new Error("Invalid media command payload");
-    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeVoiceId ? { runtime_voice_id: runtimeVoiceId } : {}), ...(voiceChecksum ? { voice_checksum: voiceChecksum } : {}) } };
+    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeVoiceId ? { runtime_voice_id: runtimeVoiceId } : {}), ...(voiceChecksum ? { voice_checksum: voiceChecksum } : {}), ...(overlaySceneJson !== undefined ? { overlay_scene_json: overlaySceneJson, overlay_scene_sha256: overlaySceneSha256 } : {}) } };
   }
   if (event.event_type === "speech.dispatch") {
     const { sessionId, command } = event.payload;
@@ -629,6 +636,7 @@ function assertMediaGatewayReceipt(value, command, sessionId, eventCreatedAt) {
   const notBefore = new Date(eventCreatedAt).getTime() - RECEIPT_CLOCK_SKEW_MS;
   if (receipt.command_id !== command.id || receipt.session_id !== sessionId || receipt.action !== command.type || Number.isNaN(acceptedAt) || !(acceptedAt >= notBefore) || acceptedAt > Date.now() + RECEIPT_CLOCK_SKEW_MS) throw new DeliveryError("Runtime gateway receipt does not bind the media command", false);
   if (command.payload?.programSegmentId && receipt.program_segment_id !== command.payload.programSegmentId) throw new DeliveryError("Runtime gateway receipt does not bind the program segment", false);
+  if (command.payload?.overlaySceneSha256 && receipt.overlay_scene_sha256 !== command.payload.overlaySceneSha256) throw new DeliveryError("Runtime gateway receipt does not bind the media command", false);
   return receipt;
 }
 

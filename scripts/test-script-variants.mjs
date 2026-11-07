@@ -398,6 +398,7 @@ async function runWorkerSchedule({ segment = workerSegment, last = null, profile
       if (failOn && failOn.test(sql)) throw new Error("injected failure");
       if (/from live_runs where state = 'ARMED'/.test(sql)) return { rows: [workerRun] };
       if (sql.startsWith("select id, runtime_script, runtime_script_variants from show_revision_segments")) return { rows: segment ? [segment] : [] };
+      if (sql.startsWith("select scene_json, scene_sha256 from show_revision_overlays")) return { rows: [] };
       if (sql.includes("from show_revision_media_assets binding")) return { rows: voice ? [voice] : [] };
       if (sql.includes("from tenant_entitlements")) return { rows: [] };
       if (sql.startsWith("update runtime_alerts")) return { rows: [] };
