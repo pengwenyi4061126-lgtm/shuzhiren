@@ -4015,3 +4015,41 @@ skipped 步骤数: "0"
   与 V-20261105-20 相同的原因没有列入 步骤；skipped 步骤数仍按采集器的统计。本条目只证明这些检查在 CI 中通过；4090 上的画面标识核验、默认素材的商用授权、抖音开放平台权限与
   AIGC 标识的法务确认不在其中（就绪矩阵 RW-000-12、EP-15 至 EP-17）。
 ```
+
+## V-20261108-01 违禁词库页面与编辑提示通过本机验证
+
+```yaml
+编号: V-20261108-01
+类型: 结论
+结论: 任务 8.6 的违禁词库管理页、内联扫描提示与接入点通过本机静态和行为验证；GitHub Actions 结果待计划中的推送后运行
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows NT 10.0.22631.0
+    提交: 63a8269e5a970e72933b27d169b0f5f3d2121198
+    检查:
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: console:page-auth:check, 标签: static }
+      - { 名称: console:client-requests:check, 标签: static }
+      - { 名称: governance:tenant-scope:check, 标签: static }
+      - { 名称: prohibited-terms:test, 标签: behavioral }
+      - { 名称: program:variants:test, 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: static-gates, 名称: npm run ci:action-pins:verify, 原因: Local_Verification 不访问 GitHub 网络 }
+      - { job: static-gates, 名称: bash -n 与 bash --help 检查, 原因: Local_Verification 未登记 Bash 检查 }
+      - { job: node-unit, 名称: npm run runtime:overlay:test, 原因: 未启用 --with-gateway }
+      - { job: node-unit, 名称: bash scripts/test-postgres-backup-direct.sh, 原因: 本机缺少带 flock 的 Linux shell }
+      - { job: python-gateway, 名称: Python 3 依赖安装及 Gateway Python 检查, 原因: 本机缺少 Python 3；未启用 --with-gateway }
+      - { job: postgres-integration, 名称: PostgreSQL 迁移、集成与 schema 验证, 原因: 本机未检测到 PostgreSQL }
+      - { job: compose-render, 名称: Docker Compose 配置渲染, 原因: 本机未检测到 Docker }
+      - { job: docker-build, 名称: 控制台、Worker、Gateway、LiveTalking、CosyVoice 镜像构建与镜像检查, 原因: 本机未检测到 Docker }
+静态门禁覆盖:
+  - { 门禁: console:page-auth:check, 行为测试: [无] }
+  - { 门禁: console:client-requests:check, 行为测试: [无] }
+  - { 门禁: governance:tenant-scope:check, 行为测试: [无] }
+```
