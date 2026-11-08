@@ -236,6 +236,7 @@ test("the live-output flow forwards saved project assets into tenant-scoped run 
   assert.match(workspace, /canCreateLive = .*channelReady && scriptReviewed/);
   assert.match(workspace, /直播渠道/);
   assert.match(workspace, /直播输出准备状态/);
+  assert.match(workspace, /当前部署最多支持 1 路实时数字人直播；直播期间暂停离线语音预览/);
   assert.match(workspace, /项目中的照片只用于照片播报录播，不能作为实时直播形象/);
   assert.match(workspace, /正式开播仍以运行时与场次预检结果为准/);
 });

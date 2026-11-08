@@ -419,6 +419,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
             <div><span className={styles.readinessLabel}>已审核脚本</span><strong className={scriptReviewed ? styles.readinessReady : styles.readinessPending}>{scriptReviewed ? "就绪" : "待审核"}</strong></div>
             <div><span className={styles.readinessLabel}>直播渠道</span><strong className={channelReady ? styles.readinessReady : styles.readinessPending}>{channelReady ? "已连接" : "待连接或选择"}</strong></div>
             <div><span className={styles.readinessLabel}>直播形象视频</span><strong className={selectedLivePortrait ? styles.readinessReady : styles.readinessPending}>{selectedLivePortrait ? "已选可用形象" : "尚未选择"}</strong></div>
+            <p>运行容量：当前部署最多支持 1 路实时数字人直播；直播期间暂停离线语音预览。</p>
             {!selectedLivePortrait ? <p>{selectedPhotoPortrait ? "项目中的照片只用于照片播报录播，不能作为实时直播形象。" : "直播需要已审核、授权有效且内容核验通过的肖像视频素材。"} <Link href="/assets" target="_blank" rel="noreferrer">管理形象素材</Link></p> : null}
             {!channelReady ? <p>选择一个仍处于已连接状态的直播渠道，或前往 <Link href="/channels">渠道设置</Link> 完成连接。</p> : null}
             <small>此处可先创建直播草稿；正式开播仍以运行时与场次预检结果为准。</small>
