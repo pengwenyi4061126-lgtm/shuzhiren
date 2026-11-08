@@ -3,8 +3,8 @@ import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export async function assertLiveRunAccess(context: RequestContext, runId: string) {
-  if (!isUuid(runId)) throw new Response("Live run not found", { status: 404 });
   if (!databasePool()) return;
+  if (!isUuid(runId)) throw new Response("Live run not found", { status: 404 });
   const accessible = await withTenantTransaction(context.tenantId, async (client) => liveRunAccessible(client, context, runId));
   if (!accessible) throw new Response("Live run not found", { status: 404 });
 }

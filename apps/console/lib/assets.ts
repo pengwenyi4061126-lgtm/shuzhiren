@@ -4,8 +4,9 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 import { verifyMediaAssetContent, type MediaContentVerification } from "@/lib/media-evidence";
+import { preferProjectLiveAssets } from "@/lib/shared/live-asset-selection.mjs";
 
-export type AssetKind = "portrait" | "voice" | "product_clip" | "music" | "overlay_background";
+export type AssetKind = "portrait" | "portrait_photo" | "voice" | "product_clip" | "music" | "overlay_background";
 export type AssetApproval = "pending" | "approved" | "revoked";
 export const requiredLiveAssetKinds: AssetKind[] = ["portrait", "voice", "product_clip", "music"];
 export type MediaAsset = {
@@ -54,13 +55,17 @@ type BoundAssetRow = Pick<PersistentAssetRow, "kind" | "name" | "approval_status
 
 declare global { var shuzhirenAssetStore: AssetStore | undefined; }
 
+const demoPortraitPhoto: MediaAsset = { id: "asset_portrait_photo_demo", tenantId: "tenant_demo", kind: "portrait_photo", name: "录播照片形象参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "照片播报录播制作", source: "授权书 #POR-PHOTO-2026-001", objectKey: "demo/portrait.jpg", checksum: "demo-portrait-photo", contentVerification: { objectVersion: "demo", bytes: 1, contentType: "image/jpeg", evidenceRef: "demo://media-evidence", verifiedAt: "2026-11-01T08:30:00.000Z" }, approvedAt: "2026-11-01T08:30:00.000Z" };
+
 function assetStore(): AssetStore {
   globalThis.shuzhirenAssetStore ??= { assets: new Map([
     ["asset_portrait_demo", { id: "asset_portrait_demo", tenantId: "tenant_demo", kind: "portrait", name: "主播肖像授权素材", approval: "approved", expiresAt: "2027-10-31", rightsScope: "直播与录播数字人驱动", source: "授权书 #POR-2026-001", objectKey: "demo/portrait.mp4", checksum: "demo-portrait", approvedAt: "2026-11-01T08:30:00.000Z" }],
+    ["asset_portrait_photo_demo", demoPortraitPhoto],
     ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004", objectKey: "demo/voice.wav", checksum: "sha256:9b1f0c6c3d2a4e5f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f", runtimeVoiceId: "approved_voice_demo", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_clip_a102", { id: "asset_clip_a102", tenantId: "tenant_demo", kind: "product_clip", name: "洁面慕斯预制讲品", approval: "approved", rightsScope: "A-102 商品讲解", source: "内容审核 #CLP-2026-019", objectKey: "demo/a102.mp4", checksum: "demo-clip", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_bgm_demo", { id: "asset_bgm_demo", tenantId: "tenant_demo", kind: "music", name: "直播间背景音乐", approval: "approved", expiresAt: "2027-03-31", rightsScope: "店播背景音乐", source: "音乐授权 #MUS-2026-011", objectKey: "demo/bgm.mp3", checksum: "demo-music", approvedAt: "2026-11-01T08:30:00.000Z" }]
   ]) };
+  if (!globalThis.shuzhirenAssetStore.assets.has(demoPortraitPhoto.id)) globalThis.shuzhirenAssetStore.assets.set(demoPortraitPhoto.id, demoPortraitPhoto);
   return globalThis.shuzhirenAssetStore;
 }
 
@@ -165,9 +170,14 @@ export async function hasApprovedLiveRights(context: RequestContext) {
   return (await activeMediaAssetStatus(context)).active;
 }
 
-export async function currentApprovedMediaAssetsInTransaction(client: PoolClient) {
+export async function currentApprovedMediaAssetsInTransaction(client: PoolClient, preferredAssetIds: string[] = []) {
   const result = await client.query<PersistentAssetRow>(`select distinct on (kind) ${columns} from media_assets where approval_status = 'approved' and verified_object_version is not null and verified_bytes is not null and verified_content_type is not null and verification_evidence_ref is not null and verified_at is not null and (expires_at is null or expires_at >= current_date) and kind = any($1::media_asset_kind[]) order by kind, approved_at desc, created_at desc`, [requiredLiveAssetKinds]);
-  return new Map(result.rows.map((row) => [row.kind, persistentAsset(row)]));
+  const defaults = new Map(result.rows.map((row) => [row.kind, persistentAsset(row)]));
+  const ids = [...new Set(preferredAssetIds)];
+  if (!ids.length) return defaults;
+  const preferred = await client.query<PersistentAssetRow>(`select ${columns} from media_assets where id::text = any($1::text[]) and approval_status = $2 and verified_object_version is not null and verified_bytes is not null and verified_content_type is not null and verification_evidence_ref is not null and verified_at is not null and (expires_at is null or expires_at >= current_date)`, [ids, "approved"]);
+  if (preferred.rowCount !== ids.length) throw new Response("A selected asset is no longer approved, verified, or current", { status: 409 });
+  return preferProjectLiveAssets(defaults, preferred.rows.map(persistentAsset));
 }
 
 export async function activeMediaAssetStatus(context: RequestContext, revisionId?: string) {

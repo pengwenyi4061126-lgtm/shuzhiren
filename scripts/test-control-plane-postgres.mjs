@@ -206,6 +206,25 @@ try {
   const verifiedAssetApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets/${verifiedAsset.data.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(verifiedAssetApproval.status, 200, "media asset approval must repeat private content verification");
   assert.equal((await verifiedAssetApproval.json()).data.contentVerification.objectVersion, "integration-version-1", "media asset approval must retain the version-bound verification evidence");
+  const photoAssetCreate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ kind: "portrait_photo", name: "Integration photo portrait", rightsScope: "Recording-only integration fixture", source: "evidence://integration/photo-portrait", objectKey: `assets/${tenantId}/portrait.jpg`, checksum: `sha256:${"e".repeat(64)}` }) });
+  assert.equal(photoAssetCreate.status, 201, "an authorized photo portrait should be accepted as a distinct recording asset type");
+  const photoAsset = await photoAssetCreate.json();
+  assert.equal(photoAsset.data.contentVerification.contentType, "image/jpeg", "photo portraits must be verified as image objects");
+  const photoAssetApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/assets/${photoAsset.data.id}/approve`, { method: "POST", headers: requestHeaders });
+  assert.equal(photoAssetApproval.status, 200, "photo portrait assets should use the existing reviewer approval gate");
+  const projectCreate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ name: "Integration shared content project", goal: "Exercise shared draft persistence", audience: "Integration test", outputMode: "both", productVersionId: recoverRun.productVersionId, assetIds: [photoAsset.data.id, verifiedAsset.data.id], script: "审核资料范围内的项目脚本" }) });
+  assert.equal(projectCreate.status, 201, "a shared content project should persist with approved product facts and tenant assets");
+  const project = (await projectCreate.json()).data;
+  assert.equal(project.revision, 1);
+  assert.deepEqual(new Set(project.assetIds), new Set([photoAsset.data.id, verifiedAsset.data.id]));
+  const isolatedProjects = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects`, { headers: isolatedRequestHeaders });
+  assert.deepEqual((await isolatedProjects.json()).data, [], "content projects must not cross tenant boundaries");
+  const projectUpdate = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ name: project.name, goal: project.goal, audience: project.audience, outputMode: project.outputMode, productVersionId: project.productVersionId, assetIds: project.assetIds, script: "保存后的共享脚本修订" }) });
+  assert.equal(projectUpdate.status, 200, "a saved content project should support draft updates");
+  assert.equal((await projectUpdate.json()).data.revision, 2, "each saved project change must advance its revision counter");
+  const reloadedProjects = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects`, { headers: requestHeaders });
+  const reloadedProject = (await reloadedProjects.json()).data.find((item) => item.id === project.id);
+  assert.equal(reloadedProject.script, "保存后的共享脚本修订", "project listing must restore the saved script after a new request");
   const forgedRoleEntitlement = await fetch(`http://127.0.0.1:${consolePort}/api/v1/entitlements/max_concurrent_live_runs`, { method: "PUT", headers: forgedRoleRequestHeaders, body: JSON.stringify({ limitValue: 1 }) });
   assert.equal(forgedRoleEntitlement.status, 403, "a JWT role claim must not elevate an analyst database membership");
   const memberDirectory = await fetch(`http://127.0.0.1:${consolePort}/api/v1/memberships`, { headers: requestHeaders });
@@ -1579,7 +1598,7 @@ async function startMockServer() {
     if (url.pathname === "/v1/media-evidence/verify" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${mediaEvidenceToken}`);
       const evidence = await requestBody(request);
-      const contentType = evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
+      const contentType = evidence.kind === "portrait_photo" ? "image/jpeg" : evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
       return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
     }
     if (url.pathname === "/v1/recording-evidence/verify" && request.method === "POST") {

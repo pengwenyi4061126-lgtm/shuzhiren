@@ -12,6 +12,26 @@ export type MediaContentVerification = {
 
 type VerifierConfig = { url?: string; token?: string; demoMode: boolean; timeoutMs: number };
 
+export type MediaUploadGrant = { objectKey: string; uploadUrl?: string; headers?: Record<string, string>; expiresAt: string; demoMode: boolean };
+
+export async function createMediaUploadGrant(context: { tenantId: string }, input: { kind: AssetKind; checksum: string; checksumBase64: string; contentType: string; bytes: number }): Promise<MediaUploadGrant> {
+  if (!isSha256Digest(input.checksum) || !/^[A-Za-z0-9+/]{43}=$/.test(input.checksumBase64)
+    || !contentTypeMatches(input.kind, input.contentType) || !Number.isSafeInteger(input.bytes) || input.bytes < 1 || input.bytes > 100 * 1024 * 1024) {
+    throw new Response("Media upload input is invalid", { status: 400 });
+  }
+  const config = verifierConfig();
+  if (config.demoMode) return { objectKey: `demo-uploads/${crypto.randomUUID()}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), demoMode: true };
+  const response = await fetch(`${config.url}/v1/media-evidence/upload-grant`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+    body: JSON.stringify({ tenantId: context.tenantId, kind: input.kind, checksum: input.checksum, checksumBase64: input.checksumBase64, contentType: normalizedContentType(input.contentType), bytes: input.bytes }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(config.timeoutMs)
+  });
+  if (!response.ok) throw new Response("Media upload authorization failed", { status: 502 });
+  return validateUploadGrant(await response.json(), input);
+}
+
 export async function verifyMediaAssetContent(context: { tenantId: string }, input: Pick<CreateMediaAssetInput, "kind" | "objectKey" | "checksum">): Promise<MediaContentVerification> {
   const config = verifierConfig();
   if (config.demoMode) return { objectVersion: "demo", bytes: 1, contentType: expectedContentType(input.kind), evidenceRef: "demo://media-evidence", verifiedAt: new Date().toISOString() };
@@ -61,9 +81,29 @@ function validateVerification(value: unknown, input: Pick<CreateMediaAssetInput,
   return { objectVersion: proof.objectVersion, bytes: proof.bytes, contentType: normalizedContentType(proof.contentType), evidenceRef: proof.evidenceRef, verifiedAt: verifiedAt.toISOString() };
 }
 
+function validateUploadGrant(value: unknown, input: { checksumBase64: string; contentType: string }): MediaUploadGrant {
+  if (!value || typeof value !== "object") throw new Response("Media upload authorization response is invalid", { status: 502 });
+  const grant = value as Record<string, unknown>;
+  let uploadUrl: URL;
+  try { uploadUrl = new URL(String(grant.uploadUrl)); } catch { throw new Response("Media upload authorization response is invalid", { status: 502 }); }
+  const loopbackHttp = uploadUrl.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(uploadUrl.hostname);
+  const headers = grant.headers;
+  const expiresAt = typeof grant.expiresAt === "string" ? new Date(grant.expiresAt) : new Date(Number.NaN);
+  if (!isSafeObjectKey(grant.objectKey) || uploadUrl.username || uploadUrl.password || uploadUrl.hash
+    || (uploadUrl.protocol !== "https:" && !loopbackHttp) || !headers || typeof headers !== "object"
+    || Object.keys(headers).some((key) => !["content-type", "x-amz-checksum-sha256"].includes(key.toLowerCase()))
+    || (headers as Record<string, unknown>)["content-type"] !== normalizedContentType(input.contentType)
+    || (headers as Record<string, unknown>)["x-amz-checksum-sha256"] !== input.checksumBase64
+    || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now() || expiresAt.getTime() > Date.now() + 15 * 60_000) {
+    throw new Response("Media upload authorization response is invalid", { status: 502 });
+  }
+  return { objectKey: String(grant.objectKey), uploadUrl: uploadUrl.toString(), headers: headers as Record<string, string>, expiresAt: expiresAt.toISOString(), demoMode: false };
+}
+
 function contentTypeMatches(kind: AssetKind, value: string) {
   const type = normalizedContentType(value);
   if (kind === "overlay_background") return type === "image/png" || type === "image/jpeg";
+  if (kind === "portrait_photo") return type === "image/png" || type === "image/jpeg";
   return (kind === "portrait" || kind === "product_clip") ? type.startsWith("video/") : type.startsWith("audio/");
 }
 
@@ -76,6 +116,6 @@ function isOpaqueEvidenceRef(value: string) {
 }
 
 function expectedContentType(kind: AssetKind) {
-  if (kind === "overlay_background") return "image/png";
+  if (kind === "overlay_background" || kind === "portrait_photo") return "image/jpeg";
   return kind === "portrait" || kind === "product_clip" ? "video/mp4" : "audio/wav";
 }

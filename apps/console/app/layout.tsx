@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./styles.css";
+import "./desktop.css";
+import { AppSidebar } from "@/components/app-sidebar";
 
 // Every route renders per request so that Next.js can apply the proxy's CSP
 // nonce to its scripts; a prerendered page (including the 404 page) would ship
@@ -14,7 +16,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        <div className="platform-shell">
+          <AppSidebar />
+          <div className="platform-main">{children}</div>
+        </div>
+      </body>
     </html>
   );
 }

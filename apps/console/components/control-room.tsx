@@ -1,7 +1,6 @@
 "use client";
 
-import { AlertTriangle, Archive, BarChart3, BookOpenCheck, CalendarDays, ChartNoAxesCombined, Clapperboard, CircleStop, Clock3, FileText, Gauge, LoaderCircle, MonitorPlay, Package, PackageCheck, Pause, Play, Radio, RotateCcw, Send, ShieldAlert, ShieldCheck, SquareStack, UserRoundCheck, Users, UsersRound, Volume2, Zap } from "lucide-react";
-import Link from "next/link";
+import { AlertTriangle, CircleStop, Clock3, LoaderCircle, Pause, Play, RotateCcw, Send, UserRoundCheck, Volume2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { LiveCommand, LiveRun, LiveRunState } from "@/lib/domain";
 import { clientFetch as fetch } from "@/lib/client-request";
@@ -19,28 +18,6 @@ type CommandResponse = { data: { command: LiveCommand; run: LiveRun; mediaEvent:
 type GatewayConfirmedAction = Extract<LiveCommand["action"], "START" | "RECOVER" | "END" | "INSERT_PROGRAM" | "ROLLBACK_PROGRAM">;
 type GatewayConfirmation = { action: GatewayConfirmedAction; waitingState: LiveRunState; eventId: string };
 
-type NavigationItem = { icon: typeof MonitorPlay; label: string; href?: string };
-
-const navigation: NavigationItem[] = [
-  { icon: MonitorPlay, label: "指挥台", href: "/" },
-  { icon: CalendarDays, label: "场次", href: "/shows" },
-  { icon: Clapperboard, label: "内容工坊", href: "/assets" },
-  { icon: Package, label: "商品中心", href: "/products" },
-  { icon: PackageCheck, label: "发布治理", href: "/releases" },
-  { icon: ShieldCheck, label: "知识与策略", href: "/policy" },
-  { icon: Zap, label: "互动规则", href: "/interaction-rules" },
-  { icon: ShieldAlert, label: "违禁词库", href: "/prohibited-terms" },
-  { icon: ChartNoAxesCombined, label: "运行监控", href: "/monitoring" },
-  { icon: BookOpenCheck, label: "运行手册", href: "/runbooks" },
-  { icon: BarChart3, label: "经营数据", href: "/analytics" },
-  { icon: Archive, label: "录制归档", href: "/recordings" },
-  { icon: Gauge, label: "商业额度", href: "/usage" },
-  { icon: Send, label: "投递队列", href: "/outbox" },
-  { icon: FileText, label: "审计中心", href: "/audit" },
-  { icon: SquareStack, label: "渠道设置", href: "/channels" },
-  { icon: UsersRound, label: "人员权限", href: "/memberships" },
-  { icon: BookOpenCheck, label: "知识库", href: "/knowledge" }
-];
 const stateLabel: Record<LiveRunState, string> = { DRAFT: "草稿", REVIEW: "审核中", APPROVED: "已批准", PREFLIGHT: "预检", ARMED: "待开播", LIVE: "直播中", DEGRADED: "降级运行", ENDED: "已结束", ARCHIVED: "已归档" };
 const confirmationActions = new Set<LiveCommand["action"]>(["START", "PAUSE", "HANDOFF", "END", "INSERT_PROGRAM", "ROLLBACK_PROGRAM"]);
 // 版本序号 0 是主版本，1 起是备选话术；账本只有序号与哈希，不含话术全文。
@@ -68,7 +45,6 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
   const [draftLoading, setDraftLoading] = useState(false);
   const [speechLoading, setSpeechLoading] = useState(false);
   const [speechStatus, setSpeechStatus] = useState<string | null>(null);
-  const [activeNav, setActiveNav] = useState("指挥台");
   const [pendingAction, setPendingAction] = useState<LiveCommand["action"] | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
@@ -275,10 +251,9 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
     }
   }
 
-  return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><span className="brand-mark"><Radio size={16} /></span><span>Shuzhiren</span></div><nav aria-label="工作区">{navigation.map(({ icon: Icon, label, href }) => href ? <Link className={activeNav === label ? "nav-item active" : "nav-item"} href={href} key={label} onClick={() => setActiveNav(label)}><Icon size={17} />{label}</Link> : <button className={activeNav === label ? "nav-item active" : "nav-item"} key={label} onClick={() => setActiveNav(label)} type="button"><Icon size={17} />{label}</button>)}</nav><div className="sidebar-footer"><Users size={15} /> 运营组<br /><span>华东直播间</span></div></aside>
+  return <div className="control-room">
     <main className="main-content">
-      <header className="topbar"><div><div className="eyebrow">{activeNav}</div><h1>{run.showName}</h1></div><div className="topbar-status"><span className={`state state-${run.state.toLowerCase()}`}>{stateLabel[run.state]} · {elapsed}</span><span className="trace">{run.traceId}</span></div></header>
+      <header className="topbar"><div><div className="eyebrow">指挥台</div><h1>{run.showName}</h1></div><div className="topbar-status"><span className={`state state-${run.state.toLowerCase()}`}>{stateLabel[run.state]} · {elapsed}</span><span className="trace">{run.traceId}</span></div></header>
       <section className="workspace" aria-label="直播指挥台">
         <div className="primary-grid">
           <section className="panel stage-panel">

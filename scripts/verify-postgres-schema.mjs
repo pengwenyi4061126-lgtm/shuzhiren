@@ -104,6 +104,14 @@ for (const constraint of [
   "show_revision_overlays_check2",
   "show_revision_overlays_check3"
 ]) requiredConstraints.set(constraint, true);
+// 091: persistent beginner-first content projects, approved asset references, and linked live outputs.
+requiredTables.push("creation_projects", "creation_project_assets", "creation_project_live_outputs");
+requiredColumns.creation_projects = ["tenant_id", "name", "goal", "audience", "output_mode", "product_version_id", "script", "revision", "created_at", "updated_at"];
+requiredColumns.creation_project_assets = ["tenant_id", "project_id", "media_asset_id", "created_at"];
+requiredColumns.creation_project_live_outputs = ["tenant_id", "project_id", "live_run_id", "created_at"];
+requiredIndexes.push("creation_projects_tenant_updated_idx", "creation_project_assets_tenant_asset_idx", "creation_project_live_outputs_tenant_run_idx");
+requiredPolicies.push("tenant_isolation_creation_projects", "tenant_isolation_creation_project_assets", "tenant_isolation_creation_project_live_outputs");
+for (const constraint of ["creation_projects_name_check", "creation_projects_goal_check", "creation_projects_audience_check", "creation_projects_output_mode_check", "creation_projects_script_check", "creation_projects_revision_check"]) requiredConstraints.set(constraint, true);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.
@@ -197,6 +205,7 @@ try {
   // 089: the background image is a separately approved media asset kind.
   const mediaAssetKinds = new Set((await client.query("select e.enumlabel from pg_type t join pg_enum e on e.enumtypid = t.oid where t.typname = 'media_asset_kind'")).rows.map((row) => row.enumlabel));
   if (!mediaAssetKinds.has("overlay_background")) errors.push("media_asset_kind 缺少类型：overlay_background");
+  if (!mediaAssetKinds.has("portrait_photo")) errors.push("media_asset_kind 缺少类型：portrait_photo");
 
   const identity = await client.query("select current_user as role, r.rolsuper, r.rolbypassrls from pg_roles r where r.rolname = current_user");
   if (!allowPrivileged && (identity.rows[0]?.rolsuper || identity.rows[0]?.rolbypassrls)) errors.push(`应用数据库账号 ${identity.rows[0]?.role ?? "unknown"} 可绕过 RLS；请使用非超级、非 BYPASSRLS 的运行时账号`);

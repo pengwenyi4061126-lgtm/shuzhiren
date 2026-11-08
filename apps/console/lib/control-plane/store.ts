@@ -138,7 +138,7 @@ export async function listRuns(context: RequestContext) {
   });
 }
 
-export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean }) {
+export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[] }) {
   requireTenantWideAccess(context);
   const product = await findApprovedProductVersion(context, input.productVersionId);
   if (!product) throw new Response("An approved product version is required", { status: 409 });
@@ -156,7 +156,7 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     if (!requiredProductionReleaseComponents.every((component) => frozenReleases.has(component))) throw new Response("Approved runtime, lip-sync, and voice releases are required", { status: 409 });
     const policyProfile = await latestApprovedPolicyProfile(client);
     if (!policyProfile) throw new Response("An approved policy profile is required", { status: 409 });
-    const mediaAssets = await currentApprovedMediaAssetsInTransaction(client);
+    const mediaAssets = await currentApprovedMediaAssetsInTransaction(client, input.mediaAssetIds);
     if (!requiredLiveAssetKinds.every((kind) => mediaAssets.has(kind))) throw new Response("Approved portrait, voice, product clip, and music assets are required", { status: 409 });
     if (!mediaAssets.get("voice")?.runtimeVoiceId) throw new Response("Approved voice asset requires a runtime voice identifier", { status: 409 });
     if (!isVoiceChecksum(mediaAssets.get("voice")?.checksum)) throw new Response("Approved voice asset requires a sha256 voice checksum", { status: 409, statusText: "runtime_voice_binding_unavailable" });

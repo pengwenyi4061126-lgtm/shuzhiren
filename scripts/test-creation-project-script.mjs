@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { splitNarrationScript } from "../apps/console/lib/shared/content-script.mjs";
+import { preferProjectLiveAssets } from "../apps/console/lib/shared/live-asset-selection.mjs";
+
+test("narration splitting preserves text and keeps each live segment under the runtime limit", () => {
+  const source = `${"中文口播内容，介绍商品事实。".repeat(170)}${"末尾无空格".repeat(80)}`;
+  const chunks = splitNarrationScript(source);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= 800));
+  assert.equal(chunks.join(""), source);
+});
+
+test("narration splitting returns no empty segment", () => {
+  assert.deepEqual(splitNarrationScript("   "), []);
+  assert.deepEqual(splitNarrationScript("一段短文。"), ["一段短文。"]);
+});
+
+test("narration splitting rejects an invalid segment limit", () => {
+  assert.throws(() => splitNarrationScript("text", 0), TypeError);
+});
+
+test("live outputs prefer project assets and never bind a photo as the live portrait", () => {
+  const defaults = new Map([["portrait", { id: "default-video", kind: "portrait" }], ["voice", { id: "default-voice", kind: "voice" }]]);
+  const selected = preferProjectLiveAssets(defaults, [
+    { id: "project-photo", kind: "portrait_photo" },
+    { id: "project-video", kind: "portrait" },
+    { id: "project-voice", kind: "voice" }
+  ]);
+  assert.equal(selected.get("portrait")?.id, "project-video");
+  assert.equal(selected.get("voice")?.id, "project-voice");
+  assert.equal(selected.has("portrait_photo"), false);
+});
+
+test("the live-output flow forwards saved project assets into tenant-scoped run creation", async () => {
+  const [workspace, route, store, assets] = await Promise.all([
+    readFile(new URL("../apps/console/components/studio-workspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/app/api/v1/live-runs/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/control-plane/store.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/assets.ts", import.meta.url), "utf8")
+  ]);
+  assert.match(workspace, /mediaAssetIds:\s*project\.assetIds/);
+  assert.ok(route.includes("mediaAssetIds?: string[]"));
+  assert.match(store, /currentApprovedMediaAssetsInTransaction\(client, input\.mediaAssetIds\)/);
+  assert.match(assets, /preferProjectLiveAssets\(defaults, preferred\.rows\.map\(persistentAsset\)\)/);
+});
