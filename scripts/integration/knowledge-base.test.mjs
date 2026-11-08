@@ -83,7 +83,7 @@ async function fixture() {
   for (const name of ["洁面慕斯", "防晒霜"]) {
     const productId = randomUUID();
     await admin.query("insert into products (id, tenant_id, external_sku, name) values ($1, $2, $3, $4)", [productId, tenantId, `it-kb-${productId}`, name]);
-    const productVersionId = await seed.productVersion({ tenantId, approver: memberId, productId, facts: { priceCent: 9900, stock: 20 } });
+    const productVersionId = await seed.productVersion({ tenantId, approver: memberId, productId, facts: { priceCent: 9900, stock: 20, sourceRef: "evidence://integration/knowledge-product", sourceSyncedAt: new Date().toISOString(), validFrom: new Date(Date.now() - 60_000).toISOString(), validUntil: "2099-12-31T23:59:59.000Z" } });
     products.push({ productId, productVersionId });
   }
   const runs = [];

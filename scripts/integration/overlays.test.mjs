@@ -19,7 +19,7 @@ before(async () => {
   h = await createHarness(import.meta.url);
   const gateway = await h.stub();
   for (const name of ["CONTROL_PLANE_DEMO_MODE", "CONTROL_PLANE_DEV_HEADER_IDENTITY", "AIGC_LABEL_TEXT"]) delete process.env[name];
-  Object.assign(process.env, { NODE_ENV: "development", DATABASE_URL: h.url("control_plane"), RUNTIME_GATEWAY_URL: gateway.baseUrl, RUNTIME_GATEWAY_DEMO_MODE: "false", AIGC_CONTENT_PRODUCER: "Integration Operator" });
+  Object.assign(process.env, { NODE_ENV: "development", DATABASE_URL: h.url("control_plane"), RUNTIME_GATEWAY_URL: gateway.baseUrl, RUNTIME_GATEWAY_DEMO_MODE: "true", AIGC_CONTENT_PRODUCER: "Integration Operator" });
   register("../lib/console-ts-loader.mjs", import.meta.url);
   store = await import("../../apps/console/lib/control-plane/store.ts");
   revisions = await import("../../apps/console/lib/show-program-revisions.ts");
