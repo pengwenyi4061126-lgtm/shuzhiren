@@ -5414,3 +5414,35 @@ skipped 步骤数: "0"
       - regression:registry:test
 说明: 本条依据由 ci:evidence:collect 在 2026-11-08 读取真实 GitHub Actions run 及六份 job 日志生成；run 由推送 master 触发，runner 镜像及各 job 步骤结论、跳过数与弃用告警数均按采集结果记录。docker-build 的 CosyVoice Docker 构建步骤序号 19 的真实结论为 success；为遵循具名 workflow 步骤的登记约定，该步骤结论在此说明中记录，不重复列入带标签步骤。该 CI 证据不覆盖 4090 实机画面观感、EP-18 法务审定或 EP-19 抖音书面规则证据。
 ```
+
+## V-20261108-14 桌面照片播报成片质量门与上传超时验证通过
+
+```yaml
+编号: V-20261108-14
+类型: 结论
+结论: 本机 verify:local 90 项检查全部通过；照片播报保存前已接入 WebM 格式、首帧解码、720×1280 尺寸与可读时长校验，并为签名大文件上传设置 120 秒有界请求。
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-08
+    退出码: "0"
+    操作系统: Windows 10.0.22631.7376
+    提交: a725ecbc3491e3ba05e36b92cb0754198d49be6d
+    检查:
+      - { 名称: recording:quality:test, 标签: behavioral }
+      - { 名称: console:client-requests:check, 标签: static }
+      - { 名称: program:variants:test, 标签: behavioral }
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: "npm run control-plane:integration", 原因: 本机缺少 PostgreSQL }
+      - { job: compose-render, 名称: "docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config", 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: "docker build --file services/media-evidence-verifier/Dockerfile --tag shuzhiren-media-evidence-verifier-ci services/media-evidence-verifier", 原因: 本机缺少 Docker }
+  - 类别: 需外部环境
+    环境: 单张 RTX 4090 主机
+    命令或验收步骤: 执行 scripts/verify-4090-acceptance.mjs 所要求的 4 小时单 Avatar 实机验收
+静态门禁覆盖:
+  - { 门禁: console:client-requests:check, 行为测试: [无] }
+```
