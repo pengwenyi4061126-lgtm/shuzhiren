@@ -34,10 +34,11 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   const chunksRef = useRef<BlobPart[]>([]);
   const audioUrlRef = useRef("");
   const videoUrlRef = useRef("");
-  const photo = photos.find((item) => item.id === photoId);
+  const activePhotoId = photos.some((item) => item.id === photoId) ? photoId : (preferred?.id ?? "");
+  const photo = photos.find((item) => item.id === activePhotoId);
   const audioBlob = recordedAudio ?? audioFile;
   const savedOutput = savedOutputs.find((output) => output.id === selectedOutputId) ?? savedOutputs[0] ?? null;
-  const previewDiffersFromProject = Boolean(videoSnapshot && (videoSnapshot.script !== script || videoSnapshot.photoAssetId !== photoId || videoSnapshot.projectName !== projectName));
+  const previewDiffersFromProject = Boolean(videoSnapshot && (videoSnapshot.script !== script || videoSnapshot.photoAssetId !== activePhotoId || videoSnapshot.projectName !== projectName));
 
   useEffect(() => () => {
     microphoneRef.current?.getTracks().forEach((track) => track.stop());
@@ -63,8 +64,8 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
 
   useEffect(() => {
     let active = true;
-    if (!photoId) return () => { active = false; };
-    getPhotoSource(photoId).then((file) => {
+    if (!activePhotoId) return () => { active = false; };
+    getPhotoSource(activePhotoId).then((file) => {
       if (!active) return;
       setImageFile(file);
       setPhotoSourceStatus(file ? `已自动载入本机副本：${file.name}` : "此设备没有本机副本；请重新选择与已批准素材完全相同的照片。");
@@ -72,7 +73,7 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
       if (active) setPhotoSourceStatus("本机照片读取失败；请重新选择与已批准素材完全相同的照片。");
     });
     return () => { active = false; };
-  }, [photoId]);
+  }, [activePhotoId]);
 
   function setAudioPreview(blob: Blob | null) {
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
@@ -133,7 +134,7 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
       } else {
         const project = await onEnsureProject();
         fileName = `${safeName(project.name)}-照片播报-r${savedOutputs.length + 1}.webm`;
-        const output = await saveProjectRecording({ projectId: project.id, projectName: project.name, projectRevision: project.revision, scriptSnapshot: videoSnapshot?.script ?? script, photoAssetId: videoSnapshot?.photoAssetId ?? photoId, fileName, createdAt: new Date().toISOString(), size: videoBlob.size, contentType: videoBlob.type || "video/webm", blob: videoBlob });
+        const output = await saveProjectRecording({ projectId: project.id, projectName: project.name, projectRevision: project.revision, scriptSnapshot: videoSnapshot?.script ?? script, photoAssetId: videoSnapshot?.photoAssetId ?? activePhotoId, fileName, createdAt: new Date().toISOString(), size: videoBlob.size, contentType: videoBlob.type || "video/webm", blob: videoBlob });
         setSavedOutputs((current) => [output, ...current]);
         setSelectedOutputId(output.id);
         setVideoProjectId(project.id);
@@ -151,7 +152,7 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   return <section className={styles.composer} aria-labelledby="photo-recording-title">
     <div className={styles.heading}><div><span>PHOTO NARRATION</span><h3 id="photo-recording-title">照片播报视频</h3></div><small>720 × 1280 · WebM</small></div>
     {!photos.length ? <div className={styles.empty}>先把一张已批准照片加入当前项目。<Link href="/assets">打开素材资产</Link></div> : <div className={styles.fields}>
-      <label>项目照片<select value={photoId} onChange={(event) => { setPhotoId(event.target.value); setImageFile(null); setPhotoSourceStatus("正在查找此设备上的照片副本…"); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }}>{photos.map((item) => <option key={item.id} value={item.id}>{item.name}{selectedPhotoIds.includes(item.id) ? " · 项目已选" : ""}</option>)}</select></label>
+      <label>项目照片<select value={activePhotoId} onChange={(event) => { setPhotoId(event.target.value); setImageFile(null); setPhotoSourceStatus("正在查找此设备上的照片副本…"); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }}>{photos.map((item) => <option key={item.id} value={item.id}>{item.name}{selectedPhotoIds.includes(item.id) ? " · 项目已选" : ""}</option>)}</select></label>
       <label>照片原文件（可自动使用本机副本）<input type="file" accept="image/jpeg,image/png" onChange={(event) => { const file = event.target.files?.[0] ?? null; setImageFile(file); setPhotoSourceStatus(file ? `已选择：${file.name}` : "未选择本机文件。"); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>
       <p className={styles.hint} role="status">{photoSourceStatus}</p>
       <div className={styles.recordingActions}><label>口播音频<input type="file" accept="audio/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setAudioFile(file); setAudioPreview(file); setRecordedAudio(null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>

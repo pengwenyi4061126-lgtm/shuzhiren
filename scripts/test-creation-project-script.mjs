@@ -97,7 +97,8 @@ test("photo recording outputs are versioned, migrated from the old project-keyed
   assert.match(photoVault, /export async function deletePhotoSource/);
   assert.match(assets, /checked=\{keepPhotoLocal\}/);
   assert.match(assets, /await deletePhotoSource\(id\)/);
-  assert.match(composer, /getPhotoSource\(photoId\)/);
+  assert.match(composer, /photos\.some\(\(item\) => item\.id === photoId\) \? photoId : \(preferred\?\.id \?\? ""\)/);
+  assert.match(composer, /getPhotoSource\(activePhotoId\)/);
   assert.match(composer, /此设备没有本机副本/);
 });
 
