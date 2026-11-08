@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { CircleAlert, Download, Mic, Square } from "lucide-react";
 import type { CreationProject } from "@/lib/creation-projects";
 import { listProjectRecordings, saveProjectRecording, type ProjectRecordingOutput } from "@/lib/project-recording-vault";
+import { getPhotoSource } from "@/lib/photo-source-vault";
 import { splitNarrationScript } from "@/lib/shared/content-script.mjs";
 import styles from "./photo-recording-composer.module.css";
 
@@ -14,6 +15,7 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   const preferred = photos.find((photo) => selectedPhotoIds.includes(photo.id)) ?? photos[0];
   const [photoId, setPhotoId] = useState(preferred?.id ?? "");
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const [photoSourceStatus, setPhotoSourceStatus] = useState(preferred ? "正在查找此设备上的照片副本…" : "请先选择一张项目照片。");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [recordedAudio, setRecordedAudio] = useState<Blob | null>(null);
   const [recording, setRecording] = useState(false);
@@ -58,6 +60,19 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
     });
     return () => { active = false; };
   }, [projectId]);
+
+  useEffect(() => {
+    let active = true;
+    if (!photoId) return () => { active = false; };
+    getPhotoSource(photoId).then((file) => {
+      if (!active) return;
+      setImageFile(file);
+      setPhotoSourceStatus(file ? `已自动载入本机副本：${file.name}` : "此设备没有本机副本；请重新选择与已批准素材完全相同的照片。");
+    }).catch(() => {
+      if (active) setPhotoSourceStatus("本机照片读取失败；请重新选择与已批准素材完全相同的照片。");
+    });
+    return () => { active = false; };
+  }, [photoId]);
 
   function setAudioPreview(blob: Blob | null) {
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
@@ -136,8 +151,9 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   return <section className={styles.composer} aria-labelledby="photo-recording-title">
     <div className={styles.heading}><div><span>PHOTO NARRATION</span><h3 id="photo-recording-title">照片播报视频</h3></div><small>720 × 1280 · WebM</small></div>
     {!photos.length ? <div className={styles.empty}>先把一张已批准照片加入当前项目。<Link href="/assets">打开素材资产</Link></div> : <div className={styles.fields}>
-      <label>项目照片<select value={photoId} onChange={(event) => { setPhotoId(event.target.value); setImageFile(null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }}>{photos.map((item) => <option key={item.id} value={item.id}>{item.name}{selectedPhotoIds.includes(item.id) ? " · 项目已选" : ""}</option>)}</select></label>
-      <label>重新选择同一张照片<input type="file" accept="image/jpeg,image/png" onChange={(event) => { setImageFile(event.target.files?.[0] ?? null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>
+      <label>项目照片<select value={photoId} onChange={(event) => { setPhotoId(event.target.value); setImageFile(null); setPhotoSourceStatus("正在查找此设备上的照片副本…"); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }}>{photos.map((item) => <option key={item.id} value={item.id}>{item.name}{selectedPhotoIds.includes(item.id) ? " · 项目已选" : ""}</option>)}</select></label>
+      <label>照片原文件（可自动使用本机副本）<input type="file" accept="image/jpeg,image/png" onChange={(event) => { const file = event.target.files?.[0] ?? null; setImageFile(file); setPhotoSourceStatus(file ? `已选择：${file.name}` : "未选择本机文件。"); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>
+      <p className={styles.hint} role="status">{photoSourceStatus}</p>
       <div className={styles.recordingActions}><label>口播音频<input type="file" accept="audio/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setAudioFile(file); setAudioPreview(file); setRecordedAudio(null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>
         {recording ? <button type="button" onClick={() => recorderRef.current?.stop()} className={styles.stop}><Square size={14} />结束录音</button> : <button type="button" onClick={startMicrophone} disabled={!canCreate || working} className={styles.mic}><Mic size={14} />录制口播</button>}</div>
       {audioBlob ? <audio className={styles.audio} controls src={audioUrl} /> : <p className={styles.hint}>可上传配音文件，或照着共享脚本录制本人声音。</p>}

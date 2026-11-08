@@ -76,9 +76,11 @@ test("live outputs prefer project assets and never bind a photo as the live port
 });
 
 test("photo recording outputs are versioned, migrated from the old project-keyed store, and selectable", async () => {
-  const [vault, composer] = await Promise.all([
+  const [vault, composer, photoVault, assets] = await Promise.all([
     readFile(new URL("../apps/console/lib/project-recording-vault.ts", import.meta.url), "utf8"),
-    readFile(new URL("../apps/console/components/photo-recording-composer.tsx", import.meta.url), "utf8")
+    readFile(new URL("../apps/console/components/photo-recording-composer.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/photo-source-vault.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/components/asset-workspace.tsx", import.meta.url), "utf8")
   ]);
   assert.match(vault, /indexedDB\.open\(databaseName, 2\)/);
   assert.match(vault, /createObjectStore\(storeName, \{ keyPath: "id" \}\)/);
@@ -90,6 +92,13 @@ test("photo recording outputs are versioned, migrated from the old project-keyed
   assert.match(composer, /项目成片版本/);
   assert.match(composer, /保存为第 \$\{savedOutputs\.length \+ 1\} 版并下载/);
   assert.match(composer, /disabled=\{!reviewed \|\| working \|\| previewDiffersFromProject\}/);
+  assert.match(photoVault, /export async function savePhotoSource/);
+  assert.match(photoVault, /export async function getPhotoSource/);
+  assert.match(photoVault, /export async function deletePhotoSource/);
+  assert.match(assets, /checked=\{keepPhotoLocal\}/);
+  assert.match(assets, /await deletePhotoSource\(id\)/);
+  assert.match(composer, /getPhotoSource\(photoId\)/);
+  assert.match(composer, /此设备没有本机副本/);
 });
 
 test("Studio scans and requires review of the exact current script and product facts before outputs", async () => {
