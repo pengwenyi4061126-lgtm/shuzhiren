@@ -56,6 +56,20 @@ test("live outputs prefer project assets and never bind a photo as the live port
   assert.equal(selected.has("portrait_photo"), false);
 });
 
+test("Studio scans and requires review of the exact current script and product facts before outputs", async () => {
+  const [workspace, scanRoute] = await Promise.all([
+    readFile(new URL("../apps/console/components/studio-workspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/app/api/v1/prohibited-terms/scan/route.ts", import.meta.url), "utf8")
+  ]);
+  assert.match(workspace, /<ProhibitedTermHints text=\{currentScript\} context="script"/);
+  assert.match(workspace, /scriptReviewMark\.productVersionId === productVersionId/);
+  assert.match(workspace, /scriptReviewMark\.text === currentScript/);
+  assert.match(workspace, /canCreateLive = .*scriptReviewed/);
+  assert.match(workspace, /canCreate=\{canCreate && scriptReviewed\}/);
+  assert.match(scanRoute, /readBoundedJson\(request, 32 \* 1024\)/);
+  assert.match(scanRoute, /text\.length > 4000/);
+});
+
 test("the live-output flow forwards saved project assets into tenant-scoped run creation", async () => {
   const [workspace, route, store, assets] = await Promise.all([
     readFile(new URL("../apps/console/components/studio-workspace.tsx", import.meta.url), "utf8"),

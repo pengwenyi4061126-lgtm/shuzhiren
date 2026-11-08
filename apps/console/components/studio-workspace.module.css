@@ -48,6 +48,11 @@
 .scriptTools select { max-width: 120px; min-height: 30px; padding: 4px 24px 4px 8px; border: 1px solid #d8e1dc; border-radius: 4px; color: #273630; background: #fff; font: inherit; }
 .textAction { display: inline-flex; align-items: center; gap: 6px; padding: 6px 2px; border: 0; background: transparent; color: #147b67; font-size: 11px; font-weight: 700; cursor: pointer; }
 .script { display: block; width: 100%; min-height: 220px; resize: vertical; padding: 13px; border: 1px solid #d8e1dc; border-radius: 5px; outline: 0; color: #273630; background: #fff; font: 13px/1.85 "Segoe UI", "Microsoft YaHei", sans-serif; }
+.scriptReview { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; padding: 10px 11px; border-left: 3px solid #26836d; background: #f0f7f3; color: #34483e; cursor: pointer; }
+.scriptReview input { flex: 0 0 auto; width: 16px; height: 16px; margin: 1px 0 0; accent-color: #147b67; }
+.scriptReview span { display: grid; gap: 4px; min-width: 0; }
+.scriptReview strong { font-size: 11px; }
+.scriptReview small { color: #6f7d75; font-size: 10px; line-height: 1.5; }
 .helper { margin: 8px 0 0; color: #77847e; font-size: 10px; line-height: 1.6; }
 .outputChoices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: -8px; }
 .outputChoices button { min-width: 0; min-height: 62px; padding: 9px 7px; border: 1px solid #dce4df; border-radius: 5px; background: #fff; color: #34443d; text-align: left; cursor: pointer; }
