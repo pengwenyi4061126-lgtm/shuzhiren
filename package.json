@@ -90,6 +90,7 @@
     "recording:evidence:check": "node scripts/check-recording-evidence-verification.mjs",
     "runtime:gateway:config:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-config.py",
     "runtime:gateway:errors:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-errors.py",
+    "runtime:gateway:speech-preview:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-speech-preview.py",
     "runtime:images:check": "node scripts/check-runtime-service-images.mjs",
     "runtime:images:licenses:check": "node scripts/check-runtime-image-licenses.mjs --static",
     "runtime:images:licenses:test": "node scripts/test-runtime-image-licenses.mjs",

@@ -365,3 +365,19 @@ export function liveTalkingTtsComposeProblems(doc) {
   }
   return problems;
 }
+
+export function liveTalkingCapacityComposeProblems(doc) {
+  const command = doc?.services?.livetalking?.command;
+  const words = Array.isArray(command) ? command.map(String) : typeof command === "string" ? shellWords(command) : null;
+  if (!words) return ["LiveTalking_Runtime 容量配置不合规：livetalking.command 缺失或引号不成对"];
+  const values = [];
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--max_session") values.push(words[index + 1] ?? "");
+    else if (word.startsWith("--max_session=")) values.push(word.slice("--max_session=".length));
+  }
+  if (values.length !== 1 || values[0] !== "1") {
+    return [`LiveTalking_Runtime 容量配置不合规：--max_session 必须恰好设置为 1，实际为 ${values.length ? values.join(",") : "未设置"}`];
+  }
+  return [];
+}

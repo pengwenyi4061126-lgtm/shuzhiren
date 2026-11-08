@@ -154,6 +154,26 @@ function programSegmentIdValid(value: unknown) {
 function runtimeVoiceIdValid(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function voiceChecksumValid(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/i.test(value); }
 
+export async function synthesizeRuntimeSpeechPreview(text: string, voice: string, voiceChecksum: string) {
+  const config = runtimeGatewayConfig();
+  if (config.demoMode) throw new RuntimeGatewayError("Speech synthesis requires a configured Runtime Gateway", 503, "runtime_gateway_demo_mode");
+  if (!text.trim() || text.length > 12000 || !runtimeVoiceIdValid(voice) || !voiceChecksumValid(voiceChecksum)) throw new Error("Speech preview request is invalid");
+  const response = await fetch(`${config.url}/v1/synthesize`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+    body: JSON.stringify({ text, voice, voice_checksum: voiceChecksum }),
+    signal: AbortSignal.timeout(Math.max(config.requestTimeoutMs, 60_000))
+  });
+  if (!response.ok) throw await gatewayError(response, "Runtime Gateway rejected speech preview");
+  if (!response.headers.get("content-type")?.toLowerCase().startsWith("audio/wav")) throw new Error("Runtime Gateway returned an invalid speech preview");
+  const audio = await response.arrayBuffer();
+  const signature = new TextDecoder().decode(audio.slice(0, 4));
+  const format = new TextDecoder().decode(audio.slice(8, 12));
+  if (audio.byteLength < 44 || audio.byteLength > 4_400_000 || signature !== "RIFF" || format !== "WAVE") throw new Error("Runtime Gateway returned an invalid WAV preview");
+  return new Blob([audio], { type: "audio/wav" });
+}
+
 export async function dispatchSpeechCommand(command: SpeechCommand, sessionId: string, options?: DispatchOptions) {
   const config = runtimeGatewayConfig();
   if (config.demoMode) return { delivery: "demo" as const };

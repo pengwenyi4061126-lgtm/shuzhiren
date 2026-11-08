@@ -232,6 +232,27 @@ try {
   assert.equal(reviewedProject.scriptReview.productVersionId, project.productVersionId);
   const reviewedProjects = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects`, { headers: requestHeaders });
   assert.ok((await reviewedProjects.json()).data.find((item) => item.id === project.id).scriptReview, "project review state must survive a fresh listing request");
+  const projectRecordingInput = { projectRevision: 2, productVersionId: project.productVersionId, scriptSnapshot: reviewedProject.script, photoAssetId: photoAsset.data.id, fileName: "integration-recording.webm", objectKey: `assets/${tenantId}/integration-recording.webm`, checksum: `sha256:${"f".repeat(64)}`, bytes: 1024 };
+  const projectRecordingResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify(projectRecordingInput) });
+  assert.equal(projectRecordingResponse.status, 201, "a reviewed WebM recording should be archived against its project and approved photo asset");
+  const projectRecording = (await projectRecordingResponse.json()).data;
+  assert.equal(projectRecording.verifiedObjectVersion, "integration-version-1", "project recordings must retain immutable object verification evidence");
+  const projectRecordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { headers: requestHeaders });
+  assert.equal((await projectRecordings.json()).data[0].id, projectRecording.id, "the project archive list must return the registered recording");
+  const foreignProjectRecordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { headers: isolatedRequestHeaders });
+  assert.equal(foreignProjectRecordings.status, 404, "project recordings must not be visible across tenant boundaries");
+  const downloadGrantResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings/${projectRecording.id}/download-grant`, { method: "POST", headers: requestHeaders });
+  assert.equal(downloadGrantResponse.status, 200, "an authorized tenant member should receive a short-lived recording download grant");
+  const downloadGrant = (await downloadGrantResponse.json()).data;
+  assert.equal(new URL(downloadGrant.downloadUrl).protocol, "https:", "recording download grants must use HTTPS");
+  assert.equal(mock.mediaDownloadGrants.at(-1).objectVersion, projectRecording.verifiedObjectVersion, "download grants must bind to the immutable verified object version");
+  assert.equal(mock.mediaDownloadGrants.at(-1).expectedChecksum, projectRecordingInput.checksum, "download grants must bind to the verified checksum");
+  const foreignDownloadGrant = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings/${projectRecording.id}/download-grant`, { method: "POST", headers: isolatedRequestHeaders });
+  assert.equal(foreignDownloadGrant.status, 404, "recording download grants must not be issued across tenant boundaries");
+  const immutableRecordingUpdate = client.query("update creation_project_recordings set file_name = 'changed.webm' where tenant_id = $1 and id = $2", [tenantId, projectRecording.id]);
+  await assert.rejects(immutableRecordingUpdate, /creation project recordings are immutable/, "archived project recording evidence must be immutable");
+  const projectRecordingAudit = await client.query("select detail from audit_events where event_type = 'creation_project.recording_archived' and resource_key = $1", [projectRecording.id]);
+  assert.equal(projectRecordingAudit.rowCount, 1, "recording registration and its immutable audit event must commit together");
   const mutateReviewedProject = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}`, { method: "PUT", headers: requestHeaders, body: JSON.stringify({ name: project.name, goal: project.goal, audience: project.audience, outputMode: project.outputMode, productVersionId: project.productVersionId, assetIds: project.assetIds, script: "审核后修改的共享脚本" }) });
   assert.equal(mutateReviewedProject.status, 200);
   assert.equal((await mutateReviewedProject.json()).data.scriptReview, null, "changing reviewed content must invalidate its review record");
@@ -1597,6 +1618,7 @@ async function assertManualDeliveryUncertainOutcome(consolePort, adminHeaders, o
 
 async function startMockServer() {
   const mediaCommands = [];
+  const mediaDownloadGrants = [];
   const speechCommands = [];
   const alertNotifications = [];
   const channelReplies = [];
@@ -1623,8 +1645,14 @@ async function startMockServer() {
     if (url.pathname === "/v1/media-evidence/verify" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${mediaEvidenceToken}`);
       const evidence = await requestBody(request);
-      const contentType = evidence.kind === "portrait_photo" ? "image/jpeg" : evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
+      const contentType = evidence.kind === "portrait_photo" ? "image/jpeg" : evidence.kind === "product_clip" && evidence.objectKey.endsWith("integration-recording.webm") ? "video/webm" : evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
       return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
+    }
+    if (url.pathname === "/v1/media-evidence/download-grant" && request.method === "POST") {
+      assert.equal(request.headers.authorization, `Bearer ${mediaEvidenceToken}`);
+      const grantRequest = await requestBody(request);
+      mediaDownloadGrants.push(grantRequest);
+      return json(response, 200, { downloadUrl: `https://media.example/${encodeURIComponent(grantRequest.objectVersion)}?checksum=${encodeURIComponent(grantRequest.expectedChecksum)}`, expiresAt: new Date(Date.now() + 60_000).toISOString() });
     }
     if (url.pathname === "/v1/recording-evidence/verify" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${recordingEvidenceToken}`);
@@ -1695,7 +1723,7 @@ async function startMockServer() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("mock server did not bind a TCP port");
-  return { server, mediaCommands, speechCommands, alertNotifications, channelReplies, uncertainCommands, opsRequests, baseUrl: `http://127.0.0.1:${address.port}` };
+  return { server, mediaCommands, mediaDownloadGrants, speechCommands, alertNotifications, channelReplies, uncertainCommands, opsRequests, baseUrl: `http://127.0.0.1:${address.port}` };
 }
 function gatewayVoiceIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function gatewayVoiceChecksumValid(value) { return typeof value === "string" && /^sha256:[0-9a-fA-F]{64}$/.test(value); }

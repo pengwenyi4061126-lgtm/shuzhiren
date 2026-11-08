@@ -13,6 +13,7 @@ export type MediaContentVerification = {
 type VerifierConfig = { url?: string; token?: string; demoMode: boolean; timeoutMs: number };
 
 export type MediaUploadGrant = { objectKey: string; uploadUrl?: string; headers?: Record<string, string>; expiresAt: string; demoMode: boolean };
+export type MediaDownloadGrant = { downloadUrl: string; expiresAt: string };
 
 export async function createMediaUploadGrant(context: { tenantId: string }, input: { kind: AssetKind; checksum: string; checksumBase64: string; contentType: string; bytes: number }): Promise<MediaUploadGrant> {
   if (!isSha256Digest(input.checksum) || !/^[A-Za-z0-9+/]{43}=$/.test(input.checksumBase64)
@@ -30,6 +31,24 @@ export async function createMediaUploadGrant(context: { tenantId: string }, inpu
   });
   if (!response.ok) throw new Response("Media upload authorization failed", { status: 502 });
   return validateUploadGrant(await response.json(), input);
+}
+
+export async function createMediaDownloadGrant(context: { tenantId: string }, input: { objectKey: string; objectVersion: string; checksum: string; fileName: string }): Promise<MediaDownloadGrant> {
+  if (!isSafeObjectKey(input.objectKey) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.objectVersion) || !isSha256Digest(input.checksum)
+    || input.fileName.length < 1 || input.fileName.length > 160 || /[\\/:*?"<>|\u0000-\u001f]/.test(input.fileName)) {
+    throw new Response("Media download input is invalid", { status: 400 });
+  }
+  const config = verifierConfig();
+  if (config.demoMode) throw new Response("Server-side media download is unavailable in demo mode", { status: 503 });
+  const response = await fetch(`${config.url}/v1/media-evidence/download-grant`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+    body: JSON.stringify({ tenantId: context.tenantId, objectKey: input.objectKey, objectVersion: input.objectVersion, expectedChecksum: input.checksum, fileName: input.fileName }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(config.timeoutMs)
+  });
+  if (!response.ok) throw new Response("Media download authorization failed", { status: 502 });
+  return validateDownloadGrant(await response.json());
 }
 
 export async function verifyMediaAssetContent(context: { tenantId: string }, input: Pick<CreateMediaAssetInput, "kind" | "objectKey" | "checksum">): Promise<MediaContentVerification> {
@@ -100,6 +119,19 @@ function validateUploadGrant(value: unknown, input: { checksumBase64: string; co
   return { objectKey: String(grant.objectKey), uploadUrl: uploadUrl.toString(), headers: headers as Record<string, string>, expiresAt: expiresAt.toISOString(), demoMode: false };
 }
 
+function validateDownloadGrant(value: unknown): MediaDownloadGrant {
+  if (!value || typeof value !== "object") throw new Response("Media download authorization response is invalid", { status: 502 });
+  const grant = value as Record<string, unknown>;
+  let downloadUrl: URL;
+  try { downloadUrl = new URL(String(grant.downloadUrl)); } catch { throw new Response("Media download authorization response is invalid", { status: 502 }); }
+  const expiresAt = typeof grant.expiresAt === "string" ? new Date(grant.expiresAt) : new Date(Number.NaN);
+  if (downloadUrl.protocol !== "https:" || downloadUrl.username || downloadUrl.password || downloadUrl.hash
+    || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now() || expiresAt.getTime() > Date.now() + 5 * 60_000) {
+    throw new Response("Media download authorization response is invalid", { status: 502 });
+  }
+  return { downloadUrl: downloadUrl.toString(), expiresAt: expiresAt.toISOString() };
+}
+
 function contentTypeMatches(kind: AssetKind, value: string) {
   const type = normalizedContentType(value);
   if (kind === "overlay_background") return type === "image/png" || type === "image/jpeg";
@@ -116,6 +148,7 @@ function isOpaqueEvidenceRef(value: string) {
 }
 
 function expectedContentType(kind: AssetKind) {
-  if (kind === "overlay_background" || kind === "portrait_photo") return "image/jpeg";
+  if (kind === "overlay_background") return "image/png";
+  if (kind === "portrait_photo") return "image/jpeg";
   return kind === "portrait" || kind === "product_clip" ? "video/mp4" : "audio/wav";
 }

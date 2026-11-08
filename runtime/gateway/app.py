@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from audio import pcm_s16le_to_wav
 from captions import build_caption_cues, caption_form_value, caption_id_for
@@ -78,6 +78,7 @@ PREVIEW_BROKER_URL = os.environ.get("PREVIEW_BROKER_URL", "").rstrip("/")
 PREVIEW_BROKER_TOKEN = os.environ.get("PREVIEW_BROKER_TOKEN", "")
 PREVIEW_GRANT_MAX_SECONDS = int(os.environ.get("PREVIEW_GRANT_MAX_SECONDS", "600"))
 runtime_command_cache_lock = asyncio.Lock()
+cosyvoice_synthesis_lock = asyncio.Lock()
 runtime_command_cache: OrderedDict[str, dict] = OrderedDict()
 runtime_command_locks: dict[str, dict] = {}
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -114,6 +115,11 @@ class SpeakRequest(BaseModel):
     # Both values are synthesized by CosyVoice; "livetalking" no longer selects LiveTalking's own TTS.
     provider: Literal["cosyvoice", "livetalking"] = "cosyvoice"
 
+class SynthesisPreviewRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
+    voice: str | None = None
+    voice_checksum: str | None = None
+
 class MediaRequest(BaseModel):
     command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -138,6 +144,7 @@ LIVETALKING_POST_PATHS = frozenset({"/interrupt_talk", "/set_audiotype", "/recor
 VOICE_PROMPT_WAV_MAX_BYTES = 16 * 1024 * 1024
 VOICE_PROMPT_TEXT_MAX_CHARS = 1000
 COSYVOICE_MAX_AUDIO_SECONDS = 600
+COSYVOICE_PREVIEW_MAX_SECONDS = 90
 
 class CommandError(HTTPException):
     """A command or operator response with a fixed detail text and a machine-readable code."""
@@ -1164,11 +1171,11 @@ async def cosyvoice_chunk(text: str, voice: VoiceSpec, chunk_index: int, remaini
         raise cosyvoice_failure(502, "CosyVoice returned incomplete audio", "cosyvoice_odd_audio_length", chunk_index)
     return bytes(audio)
 
-async def cosyvoice_synthesize(text: str, voice: VoiceSpec, deadline: float) -> SynthesisResult:
+async def cosyvoice_synthesize(text: str, voice: VoiceSpec, deadline: float, max_seconds: int = COSYVOICE_MAX_AUDIO_SECONDS) -> SynthesisResult:
     """Synthesize every segment in order before anything reaches LiveTalking (D2)."""
     started = time.monotonic()
     chunks = split_script(text, COSYVOICE_CHUNK_MAX_CHARS)
-    max_bytes = COSYVOICE_SAMPLE_RATE * 2 * COSYVOICE_MAX_AUDIO_SECONDS
+    max_bytes = COSYVOICE_SAMPLE_RATE * 2 * max_seconds
     pcm = bytearray()
     chunk_samples: list[int] = []
     for index, chunk in enumerate(chunks):
@@ -1359,6 +1366,15 @@ def validate_speak_request(request: SpeakRequest) -> None:
     if not pronounceable(request.text):
         raise HTTPException(status_code=400, detail="Speech text has nothing to pronounce")
 
+def validate_synthesis_preview_request(request: SynthesisPreviewRequest) -> None:
+    validate_runtime_voice(request.voice, request.voice_checksum)
+    if not pronounceable(request.text):
+        raise HTTPException(status_code=400, detail="Speech text has nothing to pronounce")
+
+async def active_runtime_sessions() -> bool:
+    sessions = livetalking_sessions(await livetalking_get("/api/admin/runtime-metrics"))
+    return any(isinstance(session, dict) and isinstance(session.get("sessionid"), str) for session in sessions)
+
 def validate_overlay_scene(request: MediaRequest) -> None:
     scene_json, scene_sha256 = request.overlay_scene_json, request.overlay_scene_sha256
     if scene_json is None and scene_sha256 is None:
@@ -1436,6 +1452,21 @@ def synthesis_summary(synthesis: SynthesisResult) -> dict:
 def log_command_timing(command_id: str, kind: str, synthesis: SynthesisResult, reserved_at: float) -> None:
     logger.info("runtime_command_timing command_id=%s kind=%s chunks=%d synth_ms=%d audio_ack_ms=%d", command_id, kind, synthesis.chunks, synthesis.synth_ms, int((time.monotonic() - reserved_at) * 1000))
 
+@app.post("/v1/synthesize")
+async def synthesize_preview(request: SynthesisPreviewRequest, authorization: str | None = Header(default=None)) -> Response:
+    authorize(authorization)
+    validate_synthesis_preview_request(request)
+    voice = await asyncio.to_thread(load_voice_spec, request.voice, request.voice_checksum)
+    async with cosyvoice_synthesis_lock:
+        if await active_runtime_sessions():
+            raise CommandError(409, "Offline speech preview is unavailable while a live session is active", "offline_speech_preview_busy")
+        deadline = time.monotonic() + min(90, max(10, REQUEST_TIMEOUT_SECONDS * 4))
+        synthesis = await cosyvoice_synthesize(request.text, voice, deadline, COSYVOICE_PREVIEW_MAX_SECONDS)
+        if len(synthesis.pcm) > COSYVOICE_SAMPLE_RATE * 2 * COSYVOICE_PREVIEW_MAX_SECONDS:
+            raise HTTPException(status_code=413, detail="Speech preview exceeds the 90 second limit")
+    audio = pcm_s16le_to_wav(synthesis.pcm, COSYVOICE_SAMPLE_RATE)
+    return Response(audio, media_type="audio/wav", headers={"cache-control": "no-store", "x-audio-sample-rate": str(COSYVOICE_SAMPLE_RATE)})
+
 @app.post("/v1/speak")
 async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
     authorize(authorization)
@@ -1457,7 +1488,8 @@ async def speak(request: SpeakRequest, authorization: str | None = Header(defaul
         reserved_at = time.monotonic()
 
         async def execute() -> dict:
-            synthesis, audio = await synthesize_reserved_command(request.text, voice, execution.deadline)
+            async with cosyvoice_synthesis_lock:
+                synthesis, audio = await synthesize_reserved_command(request.text, voice, execution.deadline)
             caption = command_caption(request.command_id, synthesis)
             if request.interrupt:
                 await livetalking_step(execution, "interrupt_talk", lambda: livetalking_post("/interrupt_talk", {"sessionid": request.session_id}))
@@ -1501,7 +1533,11 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
             audio = b""
             caption: str | None = None
             if request.program_script and voice is not None:
-                synthesis, audio = await synthesize_reserved_command(request.program_script, voice, execution.deadline)
+                if request.action == "start_program":
+                    synthesis, audio = await synthesize_reserved_command(request.program_script, voice, execution.deadline)
+                else:
+                    async with cosyvoice_synthesis_lock:
+                        synthesis, audio = await synthesize_reserved_command(request.program_script, voice, execution.deadline)
                 caption = command_caption(request.command_id, synthesis)
 
             async def play_program() -> None:
@@ -1539,6 +1575,9 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
                 result["synthesis"] = synthesis_summary(synthesis)
             return result
 
+        if request.action == "start_program":
+            async with cosyvoice_synthesis_lock:
+                return await run_reserved_command(execution, execute)
         return await run_reserved_command(execution, execute)
     finally:
         await release_runtime_command_lock(request.command_id, lock)

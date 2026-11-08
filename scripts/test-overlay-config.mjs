@@ -489,6 +489,42 @@ test("overlay background media verification accepts only PNG/JPEG and does not b
   assert.equal(demoVerification.contentType, "image/png");
 });
 
+test("project media downloads require a short-lived HTTPS grant bound to the immutable object version", async () => {
+  const { createMediaDownloadGrant } = await import("../apps/console/lib/media-evidence.ts");
+  const saved = {
+    databaseUrl: process.env.DATABASE_URL,
+    demo: process.env.CONTROL_PLANE_DEMO_MODE,
+    verifierUrl: process.env.MEDIA_EVIDENCE_VERIFIER_URL,
+    verifierToken: process.env.MEDIA_EVIDENCE_VERIFIER_TOKEN,
+    fetch: globalThis.fetch
+  };
+  process.env.DATABASE_URL = "postgres://integration.invalid/control_plane";
+  process.env.CONTROL_PLANE_DEMO_MODE = "false";
+  process.env.MEDIA_EVIDENCE_VERIFIER_URL = "http://127.0.0.1:8080";
+  process.env.MEDIA_EVIDENCE_VERIFIER_TOKEN = "x".repeat(48);
+  let response = { downloadUrl: "https://media.example/signed?token=secret", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  let requestBody = null;
+  globalThis.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return Response.json(response);
+  };
+  const input = { objectKey: "tenant/recordings/output.webm", objectVersion: "version-1", checksum: `sha256:${"a".repeat(64)}`, fileName: "output.webm" };
+  try {
+    const grant = await createMediaDownloadGrant(demoContext, input);
+    assert.equal(grant.downloadUrl, response.downloadUrl);
+    assert.deepEqual(requestBody, { tenantId: demoContext.tenantId, objectKey: input.objectKey, objectVersion: input.objectVersion, expectedChecksum: input.checksum, fileName: input.fileName });
+    response = { downloadUrl: "http://media.example/output.webm", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    await assert.rejects(createMediaDownloadGrant(demoContext, input), (error) => error instanceof Response && error.status === 502);
+    response = { downloadUrl: "https://media.example/output.webm", expiresAt: new Date(Date.now() + 10 * 60_000).toISOString() };
+    await assert.rejects(createMediaDownloadGrant(demoContext, input), (error) => error instanceof Response && error.status === 502);
+  } finally {
+    for (const [key, value] of [["DATABASE_URL", saved.databaseUrl], ["CONTROL_PLANE_DEMO_MODE", saved.demo], ["MEDIA_EVIDENCE_VERIFIER_URL", saved.verifierUrl], ["MEDIA_EVIDENCE_VERIFIER_TOKEN", saved.verifierToken]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    globalThis.fetch = saved.fetch;
+  }
+});
+
 test("worker scheduled starts dispatch only hash-verified frozen overlays and bind Gateway receipts", async () => {
   const workerSource = (await readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   const workerPolicy = await import("../apps/console/lib/shared/policy-engine.mjs");

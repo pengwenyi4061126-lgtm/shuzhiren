@@ -11,7 +11,7 @@ import { interpolate } from "./lib/compose-interpolation.mjs";
 import { checkDockerignore, isExcluded, parseDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
 import { parseEnvFile } from "./lib/compose-interpolation.mjs";
-import { checkComposePorts, checkObserverCredentials, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
+import { checkComposePorts, checkObserverCredentials, checkRuntimeComposeConsistency, checkRuntimeComposeIsolation, checkTemplateRequirements, liveTalkingCapacityComposeProblems, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 function findPython() {
   const requested = process.env.PYTHON?.trim();
@@ -896,6 +896,15 @@ try {
 
   // H3/D2 (15.12): LiveTalking runs without a TTS plugin; speech is CosyVoice audio from runtime-gateway.
   assert.deepEqual(liveTalkingTtsComposeProblems(runtimeComposeDoc), [], "the runtime Compose must start LiveTalking with --tts none");
+  assert.deepEqual(liveTalkingCapacityComposeProblems(runtimeComposeDoc), [], "the runtime Compose must limit the single-GPU LiveTalking service to one session");
+  for (const command of [
+    "python3 app.py --max_session 2",
+    "python3 app.py --max_session 1 --max_session 1",
+    "python3 app.py"
+  ]) {
+    assert.match(liveTalkingCapacityComposeProblems({ services: { livetalking: { command } } }).join("\n"), /--max_session 必须恰好设置为 1/);
+  }
+  assert.deepEqual(liveTalkingCapacityComposeProblems({ services: { livetalking: { command: ["python3", "app.py", "--max_session=1"] } } }), [], "the array command must enforce the same one-session limit");
   const baseCommand = "python3 app.py --transport rtmp --stream_key_file /run/secrets/stream-key";
   const ttsCommand = (extra) => ({ services: { livetalking: { command: `${baseCommand} ${extra}` } } });
   assert.deepEqual(liveTalkingTtsComposeProblems(ttsCommand("--tts none --TTS_SERVER http://cosyvoice:50000")), []);

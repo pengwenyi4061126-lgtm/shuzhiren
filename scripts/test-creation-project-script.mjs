@@ -91,7 +91,10 @@ test("photo recording outputs are versioned, migrated from the old project-keyed
   assert.match(composer, /listProjectRecordings\(projectId\)/);
   assert.match(composer, /项目成片版本/);
   assert.match(composer, /保存为第 \$\{savedOutputs\.length \+ 1\} 版并下载/);
-  assert.match(composer, /disabled=\{!reviewed \|\| working \|\| previewDiffersFromProject\}/);
+  assert.match(composer, /disabled=\{!reviewed \|\| \(!selectedSavedOutput && \(!canCreate \|\| previewDiffersFromProject\)\) \|\| working\}/);
+  assert.match(composer, /videoSnapshot\.productVersionId !== productVersionId/);
+  assert.match(composer, /videoSnapshot\.productVersionId !== project\.productVersionId \|\| videoSnapshot\.script !== project\.script \|\| !project\.scriptReview/);
+  assert.match(composer, /if \(!videoBlob \|\| !reviewed \|\| \(!selectedSavedOutput && \(!canCreate \|\| previewDiffersFromProject\)\)\) return/);
   assert.match(photoVault, /export async function savePhotoSource/);
   assert.match(photoVault, /export async function getPhotoSource/);
   assert.match(photoVault, /export async function deletePhotoSource/);
@@ -100,6 +103,87 @@ test("photo recording outputs are versioned, migrated from the old project-keyed
   assert.match(composer, /photos\.some\(\(item\) => item\.id === photoId\) \? photoId : \(preferred\?\.id \?\? ""\)/);
   assert.match(composer, /getPhotoSource\(activePhotoId\)/);
   assert.match(composer, /此设备没有本机副本/);
+});
+
+test("Studio shows recording and live output counts for the selected project", async () => {
+  const [workspace, composer] = await Promise.all([
+    readFile(new URL("../apps/console/components/studio-workspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/components/photo-recording-composer.tsx", import.meta.url), "utf8")
+  ]);
+  assert.match(workspace, /listProjectRecordings\(projectId\)/);
+  assert.match(workspace, /aria-label="项目输出状态"/);
+  assert.match(workspace, /录播成片/);
+  assert.match(workspace, /studio\/projects\/\$\{encodeURIComponent\(projectId\)\}\/recordings/);
+  assert.match(workspace, /serverCount: result\.data!\.length/);
+  assert.match(workspace, /activeProject\?\.liveRunIds\.length/);
+  assert.match(workspace, /refreshProjectAssets/);
+  assert.match(workspace, /刷新已审核素材/);
+  assert.match(workspace, /href="\/assets" target="_blank"/);
+  assert.match(workspace, /hasUnsavedChanges/);
+  assert.match(workspace, /beforeunload/);
+  assert.match(workspace, /放弃更改并切换项目/);
+  assert.ok(workspace.includes("onRecordingSaved={(result) => setRecordingOutputState"));
+  assert.match(composer, /onRecordingSaved\(\{ localSaved: true, serverArchived: archiveStatus\.status === "archived" \}\)/);
+  assert.match(composer, /重试服务端归档/);
+  assert.match(composer, /updateProjectRecordingArchive/);
+});
+
+test("reviewed photo narration is uploaded and archived as an immutable tenant project recording", async () => {
+  const [composer, route, service, migration, schema, vault, downloadRoute, mediaEvidence] = await Promise.all([
+    readFile(new URL("../apps/console/components/photo-recording-composer.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/app/api/v1/studio/projects/[projectId]/recordings/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/project-recordings.ts", import.meta.url), "utf8"),
+    readFile(new URL("../infra/postgres/migrations/095_creation_project_recordings.sql", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/verify-postgres-schema.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/project-recording-vault.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/app/api/v1/studio/projects/[projectId]/recordings/[recordingId]/download-grant/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/media-evidence.ts", import.meta.url), "utf8")
+  ]);
+  assert.match(composer, /\/api\/v1\/media-uploads\/grant/);
+  assert.match(composer, /method: "PUT".*body: blob/);
+  assert.match(composer, /\/api\/v1\/studio\/projects\/\$\{encodeURIComponent\(project\.id\)\}\/recordings/);
+  assert.match(route, /requireRole\(context, \["admin", "operator"\]\)/);
+  assert.match(service, /verifyMediaAssetContent\(context, \{ kind: "product_clip"/);
+  assert.match(service, /project\.script_review_sha256 !== scriptSha256/);
+  assert.match(service, /assertAttachedApprovedAsset\(client, context\.tenantId, projectId, input\.photoAssetId, "portrait_photo"\)/);
+  assert.match(service, /creation_project\.recording_archived/);
+  assert.match(vault, /serverArchive\?: \{ status: "archived" \| "failed" \| "local-only"/);
+  assert.match(vault, /export async function updateProjectRecordingArchive/);
+  assert.match(composer, /项目服务端成片/);
+  assert.match(composer, /download-grant/);
+  assert.match(downloadRoute, /requireRole\(context, \["admin", "operator", "reviewer", "analyst"\]\)/);
+  assert.match(service, /createMediaDownloadGrant\(context/);
+  assert.match(mediaEvidence, /\/v1\/media-evidence\/download-grant/);
+  assert.match(mediaEvidence, /5 \* 60_000/);
+  assert.match(migration, /enable row level security/);
+  assert.match(migration, /force row level security/);
+  assert.match(migration, /creation_project_recordings_immutable/);
+  assert.match(schema, /"creation_project_recordings"/);
+});
+
+test("Studio can create a reviewed project speech track from its approved voice asset", async () => {
+  const [workspace, composer, route, gateway, gatewayClient] = await Promise.all([
+    readFile(new URL("../apps/console/components/studio-workspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/components/photo-recording-composer.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/app/api/v1/studio/projects/[projectId]/speech-preview/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../runtime/gateway/app.py", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/runtime-gateway.ts", import.meta.url), "utf8")
+  ]);
+  assert.match(workspace, /asset\.kind === "voice" && asset\.approval === "approved" && assetIds\.includes\(asset\.id\)/);
+  assert.match(composer, /speech-preview/);
+  assert.match(composer, /generatedAudioMatches/);
+  assert.match(composer, /videoSnapshot\.voiceAssetId !== selectedVoice\?\.id/);
+  assert.match(composer, /voiceAssetName: selectedVoice\?\.name/);
+  assert.match(route, /assertCreationProjectScriptReviewed\(actor, project\.id, project\.productVersionId\)/);
+  assert.match(route, /project\.assetIds\.includes\(voiceAssetId\)/);
+  assert.match(route, /asset\.kind !== "voice" \|\| asset\.approval !== "approved"/);
+  assert.match(route, /synthesizeRuntimeSpeechPreview\(project\.script, asset\.runtimeVoiceId, asset\.checksum\)/);
+  assert.match(gateway, /@app\.post\("\/v1\/synthesize"\)/);
+  assert.match(gateway, /async with cosyvoice_synthesis_lock:/);
+  assert.match(gateway, /offline_speech_preview_busy/);
+  assert.match(gateway, /request\.action == "start_program"/);
+  assert.match(gatewayClient, /\/v1\/synthesize/);
+  assert.match(gatewayClient, /audio\.byteLength > 4_400_000/);
 });
 
 test("Studio scans and requires review of the exact current script and product facts before outputs", async () => {

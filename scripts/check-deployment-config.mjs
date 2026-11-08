@@ -12,7 +12,7 @@ import { checkDockerignore } from "./lib/dockerignore.mjs";
 import { checkPatchSeries } from "./lib/livetalking-patches.mjs";
 import { checkTemplateRefVariables, deprecatedRefVariables, verifyOpenSourceLock } from "./lib/open-source-lock.mjs";
 import { verifyLiveTalkingNotice } from "./lib/runtime-image-licenses.mjs";
-import { checkRuntimeComposeConsistency, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
+import { checkRuntimeComposeConsistency, liveTalkingCapacityComposeProblems, liveTalkingTtsComposeProblems, streamKeyComposeProblems } from "./lib/runtime-compose-consistency.mjs";
 
 // Context-relative paths the LiveTalking image build must leave out (M23) or keep.
 const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
@@ -694,6 +694,7 @@ try {
   for (const { code, message } of checkRuntimeComposeConsistency({ composeDoc: runtimeComposeDoc, envFiles }).errors) errors.push(`[${code}] ${message}`);
   for (const message of streamKeyComposeProblems(runtimeComposeDoc)) errors.push(message);
   for (const message of liveTalkingTtsComposeProblems(runtimeComposeDoc)) errors.push(message);
+  for (const message of liveTalkingCapacityComposeProblems(runtimeComposeDoc)) errors.push(message);
   for (const message of aigcLabelComposeProblems(runtimeComposeDoc)) errors.push(message);
 } catch (error) {
   errors.push(`[RC-PARSE] 运行时 Compose 无法解析：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);

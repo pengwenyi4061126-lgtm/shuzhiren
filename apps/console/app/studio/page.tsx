@@ -12,6 +12,6 @@ export default async function StudioPage() {
   const actor = await authorizedPageRequestContext(["admin", "operator", "reviewer", "analyst"], { tenantWide: true });
   if (!actor) return <AccessDenied />;
   const [products, channels, assets, projects] = await Promise.all([listProducts(actor), listChannelConnections(actor), listAssets(actor), listCreationProjects(actor)]);
-  const assetOptions = assets.map(({ id, kind, name, approval, expiresAt, rightsScope, checksum, contentVerification }) => ({ id, kind, name, approval, expiresAt, rightsScope, checksum, contentType: contentVerification?.contentType ?? "" }));
+  const assetOptions = assets.map(({ id, kind, name, approval, expiresAt, rightsScope, checksum, runtimeVoiceId, contentVerification }) => ({ id, kind, name, approval, expiresAt, rightsScope, checksum, runtimeVoiceId, contentType: contentVerification?.contentType ?? "" }));
   return <StudioWorkspace products={products} channels={channels} assets={assetOptions} initialProjects={projects} canCreate={actor.role === "admin" || actor.role === "operator"} />;
 }

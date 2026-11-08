@@ -3,13 +3,17 @@ export type ProjectRecordingOutput = {
   projectId: string;
   projectName: string;
   projectRevision: number;
+  productVersionId?: string;
   scriptSnapshot: string;
   photoAssetId: string;
+  voiceAssetId?: string;
+  voiceAssetName?: string;
   fileName: string;
   createdAt: string;
   size: number;
   contentType: string;
   blob: Blob;
+  serverArchive?: { status: "archived" | "failed" | "local-only"; recordingId?: string; message?: string };
 };
 
 const databaseName = "shuzhiren-project-recordings";
@@ -83,6 +87,29 @@ export async function listProjectRecordings(projectId: string) {
     });
     await transactionDone(transaction);
     return outputs.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+  } finally {
+    database.close();
+  }
+}
+
+export async function updateProjectRecordingArchive(projectId: string, outputId: string, serverArchive: ProjectRecordingOutput["serverArchive"]) {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(storeName, "readwrite");
+    const store = transaction.objectStore(storeName);
+    const request = store.get(outputId) as IDBRequest<ProjectRecordingOutput | undefined>;
+    const output = await new Promise<ProjectRecordingOutput | undefined>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("读取本机项目输出失败。"));
+    });
+    if (!output || output.projectId !== projectId) {
+      transaction.abort();
+      throw new Error("找不到要更新的本机项目版本。");
+    }
+    const updated = { ...output, serverArchive };
+    store.put(updated);
+    await transactionDone(transaction);
+    return updated;
   } finally {
     database.close();
   }

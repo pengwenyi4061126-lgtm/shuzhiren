@@ -39,6 +39,7 @@ requiredIndexes.push("outbox_events_media_aggregate_order_idx");
 // H7 (080): the runtime worker flags events the Gateway answered with command_outcome_uncertain.
 requiredColumns.outbox_events = ["outcome_uncertain_at"];
 requiredTriggers.push("product_versions_approved_insert_evidence", "show_revisions_approved_insert_evidence", "media_assets_approved_insert_evidence", "model_releases_approved_insert_evidence", "policy_profiles_approved_insert_evidence");
+requiredTriggers.push("creation_project_recordings_immutable");
 // Functions that must run as their owner so callers need no write privilege on the tables they maintain.
 const requiredSecurityDefinerFunctions = ["seal_audit_event", "protect_last_active_tenant_admin"];
 requiredTables.push("membership_admin_guards");
@@ -105,14 +106,15 @@ for (const constraint of [
   "show_revision_overlays_check3"
 ]) requiredConstraints.set(constraint, true);
 // 091: persistent beginner-first content projects, approved asset references, and linked live outputs.
-requiredTables.push("creation_projects", "creation_project_assets", "creation_project_live_outputs", "live_run_creation_requests");
+requiredTables.push("creation_projects", "creation_project_assets", "creation_project_live_outputs", "creation_project_recordings", "live_run_creation_requests");
 requiredColumns.creation_projects = ["tenant_id", "name", "goal", "audience", "output_mode", "product_version_id", "script", "revision", "script_review_sha256", "script_review_product_version_id", "script_reviewed_by", "script_reviewed_at", "created_at", "updated_at"];
 requiredColumns.creation_project_assets = ["tenant_id", "project_id", "media_asset_id", "created_at"];
 requiredColumns.creation_project_live_outputs = ["tenant_id", "project_id", "live_run_id", "created_at"];
+requiredColumns.creation_project_recordings = ["tenant_id", "project_id", "project_revision", "product_version_id", "script_snapshot", "script_sha256", "photo_asset_id", "voice_asset_id", "file_name", "object_key", "checksum_sha256", "bytes", "content_type", "verified_object_version", "verification_evidence_ref", "verified_at", "created_by", "created_at"];
 requiredColumns.live_run_creation_requests = ["tenant_id", "idempotency_key", "request_sha256", "live_run_id", "created_at"];
-requiredIndexes.push("creation_projects_tenant_updated_idx", "creation_project_assets_tenant_asset_idx", "creation_project_live_outputs_tenant_run_idx", "live_runs_tenant_id_id_key", "live_run_creation_requests_pkey", "live_run_creation_requests_tenant_id_live_run_id_key");
-requiredPolicies.push("tenant_isolation_creation_projects", "tenant_isolation_creation_project_assets", "tenant_isolation_creation_project_live_outputs", "tenant_isolation_live_run_creation_requests");
-for (const constraint of ["creation_projects_name_check", "creation_projects_goal_check", "creation_projects_audience_check", "creation_projects_output_mode_check", "creation_projects_script_check", "creation_projects_revision_check", "creation_projects_script_review_sha256_check", "creation_projects_script_review_state_check", "creation_projects_script_review_product_fk", "live_run_creation_requests_idempotency_key_check", "live_run_creation_requests_request_sha256_check"]) requiredConstraints.set(constraint, true);
+requiredIndexes.push("creation_projects_tenant_updated_idx", "creation_project_assets_tenant_asset_idx", "creation_project_live_outputs_tenant_run_idx", "creation_project_recordings_project_created_idx", "live_runs_tenant_id_id_key", "live_run_creation_requests_pkey", "live_run_creation_requests_tenant_id_live_run_id_key");
+requiredPolicies.push("tenant_isolation_creation_projects", "tenant_isolation_creation_project_assets", "tenant_isolation_creation_project_live_outputs", "tenant_isolation_creation_project_recordings", "tenant_isolation_live_run_creation_requests");
+for (const constraint of ["creation_projects_name_check", "creation_projects_goal_check", "creation_projects_audience_check", "creation_projects_output_mode_check", "creation_projects_script_check", "creation_projects_revision_check", "creation_projects_script_review_sha256_check", "creation_projects_script_review_state_check", "creation_projects_script_review_product_fk", "creation_project_recordings_script_sha256_check", "creation_project_recordings_checksum_sha256_check", "creation_project_recordings_bytes_check", "creation_project_recordings_content_type_check", "live_run_creation_requests_idempotency_key_check", "live_run_creation_requests_request_sha256_check"]) requiredConstraints.set(constraint, true);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.

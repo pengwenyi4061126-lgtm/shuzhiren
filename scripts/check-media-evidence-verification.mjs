@@ -26,6 +26,9 @@ if (!route.includes("media_evidence_verification_failed")) throw new Error("Medi
 for (const source of ["/v1/media-evidence/upload-grant", "checksumBase64", "100 * 1024 * 1024", "x-amz-checksum-sha256", "expiresAt"]) {
   if (!client.includes(source) && !uploadRoute.includes(source) && !uploadContract.includes(source)) throw new Error(`Media upload must retain constrained grant contract: ${source}`);
 }
+for (const source of ["/v1/media-evidence/download-grant", "objectVersion", "expectedChecksum", "5 * 60_000", "downloadUrl.protocol !== \"https:\""]) {
+  if (!client.includes(source)) throw new Error(`Media download must retain the short-lived version-bound grant contract: ${source}`);
+}
 for (const source of ["requestContextFrom", "isMatchingDigest", "cache-control"]) {
   if (!uploadRoute.includes(source)) throw new Error(`Media upload grant route must enforce authenticated, non-cacheable requests: ${source}`);
 }
