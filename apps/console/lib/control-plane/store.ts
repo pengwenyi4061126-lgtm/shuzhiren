@@ -19,6 +19,7 @@ import { createSpeechCommand } from "@/lib/speech-protocol";
 import { assertLiveActivationAllowed } from "@/lib/entitlements";
 import { activePolicyProfileStatusForRun, activePolicyProfileStatusForRunInTransaction, latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
 import { createReleaseManifestSnapshotInTransaction, frozenAigcLabelTextInTransaction } from "@/lib/release-manifest";
+import { creationProjectScriptReviewSha256 } from "@/lib/creation-project-review";
 import { aigcLabelText, evaluateAigcLabelReadiness } from "@/lib/aigc-label";
 import { aiDisclosureRuleStatus, aiDisclosureRuleStatusInTransaction } from "@/lib/interaction-rules";
 import { evaluateOverlayReadinessForRun } from "@/lib/overlay-scene";
@@ -140,7 +141,7 @@ export async function listRuns(context: RequestContext) {
   });
 }
 
-export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string }) {
+export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string; creationProjectId?: string }) {
   requireTenantWideAccess(context);
   const requestSha256 = liveRunCreationRequestSha256(input);
   if (!databasePool() && input.idempotencyKey) {
@@ -177,6 +178,7 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
       const existing = await existingIdempotentLiveRun(client, context, input.idempotencyKey, requestSha256);
       if (existing) return existing;
     }
+    if (input.creationProjectId) await assertCreationProjectScriptReviewInTransaction(client, context.tenantId, input.creationProjectId, input.productVersionId);
     const releases = await client.query<{ id: string; component: ReleaseComponent }>("select id, component from model_releases where approval_status = 'approved' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' and (evidence_ref ~ '^evidence://[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$' or evidence_ref ~ '^urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$') and component = any($1::model_release_component[]) order by approved_at desc", [requiredProductionReleaseComponents]);
     const frozenReleases = new Map<ReleaseComponent, string>();
     for (const release of releases.rows) if (!frozenReleases.has(release.component)) frozenReleases.set(release.component, release.id);
@@ -203,12 +205,13 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
   });
 }
 
-function liveRunCreationRequestSha256(input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string }) {
+function liveRunCreationRequestSha256(input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string; creationProjectId?: string }) {
   const canonical = {
     showName: input.showName,
     scheduledAt: input.scheduledAt ?? null,
     channelConnectionId: input.channelConnectionId,
     productVersionId: input.productVersionId,
+    creationProjectId: input.creationProjectId ?? null,
     runtimeSessionId: input.runtimeSessionId ?? null,
     aiDisclosureEnabled: input.aiDisclosureEnabled,
     mediaAssetIds: [...(input.mediaAssetIds ?? [])].sort()
@@ -229,8 +232,20 @@ async function existingIdempotentLiveRun(client: PoolClient, context: RequestCon
   return run;
 }
 
-function liveRunCreatedAudit(run: StoredRun, input: { channelConnectionId: string; productVersionId: string }): AuditEventInput {
-  return { type: "live_run.created", resource: "live_run", resourceId: run.id, detail: { scheduledAt: run.scheduledAt ?? null, channelConnectionId: input.channelConnectionId, productVersionId: input.productVersionId } };
+function liveRunCreatedAudit(run: StoredRun, input: { channelConnectionId: string; productVersionId: string; creationProjectId?: string }): AuditEventInput {
+  return { type: "live_run.created", resource: "live_run", resourceId: run.id, detail: { scheduledAt: run.scheduledAt ?? null, channelConnectionId: input.channelConnectionId, productVersionId: input.productVersionId, creationProjectId: input.creationProjectId ?? null } };
+}
+
+async function assertCreationProjectScriptReviewInTransaction(client: PoolClient, tenantId: string, projectId: string, productVersionId: string) {
+  const project = (await client.query<{ product_version_id: string; script: string; script_review_sha256: string | null; script_review_product_version_id: string | null }>(
+    "select product_version_id, script, script_review_sha256, script_review_product_version_id from creation_projects where tenant_id = $1 and id = $2 for update",
+    [tenantId, projectId]
+  )).rows[0];
+  if (!project) throw new Response("Content project was not found", { status: 404, statusText: "creation_project_not_found" });
+  if (project.product_version_id !== productVersionId || project.script_review_product_version_id !== productVersionId
+    || project.script_review_sha256 !== creationProjectScriptReviewSha256(project.product_version_id, project.script)) {
+    throw new Response("Current project script must be reviewed before creating outputs", { status: 409, statusText: "creation_project_script_not_reviewed" });
+  }
 }
 
 export async function advanceRunLifecycle(context: RequestContext, runId: string, action: RunLifecycleAction) {

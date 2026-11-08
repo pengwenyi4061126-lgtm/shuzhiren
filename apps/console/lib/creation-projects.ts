@@ -2,14 +2,17 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { listAssets } from "@/lib/assets";
-import { isProductFactsCurrent, listProducts } from "@/lib/catalog";
+import { isProductFactsCurrent, listProducts, type ProductFacts } from "@/lib/catalog";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { listRuns } from "@/lib/control-plane/store";
+import { scanProhibitedTermText } from "@/lib/prohibited-terms";
+import { creationProjectScriptReviewSha256 } from "@/lib/creation-project-review";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 
 export type CreationOutputMode = "recording" | "live" | "both";
 export type CreationProjectInput = { name: string; goal: string; audience: string; outputMode: CreationOutputMode; productVersionId: string; assetIds: string[]; script: string };
-export type CreationProject = CreationProjectInput & { id: string; tenantId: string; assetIds: string[]; liveRunIds: string[]; revision: number; createdAt: string; updatedAt: string };
+export type CreationProjectScriptReview = { sha256: string; productVersionId: string; reviewedBy: string; reviewedAt: string };
+export type CreationProject = CreationProjectInput & { id: string; tenantId: string; assetIds: string[]; liveRunIds: string[]; revision: number; createdAt: string; updatedAt: string; scriptReview: CreationProjectScriptReview | null };
 
 export function isCreationProjectInput(value: unknown): value is CreationProjectInput {
   if (!value || typeof value !== "object") return false;
@@ -23,7 +26,7 @@ export function isCreationProjectInput(value: unknown): value is CreationProject
     && typeof item.script === "string" && item.script.length <= 12000;
 }
 
-type ProjectRow = Omit<CreationProject, "assetIds" | "liveRunIds" | "createdAt" | "updatedAt"> & { created_at: Date | string; updated_at: Date | string };
+type ProjectRow = Omit<CreationProject, "assetIds" | "liveRunIds" | "createdAt" | "updatedAt" | "scriptReview"> & { scriptReviewSha256: string | null; scriptReviewProductVersionId: string | null; scriptReviewedBy: string | null; scriptReviewedAt: Date | string | null; created_at: Date | string; updated_at: Date | string };
 type ProjectStore = { projects: Map<string, CreationProject> };
 
 declare global { var shuzhirenCreationProjects: ProjectStore | undefined; }
@@ -38,7 +41,7 @@ export async function listCreationProjects(context: RequestContext) {
   if (!databasePool()) return [...projectStore().projects.values()].filter((project) => project.tenantId === context.tenantId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return withTenantTransaction(context.tenantId, async (client) => {
     const rows = (await client.query<ProjectRow>(
-      `select id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, created_at, updated_at
+      `select id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, script_review_sha256 as "scriptReviewSha256", script_review_product_version_id as "scriptReviewProductVersionId", script_reviewed_by as "scriptReviewedBy", script_reviewed_at as "scriptReviewedAt", created_at, updated_at
        from creation_projects order by updated_at desc`
     )).rows;
     return loadProjectRelations(client, context.tenantId, rows);
@@ -50,7 +53,7 @@ export async function createCreationProject(context: RequestContext, input: Crea
   const normalized = await validateReferences(context, input);
   if (!databasePool()) {
     const now = new Date().toISOString();
-    const project: CreationProject = { ...normalized, id: `project_${crypto.randomUUID()}`, tenantId: context.tenantId, liveRunIds: [], revision: 1, createdAt: now, updatedAt: now };
+    const project: CreationProject = { ...normalized, id: `project_${crypto.randomUUID()}`, tenantId: context.tenantId, liveRunIds: [], revision: 1, createdAt: now, updatedAt: now, scriptReview: null };
     projectStore().projects.set(project.id, project);
     await recordAuditEvent(context, projectAudit("creation_project.created", project));
     return project;
@@ -60,7 +63,7 @@ export async function createCreationProject(context: RequestContext, input: Crea
     const row = (await client.query<ProjectRow>(
       `insert into creation_projects (tenant_id, name, goal, audience, output_mode, product_version_id, script)
        values ($1, $2, $3, $4, $5, $6, $7)
-       returning id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, created_at, updated_at`,
+       returning id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, script_review_sha256 as "scriptReviewSha256", script_review_product_version_id as "scriptReviewProductVersionId", script_reviewed_by as "scriptReviewedBy", script_reviewed_at as "scriptReviewedAt", created_at, updated_at`,
       [context.tenantId, normalized.name, normalized.goal, normalized.audience, normalized.outputMode, normalized.productVersionId, normalized.script]
     )).rows[0];
     await replaceProjectAssets(client, context.tenantId, row.id, normalized.assetIds);
@@ -76,7 +79,8 @@ export async function updateCreationProject(context: RequestContext, projectId: 
   if (!databasePool()) {
     const project = projectStore().projects.get(projectId);
     if (!project || project.tenantId !== context.tenantId) return null;
-    const updated: CreationProject = { ...project, ...normalized, revision: project.revision + 1, updatedAt: new Date().toISOString() };
+    const reviewUnchanged = project.script === normalized.script && project.productVersionId === normalized.productVersionId;
+    const updated: CreationProject = { ...project, ...normalized, revision: project.revision + 1, updatedAt: new Date().toISOString(), scriptReview: reviewUnchanged ? project.scriptReview : null };
     projectStore().projects.set(projectId, updated);
     await recordAuditEvent(context, projectAudit("creation_project.updated", updated));
     return updated;
@@ -87,7 +91,7 @@ export async function updateCreationProject(context: RequestContext, projectId: 
       `update creation_projects set name = $3, goal = $4, audience = $5, output_mode = $6, product_version_id = $7, script = $8,
          revision = revision + 1, updated_at = now()
        where tenant_id = $1 and id = $2
-       returning id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, created_at, updated_at`,
+       returning id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, script_review_sha256 as "scriptReviewSha256", script_review_product_version_id as "scriptReviewProductVersionId", script_reviewed_by as "scriptReviewedBy", script_reviewed_at as "scriptReviewedAt", created_at, updated_at`,
       [context.tenantId, projectId, normalized.name, normalized.goal, normalized.audience, normalized.outputMode, normalized.productVersionId, normalized.script]
     )).rows[0];
     if (!row) return null;
@@ -97,6 +101,117 @@ export async function updateCreationProject(context: RequestContext, projectId: 
     await recordAuditEventInTransaction(client, context, projectAudit("creation_project.updated", project));
     return project;
   });
+}
+
+export async function reviewCreationProjectScript(context: RequestContext, projectId: string) {
+  requireTenantWideAccess(context);
+  let script: string;
+  let productVersionId: string;
+
+  if (!databasePool()) {
+    const project = projectStore().projects.get(projectId);
+    if (!project || project.tenantId !== context.tenantId) return null;
+    if (project.script.length > 4000) throw new Response("Project script exceeds the review limit", { status: 422, statusText: "project_script_too_long" });
+    await validateReferences(context, project);
+    script = project.script;
+    productVersionId = project.productVersionId;
+  } else {
+    const candidate = await withTenantTransaction(context.tenantId, async (client) => (await client.query<{ productVersionId: string; script: string; facts: unknown }>(
+      `select project.product_version_id as "productVersionId", project.script, version.facts
+       from creation_projects project join product_versions version on version.tenant_id = project.tenant_id and version.id = project.product_version_id
+       where project.tenant_id = $1 and project.id = $2 and version.approval_status = 'approved'`,
+      [context.tenantId, projectId]
+    )).rows[0] ?? null, { readOnly: true });
+    if (!candidate) return null;
+    if (candidate.script.length > 4000) throw new Response("Project script exceeds the review limit", { status: 422, statusText: "project_script_too_long" });
+    if (!isProductFactsCurrent(candidate.facts as Parameters<typeof isProductFactsCurrent>[0])) throw new Response("Current approved product facts are required", { status: 409, statusText: "approved_product_facts_required" });
+    script = candidate.script;
+    productVersionId = candidate.productVersionId;
+  }
+
+  const scriptSha256 = creationProjectScriptReviewSha256(productVersionId, script);
+  const scan = await scanProhibitedTermText(context, script);
+  if (scan.findings.some((finding) => finding.severity === "block")) throw new Response("Script contains blocking prohibited terms", { status: 422, statusText: "script_prohibited_terms_blocked" });
+  const reviewedAt = new Date().toISOString();
+
+  if (!databasePool()) {
+    const current = projectStore().projects.get(projectId);
+    if (!current || current.tenantId !== context.tenantId) return null;
+    if (creationProjectScriptReviewSha256(current.productVersionId, current.script) !== scriptSha256) throw new Response("Project script changed during review", { status: 409, statusText: "project_script_changed" });
+    const updated: CreationProject = { ...current, scriptReview: { sha256: scriptSha256, productVersionId, reviewedBy: context.actorId, reviewedAt } };
+    projectStore().projects.set(projectId, updated);
+    await recordAuditEvent(context, scriptReviewAudit("creation_project.script_reviewed", updated));
+    return updated;
+  }
+
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const current = (await client.query<ProjectRow & { facts: ProductFacts }>(
+      `select project.id, project.tenant_id as "tenantId", project.name, project.goal, project.audience, project.output_mode as "outputMode", project.product_version_id as "productVersionId", project.script, project.revision, project.script_review_sha256 as "scriptReviewSha256", project.script_review_product_version_id as "scriptReviewProductVersionId", project.script_reviewed_by as "scriptReviewedBy", project.script_reviewed_at as "scriptReviewedAt", project.created_at, project.updated_at, version.facts
+       from creation_projects project join product_versions version on version.tenant_id = project.tenant_id and version.id = project.product_version_id
+       where project.tenant_id = $1 and project.id = $2 and version.approval_status = 'approved' for update of project`,
+      [context.tenantId, projectId]
+    )).rows[0];
+    if (!current) return null;
+    if (creationProjectScriptReviewSha256(current.productVersionId, current.script) !== scriptSha256 || current.productVersionId !== productVersionId) throw new Response("Project script changed during review", { status: 409, statusText: "project_script_changed" });
+    if (!isProductFactsCurrent(current.facts)) throw new Response("Current approved product facts are required", { status: 409, statusText: "approved_product_facts_required" });
+    const row = (await client.query<ProjectRow>(
+      `update creation_projects set script_review_sha256 = $3, script_review_product_version_id = $4, script_reviewed_by = $5, script_reviewed_at = $6::timestamptz, updated_at = $6::timestamptz
+       where tenant_id = $1 and id = $2
+       returning id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, script_review_sha256 as "scriptReviewSha256", script_review_product_version_id as "scriptReviewProductVersionId", script_reviewed_by as "scriptReviewedBy", script_reviewed_at as "scriptReviewedAt", created_at, updated_at`,
+      [context.tenantId, projectId, scriptSha256, productVersionId, context.actorId, reviewedAt]
+    )).rows[0];
+    const project = (await loadProjectRelations(client, context.tenantId, [row]))[0];
+    await recordAuditEventInTransaction(client, context, scriptReviewAudit("creation_project.script_reviewed", project));
+    return project;
+  });
+}
+
+export async function revokeCreationProjectScriptReview(context: RequestContext, projectId: string) {
+  requireTenantWideAccess(context);
+  if (!databasePool()) {
+    const current = projectStore().projects.get(projectId);
+    if (!current || current.tenantId !== context.tenantId) return null;
+    if (!current.scriptReview) return current;
+    const updated = { ...current, scriptReview: null };
+    projectStore().projects.set(projectId, updated);
+    await recordAuditEvent(context, scriptReviewAudit("creation_project.script_review_revoked", updated));
+    return updated;
+  }
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const row = (await client.query<ProjectRow>(
+      `update creation_projects set script_review_sha256 = null, script_review_product_version_id = null, script_reviewed_by = null, script_reviewed_at = null, updated_at = now()
+       where tenant_id = $1 and id = $2 and script_review_sha256 is not null
+       returning id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, script_review_sha256 as "scriptReviewSha256", script_review_product_version_id as "scriptReviewProductVersionId", script_reviewed_by as "scriptReviewedBy", script_reviewed_at as "scriptReviewedAt", created_at, updated_at`,
+      [context.tenantId, projectId]
+    )).rows[0];
+    if (!row) return (await listCreationProjectsInTransaction(client, context.tenantId, projectId))[0] ?? null;
+    const project = (await loadProjectRelations(client, context.tenantId, [row]))[0];
+    await recordAuditEventInTransaction(client, context, scriptReviewAudit("creation_project.script_review_revoked", project));
+    return project;
+  });
+}
+
+export async function assertCreationProjectScriptReviewed(context: RequestContext, projectId: string, productVersionId: string) {
+  requireTenantWideAccess(context);
+  if (!databasePool()) {
+    const project = projectStore().projects.get(projectId);
+    if (!project || project.tenantId !== context.tenantId) throw new Response("Content project was not found", { status: 404, statusText: "creation_project_not_found" });
+    if (!project.scriptReview || project.productVersionId !== productVersionId || project.scriptReview.productVersionId !== productVersionId
+      || project.scriptReview.sha256 !== creationProjectScriptReviewSha256(project.productVersionId, project.script)) {
+      throw new Response("Current project script must be reviewed before creating outputs", { status: 409, statusText: "creation_project_script_not_reviewed" });
+    }
+    return;
+  }
+  await withTenantTransaction(context.tenantId, async (client) => {
+    const row = (await client.query<{ productVersionId: string; script: string; reviewSha256: string | null; reviewProductVersionId: string | null }>(
+      `select product_version_id as "productVersionId", script, script_review_sha256 as "reviewSha256", script_review_product_version_id as "reviewProductVersionId"
+       from creation_projects where tenant_id = $1 and id = $2`, [context.tenantId, projectId]
+    )).rows[0];
+    if (!row) throw new Response("Content project was not found", { status: 404, statusText: "creation_project_not_found" });
+    if (row.productVersionId !== productVersionId || row.reviewProductVersionId !== productVersionId || row.reviewSha256 !== creationProjectScriptReviewSha256(row.productVersionId, row.script)) {
+      throw new Response("Current project script must be reviewed before creating outputs", { status: 409, statusText: "creation_project_script_not_reviewed" });
+    }
+  }, { readOnly: true });
 }
 
 export async function attachLiveOutput(context: RequestContext, projectId: string, runId: string) {
@@ -177,17 +292,24 @@ async function loadProjectRelations(client: PoolClient, tenantId: string, rows: 
 
 async function listCreationProjectsInTransaction(client: PoolClient, tenantId: string, projectId: string) {
   const rows = (await client.query<ProjectRow>(
-    `select id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, created_at, updated_at
+    `select id, tenant_id as "tenantId", name, goal, audience, output_mode as "outputMode", product_version_id as "productVersionId", script, revision, script_review_sha256 as "scriptReviewSha256", script_review_product_version_id as "scriptReviewProductVersionId", script_reviewed_by as "scriptReviewedBy", script_reviewed_at as "scriptReviewedAt", created_at, updated_at
      from creation_projects where tenant_id = $1 and id = $2`, [tenantId, projectId]
   )).rows;
   return loadProjectRelations(client, tenantId, rows);
 }
 
 function mapProjectRow(row: ProjectRow) {
-  return { id: row.id, tenantId: row.tenantId, name: row.name, goal: row.goal, audience: row.audience, outputMode: row.outputMode, productVersionId: row.productVersionId, assetIds: [], liveRunIds: [], script: row.script, revision: row.revision, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() };
+  const scriptReview = row.scriptReviewSha256 && row.scriptReviewProductVersionId && row.scriptReviewedBy && row.scriptReviewedAt
+    ? { sha256: row.scriptReviewSha256, productVersionId: row.scriptReviewProductVersionId, reviewedBy: row.scriptReviewedBy, reviewedAt: new Date(row.scriptReviewedAt).toISOString() }
+    : null;
+  return { id: row.id, tenantId: row.tenantId, name: row.name, goal: row.goal, audience: row.audience, outputMode: row.outputMode, productVersionId: row.productVersionId, assetIds: [], liveRunIds: [], script: row.script, revision: row.revision, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(), scriptReview };
 }
 
 function projectAudit(type: "creation_project.created" | "creation_project.updated", project: CreationProject) {
   const contentHash = createHash("sha256").update(JSON.stringify({ name: project.name, goal: project.goal, audience: project.audience, outputMode: project.outputMode, productVersionId: project.productVersionId, assetIds: [...project.assetIds].sort(), script: project.script })).digest("hex");
   return { type, resource: "creation_project", resourceId: project.id, detail: { revision: project.revision, contentSha256: contentHash, assetCount: project.assetIds.length, outputMode: project.outputMode } };
+}
+
+function scriptReviewAudit(type: "creation_project.script_reviewed" | "creation_project.script_review_revoked", project: CreationProject) {
+  return { type, resource: "creation_project", resourceId: project.id, detail: { productVersionId: project.productVersionId, scriptSha256: project.scriptReview?.sha256 ?? null, reviewed: project.scriptReview !== null } };
 }

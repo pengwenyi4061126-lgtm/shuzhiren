@@ -57,17 +57,29 @@ test("live outputs prefer project assets and never bind a photo as the live port
 });
 
 test("Studio scans and requires review of the exact current script and product facts before outputs", async () => {
-  const [workspace, scanRoute] = await Promise.all([
+  const [workspace, scanRoute, projectService, reviewRoute, liveRunRoute, store, migration] = await Promise.all([
     readFile(new URL("../apps/console/components/studio-workspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../apps/console/app/api/v1/prohibited-terms/scan/route.ts", import.meta.url), "utf8")
+    readFile(new URL("../apps/console/app/api/v1/prohibited-terms/scan/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/creation-projects.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/app/api/v1/studio/projects/[projectId]/script-review/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/app/api/v1/live-runs/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/control-plane/store.ts", import.meta.url), "utf8"),
+    readFile(new URL("../infra/postgres/migrations/094_creation_project_script_reviews.sql", import.meta.url), "utf8")
   ]);
   assert.match(workspace, /<ProhibitedTermHints text=\{currentScript\} context="script"/);
   assert.match(workspace, /scriptReviewMark\.productVersionId === productVersionId/);
   assert.match(workspace, /scriptReviewMark\.text === currentScript/);
   assert.match(workspace, /canCreateLive = .*scriptReviewed/);
-  assert.match(workspace, /canCreate=\{canCreate && scriptReviewed\}/);
+  assert.match(workspace, /canCreate=\{canCreate && scriptReviewed && !scriptReviewBusy\}/);
   assert.match(scanRoute, /readBoundedJson\(request, 32 \* 1024\)/);
   assert.match(scanRoute, /text\.length > 4000/);
+  assert.match(projectService, /creationProjectScriptReviewSha256\(productVersionId, script\)/);
+  assert.match(projectService, /finding\.severity === "block"/);
+  assert.match(reviewRoute, /reviewCreationProjectScript/);
+  assert.match(liveRunRoute, /assertCreationProjectScriptReviewed\(actor, body\.creationProjectId, body\.productVersionId\)/);
+  assert.match(store, /assertCreationProjectScriptReviewInTransaction\(client, context\.tenantId, input\.creationProjectId, input\.productVersionId\)/);
+  assert.match(migration, /invalidate_creation_project_script_review_on_content_change/);
+  assert.match(workspace, /creationProjectId: project\.id/);
 });
 
 test("the live-output flow forwards saved project assets into tenant-scoped run creation", async () => {

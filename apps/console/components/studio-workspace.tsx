@@ -29,7 +29,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const [projectId, setProjectId] = useState(firstProject?.id ?? "");
   const [recordingComposerKey, setRecordingComposerKey] = useState(0);
   const [scriptReviewEpoch, setScriptReviewEpoch] = useState(0);
-  const [scriptReviewMark, setScriptReviewMark] = useState<{ epoch: number; productVersionId: string; text: string } | null>(null);
+  const [scriptReviewMark, setScriptReviewMark] = useState<{ epoch: number; productVersionId: string; text: string } | null>(() => firstProject?.scriptReview ? { epoch: 0, productVersionId: firstProject.scriptReview.productVersionId, text: firstProject.script } : null);
   const [projectRevision, setProjectRevision] = useState(firstProject?.revision ?? 0);
   const [productVersionId, setProductVersionId] = useState(firstProject?.productVersionId ?? versions[0]?.version.id ?? "");
   const selected = versions.find(({ version }) => version.id === productVersionId) ?? versions[0];
@@ -44,6 +44,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const [scriptStyle, setScriptStyle] = useState<ScriptStyle>("friendly");
   const [scriptLength, setScriptLength] = useState<ScriptLength>("standard");
   const [busy, setBusy] = useState(false);
+  const [scriptReviewBusy, setScriptReviewBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [createdRun, setCreatedRun] = useState<LiveRun | null>(null);
@@ -87,6 +88,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
     setProjectName(saved.name);
     setScript(saved.script);
     setProjects((current) => [saved, ...current.filter((project) => project.id !== saved.id)]);
+    setScriptReviewMark(saved.scriptReview ? { epoch: scriptReviewEpoch, productVersionId: saved.scriptReview.productVersionId, text: saved.script } : null);
     setNotice(`项目已保存 · 第 ${saved.revision} 次保存`);
     return saved;
   }
@@ -94,6 +96,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   function startNewProject() {
     setRecordingComposerKey((key) => key + 1);
     setScriptReviewEpoch((epoch) => epoch + 1);
+    setScriptReviewMark(null);
     setProjectId("");
     setProjectRevision(0);
     setProjectName("");
@@ -112,7 +115,9 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
     const project = projects.find((item) => item.id === id);
     if (!project) { startNewProject(); return; }
     setRecordingComposerKey((key) => key + 1);
-    setScriptReviewEpoch((epoch) => epoch + 1);
+    const nextReviewEpoch = scriptReviewEpoch + 1;
+    setScriptReviewEpoch(nextReviewEpoch);
+    setScriptReviewMark(project.scriptReview ? { epoch: nextReviewEpoch, productVersionId: project.scriptReview.productVersionId, text: project.script } : null);
     setProjectId(project.id);
     setProjectRevision(project.revision);
     setProjectName(project.name);
@@ -133,6 +138,41 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
     try { await persistProject(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败，请重试"); }
     finally { setBusy(false); }
+  }
+
+  async function updateScriptReview(checked: boolean) {
+    if (!checked) {
+      setScriptReviewMark(null);
+      if (!projectId) return;
+      setScriptReviewBusy(true); setError("");
+      try {
+        const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(projectId)}/script-review`, { method: "DELETE" });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "撤销脚本审核失败");
+        const project = result.data as CreationProject;
+        setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+        setNotice("当前脚本审核已撤销。");
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "撤销脚本审核失败");
+        const project = projects.find((item) => item.id === projectId);
+        if (project?.scriptReview) setScriptReviewMark({ epoch: scriptReviewEpoch, productVersionId: project.scriptReview.productVersionId, text: project.script });
+      } finally { setScriptReviewBusy(false); }
+      return;
+    }
+    if (!canCreate || !selected) return;
+    setScriptReviewBusy(true); setError(""); setNotice("");
+    try {
+      const saved = await persistProject();
+      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(saved.id)}/script-review`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "脚本审核未通过");
+      const reviewedProject = result.data as CreationProject;
+      setProjects((current) => [reviewedProject, ...current.filter((item) => item.id !== reviewedProject.id)]);
+      setScriptReviewMark({ epoch: scriptReviewEpoch, productVersionId: reviewedProject.productVersionId, text: reviewedProject.script });
+      setNotice("脚本检查通过，人工审核已记录到项目审计。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "脚本审核失败");
+    } finally { setScriptReviewBusy(false); }
   }
 
   async function downloadRecordingPack() {
@@ -179,7 +219,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
 
   async function createLiveOutput(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selected || !channelId || !canCreate || !scriptReviewed) return;
+    if (!selected || !channelId || !canCreate || !scriptReviewed || scriptReviewBusy) return;
     setBusy(true);
     setError("");
     setNotice("");
@@ -187,7 +227,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
     try {
       const project = await persistProject();
       const scriptChunks = splitNarrationScript(project.script);
-      const request = { showName: project.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true };
+      const request = { showName: project.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: project.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true };
       const requestFingerprint = JSON.stringify(request);
       const resume = canResumeLiveOutput(pendingOutput, project.id, requestFingerprint);
       const idempotencyKey = resume ? pendingOutput!.idempotencyKey : crypto.randomUUID();
@@ -238,7 +278,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   }
 
   const canCreateLive = canCreate && versions.length > 0 && connectedChannels.length > 0 && scriptReviewed;
-  const pendingRequest = selected ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, mediaAssetIds: assetIds, aiDisclosureEnabled: true } : null;
+  const pendingRequest = selected ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, ...(projectId ? { creationProjectId: projectId } : {}), mediaAssetIds: assetIds, aiDisclosureEnabled: true } : null;
   const canResumePending = Boolean(pendingRequest && canResumeLiveOutput(pendingOutput, projectId, JSON.stringify(pendingRequest)));
 
   return <main className={styles.page}>
@@ -265,7 +305,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
         <div className={styles.scriptHeader}><div><span className={styles.kicker}>SHARED SCRIPT</span><h3>同一份脚本草稿</h3></div><div className={styles.scriptTools}><label>篇幅<select aria-label="脚本篇幅" value={scriptLength} onChange={(event) => setScriptLength(event.target.value as ScriptLength)}><option value="short">简短</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>表达<select aria-label="脚本表达方式" value={scriptStyle} onChange={(event) => setScriptStyle(event.target.value as ScriptStyle)}><option value="friendly">亲切讲解</option><option value="professional">专业说明</option><option value="faq">问题优先</option></select></label><button type="button" className={styles.textAction} onClick={() => setScript(starterScript)} disabled={!selected}><Sparkles size={15} />按审核资料生成</button></div></div>
         <textarea className={styles.script} value={currentScript} onChange={(event) => setScript(event.target.value)} maxLength={4000} aria-label="内容脚本草稿" />
         <ProhibitedTermHints text={currentScript} context="script" onChange={setScript} />
-        <label className={styles.scriptReview}><input type="checkbox" checked={scriptReviewed} onChange={(event) => setScriptReviewMark(event.target.checked ? { epoch: scriptReviewEpoch, productVersionId, text: currentScript } : null)} /><span><strong>我已核对当前脚本</strong><small>请对照已审核的商品资料，检查价格、卖点和口播表达。修改脚本、切换商品或切换项目后，需要重新确认。</small></span></label>
+        <label className={styles.scriptReview}><input type="checkbox" checked={scriptReviewed} disabled={!canCreate || scriptReviewBusy} onChange={(event) => void updateScriptReview(event.target.checked)} /><span><strong>{scriptReviewBusy ? "正在保存审核记录…" : "我已核对当前脚本"}</strong><small>请对照已审核的商品资料，检查价格、卖点和口播表达。确认会写入项目审计；修改脚本、切换商品或切换项目后，需要重新确认。</small></span></label>
         <p className={styles.helper}>脚本草稿由已审核商品事实整理，可直接修改；发布前仍需人工复核。素材授权与人物形象审核在素材资产中管理。</p>
       </section>
 
@@ -275,7 +315,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
           {([ ["both", "双输出", "照片播报视频 + 直播场次"], ["recording", "录播", "照片播报视频"], ["live", "直播", "创建直播草稿场次"] ] as const).map(([value, label, detail]) => <button className={output === value ? styles.outputSelected : ""} key={value} onClick={() => setOutput(value)} type="button" aria-pressed={output === value}><span>{label}</span><small>{detail}</small></button>)}
         </div>
 
-        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>静态照片 + 口播 + 字幕，可恢复预览并下载 WebM</small></span></div><PhotoRecordingComposer key={recordingComposerKey} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} selectedPhotoIds={assetIds} script={currentScript} projectName={projectName || selected?.product.name || "内容项目"} projectId={projectId} onEnsureProject={persistProject} canCreate={canCreate && scriptReviewed} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
+        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>静态照片 + 口播 + 字幕，可恢复预览并下载 WebM</small></span></div><PhotoRecordingComposer key={recordingComposerKey} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} selectedPhotoIds={assetIds} script={currentScript} projectName={projectName || selected?.product.name || "内容项目"} projectId={projectId} onEnsureProject={persistProject} canCreate={canCreate && scriptReviewed && !scriptReviewBusy} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
         {(output === "live" || output === "both") ? <>
           <label className={styles.field}>直播渠道<select value={channelId} onChange={(event) => setChannelId(event.target.value)} disabled={!connectedChannels.length}>{connectedChannels.map((channel: ChannelConnection) => <option value={channel.id} key={channel.id}>{channel.name} · {channel.outputProtocol.toUpperCase()}</option>)}</select></label>
           <label className={styles.field}>计划开播时间 <span className={styles.optional}>可稍后排期</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>
@@ -290,7 +330,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
         <div className={styles.outputFooter}>
           <button type="button" className={styles.saveAction} onClick={saveProject} disabled={busy || !canCreate || !selected}><Save size={15} />{busy ? "保存中…" : projectId ? "保存项目更改" : "保存内容项目"}</button>
           {output !== "live" ? <button type="button" className={styles.primaryAction} onClick={downloadRecordingPack} disabled={busy || !selected}><ArrowDownToLine size={16} />导出录播制作包</button> : null}
-          {output !== "recording" ? <button type="submit" className={styles.primaryAction} disabled={busy || !canCreateLive || !selected}>{busy ? "正在处理…" : canResumePending ? "继续完成直播输出" : "创建直播草稿场次"}<ArrowRight size={16} /></button> : null}
+          {output !== "recording" ? <button type="submit" className={styles.primaryAction} disabled={busy || scriptReviewBusy || !canCreateLive || !selected}>{busy ? "正在处理…" : canResumePending ? "继续完成直播输出" : "创建直播草稿场次"}<ArrowRight size={16} /></button> : null}
           {!canCreate && output !== "recording" ? <p className={styles.helper}>当前账号只有查看权限。</p> : null}
           {!scriptReviewed ? <p className={styles.helper}>完成当前脚本审核后，才能生成录播视频或直播草稿输出。</p> : null}
           {!connectedChannels.length && output !== "recording" ? <p className={styles.helper}>还没有已连接渠道，请先到 <Link href="/channels">渠道设置</Link> 完成配置。</p> : null}

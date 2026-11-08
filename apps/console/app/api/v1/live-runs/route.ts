@@ -1,5 +1,6 @@
 import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
+import { assertCreationProjectScriptReviewed } from "@/lib/creation-projects";
 import { createLiveRun, listRuns } from "@/lib/control-plane/store";
 import { observeRuntimeSession } from "@/lib/runtime-gateway";
 
@@ -24,6 +25,7 @@ export async function POST(request: Request) {
     try { body = await readBoundedJson(request); }
     catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
     if (!isInput(body)) return Response.json({ error: "invalid_live_run" }, { status: 400 });
+    if (body.creationProjectId) await assertCreationProjectScriptReviewed(actor, body.creationProjectId, body.productVersionId);
     if (body.runtimeSessionId) {
       try {
         const observation = await observeRuntimeSession(body.runtimeSessionId);
@@ -38,8 +40,8 @@ export async function POST(request: Request) {
   } catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "live_run_conflict" }, { status: error.status }); throw error; }
 }
 
-function isInput(value: unknown): value is { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string } {
+function isInput(value: unknown): value is { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string; creationProjectId?: string } {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>;
-  return typeof item.showName === "string" && item.showName.trim().length > 0 && item.showName.length <= 200 && typeof item.channelConnectionId === "string" && typeof item.productVersionId === "string" && typeof item.aiDisclosureEnabled === "boolean" && (item.runtimeSessionId === undefined || typeof item.runtimeSessionId === "string") && (item.scheduledAt === undefined || (typeof item.scheduledAt === "string" && !Number.isNaN(Date.parse(item.scheduledAt)))) && (item.idempotencyKey === undefined || (typeof item.idempotencyKey === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(item.idempotencyKey))) && (item.mediaAssetIds === undefined || (Array.isArray(item.mediaAssetIds) && item.mediaAssetIds.length <= 50 && item.mediaAssetIds.every((id) => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id))));
+  return typeof item.showName === "string" && item.showName.trim().length > 0 && item.showName.length <= 200 && typeof item.channelConnectionId === "string" && typeof item.productVersionId === "string" && typeof item.aiDisclosureEnabled === "boolean" && (item.runtimeSessionId === undefined || typeof item.runtimeSessionId === "string") && (item.scheduledAt === undefined || (typeof item.scheduledAt === "string" && !Number.isNaN(Date.parse(item.scheduledAt)))) && (item.idempotencyKey === undefined || (typeof item.idempotencyKey === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(item.idempotencyKey))) && (item.creationProjectId === undefined || (typeof item.creationProjectId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(item.creationProjectId))) && (item.mediaAssetIds === undefined || (Array.isArray(item.mediaAssetIds) && item.mediaAssetIds.length <= 50 && item.mediaAssetIds.every((id) => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id))));
 }

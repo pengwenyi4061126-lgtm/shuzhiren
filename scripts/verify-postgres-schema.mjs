@@ -106,13 +106,13 @@ for (const constraint of [
 ]) requiredConstraints.set(constraint, true);
 // 091: persistent beginner-first content projects, approved asset references, and linked live outputs.
 requiredTables.push("creation_projects", "creation_project_assets", "creation_project_live_outputs", "live_run_creation_requests");
-requiredColumns.creation_projects = ["tenant_id", "name", "goal", "audience", "output_mode", "product_version_id", "script", "revision", "created_at", "updated_at"];
+requiredColumns.creation_projects = ["tenant_id", "name", "goal", "audience", "output_mode", "product_version_id", "script", "revision", "script_review_sha256", "script_review_product_version_id", "script_reviewed_by", "script_reviewed_at", "created_at", "updated_at"];
 requiredColumns.creation_project_assets = ["tenant_id", "project_id", "media_asset_id", "created_at"];
 requiredColumns.creation_project_live_outputs = ["tenant_id", "project_id", "live_run_id", "created_at"];
 requiredColumns.live_run_creation_requests = ["tenant_id", "idempotency_key", "request_sha256", "live_run_id", "created_at"];
 requiredIndexes.push("creation_projects_tenant_updated_idx", "creation_project_assets_tenant_asset_idx", "creation_project_live_outputs_tenant_run_idx", "live_runs_tenant_id_id_key", "live_run_creation_requests_pkey", "live_run_creation_requests_tenant_id_live_run_id_key");
 requiredPolicies.push("tenant_isolation_creation_projects", "tenant_isolation_creation_project_assets", "tenant_isolation_creation_project_live_outputs", "tenant_isolation_live_run_creation_requests");
-for (const constraint of ["creation_projects_name_check", "creation_projects_goal_check", "creation_projects_audience_check", "creation_projects_output_mode_check", "creation_projects_script_check", "creation_projects_revision_check", "live_run_creation_requests_idempotency_key_check", "live_run_creation_requests_request_sha256_check"]) requiredConstraints.set(constraint, true);
+for (const constraint of ["creation_projects_name_check", "creation_projects_goal_check", "creation_projects_audience_check", "creation_projects_output_mode_check", "creation_projects_script_check", "creation_projects_revision_check", "creation_projects_script_review_sha256_check", "creation_projects_script_review_state_check", "creation_projects_script_review_product_fk", "live_run_creation_requests_idempotency_key_check", "live_run_creation_requests_request_sha256_check"]) requiredConstraints.set(constraint, true);
 // RLS coverage comes from the system catalog, not from a hand-written list (M5): every public table with a
 // tenant_id column must have both ENABLE and FORCE ROW LEVEL SECURITY. The settlement tables are listed again so
 // that losing their tenant_id column or the table itself is reported instead of silently leaving the set.
