@@ -1,6 +1,7 @@
 "use client";
 
-import { AlertTriangle, CircleStop, Clock3, LoaderCircle, Pause, Play, RotateCcw, Send, UserRoundCheck, Volume2 } from "lucide-react";
+import { AlertTriangle, CircleStop, Clapperboard, Clock3, LoaderCircle, Pause, Play, RotateCcw, Send, UserRoundCheck, Volume2 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { LiveCommand, LiveRun, LiveRunState } from "@/lib/domain";
 import { clientFetch as fetch } from "@/lib/client-request";
@@ -253,7 +254,7 @@ export function ControlRoom({ initialRun, initialProgram, initialTelemetry, init
 
   return <div className="control-room">
     <main className="main-content">
-      <header className="topbar"><div><div className="eyebrow">指挥台</div><h1>{run.showName}</h1></div><div className="topbar-status"><span className={`state state-${run.state.toLowerCase()}`}>{stateLabel[run.state]} · {elapsed}</span><span className="trace">{run.traceId}</span></div></header>
+      <header className="topbar"><div><div className="eyebrow">指挥台</div><h1>{run.showName}</h1></div><div className="topbar-actions"><Link className="studio-shortcut" href="/studio"><Clapperboard size={15} />内容工坊</Link><div className="topbar-status"><span className={`state state-${run.state.toLowerCase()}`}>{stateLabel[run.state]} · {elapsed}</span><span className="trace">{run.traceId}</span></div></div></header>
       <section className="workspace" aria-label="直播指挥台">
         <div className="primary-grid">
           <section className="panel stage-panel">

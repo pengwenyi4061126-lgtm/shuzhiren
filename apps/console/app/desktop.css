@@ -233,6 +233,29 @@
     gap: 14px;
   }
 
+  .topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .studio-shortcut {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    color: #31443c;
+    background: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .studio-shortcut:hover { border-color: #80b6a4; color: var(--green); background: #f4faf7; }
+
   .state {
     border-radius: 4px;
     padding: 7px 10px;
@@ -511,6 +534,87 @@
     border-color: #4f9d83;
     box-shadow: 0 0 0 3px rgb(79 157 131 / 12%);
   }
+}
+
+.dashboard-empty {
+  width: min(100% - 48px, 760px);
+  min-height: 58vh;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 44px 0;
+}
+
+.dashboard-empty-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #e2f3ed;
+  color: #137e68;
+}
+
+.dashboard-empty-kicker {
+  margin: 24px 0 8px;
+  color: #137e68;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.dashboard-empty h1 {
+  margin: 0;
+  color: #192522;
+  font-size: 27px;
+  line-height: 1.25;
+}
+
+.dashboard-empty-copy {
+  max-width: 58ch;
+  margin: 12px 0 0;
+  color: #687671;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.dashboard-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  margin-top: 24px;
+}
+
+.dashboard-empty-primary {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-radius: 5px;
+  background: #137e68;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.dashboard-empty-primary:hover { background: #0f6b58; }
+.dashboard-empty-secondary { color: #43554c; font-size: 12px; font-weight: 650; text-underline-offset: 3px; }
+
+@media (max-width: 920px) {
+  .dashboard-empty { width: min(100% - 32px, 620px); min-height: 52vh; }
+}
+
+@media (max-width: 560px) {
+  .dashboard-empty { width: calc(100% - 32px); min-height: 48vh; }
+  .dashboard-empty h1 { font-size: 24px; }
+  .dashboard-empty-copy { font-size: 13px; }
+  .topbar-actions { gap: 8px; }
+  .studio-shortcut { min-height: 32px; padding-inline: 8px; font-size: 10px; }
 }
 
 @media (max-width: 920px) {
