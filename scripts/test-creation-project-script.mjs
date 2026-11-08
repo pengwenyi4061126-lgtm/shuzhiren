@@ -102,6 +102,9 @@ test("Studio scans and requires review of the exact current script and product f
   assert.match(workspace, /scriptReviewMark\.text === currentScript/);
   assert.match(workspace, /canCreateLive = .*scriptReviewed/);
   assert.match(workspace, /canCreate=\{canCreate && scriptReviewed && !scriptReviewBusy\}/);
+  assert.match(workspace, /aria-label="内容创建步骤"/);
+  assert.match(workspace, /navigateStep\(2, "studio-script-step"\)/);
+  assert.match(workspace, /onFocusCapture=\{\(\) => setActiveStep\(3\)\}/);
   assert.match(scanRoute, /readBoundedJson\(request, 32 \* 1024\)/);
   assert.match(scanRoute, /text\.length > 4000/);
   assert.match(projectService, /creationProjectScriptReviewSha256\(productVersionId, script\)/);

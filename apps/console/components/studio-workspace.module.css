@@ -5,10 +5,11 @@
 .header p { margin: 0; color: #697872; font-size: 13px; }
 .secondaryAction { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 12px; border: 1px solid #d9e2dd; border-radius: 5px; color: #33433d; background: #fff; text-decoration: none; font-size: 12px; font-weight: 650; }
 .progress { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border: 1px solid #dce4df; border-bottom: 0; border-radius: 7px 7px 0 0; background: #fff; color: #84918b; font-size: 11px; }
-.progress span { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.progressStep { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
+.progressStep:focus-visible { outline: 2px solid #147b67; outline-offset: 3px; }
 .progress b { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid #d8e2dc; border-radius: 50%; font-size: 10px; }
-.progress .current { color: #137e68; font-weight: 700; }
-.progress .current b { color: #fff; border-color: #137e68; background: #137e68; }
+.progressStep.current { color: #137e68; font-weight: 700; }
+.progressStep.current b { color: #fff; border-color: #137e68; background: #137e68; }
 .progress i { width: 42px; height: 1px; background: #dce4df; }
 .layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(330px, .8fr); border: 1px solid #dce4df; border-radius: 0 0 7px 7px; background: #fff; box-shadow: 0 4px 16px rgb(27 43 36 / 4%); }
 .editor { min-width: 0; padding: 25px 26px 23px; }
@@ -84,4 +85,4 @@
 .runLinks > span { display: flex; flex-wrap: wrap; gap: 12px; }
 @media (max-width: 1100px) { .page { padding: 26px 22px 36px; } .layout { grid-template-columns: minmax(0, 1fr) 340px; } .editor { padding-inline: 20px; } .outputPanel { padding-inline: 17px; } }
 @media (max-width: 920px) { .page { padding: 22px 16px 32px; } .layout { grid-template-columns: minmax(0, 1fr); } .outputPanel { border-top: 1px solid #e0e7e2; border-left: 0; } .scriptHeader { align-items: flex-start; flex-direction: column; } .scriptTools { flex-wrap: wrap; } }
-@media (max-width: 560px) { .header { align-items: flex-start; } .header h1 { font-size: 24px; } .header p { max-width: 34ch; line-height: 1.65; } .secondaryAction { padding-inline: 9px; font-size: 0; } .progress { gap: 6px; padding-inline: 10px; } .progress span { gap: 5px; font-size: 9px; } .progress i { width: 12px; } .editor { padding: 19px 14px; } .twoFields { grid-template-columns: 1fr; gap: 0; } .outputPanel { padding: 19px 14px; } .sectionHead { align-items: flex-start; flex-direction: column; } .projectActions { justify-content: flex-start; } .projectSelect select { width: 145px; } .assetList { grid-template-columns: 1fr; } .assetPickerHead { align-items: flex-start; flex-direction: column; } .assetPickerHead small { text-align: left; } }
+@media (max-width: 560px) { .header { align-items: flex-start; } .header h1 { font-size: 24px; } .header p { max-width: 34ch; line-height: 1.65; } .secondaryAction { padding-inline: 9px; font-size: 0; } .progress { gap: 6px; padding-inline: 10px; } .progressStep { gap: 5px; font-size: 9px; } .progressStep b { width: 20px; height: 20px; } .progress i { width: 12px; flex: 0 0 12px; } .editor { padding: 19px 14px; } .twoFields { grid-template-columns: 1fr; gap: 0; } .outputPanel { padding: 19px 14px; } .sectionHead { align-items: flex-start; flex-direction: column; } .projectActions { justify-content: flex-start; } .projectSelect select { width: 145px; } .assetList { grid-template-columns: 1fr; } .assetPickerHead { align-items: flex-start; flex-direction: column; } .assetPickerHead small { text-align: left; } }

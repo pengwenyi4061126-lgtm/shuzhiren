@@ -45,6 +45,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const [scriptLength, setScriptLength] = useState<ScriptLength>("standard");
   const [busy, setBusy] = useState(false);
   const [scriptReviewBusy, setScriptReviewBusy] = useState(false);
+  const [activeStep, setActiveStep] = useState<1 | 2 | 3>(1);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [createdRun, setCreatedRun] = useState<LiveRun | null>(null);
@@ -300,18 +301,27 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const pendingRequest = selected && projectId ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: projectId, mediaAssetIds: assetIds, aiDisclosureEnabled: true as const } : null;
   const canResumePending = Boolean(pendingRequest && canResumeLiveOutput(pendingOutput, projectId, JSON.stringify(pendingRequest)));
 
+  function navigateStep(step: 1 | 2 | 3, targetId: string) {
+    setActiveStep(step);
+    const target = document.getElementById(targetId);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   return <main className={styles.page}>
     <header className={styles.header}>
       <div><div className={styles.eyebrow}>内容项目 / 双输出</div><h1>内容工坊</h1><p>先准备一份内容，再生成照片播报视频、直播场次，或两者兼有。</p></div>
       <Link className={styles.secondaryAction} href="/assets"><FileText size={16} />素材资产</Link>
     </header>
 
-    <div className={styles.progress} aria-label="内容创建步骤">
-      <span className={styles.current}><b>1</b> 内容项目</span><i /><span><b>2</b> 脚本与素材</span><i /><span><b>3</b> 输出与审核</span>
-    </div>
+    <nav className={styles.progress} aria-label="内容创建步骤">
+      <button type="button" className={`${styles.progressStep} ${activeStep === 1 ? styles.current : ""}`} aria-current={activeStep === 1 ? "step" : undefined} onClick={() => navigateStep(1, "studio-project-step")}><b>1</b> 内容项目</button><i />
+      <button type="button" className={`${styles.progressStep} ${activeStep === 2 ? styles.current : ""}`} aria-current={activeStep === 2 ? "step" : undefined} onClick={() => navigateStep(2, "studio-script-step")}><b>2</b> 脚本与素材</button><i />
+      <button type="button" className={`${styles.progressStep} ${activeStep === 3 ? styles.current : ""}`} aria-current={activeStep === 3 ? "step" : undefined} onClick={() => navigateStep(3, "studio-output-step")}><b>3</b> 输出与审核</button>
+    </nav>
 
     <form className={styles.layout} onSubmit={createLiveOutput}>
-      <section className={styles.editor}>
+      <section className={styles.editor} id="studio-project-step" tabIndex={-1} onFocusCapture={() => setActiveStep(1)}>
         <div className={styles.sectionHead}><div><span className={styles.kicker}>PROJECT</span><h2>一个内容项目</h2></div><div className={styles.projectActions}>{projects.length ? <label className={styles.projectSelect}><FolderOpen size={14} /><select aria-label="打开已保存项目" value={projectId} onChange={(event) => selectProject(event.target.value)}><option value="">新建项目</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name} · r{project.revision}</option>)}</select></label> : null}<button className={styles.newProject} type="button" onClick={startNewProject}>新建</button><span className={styles.projectBadge}><Clapperboard size={15} />{projectId ? `已保存 r${projectRevision}` : "新草稿"}</span></div></div>
         <label className={styles.field}>项目名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder={selected?.product.name ?? "例：周末护肤专题"} /></label>
         <label className={styles.field}>商品与已审核事实<select value={productVersionId} onChange={(event) => { setProductVersionId(event.target.value); setScript(""); }} disabled={!versions.length}>{versions.map(({ product, version }) => <option key={version.id} value={version.id}>{product.name} · v{version.revision} · 已审核</option>)}</select></label>
@@ -320,15 +330,15 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
           <label className={styles.field}>面向受众<input value={audience} onChange={(event) => setAudience(event.target.value)} maxLength={120} /></label>
         </div>
         {selected ? <div className={styles.factStrip}><span>事实版本 {selected.version.id}</span><span>¥{(selected.version.facts.priceCent / 100).toFixed(2)}</span><span>库存 {selected.version.facts.stock}</span><span>{selected.version.facts.highlights.slice(0, 2).join(" · ") || "未录入卖点"}</span></div> : <div className={styles.empty}>暂无已审核商品。请先到 <Link href="/products">商品中心</Link> 完成商品资料审核。</div>}
-        <div className={styles.assetPicker}><div className={styles.assetPickerHead}><span><Paperclip size={14} />项目素材</span><small>选择已有的已批准素材，原文件由素材资产管理</small></div>{assets.some((asset) => asset.approval === "approved") ? <div className={styles.assetList}>{assets.filter((asset) => asset.approval === "approved").map((asset) => <label className={styles.assetOption} key={asset.id}><input type="checkbox" checked={assetIds.includes(asset.id)} onChange={(event) => setAssetIds((current) => event.target.checked ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} /><span><strong>{asset.name}</strong><small>{asset.kind === "portrait_photo" ? "照片形象 · 仅录播" : asset.kind === "portrait" ? "肖像视频" : asset.kind}{asset.contentType ? ` · ${asset.contentType}` : ""} · {asset.rightsScope}</small></span></label>)}</div> : <p className={styles.noAssets}>暂无已批准素材，可先保存项目并稍后补充。</p>}{selectedPhotoPortrait && output !== "recording" ? <p className={styles.assetBoundary}>已选照片只进入录播制作素材；直播输出不会把照片当作可直播 Avatar。</p> : null}</div>
-        <div className={styles.scriptHeader}><div><span className={styles.kicker}>SHARED SCRIPT</span><h3>同一份脚本草稿</h3></div><div className={styles.scriptTools}><label>篇幅<select aria-label="脚本篇幅" value={scriptLength} onChange={(event) => setScriptLength(event.target.value as ScriptLength)}><option value="short">简短</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>表达<select aria-label="脚本表达方式" value={scriptStyle} onChange={(event) => setScriptStyle(event.target.value as ScriptStyle)}><option value="friendly">亲切讲解</option><option value="professional">专业说明</option><option value="faq">问题优先</option></select></label><button type="button" className={styles.textAction} onClick={() => setScript(starterScript)} disabled={!selected}><Sparkles size={15} />按审核资料生成</button></div></div>
-        <textarea className={styles.script} value={currentScript} onChange={(event) => setScript(event.target.value)} maxLength={4000} aria-label="内容脚本草稿" />
-        <ProhibitedTermHints text={currentScript} context="script" onChange={setScript} />
-        <label className={styles.scriptReview}><input type="checkbox" checked={scriptReviewed} disabled={!canCreate || scriptReviewBusy} onChange={(event) => void updateScriptReview(event.target.checked)} /><span><strong>{scriptReviewBusy ? "正在保存审核记录…" : "我已核对当前脚本"}</strong><small>请对照已审核的商品资料，检查价格、卖点和口播表达。确认会写入项目审计；修改脚本、切换商品或切换项目后，需要重新确认。</small></span></label>
+        <div className={styles.assetPicker} onFocusCapture={() => setActiveStep(2)}><div className={styles.assetPickerHead}><span><Paperclip size={14} />项目素材</span><small>选择已有的已批准素材，原文件由素材资产管理</small></div>{assets.some((asset) => asset.approval === "approved") ? <div className={styles.assetList}>{assets.filter((asset) => asset.approval === "approved").map((asset) => <label className={styles.assetOption} key={asset.id}><input type="checkbox" checked={assetIds.includes(asset.id)} onChange={(event) => setAssetIds((current) => event.target.checked ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} /><span><strong>{asset.name}</strong><small>{asset.kind === "portrait_photo" ? "照片形象 · 仅录播" : asset.kind === "portrait" ? "肖像视频" : asset.kind}{asset.contentType ? ` · ${asset.contentType}` : ""} · {asset.rightsScope}</small></span></label>)}</div> : <p className={styles.noAssets}>暂无已批准素材，可先保存项目并稍后补充。</p>}{selectedPhotoPortrait && output !== "recording" ? <p className={styles.assetBoundary}>已选照片只进入录播制作素材；直播输出不会把照片当作可直播 Avatar。</p> : null}</div>
+        <div className={styles.scriptHeader} id="studio-script-step" tabIndex={-1} onFocusCapture={() => setActiveStep(2)}><div><span className={styles.kicker}>SHARED SCRIPT</span><h3>同一份脚本草稿</h3></div><div className={styles.scriptTools}><label>篇幅<select aria-label="脚本篇幅" value={scriptLength} onChange={(event) => setScriptLength(event.target.value as ScriptLength)}><option value="short">简短</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>表达<select aria-label="脚本表达方式" value={scriptStyle} onChange={(event) => setScriptStyle(event.target.value as ScriptStyle)}><option value="friendly">亲切讲解</option><option value="professional">专业说明</option><option value="faq">问题优先</option></select></label><button type="button" className={styles.textAction} onClick={() => setScript(starterScript)} disabled={!selected}><Sparkles size={15} />按审核资料生成</button></div></div>
+        <textarea className={styles.script} value={currentScript} onFocusCapture={() => setActiveStep(2)} onChange={(event) => setScript(event.target.value)} maxLength={4000} aria-label="内容脚本草稿" />
+        <div onFocusCapture={() => setActiveStep(2)}><ProhibitedTermHints text={currentScript} context="script" onChange={setScript} /></div>
+        <label className={styles.scriptReview} onFocusCapture={() => setActiveStep(2)}><input type="checkbox" checked={scriptReviewed} disabled={!canCreate || scriptReviewBusy} onChange={(event) => void updateScriptReview(event.target.checked)} /><span><strong>{scriptReviewBusy ? "正在保存审核记录…" : "我已核对当前脚本"}</strong><small>请对照已审核的商品资料，检查价格、卖点和口播表达。确认会写入项目审计；修改脚本、切换商品或切换项目后，需要重新确认。</small></span></label>
         <p className={styles.helper}>脚本草稿由已审核商品事实整理，可直接修改；发布前仍需人工复核。素材授权与人物形象审核在素材资产中管理。</p>
       </section>
 
-      <aside className={styles.outputPanel}>
+      <aside className={styles.outputPanel} id="studio-output-step" tabIndex={-1} onFocusCapture={() => setActiveStep(3)}>
         <div className={styles.sectionHead}><div><span className={styles.kicker}>OUTPUTS</span><h2>两个输出</h2></div></div>
         <div className={styles.outputChoices} role="group" aria-label="选择输出方式">
           {([ ["both", "双输出", "照片播报视频 + 直播场次"], ["recording", "录播", "照片播报视频"], ["live", "直播", "创建直播草稿场次"] ] as const).map(([value, label, detail]) => <button className={output === value ? styles.outputSelected : ""} key={value} onClick={() => setOutput(value)} type="button" aria-pressed={output === value}><span>{label}</span><small>{detail}</small></button>)}
