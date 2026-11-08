@@ -100,7 +100,7 @@ async function fixture() {
 
 function requestContext(f, role = "admin") {
   const reviewer = role === "reviewer";
-  return { tenantId: f.tenantId, actorId: reviewer ? f.reviewerSubject : f.subject, actorName: reviewer ? "知识库审核员" : "知识库编辑员", role, accessScope: "tenant" };
+  return { tenantId: f.tenantId, actorId: reviewer ? f.reviewerSubject : f.subject, actorName: reviewer ? "Knowledge Reviewer" : "Knowledge Editor", role, accessScope: "tenant" };
 }
 
 function routeRequest(f, body, role = "admin") {

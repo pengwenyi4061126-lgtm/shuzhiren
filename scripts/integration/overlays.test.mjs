@@ -115,7 +115,7 @@ describe("PostgreSQL overlay configuration and frozen scenes", () => {
     assert.equal(parsed.productCard.title, "集成洁面产品");
     assert.equal(parsed.priceSticker.priceText, "¥128.00");
     assert.equal(approved.state, "APPROVED");
-    assert.match(await rejected(h.admin, "update show_revision_overlays set caption_enabled = false where show_revision_id = $1", [f.revisionId]), /Frozen show revision overlays are immutable/);
+    assert.match(await h.withTenant(h.admin, f.tenantId, (client) => rejected(client, "update show_revision_overlays set caption_enabled = false where show_revision_id = $1", [f.revisionId])), /Frozen show revision overlays are immutable/);
     const request = await captureResponse("createProgramRevisionRequest", () => revisions.createProgramRevisionRequest(f.context, f.runId));
     const [candidate] = await h.snapshot("select scene_json, scene_sha256, frozen_at from show_revision_overlays where show_revision_id = $1", [request.candidateRevisionId]);
     assert.deepEqual(candidate, { scene_json: null, scene_sha256: null, frozen_at: null }, "cloned candidate starts with editable configuration and no frozen scene");
@@ -129,7 +129,7 @@ describe("PostgreSQL overlay configuration and frozen scenes", () => {
     assert.equal((await h.snapshot("select approval_status from show_revisions where id = $1", [f.revisionId]))[0].approval_status, "draft");
 
     const second = await fixture();
-    const direct = await rejected(h.admin, "update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [second.revisionId, second.memberId]);
+    const direct = await h.withTenant(h.admin, second.tenantId, (client) => rejected(client, "update show_revisions set approval_status = 'approved', approved_by = $2, approved_at = now() where id = $1", [second.revisionId, second.memberId]));
     assert.match(direct, /Approved show revisions with enabled overlays require a frozen scene/);
     assert.equal((await h.snapshot("select approval_status from show_revisions where id = $1", [second.revisionId]))[0].approval_status, "draft");
   });
@@ -159,6 +159,9 @@ describe("PostgreSQL overlay configuration and frozen scenes", () => {
     const runId = await h.seed.liveRun({ tenantId: f.tenantId, revisionId: f.revisionId, state: "ARMED", channelId: f.channelId, productVersionId: f.productVersionId });
     await h.admin.query("update live_runs set has_operator = true, rights_approved = true, has_approved_sku_version = true, has_fallback_program = true, channel_ready = true, output_ready = true, ai_disclosure_enabled = true where id = $1", [runId]);
     await h.seed.healthSample({ tenantId: f.tenantId, liveRunId: runId });
+    const run = await store.getRun(f.context, runId);
+    const preflight = await store.evaluateRunPreflight(f.context, run);
+    assert.equal(preflight.passed, true, JSON.stringify(preflight.checks.filter((check) => !check.passed)));
     const result = await captureResponse("issueCommand(START)", () => store.issueCommand(f.context, runId, { action: "START", expectedState: "ARMED", idempotencyKey: `it-overlay-${randomUUID()}` }));
     const [start] = await h.snapshot("select payload from outbox_events where id = $1 and event_type = 'media.dispatch'", [result.mediaEvent.id]);
     const startCommand = start.payload.command;
