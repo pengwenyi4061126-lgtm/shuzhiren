@@ -64,7 +64,7 @@ async function fixture({ backgroundApproved = true } = {}) {
     [segmentIds.handoff, 4, "human_handoff", "人工接管", null, null, true]
   ];
   for (const [id, position, kind, title, version, script, fallback] of segments) {
-    await admin.query("insert into show_revision_segments (id, tenant_id, show_revision_id, position, kind, title, purpose, duration_seconds, product_version_id, runtime_script, is_fallback) values ($1, $2, $3, $4, $5::program_segment_kind, $6, 'overlay integration', 120, $7, $8, $9)", [id, tenantId, revision.revisionId, position, kind, title, version, script, fallback]);
+    await admin.query("insert into show_revision_segments (id, tenant_id, show_revision_id, position, kind, title, purpose, duration_seconds, product_version_id, runtime_script, is_fallback) values ($1, $2, $3, $4, $5::program_segment_kind, $6, 'overlay integration', case when $5 = 'human_handoff' then 0 else 120 end, $7, $8, $9)", [id, tenantId, revision.revisionId, position, kind, title, version, script, fallback]);
   }
   const channelId = await seed.channelConnection({ tenantId, verifier: memberId, capabilities });
   const runId = await seed.liveRun({ tenantId, revisionId: revision.revisionId, state: "DRAFT", channelId, productVersionId });
