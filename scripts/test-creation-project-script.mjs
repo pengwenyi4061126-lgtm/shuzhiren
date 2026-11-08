@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { generateProductScript, splitNarrationScript } from "../apps/console/lib/shared/content-script.mjs";
-import { canResumeLiveOutput } from "../apps/console/lib/shared/live-output-resume.mjs";
+import { canResumeLiveOutput, clearLiveOutputCheckpoint, readLiveOutputCheckpoint, saveLiveOutputCheckpoint } from "../apps/console/lib/shared/live-output-resume.mjs";
 import { preferProjectLiveAssets } from "../apps/console/lib/shared/live-asset-selection.mjs";
 
 test("narration splitting preserves text and keeps each live segment under the runtime limit", () => {
@@ -44,6 +44,20 @@ test("live output retries keep one idempotency key only while the exact request 
   assert.equal(canResumeLiveOutput(null, "project-1", "request-a"), false);
 });
 
+test("live output checkpoints survive reloads and are isolated to the saved project", () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
+  const request = { showName: "Project", channelConnectionId: "channel-1", productVersionId: "product-1", creationProjectId: "project-1", mediaAssetIds: ["asset-1"], aiDisclosureEnabled: true };
+  const checkpoint = { projectId: "project-1", requestFingerprint: JSON.stringify(request), idempotencyKey: "retry-1", request, run: { id: "run-1", showName: "Project" } };
+  assert.equal(saveLiveOutputCheckpoint(storage, checkpoint), true);
+  assert.deepEqual(readLiveOutputCheckpoint(storage, "project-1"), checkpoint);
+  assert.equal(readLiveOutputCheckpoint(storage, "project-2"), null);
+  storage.setItem("shuzhiren:studio:live-output:project-1", JSON.stringify({ ...checkpoint, requestFingerprint: "tampered" }));
+  assert.equal(readLiveOutputCheckpoint(storage, "project-1"), null, "a checkpoint with a mismatched request fingerprint must be discarded");
+  clearLiveOutputCheckpoint(storage, "project-1");
+  assert.equal(readLiveOutputCheckpoint(storage, "project-1"), null);
+});
+
 test("live outputs prefer project assets and never bind a photo as the live portrait", () => {
   const defaults = new Map([["portrait", { id: "default-video", kind: "portrait" }], ["voice", { id: "default-voice", kind: "voice" }]]);
   const selected = preferProjectLiveAssets(defaults, [
@@ -80,6 +94,9 @@ test("Studio scans and requires review of the exact current script and product f
   assert.match(store, /assertCreationProjectScriptReviewInTransaction\(client, context\.tenantId, input\.creationProjectId, input\.productVersionId\)/);
   assert.match(migration, /invalidate_creation_project_script_review_on_content_change/);
   assert.match(workspace, /creationProjectId: project\.id/);
+  assert.match(workspace, /readLiveOutputCheckpoint\(window\.localStorage, projectId\)/);
+  assert.match(workspace, /saveLiveOutputCheckpoint\(window\.localStorage/);
+  assert.match(workspace, /clearLiveOutputCheckpoint\(window\.localStorage, project\.id\)/);
 });
 
 test("the live-output flow forwards saved project assets into tenant-scoped run creation", async () => {

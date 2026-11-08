@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowDownToLine, ArrowRight, Check, CircleAlert, Clapperboard, FileText, FolderOpen, Paperclip, Radio, Save, Sparkles } from "lucide-react";
 import type { ChannelConnection } from "@/lib/channels";
 import type { Product } from "@/lib/catalog";
 import type { CreationOutputMode, CreationProject } from "@/lib/creation-projects";
 import { generateProductScript, splitNarrationScript } from "@/lib/shared/content-script.mjs";
-import { canResumeLiveOutput } from "@/lib/shared/live-output-resume.mjs";
+import { canResumeLiveOutput, clearLiveOutputCheckpoint, readLiveOutputCheckpoint, saveLiveOutputCheckpoint, type PendingLiveOutput } from "@/lib/shared/live-output-resume.mjs";
 import { clientFetch } from "@/lib/client-request";
 import { PhotoRecordingComposer } from "@/components/photo-recording-composer";
 import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
@@ -17,7 +17,7 @@ type AssetOption = { id: string; kind: string; name: string; approval: string; e
 type Props = { products: Product[]; channels: ChannelConnection[]; assets: AssetOption[]; initialProjects: CreationProject[]; canCreate: boolean };
 type OutputMode = "recording" | "live" | "both";
 type LiveRun = { id: string; showName: string };
-type PendingOutput = { projectId: string; requestFingerprint: string; idempotencyKey: string; run: LiveRun | null };
+type PendingOutput = PendingLiveOutput;
 type ScriptStyle = "friendly" | "professional" | "faq";
 type ScriptLength = "short" | "standard" | "detailed";
 
@@ -49,6 +49,20 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const [notice, setNotice] = useState("");
   const [createdRun, setCreatedRun] = useState<LiveRun | null>(null);
   const [pendingOutput, setPendingOutput] = useState<PendingOutput | null>(null);
+
+  useEffect(() => {
+    const restore = () => {
+      if (!projectId) { setPendingOutput(null); return; }
+      const pending = readLiveOutputCheckpoint(window.localStorage, projectId);
+      setPendingOutput(pending);
+      if (pending) {
+        setChannelId(pending.request.channelConnectionId);
+        setScheduledAt(pending.request.scheduledAt ? toLocalDateTime(pending.request.scheduledAt) : "");
+      }
+    };
+    const frame = window.requestAnimationFrame(restore);
+    return () => window.cancelAnimationFrame(frame);
+  }, [projectId]);
 
   const facts = selected?.version.facts;
   const activeProject = projects.find((project) => project.id === projectId);
@@ -227,15 +241,17 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
     try {
       const project = await persistProject();
       const scriptChunks = splitNarrationScript(project.script);
-      const request = { showName: project.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: project.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true };
+      const request = { showName: project.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: project.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true as const };
       const requestFingerprint = JSON.stringify(request);
       const resume = canResumeLiveOutput(pendingOutput, project.id, requestFingerprint);
       const idempotencyKey = resume ? pendingOutput!.idempotencyKey : crypto.randomUUID();
+      const checkpoint: PendingOutput = { projectId: project.id, requestFingerprint, idempotencyKey, request, run: null };
       let run: LiveRun;
       if (resume && pendingOutput?.run) {
         run = pendingOutput.run;
       } else {
-        setPendingOutput({ projectId: project.id, requestFingerprint, idempotencyKey, run: null });
+        saveLiveOutputCheckpoint(window.localStorage, checkpoint);
+        setPendingOutput(checkpoint);
         const response = await clientFetch("/api/v1/live-runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -244,7 +260,9 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "创建直播场次失败");
         run = result.data as LiveRun;
-        setPendingOutput({ projectId: project.id, requestFingerprint, idempotencyKey, run });
+        const createdCheckpoint = { ...checkpoint, run };
+        saveLiveOutputCheckpoint(window.localStorage, createdCheckpoint);
+        setPendingOutput(createdCheckpoint);
       }
       setCreatedRun(run);
       const segments = [
@@ -268,6 +286,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
       const linkResult = await linkResponse.json();
       if (!linkResponse.ok) throw new Error(linkResult.error ?? "节目单已创建，但项目输出关联失败。");
       setProjects((current) => [linkResult.data as CreationProject, ...current.filter((item) => item.id !== project.id)]);
+      clearLiveOutputCheckpoint(window.localStorage, project.id);
       setPendingOutput(null);
       setNotice("直播草稿场次与节目单已创建。发布前仍需完成审核、渠道与运行时预检。");
     } catch (cause) {
@@ -278,7 +297,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   }
 
   const canCreateLive = canCreate && versions.length > 0 && connectedChannels.length > 0 && scriptReviewed;
-  const pendingRequest = selected ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, ...(projectId ? { creationProjectId: projectId } : {}), mediaAssetIds: assetIds, aiDisclosureEnabled: true } : null;
+  const pendingRequest = selected && projectId ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: projectId, mediaAssetIds: assetIds, aiDisclosureEnabled: true as const } : null;
   const canResumePending = Boolean(pendingRequest && canResumeLiveOutput(pendingOutput, projectId, JSON.stringify(pendingRequest)));
 
   return <main className={styles.page}>
@@ -339,4 +358,11 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
     </form>
     <footer className={styles.limitNote}><Radio size={16} /><span><strong>生成边界</strong>照片播报视频在浏览器本地生成；动态口型 Avatar、服务端成片保存和 4090 实机验收仍未接入。直播场次不会自动开播，仍须经过脚本审核和预检。</span></footer>
   </main>;
+}
+
+function toLocalDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
 }
