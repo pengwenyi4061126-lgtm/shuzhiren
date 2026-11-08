@@ -153,6 +153,7 @@ function scriptPlayAudit(run: StoredRun, selected: SelectedScript, outboxEventId
 
 /** The newest 200 ledger rows of a run: indexes and hashes only, never the script text. */
 export async function listScriptPlays(context: RequestContext, runId: string): Promise<ScriptPlay[]> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)) throw new Response("Live run not found", { status: 404 });
   await assertLiveRunAccess(context, runId);
   if (!databasePool()) {
     return demoPlays().plays.filter((entry) => entry.tenantId === context.tenantId && entry.play.liveRunId === runId).slice(-listLimit).reverse().map((entry) => entry.play);

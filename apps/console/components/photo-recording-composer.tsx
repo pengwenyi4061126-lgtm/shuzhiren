@@ -7,6 +7,7 @@ import type { CreationProject } from "@/lib/creation-projects";
 import { clientFetch } from "@/lib/client-request";
 import { listProjectRecordings, saveProjectRecording, updateProjectRecordingArchive, type ProjectRecordingOutput } from "@/lib/project-recording-vault";
 import { getPhotoSource } from "@/lib/photo-source-vault";
+import { photoNarrationQualityProblems } from "@/lib/photo-recording-quality.mjs";
 import { splitNarrationScript } from "@/lib/shared/content-script.mjs";
 import styles from "./photo-recording-composer.module.css";
 
@@ -28,6 +29,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
   const [error, setError] = useState("");
   const [archiveNotice, setArchiveNotice] = useState("");
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
+  const [qualityCheckPassed, setQualityCheckPassed] = useState(false);
   const [videoProjectId, setVideoProjectId] = useState(projectId);
   const [videoSnapshot, setVideoSnapshot] = useState<{ script: string; photoAssetId: string; projectName: string; productVersionId?: string; voiceAssetId: string | null } | null>(null);
   const [reviewed, setReviewed] = useState(false);
@@ -154,7 +156,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
   }
 
   async function renderVideo() {
-    setError(""); setVideoBlob(null); setVideoPreview(null); setReviewed(false);
+    setError(""); setVideoBlob(null); setVideoPreview(null); setReviewed(false); setQualityCheckPassed(false);
     setVideoProjectId(projectId);
     if (!photo || !imageFile || !audioBlob) { setError("请选择项目中的已批准照片，并录制或选择口播音频。"); return; }
     if (!script.trim()) { setError("请先补齐项目脚本。"); return; }
@@ -169,6 +171,10 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       if (!demo && !/^sha256:[a-f0-9]{64}$/.test(photo.checksum)) throw new Error("照片素材缺少有效 SHA-256，不能用于成片。");
       const result = await renderPhotoNarration(imageFile, audioBlob, script, projectName);
       if (result.size < 1024) throw new Error("生成的视频文件为空，请检查音频后重试。");
+      if (!result.type.startsWith("video/webm")) throw new Error("浏览器返回了不支持的视频格式，请使用最新版桌面 Chrome 或 Edge。");
+      const qualityProblems = await inspectPhotoNarrationVideo(result, audioBlob);
+      if (qualityProblems.length) throw new Error(qualityProblems[0]);
+      setQualityCheckPassed(true);
       setVideoBlob(result); setVideoSnapshot({ script, photoAssetId: photo.id, projectName, productVersionId, voiceAssetId: generatedAudioMatches ? selectedVoice?.id ?? null : null }); setVideoPreview(result);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "视频生成失败，请重试。"); }
     finally { setWorking(false); }
@@ -285,9 +291,66 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
     </div>}
     {error ? <div className={styles.error} role="alert"><CircleAlert size={15} />{error}</div> : null}{archiveNotice ? <p className={styles.archiveNotice} role="status">{archiveNotice}</p> : null}
     {serverOutputs.length ? <div className={styles.serverArchive}><strong>项目服务端成片</strong>{serverOutputs.map((recording) => <div key={recording.id}><span>{recording.fileName}<small>{(recording.bytes / (1024 * 1024)).toFixed(1)} MB · {new Date(recording.createdAt).toLocaleString()}</small></span><button type="button" className={styles.serverDownload} disabled={working} title="下载服务端归档成片" aria-label={`下载 ${recording.fileName}`} onClick={() => void downloadServerRecording(recording)}><Download size={15} /></button></div>)}</div> : null}
-    {videoUrl && videoProjectId === projectId ? <div className={styles.review}>{savedOutputs.length > 1 ? <label className={styles.versionPicker}>项目成片版本<select value={savedOutput?.id ?? ""} onChange={(event) => { const output = savedOutputs.find((item) => item.id === event.target.value); if (!output) return; setSelectedOutputId(output.id); setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName, productVersionId: output.productVersionId, voiceAssetId: output.voiceAssetId ?? null }); setVideoPreview(output.blob); setReviewed(false); }} aria-label="选择项目成片版本">{savedOutputs.map((output, index) => <option key={output.id} value={output.id}>第 {savedOutputs.length - index} 版 · {new Date(output.createdAt).toLocaleString()}</option>)}</select></label> : null}<video className={styles.video} controls playsInline src={videoUrl} /><label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label><button type="button" disabled={!reviewed || (!selectedSavedOutput && (!canCreate || previewDiffersFromProject)) || working} onClick={downloadVideo} className={styles.download}><Download size={15} />{working ? "正在保存…" : selectedSavedOutput ? "下载已保存版本" : `保存为第 ${savedOutputs.length + 1} 版并下载`}</button>{savedOutput?.projectId === projectId ? <><p className={styles.hint}>项目成片第 {savedOutputs.findIndex((output) => output.id === savedOutput.id) >= 0 ? savedOutputs.length - savedOutputs.findIndex((output) => output.id === savedOutput.id) : 1} 版 · {(savedOutput.size / (1024 * 1024)).toFixed(1)} MB · {new Date(savedOutput.createdAt).toLocaleString()}{savedOutput.voiceAssetName ? ` · 配音 ${savedOutput.voiceAssetName}` : ""}</p><p className={styles.archiveState}>{savedOutput.serverArchive?.status === "archived" ? "服务端已归档" : savedOutput.serverArchive?.status === "failed" ? `服务端归档待重试：${savedOutput.serverArchive.message ?? "暂时失败"}` : savedOutput.serverArchive?.status === "local-only" ? `仅本机保存：${savedOutput.serverArchive.message ?? "演示模式"}` : "本机项目版本"}</p>{savedOutput.serverArchive?.status === "failed" ? <button type="button" className={styles.retry} title="重试服务端归档" aria-label="重试服务端归档" disabled={working} onClick={() => void retryArchive(savedOutput)}><CloudUpload size={15} />重试归档</button> : null}</> : null}{previewDiffersFromProject && !selectedSavedOutput ? <p className={styles.demo}>当前项目脚本、商品版本、照片、标题或配音声线已变化；此预览不能保存为当前成片，请重新预览并完成脚本审核。</p> : !canCreate && !selectedSavedOutput ? <p className={styles.demo}>当前项目的脚本审核已失效；重新审核后才能保存新成片。</p> : null}</div> : null}
+    {videoUrl && videoProjectId === projectId ? <div className={styles.review}>{savedOutputs.length > 1 ? <label className={styles.versionPicker}>项目成片版本<select value={savedOutput?.id ?? ""} onChange={(event) => { const output = savedOutputs.find((item) => item.id === event.target.value); if (!output) return; setSelectedOutputId(output.id); setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName, productVersionId: output.productVersionId, voiceAssetId: output.voiceAssetId ?? null }); setVideoPreview(output.blob); setReviewed(false); setQualityCheckPassed(false); }} aria-label="选择项目成片版本">{savedOutputs.map((output, index) => <option key={output.id} value={output.id}>第 {savedOutputs.length - index} 版 · {new Date(output.createdAt).toLocaleString()}</option>)}</select></label> : null}<video className={styles.video} controls playsInline src={videoUrl} />{qualityCheckPassed ? <p className={styles.hint}>自动质量检查通过：画面尺寸和首帧解码正常；浏览器可读取时长时已核对口播长度。</p> : null}<label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label><button type="button" disabled={!reviewed || (!selectedSavedOutput && (!canCreate || previewDiffersFromProject)) || working} onClick={downloadVideo} className={styles.download}><Download size={15} />{working ? "正在保存…" : selectedSavedOutput ? "下载已保存版本" : `保存为第 ${savedOutputs.length + 1} 版并下载`}</button>{savedOutput?.projectId === projectId ? <><p className={styles.hint}>项目成片第 {savedOutputs.findIndex((output) => output.id === savedOutput.id) >= 0 ? savedOutputs.length - savedOutputs.findIndex((output) => output.id === savedOutput.id) : 1} 版 · {(savedOutput.size / (1024 * 1024)).toFixed(1)} MB · {new Date(savedOutput.createdAt).toLocaleString()}{savedOutput.voiceAssetName ? ` · 配音 ${savedOutput.voiceAssetName}` : ""}</p><p className={styles.archiveState}>{savedOutput.serverArchive?.status === "archived" ? "服务端已归档" : savedOutput.serverArchive?.status === "failed" ? `服务端归档待重试：${savedOutput.serverArchive.message ?? "暂时失败"}` : savedOutput.serverArchive?.status === "local-only" ? `仅本机保存：${savedOutput.serverArchive.message ?? "演示模式"}` : "本机项目版本"}</p>{savedOutput.serverArchive?.status === "failed" ? <button type="button" className={styles.retry} title="重试服务端归档" aria-label="重试服务端归档" disabled={working} onClick={() => void retryArchive(savedOutput)}><CloudUpload size={15} />重试归档</button> : null}</> : null}{previewDiffersFromProject && !selectedSavedOutput ? <p className={styles.demo}>当前项目脚本、商品版本、照片、标题或配音声线已变化；此预览不能保存为当前成片，请重新预览并完成脚本审核。</p> : !canCreate && !selectedSavedOutput ? <p className={styles.demo}>当前项目的脚本审核已失效；重新审核后才能保存新成片。</p> : null}</div> : null}
     <p className={styles.note}>输出为静态照片配口播字幕，不是动态口型 Avatar。项目服务端归档列表可从其他设备下载；本机副本用于离线预览。</p>
   </section>;
+}
+
+async function inspectPhotoNarrationVideo(blob: Blob, audioBlob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const video = document.createElement("video");
+  video.preload = "auto";
+  video.muted = true;
+  video.playsInline = true;
+  try {
+    const metadata = await new Promise<{ width: number; height: number; hasDecodedFrame: boolean; duration: number }>((resolve, reject) => {
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        video.removeEventListener("loadeddata", onLoaded);
+        video.removeEventListener("error", onError);
+      };
+      const timeout = window.setTimeout(() => { cleanup(); reject(new Error("成片解码超时，请缩短音频后重试。")); }, 15_000);
+      const onLoaded = () => {
+        cleanup();
+        resolve({ width: video.videoWidth, height: video.videoHeight, hasDecodedFrame: video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA, duration: video.duration });
+      };
+      const onError = () => { cleanup(); reject(new Error("浏览器无法解码成片，请重新生成。")); };
+      video.addEventListener("loadeddata", onLoaded, { once: true });
+      video.addEventListener("error", onError, { once: true });
+      video.src = url;
+      video.load();
+    });
+    const audio = document.createElement("audio");
+    audio.preload = "metadata";
+    const audioUrl = URL.createObjectURL(audioBlob);
+    try {
+      const expectedDuration = await new Promise<number>((resolve, reject) => {
+        const cleanup = () => {
+          window.clearTimeout(timeout);
+          audio.removeEventListener("loadedmetadata", onLoaded);
+          audio.removeEventListener("error", onError);
+        };
+        const timeout = window.setTimeout(() => { cleanup(); reject(new Error("口播音频读取超时，请换一个音频文件后重试。")); }, 15_000);
+        const onLoaded = () => { cleanup(); resolve(audio.duration); };
+        const onError = () => { cleanup(); reject(new Error("口播音频读取失败，无法校验成片时长。")); };
+        audio.addEventListener("loadedmetadata", onLoaded, { once: true });
+        audio.addEventListener("error", onError, { once: true });
+        audio.src = audioUrl;
+        audio.load();
+      });
+      return photoNarrationQualityProblems(metadata, expectedDuration);
+    } finally {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      URL.revokeObjectURL(audioUrl);
+    }
+  } finally {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(url);
+  }
 }
 
 async function archiveProjectRecording(project: CreationProject, blob: Blob, metadata: { projectRevision: number; productVersionId: string; scriptSnapshot: string; photoAssetId: string; voiceAssetId?: string; fileName: string }): Promise<NonNullable<ProjectRecordingOutput["serverArchive"]>> {
@@ -305,7 +368,7 @@ async function archiveProjectRecording(project: CreationProject, blob: Blob, met
     if (!grantResponse.ok || !grantResult?.data) throw new Error(grantResult?.error ?? "获取录播上传授权失败");
     if (grantResult.data.demoMode) return { status: "local-only", message: "演示模式未上传文件字节" };
     if (!grantResult.data.uploadUrl || !grantResult.data.headers) throw new Error("录播上传授权缺少直传参数");
-    const upload = await fetch(grantResult.data.uploadUrl, { method: "PUT", headers: grantResult.data.headers, body: blob });
+    const upload = await clientFetch(grantResult.data.uploadUrl, { method: "PUT", headers: grantResult.data.headers, body: blob }, 120_000);
     if (!upload.ok) throw new Error("WebM 直传对象存储失败");
     const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(project.id)}/recordings`, {
       method: "POST",

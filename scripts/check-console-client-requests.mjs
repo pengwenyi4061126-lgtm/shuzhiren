@@ -37,6 +37,15 @@ console.log(`PASS  ${files.length} console components use bounded client request
     const answer = new Response("{}", { status: 200 });
     globalThis.fetch = async () => answer;
     if ((await clientFetch("/api/v1/answers")) !== answer) throw new Error("clientFetch must return the response of a request that answers in time");
+    let uploadSignal;
+    globalThis.fetch = (_input, init) => new Promise((_resolve, reject) => { uploadSignal = init.signal; init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))); });
+    const upload = clientFetch("https://storage.example/upload", { method: "PUT" }, 120_000);
+    mock.timers.tick(119_999);
+    if (uploadSignal.aborted) throw new Error("clientFetch must retain the longer configured bound for a signed media upload");
+    mock.timers.tick(1);
+    if (!uploadSignal.aborted) throw new Error("clientFetch must abort a signed media upload at its configured bound");
+    const uploadOutcome = await upload.then(() => "resolved", (error) => error.message);
+    if (uploadOutcome !== "请求超时，请检查网络或稍后重试") throw new Error(`clientFetch must report a timeout for a signed media upload, got ${uploadOutcome}`);
   } finally {
     mock.timers.reset();
     globalThis.fetch = realFetch;

@@ -67,6 +67,7 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "media:evidence:check", kind: "npm", script: "media:evidence:check", label: "static" },
   { id: "media:evidence:service:test", kind: "npm", script: "media:evidence:service:test", label: "behavioral" },
   { id: "recording:evidence:check", kind: "npm", script: "recording:evidence:check", label: "static" },
+  { id: "recording:quality:test", kind: "npm", script: "recording:quality:test", label: "behavioral" },
   { id: "runtime:images:check", kind: "npm", script: "runtime:images:check", label: "static" },
   { id: "runtime:images:licenses:check", kind: "npm", script: "runtime:images:licenses:check", label: "static" },
   { id: "runtime:images:licenses:test", kind: "npm", script: "runtime:images:licenses:test", label: "behavioral" },

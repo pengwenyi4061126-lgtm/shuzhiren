@@ -27,7 +27,7 @@ export function AssetWorkspace({ initialAssets, presets = [], canManage, canAppr
     const checksumBase64 = btoa(Array.from(rawDigest, (byte) => String.fromCharCode(byte)).join(""));
     const grant = await request<{ objectKey: string; uploadUrl?: string; headers?: Record<string, string>; demoMode: boolean }>("/api/v1/media-uploads/grant", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: draft.kind, checksum, checksumBase64, contentType: uploadFile.type, bytes: uploadFile.size }) });
     if (!grant.demoMode) {
-      const upload = await fetch(grant.uploadUrl!, { method: "PUT", headers: grant.headers, body: uploadFile });
+      const upload = await clientFetch(grant.uploadUrl!, { method: "PUT", headers: grant.headers, body: uploadFile }, 120_000);
       if (!upload.ok) throw new Error("素材上传失败，请重新选择文件后重试");
     }
     const asset = await request<MediaAsset>("/api/v1/assets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...draft, objectKey: grant.objectKey, checksum, expiresAt: draft.expiresAt || undefined, runtimeVoiceId: draft.kind === "voice" ? draft.runtimeVoiceId : undefined }) });

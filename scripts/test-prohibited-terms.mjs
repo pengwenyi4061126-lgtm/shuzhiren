@@ -71,7 +71,7 @@ test("tenant prohibited-term routes enforce governance, second approval and scan
   const auditCount = globalThis.shuzhirenAuditStore?.events.length ?? 0;
   assert.equal((await callTermRoute(termRoutes.scan.POST, "/api/v1/prohibited-terms/scan", { method: "POST", role: "analyst", body: { text: "全 网 最 低", context: "script" } })).status, 200);
   assert.equal(globalThis.shuzhirenAuditStore?.events.length ?? 0, auditCount, "high-frequency scans do not write audit events");
-  assert.equal((await callTermRoute(termRoutes.scan.POST, "/api/v1/prohibited-terms/scan", { method: "POST", body: { text: "x".repeat(2001), context: "script" } })).status, 422);
+  assert.equal((await callTermRoute(termRoutes.scan.POST, "/api/v1/prohibited-terms/scan", { method: "POST", body: { text: "x".repeat(4001), context: "script" } })).status, 422);
 
   const created = await callTermRoute(termRoutes.list.POST, "/api/v1/prohibited-terms", { method: "POST", body: { term: "专属审批测试词", suggestions: ["日常用语"] }, actorId: "term-author" });
   assert.equal(created.status, 201, JSON.stringify(created.body));

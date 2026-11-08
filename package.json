@@ -89,6 +89,7 @@
     "media:evidence:check": "node scripts/check-media-evidence-verification.mjs",
     "media:evidence:service:test": "node --test services/media-evidence-verifier/test.mjs",
     "recording:evidence:check": "node scripts/check-recording-evidence-verification.mjs",
+    "recording:quality:test": "node --test scripts/test-photo-recording-quality.mjs",
     "runtime:gateway:config:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-config.py",
     "runtime:gateway:errors:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-errors.py",
     "runtime:gateway:speech-preview:test": "node scripts/run-python-test.mjs scripts/test-runtime-gateway-speech-preview.py",

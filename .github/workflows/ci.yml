@@ -111,6 +111,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run media:evidence:service:test
+      - run: npm run recording:quality:test
       # deploy:check:test runs runtime/livetalking/tests/test_aigc_label.py; its drawing tests need numpy, Pillow
       # and a CJK font, and AIGC_LABEL_REQUIRE_IMAGING turns their SKIP into a failure.
       - name: Set up Python
