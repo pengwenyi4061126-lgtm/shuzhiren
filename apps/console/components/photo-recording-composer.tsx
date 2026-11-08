@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert, Download, Mic, Square } from "lucide-react";
+import type { CreationProject } from "@/lib/creation-projects";
+import { getProjectRecording, saveProjectRecording, type ProjectRecordingOutput } from "@/lib/project-recording-vault";
 import { splitNarrationScript } from "@/lib/shared/content-script.mjs";
 import styles from "./photo-recording-composer.module.css";
 
 type PhotoAsset = { id: string; name: string; checksum: string };
 
-export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, projectName, canCreate }: { photos: PhotoAsset[]; selectedPhotoIds: string[]; script: string; projectName: string; canCreate: boolean }) {
+export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, projectName, projectId, onEnsureProject, canCreate }: { photos: PhotoAsset[]; selectedPhotoIds: string[]; script: string; projectName: string; projectId: string; onEnsureProject: () => Promise<CreationProject>; canCreate: boolean }) {
   const preferred = photos.find((photo) => selectedPhotoIds.includes(photo.id)) ?? photos[0];
   const [photoId, setPhotoId] = useState(preferred?.id ?? "");
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -18,9 +20,12 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
+  const [videoProjectId, setVideoProjectId] = useState(projectId);
+  const [videoSnapshot, setVideoSnapshot] = useState<{ script: string; photoAssetId: string; projectName: string } | null>(null);
   const [reviewed, setReviewed] = useState(false);
   const [audioUrl, setAudioUrl] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
+  const [savedOutput, setSavedOutput] = useState<ProjectRecordingOutput | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
@@ -34,6 +39,18 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!projectId) return () => { active = false; };
+    getProjectRecording(projectId).then((output) => {
+      if (!active || !output) return;
+      setSavedOutput(output); setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName }); setVideoPreview(output.blob); setReviewed(false);
+    }).catch((cause) => {
+      if (active) setError(cause instanceof Error ? cause.message : "读取本机项目输出失败。");
+    });
+    return () => { active = false; };
+  }, [projectId]);
 
   function setAudioPreview(blob: Blob | null) {
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
@@ -65,6 +82,7 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
 
   async function renderVideo() {
     setError(""); setVideoBlob(null); setVideoPreview(null); setReviewed(false);
+    setVideoProjectId(projectId);
     if (!photo || !imageFile || !audioBlob) { setError("请选择项目中的已批准照片，并录制或选择口播音频。"); return; }
     if (!script.trim()) { setError("请先补齐项目脚本。"); return; }
     if (!/^image\/(jpeg|png)$/.test(imageFile.type) || imageFile.size > 25 * 1024 * 1024) { setError("照片需为 JPEG 或 PNG，且不超过 25 MB。"); return; }
@@ -78,16 +96,29 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
       if (!demo && !/^sha256:[a-f0-9]{64}$/.test(photo.checksum)) throw new Error("照片素材缺少有效 SHA-256，不能用于成片。");
       const result = await renderPhotoNarration(imageFile, audioBlob, script, projectName);
       if (result.size < 1024) throw new Error("生成的视频文件为空，请检查音频后重试。");
-      setVideoBlob(result); setVideoPreview(result);
+      setVideoBlob(result); setVideoSnapshot({ script, photoAssetId: photo.id, projectName }); setVideoPreview(result);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "视频生成失败，请重试。"); }
     finally { setWorking(false); }
   }
 
-  function downloadVideo() {
+  async function downloadVideo() {
     if (!videoBlob || !reviewed) return;
-    const url = URL.createObjectURL(videoBlob); const link = document.createElement("a");
-    link.href = url; link.download = `${safeName(projectName || "内容项目")}-照片播报.webm`; link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setWorking(true); setError("");
+    let fileName = `${safeName(projectName || "内容项目")}-照片播报.webm`;
+    try {
+      const project = await onEnsureProject();
+      fileName = `${safeName(project.name)}-照片播报.webm`;
+      const output: ProjectRecordingOutput = { projectId: project.id, projectName: project.name, projectRevision: project.revision, scriptSnapshot: videoSnapshot?.script ?? script, photoAssetId: videoSnapshot?.photoAssetId ?? photoId, fileName, createdAt: new Date().toISOString(), size: videoBlob.size, contentType: videoBlob.type || "video/webm", blob: videoBlob };
+      await saveProjectRecording(output);
+      setSavedOutput(output); setVideoProjectId(project.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? `本机项目保存失败，仍将下载成片：${cause.message}` : "本机项目保存失败，仍将下载成片。");
+    } finally {
+      const url = URL.createObjectURL(videoBlob); const link = document.createElement("a");
+      link.href = url; link.download = fileName; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setWorking(false);
+    }
   }
 
   return <section className={styles.composer} aria-labelledby="photo-recording-title">
@@ -102,8 +133,8 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
       <button type="button" onClick={renderVideo} disabled={!canCreate || working || recording || !imageFile || !audioBlob} className={styles.render}>{working ? "正在生成本地预览…" : "生成并预览视频"}</button>
     </div>}
     {error ? <div className={styles.error} role="alert"><CircleAlert size={15} />{error}</div> : null}
-    {videoUrl ? <div className={styles.review}><video className={styles.video} controls playsInline src={videoUrl} /><label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label><button type="button" disabled={!reviewed} onClick={downloadVideo} className={styles.download}><Download size={15} />审核并下载 WebM</button></div> : null}
-    <p className={styles.note}>输出为静态照片配口播字幕，不是动态口型 Avatar。视频在当前浏览器生成，不会上传或保存到服务端。</p>
+    {videoUrl && videoProjectId === projectId ? <div className={styles.review}><video className={styles.video} controls playsInline src={videoUrl} /><label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label><button type="button" disabled={!reviewed || working} onClick={downloadVideo} className={styles.download}><Download size={15} />{working ? "正在保存…" : savedOutput?.projectId === projectId ? "保存更新并下载 WebM" : "保存到项目并下载"}</button>{savedOutput?.projectId === projectId ? <p className={styles.hint}>本机项目第 {savedOutput.projectRevision} 版 · {(savedOutput.size / (1024 * 1024)).toFixed(1)} MB · {new Date(savedOutput.createdAt).toLocaleString()}</p> : null}{savedOutput?.projectId === projectId && (savedOutput.scriptSnapshot !== script || savedOutput.photoAssetId !== photoId || savedOutput.projectName !== projectName) ? <p className={styles.demo}>当前项目脚本、照片或标题已变化；此成片对应旧内容，请重新生成后再用于发布。</p> : null}</div> : null}
+    <p className={styles.note}>输出为静态照片配口播字幕，不是动态口型 Avatar。成片保存在此浏览器的本机项目空间，可重新打开预览；清理浏览器数据会删除它，服务端归档尚未接入。</p>
   </section>;
 }
 

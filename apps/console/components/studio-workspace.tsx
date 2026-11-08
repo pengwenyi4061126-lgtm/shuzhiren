@@ -26,6 +26,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const firstProject = initialProjects[0];
   const [projects, setProjects] = useState(initialProjects);
   const [projectId, setProjectId] = useState(firstProject?.id ?? "");
+  const [recordingComposerKey, setRecordingComposerKey] = useState(0);
   const [projectRevision, setProjectRevision] = useState(firstProject?.revision ?? 0);
   const [productVersionId, setProductVersionId] = useState(firstProject?.productVersionId ?? versions[0]?.version.id ?? "");
   const selected = versions.find(({ version }) => version.id === productVersionId) ?? versions[0];
@@ -86,6 +87,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   }
 
   function startNewProject() {
+    setRecordingComposerKey((key) => key + 1);
     setProjectId("");
     setProjectRevision(0);
     setProjectName("");
@@ -103,6 +105,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   function selectProject(id: string) {
     const project = projects.find((item) => item.id === id);
     if (!project) { startNewProject(); return; }
+    setRecordingComposerKey((key) => key + 1);
     setProjectId(project.id);
     setProjectRevision(project.revision);
     setProjectName(project.name);
@@ -263,7 +266,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
           {([ ["both", "双输出", "照片播报视频 + 直播场次"], ["recording", "录播", "照片播报视频"], ["live", "直播", "创建直播草稿场次"] ] as const).map(([value, label, detail]) => <button className={output === value ? styles.outputSelected : ""} key={value} onClick={() => setOutput(value)} type="button" aria-pressed={output === value}><span>{label}</span><small>{detail}</small></button>)}
         </div>
 
-        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>静态照片 + 口播 + 字幕，可预览并下载 WebM</small></span></div><PhotoRecordingComposer key={`${projectId}:${projectPhotos.map((photo) => photo.id).join(",")}`} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} selectedPhotoIds={assetIds} script={script || starterScript} projectName={projectName || selected?.product.name || "内容项目"} canCreate={canCreate} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
+        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>静态照片 + 口播 + 字幕，可恢复预览并下载 WebM</small></span></div><PhotoRecordingComposer key={recordingComposerKey} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} selectedPhotoIds={assetIds} script={script || starterScript} projectName={projectName || selected?.product.name || "内容项目"} projectId={projectId} onEnsureProject={persistProject} canCreate={canCreate} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
         {(output === "live" || output === "both") ? <>
           <label className={styles.field}>直播渠道<select value={channelId} onChange={(event) => setChannelId(event.target.value)} disabled={!connectedChannels.length}>{connectedChannels.map((channel: ChannelConnection) => <option value={channel.id} key={channel.id}>{channel.name} · {channel.outputProtocol.toUpperCase()}</option>)}</select></label>
           <label className={styles.field}>计划开播时间 <span className={styles.optional}>可稍后排期</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>
