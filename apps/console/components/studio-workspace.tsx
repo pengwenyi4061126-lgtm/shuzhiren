@@ -357,7 +357,8 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
     }
   }
 
-  const canCreateLive = canCreate && versions.length > 0 && connectedChannels.length > 0 && scriptReviewed;
+  const channelReady = connectedChannels.some((channel) => channel.id === channelId);
+  const canCreateLive = canCreate && versions.length > 0 && channelReady && scriptReviewed;
   const pendingRequest = selected && projectId ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: projectId, mediaAssetIds: assetIds, aiDisclosureEnabled: true as const } : null;
   const canResumePending = Boolean(pendingRequest && canResumeLiveOutput(pendingOutput, projectId, JSON.stringify(pendingRequest)));
 
@@ -414,8 +415,10 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
           <label className={styles.field}>计划开播时间 <span className={styles.optional}>可稍后排期</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>
           <div className={styles.liveReadiness} aria-label="直播输出准备状态">
             <div><span className={styles.readinessLabel}>已审核脚本</span><strong className={scriptReviewed ? styles.readinessReady : styles.readinessPending}>{scriptReviewed ? "就绪" : "待审核"}</strong></div>
+            <div><span className={styles.readinessLabel}>直播渠道</span><strong className={channelReady ? styles.readinessReady : styles.readinessPending}>{channelReady ? "已连接" : "待连接或选择"}</strong></div>
             <div><span className={styles.readinessLabel}>直播形象视频</span><strong className={selectedLivePortrait ? styles.readinessReady : styles.readinessPending}>{selectedLivePortrait ? "已选可用形象" : "尚未选择"}</strong></div>
             {!selectedLivePortrait ? <p>{selectedPhotoPortrait ? "项目中的照片只用于照片播报录播，不能作为实时直播形象。" : "直播需要已审核且仍在授权有效期内的肖像视频素材。"} <Link href="/assets" target="_blank" rel="noreferrer">管理形象素材</Link></p> : null}
+            {!channelReady ? <p>选择一个仍处于已连接状态的直播渠道，或前往 <Link href="/channels">渠道设置</Link> 完成连接。</p> : null}
             <small>此处可先创建直播草稿；正式开播仍以运行时与场次预检结果为准。</small>
           </div>
           <div className={styles.disclosure}><Check size={15} />创建时默认启用 AI 数字人标识</div>
