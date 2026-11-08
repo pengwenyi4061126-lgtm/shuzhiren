@@ -110,6 +110,7 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
+      - run: npm run media:evidence:service:test
       # deploy:check:test runs runtime/livetalking/tests/test_aigc_label.py; its drawing tests need numpy, Pillow
       # and a CJK font, and AIGC_LABEL_REQUIRE_IMAGING turns their SKIP into a failure.
       - name: Set up Python
@@ -178,6 +179,7 @@ jobs:
       - run: python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes -r runtime/gateway/requirements.lock
       - run: npm run runtime:gateway:config:test
       - run: npm run runtime:gateway:errors:test
+      - run: python3 scripts/test-runtime-gateway-speech-preview.py
       - run: python3 -m py_compile runtime/gateway/*.py scripts/test-runtime-gateway-config.py
       - run: python3 scripts/test-runtime-gateway-audio.py
       - run: python3 scripts/test-runtime-gateway-concurrency.py
@@ -263,6 +265,7 @@ jobs:
       - name: "prep: free runner disk"
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
       - run: docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .
+      - run: docker build --file services/media-evidence-verifier/Dockerfile --tag shuzhiren-media-evidence-verifier-ci services/media-evidence-verifier
       - run: docker build --file apps/console/Dockerfile --target migrator --tag shuzhiren-control-plane-migrator-ci .
       - run: docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .
       - run: docker run --rm --entrypoint node shuzhiren-runtime-worker-ci --input-type=module -e "await import('/app/apps/runtime-worker/interaction-rules.mjs')"

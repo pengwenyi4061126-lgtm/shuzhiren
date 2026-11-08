@@ -38,6 +38,7 @@ export const CI_ONLY_STEPS = Object.freeze([
   { job: "compose-render", command: "docker compose --env-file config/control-plane-compose.example.env -f infra/compose/docker-compose.control-plane.yml config", localReason: NO_DOCKER, label: "static" },
   { job: "compose-render", command: "docker compose --env-file config/runtime.example.env --env-file config/runtime-gateway.example.env --env-file config/channel-adapter.example.env --env-file config/alert-notifier.example.env --profile output-probe --profile channel-adapter --profile alert-notifier --profile cosyvoice -f infra/compose/docker-compose.runtime.yml config", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file apps/console/Dockerfile --tag shuzhiren-control-plane-ci .", localReason: NO_DOCKER, label: "static" },
+  { job: "docker-build", command: "docker build --file services/media-evidence-verifier/Dockerfile --tag shuzhiren-media-evidence-verifier-ci services/media-evidence-verifier", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file apps/console/Dockerfile --target migrator --tag shuzhiren-control-plane-migrator-ci .", localReason: NO_DOCKER, label: "static" },
   { job: "docker-build", command: "docker build --file apps/runtime-worker/Dockerfile --tag shuzhiren-runtime-worker-ci .", localReason: NO_DOCKER, label: "static" },
   // Requirement 2.8 (live-commerce-p1-features): the worker image resolves ../console/lib/shared/ at run time.

@@ -1,0 +1,38 @@
+# Media Evidence Verifier
+
+This private Node service implements the upload-grant, object-verification, and download-grant endpoints in [`docs/MEDIA_UPLOAD_CONTRACT.md`](../../docs/MEDIA_UPLOAD_CONTRACT.md). It uses only Node built-ins. The control plane receives signed URLs and evidence metadata, never object-storage credentials.
+
+## Configuration
+
+Set these variables in the service environment:
+
+| Variable | Purpose |
+| --- | --- |
+| `MEDIA_EVIDENCE_VERIFIER_TOKEN` | Dedicated bearer token; at least 48 characters. |
+| `MEDIA_EVIDENCE_S3_BUCKET` | Private, versioned bucket name. |
+| `MEDIA_EVIDENCE_S3_REGION` | S3 signing region. |
+| `MEDIA_EVIDENCE_S3_ACCESS_KEY` | Dedicated least-privilege object-store key. |
+| `MEDIA_EVIDENCE_S3_SECRET_KEY` | Secret for that key. |
+| `MEDIA_EVIDENCE_S3_INTERNAL_ENDPOINT` | Endpoint used by this service for signed object reads. |
+| `MEDIA_EVIDENCE_S3_PUBLIC_ENDPOINT` | Browser-reachable endpoint used in presigned URLs. |
+| `PORT` | Optional listener port; defaults to `8089`. |
+
+Production endpoints must use HTTPS. Local HTTP endpoints are accepted only for loopback testing. The bucket must have versioning enabled before verification or cross-device downloads will be rejected. Keep public bucket access blocked; permit browser PUT only from the console origin with the `content-type` and `x-amz-checksum-sha256` headers. Do not expose bucket listing or delete operations to this service credential.
+
+The internal and public endpoint may differ when a reverse proxy exposes the object store to browsers. The public endpoint hostname and path are part of the SigV4 signature and must route to the same bucket service. Place this service behind TLS termination, allow only the control plane to call its API, and keep its bearer token and storage credentials in a secret manager.
+
+## Behavior
+
+- Upload grants are bound to tenant UUID, supported kind/MIME, SHA-256 hex and base64 digests, and a maximum 100 MiB file. Keys use an opaque UUID under the tenant prefix. Grants last 15 minutes and sign only the host, content type, and SHA-256 checksum header.
+- Verification reads the stored bytes, enforces the size limit, calculates SHA-256, detects supported JPEG, PNG, MP4, WebM, WAV, MP3, or Ogg content, and requires a non-null immutable S3 version ID.
+- Download grants re-read and hash the exact requested version, include that version in the signed GET, set an attachment filename, and last five minutes.
+- API errors do not return storage endpoint credentials, object bytes, or signed URLs beyond the grant response that was requested. `/healthz` is the only unauthenticated route.
+
+## Run and test
+
+```sh
+node services/media-evidence-verifier/server.mjs
+node --test services/media-evidence-verifier/test.mjs
+```
+
+The tests use a local fake S3 endpoint and verify SigV4 signatures independently. The container image is built from `services/media-evidence-verifier/Dockerfile`. A production deployment still needs a versioned private bucket, dedicated credentials, HTTPS routing, and an end-to-end browser upload/download check.

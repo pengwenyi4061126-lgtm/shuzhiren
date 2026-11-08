@@ -125,7 +125,8 @@ function validateDownloadGrant(value: unknown): MediaDownloadGrant {
   let downloadUrl: URL;
   try { downloadUrl = new URL(String(grant.downloadUrl)); } catch { throw new Response("Media download authorization response is invalid", { status: 502 }); }
   const expiresAt = typeof grant.expiresAt === "string" ? new Date(grant.expiresAt) : new Date(Number.NaN);
-  if (downloadUrl.protocol !== "https:" || downloadUrl.username || downloadUrl.password || downloadUrl.hash
+  const loopbackHttp = downloadUrl.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(downloadUrl.hostname);
+  if ((downloadUrl.protocol !== "https:" && !loopbackHttp) || downloadUrl.username || downloadUrl.password || downloadUrl.hash
     || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now() || expiresAt.getTime() > Date.now() + 5 * 60_000) {
     throw new Response("Media download authorization response is invalid", { status: 502 });
   }

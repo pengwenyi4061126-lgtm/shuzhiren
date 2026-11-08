@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-const [client, assets, route, approvalRoute, migration, integration, uploadRoute, uploadContract, workspace] = await Promise.all([
+const [client, assets, route, approvalRoute, migration, integration, uploadRoute, uploadContract, workspace, service, serviceTest] = await Promise.all([
   readFile(new URL("../apps/console/lib/media-evidence.ts", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/lib/assets.ts", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/app/api/v1/assets/route.ts", import.meta.url), "utf8"),
@@ -9,7 +9,9 @@ const [client, assets, route, approvalRoute, migration, integration, uploadRoute
   readFile(new URL("../scripts/test-control-plane-postgres.mjs", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/app/api/v1/media-uploads/grant/route.ts", import.meta.url), "utf8"),
   readFile(new URL("../docs/MEDIA_UPLOAD_CONTRACT.md", import.meta.url), "utf8"),
-  readFile(new URL("../apps/console/components/asset-workspace.tsx", import.meta.url), "utf8")
+  readFile(new URL("../apps/console/components/asset-workspace.tsx", import.meta.url), "utf8"),
+  readFile(new URL("../services/media-evidence-verifier/server.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../services/media-evidence-verifier/test.mjs", import.meta.url), "utf8")
 ]);
 
 for (const source of ["MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "/v1/media-evidence/verify", "expectedChecksum", "contentTypeMatches", "isOpaqueEvidenceRef", "^(?:evidence|urn):", "objectVersion", "verifiedAt"]) {
@@ -31,6 +33,12 @@ for (const source of ["/v1/media-evidence/download-grant", "objectVersion", "exp
 }
 for (const source of ["requestContextFrom", "isMatchingDigest", "cache-control"]) {
   if (!uploadRoute.includes(source)) throw new Error(`Media upload grant route must enforce authenticated, non-cacheable requests: ${source}`);
+}
+for (const source of ["upload-grant", "download-grant", "verify", "x-amz-checksum-sha256", "timingSafeEqual", "versioned_bucket_required", "checksum_mismatch", "readCappedBody", "response-content-disposition"]) {
+  if (!service.includes(source)) throw new Error(`Private media verifier must implement the storage evidence contract: ${source}`);
+}
+for (const source of ["assertValidPresignedSignature", "stored bytes must match requested checksum", "detected content must match the declared media kind", "version-001", "other-tenant/forged.jpg"]) {
+  if (!serviceTest.includes(source)) throw new Error(`Private media verifier tests must prove the storage contract: ${source}`);
 }
 for (const source of ["type=\"file\"", "crypto.subtle.digest(\"SHA-256\"", "/api/v1/media-uploads/grant", "上传并提交审核"]) {
   if (!workspace.includes(source)) throw new Error(`Asset workspace must expose the real upload-and-register flow: ${source}`);

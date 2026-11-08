@@ -1,6 +1,6 @@
 # Media Upload Contract
 
-The asset workspace uploads files directly to private object storage through a short-lived grant issued by the private media evidence service. The control plane never receives storage credentials. Production upload is available only after that service implements this contract; demo mode creates a clearly labeled demo asset and does not transfer file bytes.
+The asset workspace uploads files directly to private object storage through a short-lived grant issued by the private media evidence service. The control plane never receives storage credentials. Production upload is available only after the repository service is deployed and configured with a versioned private bucket; demo mode creates a clearly labeled demo asset and does not transfer file bytes.
 
 ## Grant request
 
