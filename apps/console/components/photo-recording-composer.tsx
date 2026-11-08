@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert, Download, Mic, Square } from "lucide-react";
 import type { CreationProject } from "@/lib/creation-projects";
-import { getProjectRecording, saveProjectRecording, type ProjectRecordingOutput } from "@/lib/project-recording-vault";
+import { listProjectRecordings, saveProjectRecording, type ProjectRecordingOutput } from "@/lib/project-recording-vault";
 import { splitNarrationScript } from "@/lib/shared/content-script.mjs";
 import styles from "./photo-recording-composer.module.css";
 
@@ -25,7 +25,8 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   const [reviewed, setReviewed] = useState(false);
   const [audioUrl, setAudioUrl] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
-  const [savedOutput, setSavedOutput] = useState<ProjectRecordingOutput | null>(null);
+  const [savedOutputs, setSavedOutputs] = useState<ProjectRecordingOutput[]>([]);
+  const [selectedOutputId, setSelectedOutputId] = useState("");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
@@ -33,6 +34,8 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   const videoUrlRef = useRef("");
   const photo = photos.find((item) => item.id === photoId);
   const audioBlob = recordedAudio ?? audioFile;
+  const savedOutput = savedOutputs.find((output) => output.id === selectedOutputId) ?? savedOutputs[0] ?? null;
+  const previewDiffersFromProject = Boolean(videoSnapshot && (videoSnapshot.script !== script || videoSnapshot.photoAssetId !== photoId || videoSnapshot.projectName !== projectName));
 
   useEffect(() => () => {
     microphoneRef.current?.getTracks().forEach((track) => track.stop());
@@ -43,9 +46,13 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
   useEffect(() => {
     let active = true;
     if (!projectId) return () => { active = false; };
-    getProjectRecording(projectId).then((output) => {
-      if (!active || !output) return;
-      setSavedOutput(output); setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName }); setVideoPreview(output.blob); setReviewed(false);
+    listProjectRecordings(projectId).then((outputs) => {
+      if (!active) return;
+      setSavedOutputs(outputs);
+      const output = outputs[0];
+      setSelectedOutputId(output?.id ?? "");
+      if (!output) return;
+      setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName }); setVideoPreview(output.blob); setReviewed(false);
     }).catch((cause) => {
       if (active) setError(cause instanceof Error ? cause.message : "读取本机项目输出失败。");
     });
@@ -106,11 +113,16 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
     setWorking(true); setError("");
     let fileName = `${safeName(projectName || "内容项目")}-照片播报.webm`;
     try {
-      const project = await onEnsureProject();
-      fileName = `${safeName(project.name)}-照片播报.webm`;
-      const output: ProjectRecordingOutput = { projectId: project.id, projectName: project.name, projectRevision: project.revision, scriptSnapshot: videoSnapshot?.script ?? script, photoAssetId: videoSnapshot?.photoAssetId ?? photoId, fileName, createdAt: new Date().toISOString(), size: videoBlob.size, contentType: videoBlob.type || "video/webm", blob: videoBlob };
-      await saveProjectRecording(output);
-      setSavedOutput(output); setVideoProjectId(project.id);
+      if (savedOutput?.id && savedOutput.blob === videoBlob && savedOutput.projectId === projectId) {
+        fileName = savedOutput.fileName;
+      } else {
+        const project = await onEnsureProject();
+        fileName = `${safeName(project.name)}-照片播报-r${savedOutputs.length + 1}.webm`;
+        const output = await saveProjectRecording({ projectId: project.id, projectName: project.name, projectRevision: project.revision, scriptSnapshot: videoSnapshot?.script ?? script, photoAssetId: videoSnapshot?.photoAssetId ?? photoId, fileName, createdAt: new Date().toISOString(), size: videoBlob.size, contentType: videoBlob.type || "video/webm", blob: videoBlob });
+        setSavedOutputs((current) => [output, ...current]);
+        setSelectedOutputId(output.id);
+        setVideoProjectId(project.id);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? `本机项目保存失败，仍将下载成片：${cause.message}` : "本机项目保存失败，仍将下载成片。");
     } finally {
@@ -133,7 +145,7 @@ export function PhotoRecordingComposer({ photos, selectedPhotoIds, script, proje
       <button type="button" onClick={renderVideo} disabled={!canCreate || working || recording || !imageFile || !audioBlob} className={styles.render}>{working ? "正在生成本地预览…" : "生成并预览视频"}</button>
     </div>}
     {error ? <div className={styles.error} role="alert"><CircleAlert size={15} />{error}</div> : null}
-    {videoUrl && videoProjectId === projectId ? <div className={styles.review}><video className={styles.video} controls playsInline src={videoUrl} /><label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label><button type="button" disabled={!reviewed || working} onClick={downloadVideo} className={styles.download}><Download size={15} />{working ? "正在保存…" : savedOutput?.projectId === projectId ? "保存更新并下载 WebM" : "保存到项目并下载"}</button>{savedOutput?.projectId === projectId ? <p className={styles.hint}>本机项目第 {savedOutput.projectRevision} 版 · {(savedOutput.size / (1024 * 1024)).toFixed(1)} MB · {new Date(savedOutput.createdAt).toLocaleString()}</p> : null}{savedOutput?.projectId === projectId && (savedOutput.scriptSnapshot !== script || savedOutput.photoAssetId !== photoId || savedOutput.projectName !== projectName) ? <p className={styles.demo}>当前项目脚本、照片或标题已变化；此成片对应旧内容，请重新生成后再用于发布。</p> : null}</div> : null}
+    {videoUrl && videoProjectId === projectId ? <div className={styles.review}>{savedOutputs.length > 1 ? <label className={styles.versionPicker}>项目成片版本<select value={savedOutput?.id ?? ""} onChange={(event) => { const output = savedOutputs.find((item) => item.id === event.target.value); if (!output) return; setSelectedOutputId(output.id); setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName }); setVideoPreview(output.blob); setReviewed(false); }} aria-label="选择项目成片版本">{savedOutputs.map((output, index) => <option key={output.id} value={output.id}>第 {savedOutputs.length - index} 版 · {new Date(output.createdAt).toLocaleString()}</option>)}</select></label> : null}<video className={styles.video} controls playsInline src={videoUrl} /><label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label><button type="button" disabled={!reviewed || working || previewDiffersFromProject} onClick={downloadVideo} className={styles.download}><Download size={15} />{working ? "正在保存…" : savedOutput?.blob === videoBlob ? "下载已保存版本" : `保存为第 ${savedOutputs.length + 1} 版并下载`}</button>{savedOutput?.projectId === projectId ? <p className={styles.hint}>项目成片第 {savedOutputs.findIndex((output) => output.id === savedOutput.id) >= 0 ? savedOutputs.length - savedOutputs.findIndex((output) => output.id === savedOutput.id) : 1} 版 · {(savedOutput.size / (1024 * 1024)).toFixed(1)} MB · {new Date(savedOutput.createdAt).toLocaleString()}</p> : null}{previewDiffersFromProject ? <p className={styles.demo}>当前项目脚本、照片或标题已变化；此成片对应旧内容，请重新生成后再用于发布。</p> : null}</div> : null}
     <p className={styles.note}>输出为静态照片配口播字幕，不是动态口型 Avatar。成片保存在此浏览器的本机项目空间，可重新打开预览；清理浏览器数据会删除它，服务端归档尚未接入。</p>
   </section>;
 }

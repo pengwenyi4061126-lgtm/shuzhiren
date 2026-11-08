@@ -1,4 +1,5 @@
 export type ProjectRecordingOutput = {
+  id: string;
   projectId: string;
   projectName: string;
   projectRevision: number;
@@ -12,7 +13,8 @@ export type ProjectRecordingOutput = {
 };
 
 const databaseName = "shuzhiren-project-recordings";
-const storeName = "outputs";
+const legacyStoreName = "outputs";
+const storeName = "output-versions";
 
 function openDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -20,8 +22,29 @@ function openDatabase() {
       reject(new Error("此浏览器不支持本机项目输出保存。"));
       return;
     }
-    const request = indexedDB.open(databaseName, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(storeName, { keyPath: "projectId" });
+    const request = indexedDB.open(databaseName, 2);
+    request.onupgradeneeded = (event) => {
+      const database = request.result;
+      const transaction = request.transaction;
+      const versions = database.objectStoreNames.contains(storeName)
+        ? transaction?.objectStore(storeName)
+        : database.createObjectStore(storeName, { keyPath: "id" });
+      if (!versions) return;
+      if (!versions.indexNames.contains("projectId")) versions.createIndex("projectId", "projectId");
+      if (event.oldVersion === 1 && transaction && database.objectStoreNames.contains(legacyStoreName)) {
+        const cursorRequest = transaction.objectStore(legacyStoreName).openCursor();
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            database.deleteObjectStore(legacyStoreName);
+            return;
+          }
+          const output = cursor.value as Omit<ProjectRecordingOutput, "id">;
+          versions.put({ ...output, id: `legacy-${output.projectId}` });
+          cursor.continue();
+        };
+      }
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("打开本机项目存储失败。"));
     request.onblocked = () => reject(new Error("本机项目存储正在升级，请关闭其他工作台标签后重试。"));
@@ -36,28 +59,30 @@ function transactionDone(transaction: IDBTransaction) {
   });
 }
 
-export async function saveProjectRecording(output: ProjectRecordingOutput) {
+export async function saveProjectRecording(output: Omit<ProjectRecordingOutput, "id">) {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(storeName, "readwrite");
-    transaction.objectStore(storeName).put(output);
+    const version = { ...output, id: crypto.randomUUID() };
+    transaction.objectStore(storeName).add(version);
     await transactionDone(transaction);
+    return version;
   } finally {
     database.close();
   }
 }
 
-export async function getProjectRecording(projectId: string) {
+export async function listProjectRecordings(projectId: string) {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(storeName, "readonly");
-    const request = transaction.objectStore(storeName).get(projectId) as IDBRequest<ProjectRecordingOutput | undefined>;
-    const output = await new Promise<ProjectRecordingOutput | undefined>((resolve, reject) => {
+    const request = transaction.objectStore(storeName).index("projectId").getAll(projectId) as IDBRequest<ProjectRecordingOutput[]>;
+    const outputs = await new Promise<ProjectRecordingOutput[]>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("读取本机项目输出失败。"));
     });
     await transactionDone(transaction);
-    return output;
+    return outputs.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
   } finally {
     database.close();
   }
