@@ -44,8 +44,28 @@ export function configFromEnv(env = process.env) {
     accessKey: env.MEDIA_EVIDENCE_S3_ACCESS_KEY,
     secretKey: env.MEDIA_EVIDENCE_S3_SECRET_KEY,
     internalEndpoint: env.MEDIA_EVIDENCE_S3_INTERNAL_ENDPOINT,
-    publicEndpoint: env.MEDIA_EVIDENCE_S3_PUBLIC_ENDPOINT
+    publicEndpoint: env.MEDIA_EVIDENCE_S3_PUBLIC_ENDPOINT,
+    allowInsecureInternalEndpoint: env.NODE_ENV === "development" && env.MEDIA_EVIDENCE_ALLOW_INSECURE_INTERNAL_ENDPOINT === "true"
   };
+}
+
+export async function initializeDevelopmentBucket(config, fetchImpl = fetch, corsConfiguration) {
+  const settings = validateConfig(config);
+  if (settings.allowInsecureInternalEndpoint !== true || typeof corsConfiguration !== "string" || !corsConfiguration.includes("<CORSConfiguration")) {
+    throw new Error("development_bucket_initialization_requires_explicit_development_configuration");
+  }
+  const create = await s3Request(settings, "PUT", "", {}, { body: Buffer.alloc(0) }, fetchImpl);
+  if (create.status === 409) {
+    const existing = await s3Request(settings, "HEAD", "", {}, undefined, fetchImpl);
+    if (!existing.ok) throw new Error(`development_bucket_exists_but_is_unavailable_${existing.status}`);
+  } else if (!create.ok) throw new Error(`development_bucket_create_failed_${create.status}`);
+  const versioning = await s3Request(settings, "PUT", "", { versioning: "" }, {
+    "content-type": "application/xml",
+    body: "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Status>Enabled</Status></VersioningConfiguration>"
+  }, fetchImpl);
+  if (!versioning.ok) throw new Error(`development_bucket_versioning_failed_${versioning.status}`);
+  const cors = await s3Request(settings, "PUT", "", { cors: "" }, { "content-type": "application/xml", body: corsConfiguration }, fetchImpl);
+  if (!cors.ok) throw new Error(`development_bucket_cors_failed_${cors.status}`);
 }
 
 async function uploadGrant(config, input) {
@@ -174,7 +194,8 @@ function presignedUrl(config, method, key, expires, headers = {}, extraQuery = {
 
 function objectUrl(endpoint, bucket, key, query = {}) {
   const url = new URL(endpoint);
-  url.pathname = `${url.pathname.replace(/\/$/, "")}/${awsEncode(bucket)}/${key.split("/").map(awsEncode).join("/")}`;
+  const suffix = key ? `/${key.split("/").map(awsEncode).join("/")}` : "";
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/${awsEncode(bucket)}${suffix}`;
   for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
   return url;
 }
@@ -203,10 +224,11 @@ function validateConfig(config) {
   if (!config || typeof config.token !== "string" || config.token.length < 48 || typeof config.bucket !== "string" || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(config.bucket)
     || typeof config.region !== "string" || !/^[a-z0-9-]{1,32}$/.test(config.region) || typeof config.accessKey !== "string" || config.accessKey.length < 8
     || typeof config.secretKey !== "string" || config.secretKey.length < 32) throw new Error("invalid_media_evidence_configuration");
-  for (const endpoint of [config.internalEndpoint, config.publicEndpoint]) {
+  for (const [index, endpoint] of [config.internalEndpoint, config.publicEndpoint].entries()) {
     const url = new URL(endpoint);
     const loopbackHttp = url.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
-    if ((url.protocol !== "https:" && !loopbackHttp) || url.username || url.password || url.search || url.hash) throw new Error("invalid_media_evidence_endpoint");
+    const devInternalHttp = index === 0 && config.allowInsecureInternalEndpoint === true && url.protocol === "http:";
+    if ((url.protocol !== "https:" && !loopbackHttp && !devInternalHttp) || url.username || url.password || url.search || url.hash) throw new Error("invalid_media_evidence_endpoint");
   }
   return config;
 }

@@ -52,8 +52,13 @@ for (const development of [false, true]) {
   assert.deepEqual(page.get("script-src"), ["'self'", "'nonce-abc'", "'strict-dynamic'", ...(development ? ["'unsafe-eval'"] : [])], "page scripts must require the nonce");
   assert.deepEqual(page.get("object-src"), ["'none'"]);
   assert.deepEqual(page.get("frame-ancestors"), ["'none'"]);
+  assert.deepEqual(page.get("connect-src"), ["'self'", ...(development ? ["http://127.0.0.1:9000"] : [])], "only the development CSP may connect directly to the loopback MinIO upload endpoint");
+  const configuredUpload = directives(csp.pageCsp("abc", { development, mediaUploadOrigins: ["https://media.example"] }));
+  assert.deepEqual(configuredUpload.get("connect-src"), ["'self'", "https://media.example", ...(development ? ["http://127.0.0.1:9000"] : [])], "upload grants must be limited to configured object-storage origins");
   assert.ok(!page.get("script-src").includes("'unsafe-inline'"), "page script-src must not allow inline scripts");
 }
+assert.throws(() => csp.mediaUploadOrigins("http://media.example", false), /MEDIA_UPLOAD_ALLOWED_ORIGINS/);
+assert.deepEqual(csp.mediaUploadOrigins("http://127.0.0.1:9000", true), ["http://127.0.0.1:9000"]);
 {
   const { proxy } = await import("../apps/console/proxy.ts");
   const { NextRequest } = await import("next/server.js");

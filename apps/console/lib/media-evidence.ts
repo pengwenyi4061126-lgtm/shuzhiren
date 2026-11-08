@@ -1,4 +1,5 @@
 import { controlPlaneConfig } from "@/lib/control-plane/config";
+import { mediaUploadOrigins } from "@/lib/csp";
 import { isSafeObjectKey, isSha256Digest } from "@/lib/governance-input";
 import type { AssetKind, CreateMediaAssetInput } from "@/lib/assets";
 
@@ -106,10 +107,12 @@ function validateUploadGrant(value: unknown, input: { checksumBase64: string; co
   let uploadUrl: URL;
   try { uploadUrl = new URL(String(grant.uploadUrl)); } catch { throw new Response("Media upload authorization response is invalid", { status: 502 }); }
   const loopbackHttp = uploadUrl.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(uploadUrl.hostname);
+  let allowedOrigins: string[];
+  try { allowedOrigins = mediaUploadOrigins(); } catch { throw new Response("Media upload origin configuration is invalid", { status: 503 }); }
   const headers = grant.headers;
   const expiresAt = typeof grant.expiresAt === "string" ? new Date(grant.expiresAt) : new Date(Number.NaN);
   if (!isSafeObjectKey(grant.objectKey) || uploadUrl.username || uploadUrl.password || uploadUrl.hash
-    || (uploadUrl.protocol !== "https:" && !loopbackHttp) || !headers || typeof headers !== "object"
+    || (uploadUrl.protocol !== "https:" && !loopbackHttp) || !allowedOrigins.includes(uploadUrl.origin) || !headers || typeof headers !== "object"
     || Object.keys(headers).some((key) => !["content-type", "x-amz-checksum-sha256"].includes(key.toLowerCase()))
     || (headers as Record<string, unknown>)["content-type"] !== normalizedContentType(input.contentType)
     || (headers as Record<string, unknown>)["x-amz-checksum-sha256"] !== input.checksumBase64

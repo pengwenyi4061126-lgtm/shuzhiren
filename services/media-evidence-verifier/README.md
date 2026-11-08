@@ -21,6 +21,17 @@ Production endpoints must use HTTPS. Local HTTP endpoints are accepted only for 
 
 The internal and public endpoint may differ when a reverse proxy exposes the object store to browsers. The public endpoint hostname and path are part of the SigV4 signature and must route to the same bucket service. Place this service behind TLS termination, allow only the control plane to call its API, and keep its bearer token and storage credentials in a secret manager.
 
+## Local development stack
+
+The development-only Compose file starts MinIO on loopback, creates the `shuzhiren-media` bucket, enables versioning, applies the restricted browser PUT CORS policy, then starts this verifier on `127.0.0.1:8089`. The local verifier uses the MinIO development root key; never reuse it outside this isolated development stack. The verifier accepts its container-network HTTP endpoint only when both `NODE_ENV=development` and `MEDIA_EVIDENCE_ALLOW_INSECURE_INTERNAL_ENDPOINT=true` are set. The public S3 URL remains loopback-only, and the console adds that loopback origin to `connect-src` only in development.
+
+1. Copy `config/dev-compose.example.env` to `infra/compose/.env` and replace all password/token placeholders with unique random values.
+2. Start the local object store and verifier with `docker compose --env-file infra/compose/.env -f infra/compose/docker-compose.yml up -d --build media-evidence-verifier`.
+3. Copy `MEDIA_EVIDENCE_VERIFIER_URL`, `MEDIA_EVIDENCE_VERIFIER_TOKEN`, and `MEDIA_UPLOAD_ALLOWED_ORIGINS` from `infra/compose/.env` into `apps/console/.env.local`, then restart the console dev server.
+4. In the console, upload and approve a photo asset, select it in a reviewed project, render a photo narration, and save it. The browser PUT goes to MinIO and the resulting immutable object version is archived through the verifier.
+
+MinIO publishes only loopback ports. This Compose stack is for development and local integration testing, not production deployment.
+
 ## Behavior
 
 - Upload grants are bound to tenant UUID, supported kind/MIME, SHA-256 hex and base64 digests, and a maximum 100 MiB file. Keys use an opaque UUID under the tenant prefix. Grants last 15 minutes and sign only the host, content type, and SHA-256 checksum header.

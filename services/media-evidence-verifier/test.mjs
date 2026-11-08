@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { after, before, test } from "node:test";
-import { createMediaEvidenceServer } from "./server.mjs";
+import { createMediaEvidenceServer, initializeDevelopmentBucket } from "./server.mjs";
 
 const token = "media-evidence-test-token-0123456789-abcdefghijklmnopqrstuvwxyz";
 const tenantId = "7e5d2e8d-0d40-4e46-8f2d-90cb0a5f7cc1";
@@ -108,4 +108,40 @@ test("invalid credentials, MIME and oversized uploads fail closed", async () => 
   const payload = { tenantId, kind: "portrait_photo", checksum, checksumBase64: Buffer.from(checksum.slice(7), "hex").toString("base64"), contentType: "video/mp4", bytes: bytes.length };
   assert.equal((await post("/v1/media-evidence/upload-grant", payload)).status, 415);
   assert.equal((await post("/v1/media-evidence/upload-grant", { ...payload, contentType: "image/jpeg", bytes: 100 * 1024 * 1024 + 1 })).status, 400);
+});
+
+test("container-network HTTP is accepted only with the explicit development opt-in", () => {
+  const config = { token, bucket: "test-media-bucket", region: "us-east-1", accessKey: "access-key-123", secretKey: "s".repeat(40), internalEndpoint: "http://minio:9000", publicEndpoint: "http://127.0.0.1:9000" };
+  assert.throws(() => createMediaEvidenceServer(config), /invalid_media_evidence_endpoint/);
+  assert.doesNotThrow(() => createMediaEvidenceServer({ ...config, allowInsecureInternalEndpoint: true }));
+});
+
+test("development initialization creates a versioned bucket and applies exact CORS configuration", async () => {
+  const config = { token, bucket: "test-media-bucket", region: "us-east-1", accessKey: "access-key-123", secretKey: "s".repeat(40), internalEndpoint: "http://minio:9000", publicEndpoint: "http://127.0.0.1:9000", allowInsecureInternalEndpoint: true };
+  const requests = [];
+  const cors = "<CORSConfiguration><CORSRule><AllowedOrigin>http://127.0.0.1:3000</AllowedOrigin></CORSRule></CORSConfiguration>";
+  await initializeDevelopmentBucket(config, async (url, options) => {
+    requests.push({ url: new URL(url), options });
+    return new Response(null, { status: 200 });
+  }, cors);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].url.pathname, "/test-media-bucket");
+  assert.equal(requests[1].url.searchParams.has("versioning"), true);
+  assert.match(requests[1].options.body, /<Status>Enabled<\/Status>/);
+  assert.equal(requests[2].url.searchParams.has("cors"), true);
+  assert.equal(requests[2].options.body, cors);
+  assert.ok(requests.every(({ options }) => options.headers.authorization.includes("Signature=")));
+  await assert.rejects(initializeDevelopmentBucket({ ...config, allowInsecureInternalEndpoint: false }, fetch, cors), /invalid_media_evidence_endpoint/);
+});
+
+test("development initialization verifies an existing bucket before changing its settings", async () => {
+  const config = { token, bucket: "test-media-bucket", region: "us-east-1", accessKey: "access-key-123", secretKey: "s".repeat(40), internalEndpoint: "http://minio:9000", publicEndpoint: "http://127.0.0.1:9000", allowInsecureInternalEndpoint: true };
+  const methods = [];
+  let first = true;
+  await initializeDevelopmentBucket(config, async (_url, options) => {
+    methods.push(options.method);
+    if (first) { first = false; return new Response(null, { status: 409 }); }
+    return new Response(null, { status: 200 });
+  }, "<CORSConfiguration />");
+  assert.deepEqual(methods, ["PUT", "HEAD", "PUT", "PUT"]);
 });

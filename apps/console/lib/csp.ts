@@ -11,11 +11,26 @@ export function generateNonce() {
   return btoa(binary);
 }
 
+export function mediaUploadOrigins(value = process.env.MEDIA_UPLOAD_ALLOWED_ORIGINS ?? "", development = process.env.NODE_ENV === "development") {
+  const entries = value.split(",").map((origin) => origin.trim()).filter(Boolean);
+  const origins = entries.map((entry) => {
+    let url: URL;
+    try { url = new URL(entry); } catch { throw new Error("MEDIA_UPLOAD_ALLOWED_ORIGINS is invalid"); }
+    const loopbackHttp = development && url.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
+    if (url.origin !== entry || url.username || url.password || url.pathname !== "/" || url.search || url.hash || (url.protocol !== "https:" && !loopbackHttp)) {
+      throw new Error("MEDIA_UPLOAD_ALLOWED_ORIGINS must contain only credential-free HTTPS origins (or loopback HTTP in development)");
+    }
+    return url.origin;
+  });
+  return [...new Set(origins)];
+}
+
 // script-src has no 'unsafe-inline': only scripts carrying the nonce (and,
 // through 'strict-dynamic', the scripts they load) run. style-src keeps
 // 'unsafe-inline' without a nonce because a nonce in the directive would make
 // browsers ignore 'unsafe-inline' and block React style attributes.
-export function pageCsp(nonce: string, options: { development?: boolean } = {}) {
+export function pageCsp(nonce: string, options: { development?: boolean; mediaUploadOrigins?: string[] } = {}) {
+  const connectOrigins = [...new Set([...(options.mediaUploadOrigins ?? []), ...(options.development ? ["http://127.0.0.1:9000"] : [])])];
   return [
     "default-src 'self'",
     "base-uri 'self'",
@@ -26,7 +41,7 @@ export function pageCsp(nonce: string, options: { development?: boolean } = {}) 
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    `connect-src 'self'${connectOrigins.length ? ` ${connectOrigins.join(" ")}` : ""}`,
     "media-src 'self' blob:",
     "worker-src 'self' blob:"
   ].join("; ");

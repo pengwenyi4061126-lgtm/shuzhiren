@@ -15,9 +15,10 @@ const [nextConfig, dockerfile, dockerignore, compose, environment, migrator, int
   readFile(new URL("../infra/compose/docker-compose.runtime.yml", import.meta.url), "utf8"),
   readFile(new URL("../infra/observability/prometheus.example.yml", import.meta.url), "utf8")
 ]);
-const [devCompose, devEnvironment] = await Promise.all([
+const [devCompose, devEnvironment, devMediaCors] = await Promise.all([
   readFile(new URL("../infra/compose/docker-compose.yml", import.meta.url), "utf8"),
-  readFile(new URL("../config/dev-compose.example.env", import.meta.url), "utf8")
+  readFile(new URL("../config/dev-compose.example.env", import.meta.url), "utf8"),
+  readFile(new URL("../config/dev-media-cors.xml", import.meta.url), "utf8")
 ]);
 
 for (const source of ['output: "standalone"']) {
@@ -71,7 +72,7 @@ for (const source of ["--approve-current-files", "refusing baseline", "baselined
 // The development data services must stay on loopback with operator-supplied credentials (M22).
 const devServices = yaml.load(devCompose)?.services ?? {};
 const devTemplate = parseEnvFile(devEnvironment, "config/dev-compose.example.env");
-const devCredentials = { postgres: ["POSTGRES_PASSWORD"], redis: ["REDIS_PASSWORD"], minio: ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"] };
+const devCredentials = { postgres: ["POSTGRES_PASSWORD"], redis: ["REDIS_PASSWORD"], minio: ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"], "media-evidence-verifier": ["MEDIA_EVIDENCE_VERIFIER_TOKEN"] };
 for (const [serviceName, keys] of Object.entries(devCredentials)) {
   const service = devServices[serviceName];
   if (!service) throw new Error(`Dev Compose must define ${serviceName}`);
@@ -92,6 +93,16 @@ for (const [serviceName, service] of Object.entries(devServices)) {
   }
 }
 if (!/^(?:[^/]+\/)?minio\/minio:RELEASE\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(?:@sha256:[a-f0-9]{64})?$/.test(String(devServices.minio.image))) throw new Error("Dev Compose minio image must pin a RELEASE.<timestamp> tag");
+if (devServices["minio-media-init"]?.image !== devServices["media-evidence-verifier"]?.image) throw new Error("Dev bucket initialization must use the tested media verifier image");
+if (devServices["media-evidence-verifier"]?.ports?.some((entry) => !String(typeof entry === "object" && entry !== null ? entry.host_ip : entry).startsWith("127.0.0.1"))) throw new Error("Dev media verifier must bind only to loopback");
+for (const source of ["command: [\"dev-init.mjs\"]", "condition: service_completed_successfully", "MEDIA_EVIDENCE_ALLOW_INSECURE_INTERNAL_ENDPOINT: \"true\"", "context: ../../services/media-evidence-verifier"]) {
+  if (!devCompose.includes(source)) throw new Error(`Dev Compose must prepare private versioned media storage before verifier startup: ${source}`);
+}
+for (const source of ["http://127.0.0.1:3000", "http://localhost:3000", "<AllowedMethod>PUT</AllowedMethod>", "<AllowedHeader>content-type</AllowedHeader>", "<AllowedHeader>x-amz-checksum-sha256</AllowedHeader>"]) {
+  if (!devMediaCors.includes(source)) throw new Error(`Development media CORS must remain restricted to console PUT uploads: ${source}`);
+}
+if (!devTemplate.get("MEDIA_EVIDENCE_VERIFIER_URL")?.startsWith("http://127.0.0.1:8089")) throw new Error("Development media verifier URL must bind to loopback");
+if (devTemplate.get("MEDIA_UPLOAD_ALLOWED_ORIGINS") !== "http://127.0.0.1:9000") throw new Error("Development media uploads must allow only the loopback MinIO origin");
 const redisCommand = [].concat(devServices.redis.command ?? []).join(" ");
 if (!redisCommand.includes("--requirepass \"$REDIS_PASSWORD\"") && !redisCommand.includes("--requirepass \"$$REDIS_PASSWORD\"")) throw new Error("Dev Compose redis must require the REDIS_PASSWORD from its environment");
 if (!/REDISCLI_AUTH=/.test([].concat(devServices.redis.healthcheck?.test ?? []).join(" "))) throw new Error("Dev Compose redis health check must authenticate without putting the password in argv");

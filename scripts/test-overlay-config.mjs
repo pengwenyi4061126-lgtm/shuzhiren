@@ -525,6 +525,41 @@ test("project media downloads require a short-lived HTTPS grant bound to the imm
   }
 });
 
+test("media upload grants must target a CSP-allowlisted object-storage origin", async () => {
+  const { createMediaUploadGrant } = await import("../apps/console/lib/media-evidence.ts");
+  const saved = {
+    nodeEnv: process.env.NODE_ENV,
+    databaseUrl: process.env.DATABASE_URL,
+    demo: process.env.CONTROL_PLANE_DEMO_MODE,
+    verifierUrl: process.env.MEDIA_EVIDENCE_VERIFIER_URL,
+    verifierToken: process.env.MEDIA_EVIDENCE_VERIFIER_TOKEN,
+    uploadOrigins: process.env.MEDIA_UPLOAD_ALLOWED_ORIGINS,
+    fetch: globalThis.fetch
+  };
+  process.env.NODE_ENV = "development";
+  process.env.DATABASE_URL = "postgres://integration.invalid/control_plane";
+  process.env.CONTROL_PLANE_DEMO_MODE = "false";
+  process.env.MEDIA_EVIDENCE_VERIFIER_URL = "http://127.0.0.1:8080";
+  process.env.MEDIA_EVIDENCE_VERIFIER_TOKEN = "x".repeat(48);
+  process.env.MEDIA_UPLOAD_ALLOWED_ORIGINS = "http://127.0.0.1:9000";
+  const bytes = Buffer.from("fixture-photo");
+  const checksum = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const input = { kind: "portrait_photo", checksum, checksumBase64: Buffer.from(checksum.slice(7), "hex").toString("base64"), contentType: "image/jpeg", bytes: bytes.length };
+  let uploadUrl = "http://127.0.0.1:9000/shuzhiren-media/object?signature=fixture";
+  globalThis.fetch = async () => Response.json({ objectKey: `${demoContext.tenantId}/123e4567-e89b-12d3-a456-426614174000.jpg`, uploadUrl, headers: { "content-type": "image/jpeg", "x-amz-checksum-sha256": input.checksumBase64 }, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  try {
+    const grant = await createMediaUploadGrant(demoContext, input);
+    assert.equal(new URL(grant.uploadUrl).origin, "http://127.0.0.1:9000");
+    uploadUrl = "https://attacker.example/object?signature=fixture";
+    await assert.rejects(createMediaUploadGrant(demoContext, input), (error) => error instanceof Response && error.status === 502);
+  } finally {
+    for (const [key, value] of [["NODE_ENV", saved.nodeEnv], ["DATABASE_URL", saved.databaseUrl], ["CONTROL_PLANE_DEMO_MODE", saved.demo], ["MEDIA_EVIDENCE_VERIFIER_URL", saved.verifierUrl], ["MEDIA_EVIDENCE_VERIFIER_TOKEN", saved.verifierToken], ["MEDIA_UPLOAD_ALLOWED_ORIGINS", saved.uploadOrigins]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    globalThis.fetch = saved.fetch;
+  }
+});
+
 test("worker scheduled starts dispatch only hash-verified frozen overlays and bind Gateway receipts", async () => {
   const workerSource = (await readFile(new URL("../apps/runtime-worker/index.mjs", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   const workerPolicy = await import("../apps/console/lib/shared/policy-engine.mjs");

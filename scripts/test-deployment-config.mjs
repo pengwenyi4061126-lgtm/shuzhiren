@@ -123,6 +123,7 @@ const control = env({
   MEDIA_EVIDENCE_VERIFIER_URL: "https://media-evidence.internal",
   MEDIA_EVIDENCE_VERIFIER_TOKEN: mediaEvidenceToken,
   MEDIA_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
+  MEDIA_UPLOAD_ALLOWED_ORIGINS: "https://media-assets.internal",
   RECORDING_EVIDENCE_VERIFIER_URL: "https://recording-evidence.internal",
   RECORDING_EVIDENCE_VERIFIER_TOKEN: recordingEvidenceToken,
   RECORDING_EVIDENCE_VERIFIER_TIMEOUT_MS: "5000",
@@ -527,6 +528,12 @@ try {
   const unsafeMediaEvidenceUrl = check(["--require-cosyvoice"]);
   assert.notEqual(unsafeMediaEvidenceUrl.status, 0, "media evidence verification must use a credential-free HTTPS endpoint");
   assert.match(unsafeMediaEvidenceUrl.stderr, /MEDIA_EVIDENCE_VERIFIER_URL/, "media evidence URL rejection must identify the object-verification gate");
+  await writeFile(files.control, control);
+
+  await writeFile(files.control, control.replace("MEDIA_UPLOAD_ALLOWED_ORIGINS=https://media-assets.internal", "MEDIA_UPLOAD_ALLOWED_ORIGINS=http://media-assets.internal/path"));
+  const unsafeMediaUploadOrigin = check(["--require-cosyvoice"]);
+  assert.notEqual(unsafeMediaUploadOrigin.status, 0, "production media uploads must reject non-HTTPS or path-bearing origins");
+  assert.match(unsafeMediaUploadOrigin.stderr, /MEDIA_UPLOAD_ALLOWED_ORIGINS/, "media upload origin rejection must identify the CSP allowlist gate");
   await writeFile(files.control, control);
 
   await writeFile(files.control, control.replace("commerce-ingest-token-at-least-32-bytes", telemetryToken));

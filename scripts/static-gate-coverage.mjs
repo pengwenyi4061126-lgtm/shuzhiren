@@ -49,7 +49,7 @@ export const STATIC_GATE_COVERAGE = Object.freeze({
   "runtime:voice:check": [],
   "runtime:journal:check": [{ test: "scripts/test-runtime-gateway-concurrency.py", case: "drives runtime/gateway/app.py through reserved, completed, failed_definite and uncertain journal states and asserts the replies and the SQLite rows" }],
   "runtime:preview:check": [],
-  "media:evidence:check": [{ test: "media:evidence:service:test", case: "issues tenant-bound upload grants, verifies stored bytes and versioned evidence, and binds signed downloads to the exact object version" }],
+  "media:evidence:check": [{ test: "media:evidence:service:test", case: "initializes a versioned development bucket, verifies tenant-bound signed uploads and stored bytes, and binds signed downloads to the exact object version" }],
   "recording:evidence:check": [],
   "runtime:images:check": [{ test: "deploy:images:test", case: "asserts the dockerfile-refs, node-runtime and npm-lock functions that scripts/check-runtime-service-images.mjs calls" }],
   "runtime:images:licenses:check": [{ test: "runtime:images:licenses:test", case: "runs scripts/check-runtime-image-licenses.mjs --static and asserts scripts/lib/runtime-image-licenses.mjs on throw-away fixture trees and in-memory image readers" }],

@@ -2,7 +2,7 @@ import { createRemoteJWKSet } from "jose";
 import { NextResponse, type NextRequest } from "next/server";
 import { devHeaderIdentityEnabled } from "@/lib/control-plane/dev-identity";
 import { oidcVerificationConfig, verifyOperatorToken } from "@/lib/control-plane/oidc";
-import { apiCsp, generateNonce, pageCsp, strictTransportSecurity } from "@/lib/csp";
+import { apiCsp, generateNonce, mediaUploadOrigins, pageCsp, strictTransportSecurity } from "@/lib/csp";
 
 const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
@@ -46,7 +46,8 @@ async function authenticate(request: NextRequest, forward: () => NextResponse) {
 function securityFor(request: NextRequest): { csp?: string; forward: () => NextResponse } {
   if (request.nextUrl.pathname === "/api" || request.nextUrl.pathname.startsWith("/api/")) return { forward: () => NextResponse.next() };
   const nonce = generateNonce();
-  const csp = pageCsp(nonce, { development: process.env.NODE_ENV === "development" });
+  const development = process.env.NODE_ENV === "development";
+  const csp = pageCsp(nonce, { development, mediaUploadOrigins: mediaUploadOrigins(undefined, development) });
   const headers = new Headers(request.headers);
   headers.set("x-nonce", nonce);
   headers.set("Content-Security-Policy", csp);

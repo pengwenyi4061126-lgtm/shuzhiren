@@ -2,6 +2,8 @@
 
 The asset workspace uploads files directly to private object storage through a short-lived grant issued by the private media evidence service. The control plane never receives storage credentials. Production upload is available only after the repository service is deployed and configured with a versioned private bucket; demo mode creates a clearly labeled demo asset and does not transfer file bytes.
 
+The development Compose stack provisions a versioned MinIO bucket and starts the verifier locally; see the local development instructions in the verifier README. The browser CSP permits the MinIO loopback upload origin only in development. Production must list each exact TLS object-storage origin in `MEDIA_UPLOAD_ALLOWED_ORIGINS`; the console rejects upload grants whose URL origin is absent from that list.
+
 ## Grant request
 
 `POST /v1/media-evidence/upload-grant` with the existing verifier bearer token and JSON body:
