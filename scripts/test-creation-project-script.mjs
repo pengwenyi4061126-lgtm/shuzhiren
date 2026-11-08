@@ -33,6 +33,11 @@ test("product scripts use only supplied approved facts and vary length and style
   assert.match(detailed, /59\.90/);
   assert.match(detailed, /适用方法/);
   assert.match(detailed, /仅依据已审核的商品资料/);
+  assert.match(short, /你好，今天我们来聊聊清洁泡沫/);
+  assert.doesNotMatch(short, /欢迎来到直播间|^\s*1\./m);
+  assert.match(detailed, /已审核资料显示：按压出泡/);
+  assert.match(detailed, /常见问题补充：适用方法/);
+  assert.notEqual(short, generateProductScript({ ...facts, style: "faq", length: "short" }));
   assert.throws(() => generateProductScript({ ...facts, style: "viral" }), TypeError);
 });
 

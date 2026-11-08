@@ -30,17 +30,29 @@ export function generateProductScript({ name, goal, audience, priceCent, highlig
   const approvedHighlights = highlights.filter((item) => typeof item === "string" && item.trim()).slice(0, highlightLimit).map((item) => item.trim().slice(0, 240));
   const approvedFaq = faq.filter((item) => typeof item === "string" && item.trim()).slice(0, faqLimit).map((item) => item.trim().slice(0, 300));
   const opening = style === "professional"
-    ? `本次围绕${topic}介绍${productName}。面向${target}，以下内容仅依据已审核的商品资料整理。`
+    ? `本次围绕“${topic}”介绍${productName}，面向${target}整理重点。以下内容仅依据已审核的商品资料。`
     : style === "faq"
-      ? `大家好，今天我们围绕${productName}回答一些常见问题，也会结合已审核资料介绍${topic}。如果你是${target}，可以按需参考。`
-      : `你好，欢迎来到直播间。今天我们一起了解${productName}，重点聊聊${topic}。如果你是${target}，可以听听下面这些已确认的信息。`;
+      ? `关于${productName}，如果你是${target}，今天先围绕“${topic}”看看已审核资料里有哪些信息。`
+      : `你好，今天我们来聊聊${productName}。如果你是${target}，可以先从“${topic}”这个方向了解。下面的内容都来自已审核资料。`;
+  const transitions = style === "professional"
+    ? ["已审核资料显示：", "资料还记录：", "另外，资料列出："]
+    : style === "faq"
+      ? ["先看一个商品信息：", "再来看一项已确认的特点：", "还有一项资料提到："]
+      : ["先说这个特点：", "再补充一点：", "另外，已审核资料还提到："];
   const factLines = approvedHighlights.length
-    ? approvedHighlights.map((item, index) => `${index + 1}. ${item}`)
+    ? approvedHighlights.map((item, index) => `${transitions[index % transitions.length]}${item}`)
     : ["目前已审核资料没有填写商品特点，这部分先不作补充说明。"];
-  if (Number.isSafeInteger(priceCent) && priceCent >= 0) factLines.push(`已审核资料记录的价格为${(priceCent / 100).toFixed(2)}元，具体展示以当前商品页面为准。`);
-  const faqLines = approvedFaq.map((item) => `常见信息：${item}`);
+  if (Number.isSafeInteger(priceCent) && priceCent >= 0) {
+    const price = `${(priceCent / 100).toFixed(2)}元`;
+    factLines.push(style === "professional"
+      ? `已审核资料中的价格为${price}；实际展示以商品页面为准。`
+      : `价格方面，已审核资料记录为${price}，实际展示以商品页面为准。`);
+  }
+  const faqLines = approvedFaq.map((item) => style === "professional" ? `常见问题补充：${item}` : `你可能还关心：${item}`);
   const closing = style === "professional"
-    ? "以上为已审核资料中的信息。请结合商品详情和自身需求判断是否适合。"
-    : "以上信息供你参考，是否适合请结合商品详情和自身需求判断。想进一步了解，可以查看商品页面。";
+    ? "以上为已审核资料中的信息，请结合商品详情和自身需求判断是否适合。"
+    : style === "faq"
+      ? "以上是这次整理的商品信息，是否适合请结合商品详情和自身需求判断。"
+      : "这些信息供你参考。想进一步了解，可以查看商品详情，再按自己的需要判断。";
   return [opening, ...factLines, ...faqLines, closing].join("\n\n");
 }
