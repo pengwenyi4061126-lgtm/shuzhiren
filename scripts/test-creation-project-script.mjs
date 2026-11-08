@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { splitNarrationScript } from "../apps/console/lib/shared/content-script.mjs";
+import { canResumeLiveOutput } from "../apps/console/lib/shared/live-output-resume.mjs";
 import { preferProjectLiveAssets } from "../apps/console/lib/shared/live-asset-selection.mjs";
 
 test("narration splitting preserves text and keeps each live segment under the runtime limit", () => {
@@ -19,6 +20,15 @@ test("narration splitting returns no empty segment", () => {
 
 test("narration splitting rejects an invalid segment limit", () => {
   assert.throws(() => splitNarrationScript("text", 0), TypeError);
+});
+
+test("live output retries reuse a draft only when project, product and channel still match", () => {
+  const pending = { projectId: "project-1", productVersionId: "product-v2", channelId: "channel-1", run: { id: "run-1" } };
+  assert.equal(canResumeLiveOutput(pending, "project-1", "product-v2", "channel-1"), true);
+  assert.equal(canResumeLiveOutput(pending, "project-2", "product-v2", "channel-1"), false);
+  assert.equal(canResumeLiveOutput(pending, "project-1", "product-v3", "channel-1"), false);
+  assert.equal(canResumeLiveOutput(pending, "project-1", "product-v2", "channel-2"), false);
+  assert.equal(canResumeLiveOutput(null, "project-1", "product-v2", "channel-1"), false);
 });
 
 test("live outputs prefer project assets and never bind a photo as the live portrait", () => {

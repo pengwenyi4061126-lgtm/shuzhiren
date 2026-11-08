@@ -7,6 +7,7 @@ import type { ChannelConnection } from "@/lib/channels";
 import type { Product } from "@/lib/catalog";
 import type { CreationOutputMode, CreationProject } from "@/lib/creation-projects";
 import { splitNarrationScript } from "@/lib/shared/content-script.mjs";
+import { canResumeLiveOutput } from "@/lib/shared/live-output-resume.mjs";
 import { clientFetch } from "@/lib/client-request";
 import { PhotoRecordingComposer } from "@/components/photo-recording-composer";
 import styles from "./studio-workspace.module.css";
@@ -15,6 +16,7 @@ type AssetOption = { id: string; kind: string; name: string; approval: string; e
 type Props = { products: Product[]; channels: ChannelConnection[]; assets: AssetOption[]; initialProjects: CreationProject[]; canCreate: boolean };
 type OutputMode = "recording" | "live" | "both";
 type LiveRun = { id: string; showName: string };
+type PendingOutput = { projectId: string; productVersionId: string; channelId: string; run: LiveRun };
 
 export function StudioWorkspace({ products, channels, assets, initialProjects, canCreate }: Props) {
   const versions = useMemo(() => products.flatMap((product) => product.versions.filter((version) => version.status === "approved").map((version) => ({ product, version }))), [products]);
@@ -37,6 +39,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [createdRun, setCreatedRun] = useState<LiveRun | null>(null);
+  const [pendingOutput, setPendingOutput] = useState<PendingOutput | null>(null);
 
   const facts = selected?.version.facts;
   const activeProject = projects.find((project) => project.id === projectId);
@@ -174,14 +177,21 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
       const project = await persistProject();
       const scriptChunks = splitNarrationScript(project.script);
       const showName = project.name;
-      const response = await clientFetch("/api/v1/live-runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ showName, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true })
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "创建直播场次失败");
-      const run = result.data as LiveRun;
+      const resume = canResumeLiveOutput(pendingOutput, project.id, selected.version.id, channelId);
+      let run: LiveRun;
+      if (resume) {
+        run = pendingOutput!.run;
+      } else {
+        const response = await clientFetch("/api/v1/live-runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ showName, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "创建直播场次失败");
+        run = result.data as LiveRun;
+        setPendingOutput({ projectId: project.id, productVersionId: selected.version.id, channelId, run });
+      }
       setCreatedRun(run);
       const segments = [
         ...scriptChunks.map((runtimeScript, index) => ({ kind: "prepared_product", title: index === 0 ? "开场与项目介绍" : `商品内容 ${index + 1}`, durationSeconds: index === 0 ? 90 : 180, purpose: "基于项目脚本和审核通过的商品事实进行介绍", runtimeScript })),
@@ -204,6 +214,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
       const linkResult = await linkResponse.json();
       if (!linkResponse.ok) throw new Error(linkResult.error ?? "节目单已创建，但项目输出关联失败。");
       setProjects((current) => [linkResult.data as CreationProject, ...current.filter((item) => item.id !== project.id)]);
+      setPendingOutput(null);
       setNotice("直播草稿场次与节目单已创建。发布前仍需完成审核、渠道与运行时预检。");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "操作失败，请重试");
@@ -213,6 +224,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   }
 
   const canCreateLive = canCreate && versions.length > 0 && connectedChannels.length > 0;
+  const canResumePending = Boolean(selected && canResumeLiveOutput(pendingOutput, projectId, selected.version.id, channelId));
 
   return <main className={styles.page}>
     <header className={styles.header}>
@@ -261,7 +273,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
         <div className={styles.outputFooter}>
           <button type="button" className={styles.saveAction} onClick={saveProject} disabled={busy || !canCreate || !selected}><Save size={15} />{busy ? "保存中…" : projectId ? "保存项目更改" : "保存内容项目"}</button>
           {output !== "live" ? <button type="button" className={styles.primaryAction} onClick={downloadRecordingPack} disabled={busy || !selected}><ArrowDownToLine size={16} />导出录播制作包</button> : null}
-          {output !== "recording" ? <button type="submit" className={styles.primaryAction} disabled={busy || !canCreateLive || !selected}>{busy ? "正在创建…" : "创建直播草稿场次"}<ArrowRight size={16} /></button> : null}
+          {output !== "recording" ? <button type="submit" className={styles.primaryAction} disabled={busy || !canCreateLive || !selected}>{busy ? "正在处理…" : canResumePending ? "继续完成直播输出" : "创建直播草稿场次"}<ArrowRight size={16} /></button> : null}
           {!canCreate && output !== "recording" ? <p className={styles.helper}>当前账号只有查看权限。</p> : null}
           {!connectedChannels.length && output !== "recording" ? <p className={styles.helper}>还没有已连接渠道，请先到 <Link href="/channels">渠道设置</Link> 完成配置。</p> : null}
         </div>
