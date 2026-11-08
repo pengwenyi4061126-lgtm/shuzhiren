@@ -81,11 +81,33 @@ async function rejected(client, sql, params = []) {
   finally { await client.query("rollback to savepoint overlay_probe"); }
 }
 
+async function advanceLifecycle(context, runId, action) {
+  try {
+    return await store.advanceRunLifecycle(context, runId, action);
+  } catch (error) {
+    if (error instanceof Response) {
+      throw new Error(`advanceRunLifecycle(${action}) failed: status=${error.status} statusText=${error.statusText} body=${await error.text()}`);
+    }
+    throw error;
+  }
+}
+
+async function captureResponse(label, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof Response) {
+      throw new Error(`${label} failed: status=${error.status} statusText=${error.statusText} body=${await error.text()}`);
+    }
+    throw error;
+  }
+}
+
 describe("PostgreSQL overlay configuration and frozen scenes", () => {
   test("console approval freezes approved inputs and database immutability protects the scene", async () => {
     const f = await fixture();
-    await store.advanceRunLifecycle(f.context, f.runId, "submit_review");
-    const approved = await store.advanceRunLifecycle(f.context, f.runId, "approve");
+    await advanceLifecycle(f.context, f.runId, "submit_review");
+    const approved = await advanceLifecycle(f.context, f.runId, "approve");
     const [scene] = await h.snapshot("select scene_json, scene_sha256, frozen_at from show_revision_overlays where show_revision_id = $1", [f.revisionId]);
     assert.ok(scene.frozen_at);
     assert.equal(scene.scene_sha256.trim(), sha256(scene.scene_json));
@@ -94,16 +116,16 @@ describe("PostgreSQL overlay configuration and frozen scenes", () => {
     assert.equal(parsed.priceSticker.priceText, "¥128.00");
     assert.equal(approved.state, "APPROVED");
     assert.match(await rejected(h.admin, "update show_revision_overlays set caption_enabled = false where show_revision_id = $1", [f.revisionId]), /Frozen show revision overlays are immutable/);
-    const request = await revisions.createProgramRevisionRequest(f.context, f.runId);
+    const request = await captureResponse("createProgramRevisionRequest", () => revisions.createProgramRevisionRequest(f.context, f.runId));
     const [candidate] = await h.snapshot("select scene_json, scene_sha256, frozen_at from show_revision_overlays where show_revision_id = $1", [request.candidateRevisionId]);
     assert.deepEqual(candidate, { scene_json: null, scene_sha256: null, frozen_at: null }, "cloned candidate starts with editable configuration and no frozen scene");
   });
 
   test("unapproved backgrounds block approval, and enabled unfrozen overlays block direct revision approval", async () => {
     const f = await fixture({ backgroundApproved: false });
-    await store.advanceRunLifecycle(f.context, f.runId, "submit_review");
+    await advanceLifecycle(f.context, f.runId, "submit_review");
     const error = await store.advanceRunLifecycle(f.context, f.runId, "approve").then(() => null, (value) => value);
-    assert.ok(error instanceof Response && error.status === 422);
+    assert.ok(error instanceof Response && error.status === 422, error instanceof Response ? `status=${error.status} statusText=${error.statusText} body=${await error.text()}` : String(error));
     assert.equal((await h.snapshot("select approval_status from show_revisions where id = $1", [f.revisionId]))[0].approval_status, "draft");
 
     const second = await fixture();
@@ -129,21 +151,21 @@ describe("PostgreSQL overlay configuration and frozen scenes", () => {
 
   test("START dispatch binds the frozen overlay while INSERT_PROGRAM omits it", async () => {
     const f = await fixture();
-    await store.advanceRunLifecycle(f.context, f.runId, "submit_review");
-    await store.advanceRunLifecycle(f.context, f.runId, "approve");
+    await advanceLifecycle(f.context, f.runId, "submit_review");
+    await advanceLifecycle(f.context, f.runId, "approve");
     const ruleContext = { ...f.context, role: "admin" };
     const { created } = await interactionRules.createDefaultInteractionRules(ruleContext);
     for (const rule of created) await interactionRules.approveInteractionRule(ruleContext, rule.id);
     const runId = await h.seed.liveRun({ tenantId: f.tenantId, revisionId: f.revisionId, state: "ARMED", channelId: f.channelId, productVersionId: f.productVersionId });
     await h.admin.query("update live_runs set has_operator = true, rights_approved = true, has_approved_sku_version = true, has_fallback_program = true, channel_ready = true, output_ready = true, ai_disclosure_enabled = true where id = $1", [runId]);
     await h.seed.healthSample({ tenantId: f.tenantId, liveRunId: runId });
-    const result = await store.issueCommand(f.context, runId, { action: "START", expectedState: "ARMED", idempotencyKey: `it-overlay-${randomUUID()}` });
+    const result = await captureResponse("issueCommand(START)", () => store.issueCommand(f.context, runId, { action: "START", expectedState: "ARMED", idempotencyKey: `it-overlay-${randomUUID()}` }));
     const [start] = await h.snapshot("select payload from outbox_events where id = $1 and event_type = 'media.dispatch'", [result.mediaEvent.id]);
     const startCommand = start.payload.command;
     assert.equal(startCommand.payload.overlaySceneJson, (await h.snapshot("select scene_json from show_revision_overlays where show_revision_id = $1", [f.revisionId]))[0].scene_json);
     assert.equal(startCommand.payload.overlaySceneSha256, sha256(startCommand.payload.overlaySceneJson));
     await h.admin.query("update live_runs set state = 'LIVE', scheduled_start_event_id = null, active_program_segment_id = $2 where id = $1", [runId, f.segmentIds.primary]);
-    const inserted = await store.issueCommand(f.context, runId, { action: "INSERT_PROGRAM", expectedState: "LIVE", idempotencyKey: `it-overlay-${randomUUID()}`, programSegmentId: f.segmentIds.interactive });
+    const inserted = await captureResponse("issueCommand(INSERT_PROGRAM)", () => store.issueCommand(f.context, runId, { action: "INSERT_PROGRAM", expectedState: "LIVE", idempotencyKey: `it-overlay-${randomUUID()}`, programSegmentId: f.segmentIds.interactive }));
     const [insertEvent] = await h.snapshot("select payload from outbox_events where id = $1 and event_type = 'media.dispatch'", [inserted.mediaEvent.id]);
     assert.equal("overlaySceneJson" in insertEvent.payload.command.payload, false);
     assert.equal("overlaySceneSha256" in insertEvent.payload.command.payload, false);

@@ -43,7 +43,7 @@ function evaluator(tenantId, overrides = {}) {
 }
 
 /** A tenant with one LIVE run whose approved revision freezes a current product version, a voice and a policy profile. */
-async function fixture({ policyRules = [{ id: "tenant_terms", terms: ["绝对安全"], reason: "租户禁用词", action: "refuse", riskLevel: "high", requiredEvidence: [] }] } = {}) {
+async function fixture({ policyRules = [{ id: "tenant_terms", terms: ["租户专属禁用句"], reason: "租户禁用词", action: "refuse", riskLevel: "high", requiredEvidence: [] }] } = {}) {
   const { seed, admin } = h;
   const tenantId = await seed.tenant();
   const subject = `it-rules-${randomUUID()}`;
@@ -197,7 +197,7 @@ describe("rate limits, cooldowns, policy and idempotency", () => {
     const f = await fixture();
     // Inserted as approved directly: the console approval check would have refused this template.
     await insertRule(f, { triggerType: "keyword", matchConfig: { keywords: ["发货"] }, templates: ["{product_name}全网最低价"] });
-    await insertRule(f, { triggerType: "gift", matchConfig: { minGiftValueCents: 0 }, templates: ["感谢{nickname}的礼物，绝对安全"] });
+    await insertRule(f, { triggerType: "gift", matchConfig: { minGiftValueCents: 0 }, templates: ["感谢{nickname}的礼物，租户专属禁用句"] });
     const run = evaluator(f.tenantId);
     await insertInteraction(f, { kind: "comment", text: "什么时候发货", viewer: "a" });
     await insertInteraction(f, { kind: "gift", text: "观众送出礼物", viewer: "b", nickname: "阿乙", giftValueCents: 100 });

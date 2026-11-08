@@ -352,7 +352,12 @@ describe("knowledge approval and answering application paths", () => {
     assert.equal((await h.admin.query("select revision from knowledge_entry_approvals where id = $1", [entry.approvedApprovalId])).rows[0].revision, 2);
 
     const blocked = await knowledge.createKnowledgeEntry(author, { ...input, question: "特殊规则是什么", answer: "Block_Term" });
-    await assert.rejects(knowledge.approveKnowledgeEntry(reviewer, blocked.id), (error) => error instanceof Response && error.status === 422);
+    await assert.rejects(knowledge.approveKnowledgeEntry(reviewer, blocked.id), async (error) => {
+      const response = await knowledge.knowledgeEntryErrorResponse(error);
+      assert.equal(response.status, 422);
+      assert.equal((await response.json()).error, "knowledge_entry_policy_blocked");
+      return true;
+    });
     assert.equal((await h.admin.query("select count(*)::int as count from knowledge_entry_approvals where entry_id = $1", [blocked.id])).rows[0].count, 0);
     assert.equal((await h.admin.query("select status from knowledge_entries where id = $1", [blocked.id])).rows[0].status, "pending");
 
