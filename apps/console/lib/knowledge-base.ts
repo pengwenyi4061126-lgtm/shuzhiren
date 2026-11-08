@@ -347,8 +347,27 @@ export async function knowledgeHitsForRunInTransaction(client: PoolClient, runId
   return [{ approvalId: hit.approvalId, entryId: hit.entryId, revision: hit.revision, question: hit.question, answer: hit.answer, answerSha256: hit.answerSha256, scorePermille: hit.scorePermille, keywordHits: hit.keywordHits }];
 }
 
+async function knowledgeHitsForRunInControlPlaneTransaction(client: PoolClient, tenantId: string, runId: string, question: string): Promise<KnowledgeHit[]> {
+  if (!isUuid(runId)) return [];
+  const queryTerms = knowledgeQueryTerms(question);
+  if (!queryTerms.length) return [];
+  const rows = (await client.query<KnowledgeCandidate>(`select a.id as approval_id, a.entry_id, a.revision, a.question, a.alias_questions, a.answer, a.keywords, a.search_terms, a.answer_sha256::text as answer_sha256
+    from live_runs r
+    join product_versions pv on pv.tenant_id = r.tenant_id and pv.id = r.product_version_id
+    join knowledge_entries e on e.tenant_id = r.tenant_id and e.status = 'approved'
+    join knowledge_entry_approvals a on a.tenant_id = e.tenant_id and a.id = e.approved_approval_id
+    where r.tenant_id = $1 and r.id = $2 and a.search_terms && $3::text[]
+      and (a.product_id is null or a.product_id = pv.product_id)
+    order by a.id limit 20`, [tenantId, runId, queryTerms])).rows;
+  const candidates = rows.map((row) => ({ entryId: row.entry_id, question: row.question, aliasQuestions: asStringArray(jsonValue(row.alias_questions)), keywords: asStringArray(jsonValue(row.keywords)), approvalId: row.approval_id, revision: row.revision, answer: row.answer, answerSha256: row.answer_sha256.trim() }));
+  const result = rankKnowledgeHits(question, candidates, { minScorePermille: 600 });
+  if (result.reason !== "matched" || !result.hit) return [];
+  const hit = result.hit;
+  return [{ approvalId: hit.approvalId, entryId: hit.entryId, revision: hit.revision, question: hit.question, answer: hit.answer, answerSha256: hit.answerSha256, scorePermille: hit.scorePermille, keywordHits: hit.keywordHits }];
+}
+
 export async function knowledgeHitsForRun(context: RequestContext, runId: string, question: string, productId?: string): Promise<KnowledgeHit[]> {
-  if (databasePool()) return withTenantTransaction(context.tenantId, (client) => knowledgeHitsForRunInTransaction(client, runId, question), { readOnly: true });
+  if (databasePool()) return withTenantTransaction(context.tenantId, (client) => knowledgeHitsForRunInControlPlaneTransaction(client, context.tenantId, runId, question), { readOnly: true });
   const queryTerms = knowledgeQueryTerms(question);
   if (!queryTerms.length) return [];
   const candidates = [...store().entries.values()]

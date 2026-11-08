@@ -276,9 +276,9 @@ export async function evaluateOverlayReadinessForRun(client: PoolClient | null, 
     const asset = record?.backgroundMediaAssetId ? (globalThis as typeof globalThis & { shuzhirenAssetStore?: { assets: Map<string, { approval: string; expiresAt?: string }> } }).shuzhirenAssetStore?.assets.get(record.backgroundMediaAssetId) : undefined;
     expected = { config, overlayPresent: Boolean(record), sceneJson: record?.sceneJson, sceneSha256: record?.sceneSha256, backgroundApproval: asset?.approval, backgroundExpiresAt: asset?.expiresAt, priceValidUntil: version?.facts.validUntil };
   }
-  const ready = evaluateOverlayReadiness(expected);
-  if (!ready.passed || ready.detail === "未启用画面层") return ready;
-  if (runtimeGatewayDemoMode()) return evaluateOverlayReadiness({ ...expected, demoGateway: true });
+  const configured = evaluateOverlayReadiness({ ...expected, demoGateway: true });
+  if (!configured.passed || configured.detail === "未启用画面层") return configured;
+  if (runtimeGatewayDemoMode()) return configured;
   try { return evaluateOverlayReport(await runtimeGatewayHealth({ timeoutMs: 5_000, acceptDegraded: true }), expected); }
   catch { return { passed: false, detail: "运行时未报告画面层能力（LiveTalking 镜像可能缺少画面层补丁）" }; }
 }
