@@ -1,16 +1,16 @@
 # 系统迁移恢复交接
 
-更新日期：2026-11-06（Asia/Shanghai）
+更新日期：2026-11-08（Asia/Shanghai）
 
 ## 当前检查点
 
-- 核对日期：2026-11-06
-- origin/master：c0f9f52801b473fccfed8f30554a7c54a0cbaea7
+- 核对日期：2026-11-08
+- origin/master：0223d4cc99e64fce1f16a1712a43257001c18e5f
 - 同步状态：一致
-- 最新 CI 运行：run 42132486742，提交 c0f9f52801b473fccfed8f30554a7c54a0cbaea7，结论 success
+- 最新 CI 运行：run 42435674115，提交 0223d4cc99e64fce1f16a1712a43257001c18e5f，结论 success
 - 仓库：`git@github.com:pengwenyi4061126-lgtm/shuzhiren.git`
 - 分支：`master`
-- 核对方式：先执行 `git fetch origin`，再执行 `git rev-list --left-right --count origin/master...master`，结果为 `0 0`；最新 CI 运行取自 GitHub Actions 接口 `GET /repos/pengwenyi4061126-lgtm/shuzhiren/actions/runs?head_sha=<提交>`（#508）。VERIFICATION_LOG 中最近一条登记的运行是 #508（[V-20261106-04](VERIFICATION_LOG.md#v-20261106-04)），同一运行中 deploy:check:test 的步骤变更见 [V-20261106-03](VERIFICATION_LOG.md#v-20261106-03)；#507（run 42088421323）只改动文档，结论为 success，没有登记。
+- 核对方式：先执行 `git fetch origin`，再执行 `git rev-list --left-right --count origin/master...master`；本次推送后需再次核对同步状态。最新 CI 运行取自 GitHub Actions 接口 `GET /repos/pengwenyi4061126-lgtm/shuzhiren/actions/runs?head_sha=<提交>`（#516）；VERIFICATION_LOG 中最近一条登记的运行是 [#516 / V-20261108-13](VERIFICATION_LOG.md#v-20261108-13)。
 - 本机环境：Windows 开发机，Node 24（`package.json` 的 `engines.node` 为 `^24.11.0`）。
 - 工作区状态：恢复前先以 `git status --short` 为准；不得通过重装依赖、解压运行时或清理工作区覆盖已有审计修复。
 - 本文件不保存任何平台密钥、SSH 私钥、GPU 租机凭据、OIDC 凭据或数据库口令。
@@ -159,19 +159,19 @@ npm run build
 
 ## live-commerce-p1-features 进度
 
-下列模块状态与 [就绪矩阵](DEPLOYMENT_READINESS.md) 一致；本规格相关 CI 结论为未验证，待推送后按真实 Actions run id 登记。
+下列模块状态与 [就绪矩阵](DEPLOYMENT_READINESS.md) 一致；CI 证据来自 [run 42435674115 @ 0223d4cc99e64fce1f16a1712a43257001c18e5f](VERIFICATION_LOG.md#v-20261108-13)。
 
 | 模块 | 迁移/交付 | 当前状态 |
 | --- | --- | --- |
-| A：开播前 AI 身份提示规则 | 迁移 084，RW-000-16 | 代码已完成但待 CI 或 Linux 验证 |
-| B：共享策略引擎 | 无数据库迁移，RW-000-17 | 代码已完成但待 CI 或 Linux 验证 |
-| C：话术变体与轮换 | 迁移 085，RW-000-18 | 代码已完成但待 CI 或 Linux 验证 |
-| D：知识库问答 | 迁移 086–087，RW-000-19 | 代码已完成但待 CI 或 Linux 验证 |
-| E：违禁词库 | 迁移 088，RW-000-20 | 代码已完成但待 CI 或 Linux 验证 |
-| F：画面层 | 迁移 089–090，RW-000-21 | 代码已完成但待 CI 或 Linux 验证 |
+| A：开播前 AI 身份提示规则 | 迁移 084，RW-000-16 | 代码已完成且有验证证据 |
+| B：共享策略引擎 | 无数据库迁移，RW-000-17 | 代码已完成且有验证证据 |
+| C：话术变体与轮换 | 迁移 085，RW-000-18 | 代码已完成且有验证证据 |
+| D：知识库问答 | 迁移 086–087，RW-000-19 | 代码已完成且有验证证据 |
+| E：违禁词库 | 迁移 088，RW-000-20 | 代码已完成且有验证证据 |
+| F：画面层 | 迁移 089–090，RW-000-21 | 代码已完成且有验证证据 |
 | 4090 画面层实机核验 | RW-000-22 | 代码已完成但待外部环境验证 |
 
-本机 `npm run verify:local` 最近一次退出码为 0（88 项）；该结果不替代 PostgreSQL 集成、Gateway Python、Linux/Docker 或真实画面检查。此次工作树有 11.x 与检查点修复提交尚未推送，最新本地提交为 `9cadb52`。
+CI 中 PostgreSQL 集成、Gateway Python、Docker 构建与镜像冒烟、Node 单元及静态门禁均在 [run 42435674115 @ 0223d4cc99e64fce1f16a1712a43257001c18e5f](VERIFICATION_LOG.md#v-20261108-13) 通过；这些结果不替代 4090 与抖音观看端的真实画面核验。外部待验证项为 RW-000-22、EP-18（法务审定）与 EP-19（抖音平台规则书面核实）。
 
 ## 代码审计结果与下一步
 

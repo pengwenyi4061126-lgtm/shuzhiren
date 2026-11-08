@@ -9,7 +9,7 @@
 - 证据列只写引用（`V-` 编号，或 `位置=…，日期=…，提供方=…`），不写推流地址、推流密钥、签名私钥、OAuth 应用密钥或 registry 凭据的值。
 - "说明"列中的"验证方式"是验证所用的命令或步骤，本身不是证据。
 
-核对基准：`origin/master` = `c0f9f52801b473fccfed8f30554a7c54a0cbaea7`（2026-11-06 核对）。VERIFICATION_LOG 中最近一条登记的 CI 运行是 #508（run 42132486742，提交 c0f9f52，`V-20261106-04`）；#507（run 42088421323，提交 1017e0f）只改动文档，结论为 success，没有登记条目。
+核对基准：`origin/master` = `0223d4cc99e64fce1f16a1712a43257001c18e5f`（2026-11-08 核对）。VERIFICATION_LOG 中最近一条登记的 CI 运行是 #516（run 42435674115，提交 0223d4c，`V-20261108-13`）；运行结论为 success，六个 job 的全部步骤通过。
 
 ## 状态定义
 
@@ -166,12 +166,12 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-000-13 | AIGC 标识开播前检查（`aigc_label`）、`deploy:check` 的标识配置规则与录制留证、release manifest 中的隐式标识元数据（迁移 083） | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`deploy:check:test`（node-unit 安装 numpy、Pillow 与 `fonts-noto-cjk` 并设 `AIGC_LABEL_REQUIRE_IMAGING=true`，`runtime/livetalking/tests/test_aigc_label.py` 的绘制用例不允许 SKIP，见 V-20261106-03）、`runtime:images:licenses:test`、`control-plane:integration`、python-gateway 的 `scripts/test-runtime-gateway-aigc-label.py`；`preflight:check` 为 static。画面标识的实机核验是 RW-000-12，合规结论是 EP-15 |
 | RW-000-14 | 默认预设库：平台级 `runtime_presets`（迁移 082）、`/api/v1/presets` 与 `/api/v1/presets/{presetCode}/adopt`、资产页“从默认库添加”、Gateway `COSYVOICE_SFT_SPEAKER_MAP` | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`scripts/integration/runtime-presets.test.mjs`（`postgres:integration`）、`service-principals:integration`、python-gateway 的 `scripts/test-runtime-gateway-sft-speakers.py`；`presets:test` 为 static。素材商用授权是 EP-16 |
 | RW-000-15 | 互动规则引擎：迁移 084、runtime-worker 评估循环、`/api/v1/interaction-rules/**` 与 `/interaction-rules` 页面、场次触发记录、Channel_Adapter `viewer_event` | 代码已完成且有验证证据 | V-20261106-04 | 无 | 相关检查：`interaction-rules:test`（含 console 与 worker 策略引擎的一致性）、`scripts/integration/interaction-rules.test.mjs` 与 `trigger-cases/interaction-rules.mjs`（`postgres:integration`）、`channel-adapter:test`。抖音真实事件接入是 EP-17 与 RW-040-02 |
-| RW-000-16 | 开播前检查 `ai_disclosure_rule`：AI 身份提示规则缺失、未启用或未批准时阻止 arm 与 START | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 1。相关检查：`preflight:check`、`interaction-rules:test`、`scripts/integration/preflight-ai-disclosure.test.mjs` |
-| RW-000-17 | 策略引擎单一实现：`apps/console/lib/shared/policy-engine.mjs` 由 console 与 runtime-worker 共用，worker 镜像复制该目录 | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 2。相关检查：`shared:modules:check`、`policy:red-team`、`interaction-rules:test`、docker-build 的镜像冒烟 |
-| RW-000-18 | 话术变体：段落多版本、提交与批准时逐版本检查、下发时确定性轮换与轮换账本（迁移 085） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 3。相关检查：`program:variants:test`、`scripts/integration/script-variants.test.mjs`（`postgres:integration`） |
-| RW-000-19 | 知识库问答：条目审批、中文二元组检索、`faq` 互动规则与回复依据（迁移 086、087） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 4。相关检查：`knowledge:test`、`scripts/integration/knowledge-base.test.mjs`（`postgres:integration`） |
-| RW-000-20 | 违禁词库：内置示例词表、租户覆盖与审批、修订冻结、编辑提示与播报前拦截（迁移 088） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 5。相关检查：`prohibited-terms:test`、`policy:red-team`、`scripts/integration/prohibited-terms.test.mjs`（`postgres:integration`）。词表内容的合规性依赖 EP-18 |
-| RW-000-21 | 画面层代码：`livetalking-overlay.patch`、`shuzhiren_overlay.py`、Gateway 字幕与场景下发、画面层配置冻结与开播前检查（迁移 089、090） | 代码已完成但待 CI 或 Linux 验证 | — | 无 | Requirement 6。相关检查：`overlay:config:test`、`scripts/integration/overlays.test.mjs`、`scripts/test-runtime-gateway-captions.py`、`runtime/livetalking/tests/test_overlay.py`、docker-build 的 LiveTalking 镜像构建（`postgres:integration`） |
+| RW-000-16 | 开播前检查 `ai_disclosure_rule`：AI 身份提示规则缺失、未启用或未批准时阻止 arm 与 START | 代码已完成且有验证证据 | V-20261108-13 | 无 | Requirement 1。相关检查：`preflight:check`、`interaction-rules:test`、`scripts/integration/preflight-ai-disclosure.test.mjs` |
+| RW-000-17 | 策略引擎单一实现：`apps/console/lib/shared/policy-engine.mjs` 由 console 与 runtime-worker 共用，worker 镜像复制该目录 | 代码已完成且有验证证据 | V-20261108-13 | 无 | Requirement 2。相关检查：`shared:modules:check`、`policy:red-team`、`interaction-rules:test`、docker-build 的镜像冒烟 |
+| RW-000-18 | 话术变体：段落多版本、提交与批准时逐版本检查、下发时确定性轮换与轮换账本（迁移 085） | 代码已完成且有验证证据 | V-20261108-13 | 无 | Requirement 3。相关检查：`program:variants:test`、`scripts/integration/script-variants.test.mjs`（`postgres:integration`） |
+| RW-000-19 | 知识库问答：条目审批、中文二元组检索、`faq` 互动规则与回复依据（迁移 086、087） | 代码已完成且有验证证据 | V-20261108-13 | 无 | Requirement 4。相关检查：`knowledge:test`、`scripts/integration/knowledge-base.test.mjs`（`postgres:integration`） |
+| RW-000-20 | 违禁词库：内置示例词表、租户覆盖与审批、修订冻结、编辑提示与播报前拦截（迁移 088） | 代码已完成且有验证证据 | V-20261108-13 | 无 | Requirement 5。相关检查：`prohibited-terms:test`、`policy:red-team`、`scripts/integration/prohibited-terms.test.mjs`（`postgres:integration`）。词表内容的合规性依赖 EP-18 |
+| RW-000-21 | 画面层代码：`livetalking-overlay.patch`、`shuzhiren_overlay.py`、Gateway 字幕与场景下发、画面层配置冻结与开播前检查（迁移 089、090） | 代码已完成且有验证证据 | V-20261108-13 | 无 | Requirement 6。相关检查：`overlay:config:test`、`scripts/integration/overlays.test.mjs`、`scripts/test-runtime-gateway-captions.py`、`runtime/livetalking/tests/test_overlay.py`、docker-build 的 LiveTalking 镜像构建（`postgres:integration`） |
 | RW-000-22 | 4090 实机画面层核验：字幕、商品卡、价格贴片与背景在推流画面和录制文件中的观感，AIGC 角标未被遮挡，字幕与语音同步，全部图层启用时的输出帧率 | 代码已完成但待外部环境验证 | — | 无 | Requirement 6。环境：4090 与抖音观看端。`apps/output-probe` 不读取画面内容，不能代替本项 |
 
 ## 待决策事项
