@@ -91,7 +91,9 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   const facts = selected?.version.facts;
   const activeProject = projects.find((project) => project.id === projectId);
   const selectedPhotoPortrait = assets.some((asset) => asset.kind === "portrait_photo" && assetIds.includes(asset.id));
-  const selectedLivePortrait = assets.some((asset) => asset.kind === "portrait" && asset.approval === "approved" && assetIds.includes(asset.id) && (!asset.expiresAt || asset.expiresAt >= new Date().toISOString().slice(0, 10)));
+  const selectedLivePortrait = assets.some((asset) => asset.kind === "portrait" && asset.approval === "approved" && assetIds.includes(asset.id)
+    && (!asset.expiresAt || asset.expiresAt >= new Date().toISOString().slice(0, 10))
+    && /^video\//i.test(asset.contentType) && /^sha256:[a-f0-9]{64}$/i.test(asset.checksum));
   const projectPhotos = assets.filter((asset) => asset.kind === "portrait_photo" && asset.approval === "approved" && assetIds.includes(asset.id));
   const starterScript = useMemo(() => {
     if (!selected || !facts) return "请先在商品中心准备并审核商品事实。";
@@ -417,7 +419,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
             <div><span className={styles.readinessLabel}>已审核脚本</span><strong className={scriptReviewed ? styles.readinessReady : styles.readinessPending}>{scriptReviewed ? "就绪" : "待审核"}</strong></div>
             <div><span className={styles.readinessLabel}>直播渠道</span><strong className={channelReady ? styles.readinessReady : styles.readinessPending}>{channelReady ? "已连接" : "待连接或选择"}</strong></div>
             <div><span className={styles.readinessLabel}>直播形象视频</span><strong className={selectedLivePortrait ? styles.readinessReady : styles.readinessPending}>{selectedLivePortrait ? "已选可用形象" : "尚未选择"}</strong></div>
-            {!selectedLivePortrait ? <p>{selectedPhotoPortrait ? "项目中的照片只用于照片播报录播，不能作为实时直播形象。" : "直播需要已审核且仍在授权有效期内的肖像视频素材。"} <Link href="/assets" target="_blank" rel="noreferrer">管理形象素材</Link></p> : null}
+            {!selectedLivePortrait ? <p>{selectedPhotoPortrait ? "项目中的照片只用于照片播报录播，不能作为实时直播形象。" : "直播需要已审核、授权有效且内容核验通过的肖像视频素材。"} <Link href="/assets" target="_blank" rel="noreferrer">管理形象素材</Link></p> : null}
             {!channelReady ? <p>选择一个仍处于已连接状态的直播渠道，或前往 <Link href="/channels">渠道设置</Link> 完成连接。</p> : null}
             <small>此处可先创建直播草稿；正式开播仍以运行时与场次预检结果为准。</small>
           </div>

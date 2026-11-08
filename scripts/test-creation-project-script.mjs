@@ -230,6 +230,8 @@ test("the live-output flow forwards saved project assets into tenant-scoped run 
   assert.match(store, /currentApprovedMediaAssetsInTransaction\(client, input\.mediaAssetIds\)/);
   assert.match(assets, /preferProjectLiveAssets\(defaults, preferred\.rows\.map\(persistentAsset\)\)/);
   assert.match(workspace, /selectedLivePortrait = assets\.some\(\(asset\) => asset\.kind === "portrait" && asset\.approval === "approved"/);
+  assert.match(workspace, /video\\\//);
+  assert.match(workspace, /sha256:\[a-f0-9\]\{64\}/);
   assert.match(workspace, /channelReady = connectedChannels\.some\(\(channel\) => channel\.id === channelId\)/);
   assert.match(workspace, /canCreateLive = .*channelReady && scriptReviewed/);
   assert.match(workspace, /直播渠道/);
