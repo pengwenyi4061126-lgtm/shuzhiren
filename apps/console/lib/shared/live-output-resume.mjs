@@ -1,7 +1,7 @@
-export function canResumeLiveOutput(pending, projectId, productVersionId, channelId) {
+export function canResumeLiveOutput(pending, projectId, requestFingerprint) {
   return Boolean(pending
     && pending.projectId === projectId
-    && pending.productVersionId === productVersionId
-    && pending.channelId === channelId
-    && pending.run?.id);
+    && pending.requestFingerprint === requestFingerprint
+    && typeof pending.idempotencyKey === "string"
+    && pending.idempotencyKey.length > 0);
 }

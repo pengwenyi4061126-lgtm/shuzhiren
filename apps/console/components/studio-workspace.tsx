@@ -16,7 +16,7 @@ type AssetOption = { id: string; kind: string; name: string; approval: string; e
 type Props = { products: Product[]; channels: ChannelConnection[]; assets: AssetOption[]; initialProjects: CreationProject[]; canCreate: boolean };
 type OutputMode = "recording" | "live" | "both";
 type LiveRun = { id: string; showName: string };
-type PendingOutput = { projectId: string; productVersionId: string; channelId: string; run: LiveRun };
+type PendingOutput = { projectId: string; requestFingerprint: string; idempotencyKey: string; run: LiveRun | null };
 type ScriptStyle = "friendly" | "professional" | "faq";
 type ScriptLength = "short" | "standard" | "detailed";
 
@@ -177,21 +177,24 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
     try {
       const project = await persistProject();
       const scriptChunks = splitNarrationScript(project.script);
-      const showName = project.name;
-      const resume = canResumeLiveOutput(pendingOutput, project.id, selected.version.id, channelId);
+      const request = { showName: project.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true };
+      const requestFingerprint = JSON.stringify(request);
+      const resume = canResumeLiveOutput(pendingOutput, project.id, requestFingerprint);
+      const idempotencyKey = resume ? pendingOutput!.idempotencyKey : crypto.randomUUID();
       let run: LiveRun;
-      if (resume) {
-        run = pendingOutput!.run;
+      if (resume && pendingOutput?.run) {
+        run = pendingOutput.run;
       } else {
+        setPendingOutput({ projectId: project.id, requestFingerprint, idempotencyKey, run: null });
         const response = await clientFetch("/api/v1/live-runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ showName, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true })
+          body: JSON.stringify({ ...request, idempotencyKey })
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "创建直播场次失败");
         run = result.data as LiveRun;
-        setPendingOutput({ projectId: project.id, productVersionId: selected.version.id, channelId, run });
+        setPendingOutput({ projectId: project.id, requestFingerprint, idempotencyKey, run });
       }
       setCreatedRun(run);
       const segments = [
@@ -225,7 +228,8 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   }
 
   const canCreateLive = canCreate && versions.length > 0 && connectedChannels.length > 0;
-  const canResumePending = Boolean(selected && canResumeLiveOutput(pendingOutput, projectId, selected.version.id, channelId));
+  const pendingRequest = selected ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, mediaAssetIds: assetIds, aiDisclosureEnabled: true } : null;
+  const canResumePending = Boolean(pendingRequest && canResumeLiveOutput(pendingOutput, projectId, JSON.stringify(pendingRequest)));
 
   return <main className={styles.page}>
     <header className={styles.header}>

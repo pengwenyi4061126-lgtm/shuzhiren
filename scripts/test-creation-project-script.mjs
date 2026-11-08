@@ -36,13 +36,12 @@ test("product scripts use only supplied approved facts and vary length and style
   assert.throws(() => generateProductScript({ ...facts, style: "viral" }), TypeError);
 });
 
-test("live output retries reuse a draft only when project, product and channel still match", () => {
-  const pending = { projectId: "project-1", productVersionId: "product-v2", channelId: "channel-1", run: { id: "run-1" } };
-  assert.equal(canResumeLiveOutput(pending, "project-1", "product-v2", "channel-1"), true);
-  assert.equal(canResumeLiveOutput(pending, "project-2", "product-v2", "channel-1"), false);
-  assert.equal(canResumeLiveOutput(pending, "project-1", "product-v3", "channel-1"), false);
-  assert.equal(canResumeLiveOutput(pending, "project-1", "product-v2", "channel-2"), false);
-  assert.equal(canResumeLiveOutput(null, "project-1", "product-v2", "channel-1"), false);
+test("live output retries keep one idempotency key only while the exact request matches", () => {
+  const pending = { projectId: "project-1", requestFingerprint: "request-a", idempotencyKey: "key-1", run: null };
+  assert.equal(canResumeLiveOutput(pending, "project-1", "request-a"), true);
+  assert.equal(canResumeLiveOutput(pending, "project-2", "request-a"), false);
+  assert.equal(canResumeLiveOutput(pending, "project-1", "request-b"), false);
+  assert.equal(canResumeLiveOutput(null, "project-1", "request-a"), false);
 });
 
 test("live outputs prefer project assets and never bind a photo as the live portrait", () => {
@@ -68,4 +67,18 @@ test("the live-output flow forwards saved project assets into tenant-scoped run 
   assert.ok(route.includes("mediaAssetIds?: string[]"));
   assert.match(store, /currentApprovedMediaAssetsInTransaction\(client, input\.mediaAssetIds\)/);
   assert.match(assets, /preferProjectLiveAssets\(defaults, preferred\.rows\.map\(persistentAsset\)\)/);
+});
+
+test("live-run creation retries are tenant-scoped, request-bound and transaction-locked", async () => {
+  const [route, store, migration] = await Promise.all([
+    readFile(new URL("../apps/console/app/api/v1/live-runs/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../apps/console/lib/control-plane/store.ts", import.meta.url), "utf8"),
+    readFile(new URL("../infra/postgres/migrations/093_live_run_creation_idempotency.sql", import.meta.url), "utf8")
+  ]);
+  assert.match(route, /idempotencyKey === undefined \|\|/);
+  assert.match(store, /pg_advisory_xact_lock\(hashtext\(\$1\)\)/);
+  assert.match(store, /request_sha256 !== requestSha256/);
+  assert.match(store, /insert into live_run_creation_requests/);
+  assert.match(migration, /primary key \(tenant_id, idempotency_key\)/);
+  assert.match(migration, /force row level security/);
 });

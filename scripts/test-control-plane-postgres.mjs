@@ -336,9 +336,16 @@ try {
   assert.equal(freshApproval.status, 200, "fresh product source facts should be approvable");
   const inactiveRuntimeRun = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration inactive runtime run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "missing_session", aiDisclosureEnabled: true }) });
   assert.equal(inactiveRuntimeRun.status, 409, "creating a run must reject an inactive runtime session");
-  const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true }) });
+  const runCreationKey = randomUUID();
+  const runCreationInput = { showName: "Integration frozen rights run", channelConnectionId: recoverRun.channelId, productVersionId: freshVersion.data.id, runtimeSessionId: "session_frozen_rights", aiDisclosureEnabled: true, idempotencyKey: runCreationKey };
+  const createdRunResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify(runCreationInput) });
   assert.equal(createdRunResponse.status, 201, "creating a production run should freeze currently approved media rights");
   const createdRun = await createdRunResponse.json();
+  const repeatedRunCreation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify(runCreationInput) });
+  assert.equal(repeatedRunCreation.status, 201, "repeating a live-run creation request should return its original result");
+  assert.equal((await repeatedRunCreation.json()).data.id, createdRun.data.id, "idempotent retry must not create a second live run");
+  const conflictingRunCreation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ ...runCreationInput, showName: "Different request" }) });
+  assert.equal(conflictingRunCreation.status, 409, "an idempotency key must not be reused with different live-run input");
   const initialProgramResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program`, { headers: requestHeaders });
   assert.equal(initialProgramResponse.status, 200, "operators should read a new draft program");
   const initialProgram = await initialProgramResponse.json();

@@ -46,7 +46,7 @@ export type CommandInput = { action: LiveCommandAction; idempotencyKey: string; 
 export type RunLifecycleAction = "submit_review" | "approve" | "begin_preflight" | "arm" | "disarm" | "archive";
 const runtimeSessionBindingStates = new Set<LiveRunState>(["DRAFT", "REVIEW", "APPROVED", "PREFLIGHT"]);
 type CommandIdempotencyRecord = { command: LiveCommand; runId: string };
-type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, CommandIdempotencyRecord> };
+type Store = { runs: Map<string, StoredRun>; idempotency: Map<string, CommandIdempotencyRecord>; creationRequests: Map<string, { requestSha256: string; runId: string }> };
 type PersistentRunRow = {
   id: string;
   tenant_id: string;
@@ -113,12 +113,14 @@ function initialStore(): Store {
       commandHistory: [],
       questions: []
     }]]),
-    idempotency: new Map()
+    idempotency: new Map(),
+    creationRequests: new Map()
   };
 }
 
 function store() {
   globalThis.shuzhirenControlStore ??= initialStore();
+  globalThis.shuzhirenControlStore.creationRequests ??= new Map();
   return globalThis.shuzhirenControlStore;
 }
 
@@ -138,18 +140,43 @@ export async function listRuns(context: RequestContext) {
   });
 }
 
-export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[] }) {
+export async function createLiveRun(context: RequestContext, input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string }) {
   requireTenantWideAccess(context);
+  const requestSha256 = liveRunCreationRequestSha256(input);
+  if (!databasePool() && input.idempotencyKey) {
+    const requestKey = `${context.tenantId}:${input.idempotencyKey}`;
+    const existing = store().creationRequests.get(requestKey);
+    if (existing) {
+      if (existing.requestSha256 !== requestSha256) throw new Response("Live-run idempotency key was used with different input", { status: 409, statusText: "live_run_idempotency_conflict" });
+      const run = getDemoRun(context, existing.runId);
+      if (!run) throw new Response("Idempotent live-run result is unavailable", { status: 409, statusText: "live_run_idempotency_result_unavailable" });
+      return run;
+    }
+  }
+  if (databasePool() && input.idempotencyKey) {
+    const existing = await withTenantTransaction(context.tenantId, async (client) => {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [`live_run_creation:${context.tenantId}:${input.idempotencyKey}`]);
+      return existingIdempotentLiveRun(client, context, input.idempotencyKey!, requestSha256);
+    });
+    if (existing) return existing;
+  }
   const product = await findApprovedProductVersion(context, input.productVersionId);
   if (!product) throw new Response("An approved product version is required", { status: 409 });
   const channel = await validateChannelConnection(context, input.channelConnectionId, { resolution: "720p", aiDisclosureEnabled: input.aiDisclosureEnabled });
   if (!channel.passed) throw new Response(`Channel is not ready: ${channel.detail}`, { status: 409 });
   if (!databasePool()) {
+    const requestKey = input.idempotencyKey ? `${context.tenantId}:${input.idempotencyKey}` : null;
     const run = await createDemoRun(context, input);
+    if (requestKey) store().creationRequests.set(requestKey, { requestSha256, runId: run.id });
     await recordAuditEvent(context, liveRunCreatedAudit(run, input));
     return run;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
+    if (input.idempotencyKey) {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [`live_run_creation:${context.tenantId}:${input.idempotencyKey}`]);
+      const existing = await existingIdempotentLiveRun(client, context, input.idempotencyKey, requestSha256);
+      if (existing) return existing;
+    }
     const releases = await client.query<{ id: string; component: ReleaseComponent }>("select id, component from model_releases where approval_status = 'approved' and btrim(evidence_ref) <> '' and btrim(validation_summary) <> '' and (evidence_ref ~ '^evidence://[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$' or evidence_ref ~ '^urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$') and component = any($1::model_release_component[]) order by approved_at desc", [requiredProductionReleaseComponents]);
     const frozenReleases = new Map<ReleaseComponent, string>();
     for (const release of releases.rows) if (!frozenReleases.has(release.component)) frozenReleases.set(release.component, release.id);
@@ -170,9 +197,36 @@ export async function createLiveRun(context: RequestContext, input: { showName: 
     await client.query(`insert into show_revision_segments (tenant_id, show_revision_id, position, kind, title, duration_seconds, product_version_id, purpose, runtime_script, is_fallback) values ($1, $2, 1, 'prepared_product', '商品讲解', 180, $3, '受审核商品事实', '本段仅讲解已审核商品事实、价格和活动权益。', false), ($1, $2, 2, 'interactive', '受控互动', 120, $3, '仅低风险可追溯问答', '本段只处理低风险、可追溯的已审核问题，其他请求转人工。', false), ($1, $2, 3, 'fallback', '备用节目', 150, $3, '运行异常降级', null, true), ($1, $2, 4, 'human_handoff', '人工接管', 0, null, '高风险人工处理', null, true)`, [context.tenantId, revision.rows[0].id, input.productVersionId]);
     await createReleaseManifestSnapshotInTransaction(client, { tenantId: context.tenantId, revisionId: revision.rows[0].id, runId: run.rows[0].id });
     const created = persistentRun(run.rows[0], []);
+    if (input.idempotencyKey) await client.query("insert into live_run_creation_requests (tenant_id, idempotency_key, request_sha256, live_run_id) values ($1, $2, $3, $4)", [context.tenantId, input.idempotencyKey, requestSha256, created.id]);
     await recordAuditEventInTransaction(client, context, liveRunCreatedAudit(created, input));
     return created;
   });
+}
+
+function liveRunCreationRequestSha256(input: { showName: string; scheduledAt?: string; channelConnectionId: string; productVersionId: string; runtimeSessionId?: string; aiDisclosureEnabled: boolean; mediaAssetIds?: string[]; idempotencyKey?: string }) {
+  const canonical = {
+    showName: input.showName,
+    scheduledAt: input.scheduledAt ?? null,
+    channelConnectionId: input.channelConnectionId,
+    productVersionId: input.productVersionId,
+    runtimeSessionId: input.runtimeSessionId ?? null,
+    aiDisclosureEnabled: input.aiDisclosureEnabled,
+    mediaAssetIds: [...(input.mediaAssetIds ?? [])].sort()
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+async function existingIdempotentLiveRun(client: PoolClient, context: RequestContext, key: string, requestSha256: string) {
+  const result = await client.query<{ request_sha256: string; live_run_id: string }>(
+    "select request_sha256, live_run_id from live_run_creation_requests where tenant_id = $1 and idempotency_key = $2",
+    [context.tenantId, key]
+  );
+  const request = result.rows[0];
+  if (!request) return null;
+  if (request.request_sha256 !== requestSha256) throw new Response("Live-run idempotency key was used with different input", { status: 409, statusText: "live_run_idempotency_conflict" });
+  const run = await loadAuthorizedPersistentRun(client, context, request.live_run_id);
+  if (!run) throw new Response("Idempotent live-run result is unavailable", { status: 409, statusText: "live_run_idempotency_result_unavailable" });
+  return run;
 }
 
 function liveRunCreatedAudit(run: StoredRun, input: { channelConnectionId: string; productVersionId: string }): AuditEventInput {

@@ -1,1 +1,1 @@
-export function canResumeLiveOutput(pending: { projectId: string; productVersionId: string; channelId: string; run: { id: string } } | null, projectId: string, productVersionId: string, channelId: string): boolean;
+export function canResumeLiveOutput(pending: { projectId: string; requestFingerprint: string; idempotencyKey: string } | null, projectId: string, requestFingerprint: string): boolean;
