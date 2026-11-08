@@ -91,6 +91,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   const facts = selected?.version.facts;
   const activeProject = projects.find((project) => project.id === projectId);
   const selectedPhotoPortrait = assets.some((asset) => asset.kind === "portrait_photo" && assetIds.includes(asset.id));
+  const selectedLivePortrait = assets.some((asset) => asset.kind === "portrait" && asset.approval === "approved" && assetIds.includes(asset.id) && (!asset.expiresAt || asset.expiresAt >= new Date().toISOString().slice(0, 10)));
   const projectPhotos = assets.filter((asset) => asset.kind === "portrait_photo" && asset.approval === "approved" && assetIds.includes(asset.id));
   const starterScript = useMemo(() => {
     if (!selected || !facts) return "请先在商品中心准备并审核商品事实。";
@@ -411,6 +412,12 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
         {(output === "live" || output === "both") ? <>
           <label className={styles.field}>直播渠道<select value={channelId} onChange={(event) => setChannelId(event.target.value)} disabled={!connectedChannels.length}>{connectedChannels.map((channel: ChannelConnection) => <option value={channel.id} key={channel.id}>{channel.name} · {channel.outputProtocol.toUpperCase()}</option>)}</select></label>
           <label className={styles.field}>计划开播时间 <span className={styles.optional}>可稍后排期</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>
+          <div className={styles.liveReadiness} aria-label="直播输出准备状态">
+            <div><span className={styles.readinessLabel}>已审核脚本</span><strong className={scriptReviewed ? styles.readinessReady : styles.readinessPending}>{scriptReviewed ? "就绪" : "待审核"}</strong></div>
+            <div><span className={styles.readinessLabel}>直播形象视频</span><strong className={selectedLivePortrait ? styles.readinessReady : styles.readinessPending}>{selectedLivePortrait ? "已选可用形象" : "尚未选择"}</strong></div>
+            {!selectedLivePortrait ? <p>{selectedPhotoPortrait ? "项目中的照片只用于照片播报录播，不能作为实时直播形象。" : "直播需要已审核且仍在授权有效期内的肖像视频素材。"} <Link href="/assets" target="_blank" rel="noreferrer">管理形象素材</Link></p> : null}
+            <small>此处可先创建直播草稿；正式开播仍以运行时与场次预检结果为准。</small>
+          </div>
           <div className={styles.disclosure}><Check size={15} />创建时默认启用 AI 数字人标识</div>
         </> : null}
 
