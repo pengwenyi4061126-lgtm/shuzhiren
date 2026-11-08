@@ -43,6 +43,9 @@
 .empty { margin: 8px 0 18px; padding: 14px; border: 1px dashed #d5ded8; color: #66756e; font-size: 12px; }
 .empty a, .helper a { color: #147b67; font-weight: 650; }
 .scriptHeader { margin-bottom: 10px; }
+.scriptTools { display: flex; align-items: center; gap: 8px; }
+.scriptTools label { display: flex; align-items: center; gap: 5px; color: #67746f; font-size: 11px; font-weight: 700; }
+.scriptTools select { max-width: 120px; min-height: 30px; padding: 4px 24px 4px 8px; border: 1px solid #d8e1dc; border-radius: 4px; color: #273630; background: #fff; font: inherit; }
 .textAction { display: inline-flex; align-items: center; gap: 6px; padding: 6px 2px; border: 0; background: transparent; color: #147b67; font-size: 11px; font-weight: 700; cursor: pointer; }
 .script { display: block; width: 100%; min-height: 220px; resize: vertical; padding: 13px; border: 1px solid #d8e1dc; border-radius: 5px; outline: 0; color: #273630; background: #fff; font: 13px/1.85 "Segoe UI", "Microsoft YaHei", sans-serif; }
 .helper { margin: 8px 0 0; color: #77847e; font-size: 10px; line-height: 1.6; }
@@ -75,5 +78,5 @@
 .runLinks a { display: inline-flex; align-items: center; gap: 5px; width: fit-content; color: #147b67; text-decoration: none; font-weight: 700; }
 .runLinks > span { display: flex; flex-wrap: wrap; gap: 12px; }
 @media (max-width: 1100px) { .page { padding: 26px 22px 36px; } .layout { grid-template-columns: minmax(0, 1fr) 340px; } .editor { padding-inline: 20px; } .outputPanel { padding-inline: 17px; } }
-@media (max-width: 920px) { .page { padding: 22px 16px 32px; } .layout { grid-template-columns: minmax(0, 1fr); } .outputPanel { border-top: 1px solid #e0e7e2; border-left: 0; } }
+@media (max-width: 920px) { .page { padding: 22px 16px 32px; } .layout { grid-template-columns: minmax(0, 1fr); } .outputPanel { border-top: 1px solid #e0e7e2; border-left: 0; } .scriptHeader { align-items: flex-start; flex-direction: column; } .scriptTools { flex-wrap: wrap; } }
 @media (max-width: 560px) { .header { align-items: flex-start; } .header h1 { font-size: 24px; } .header p { max-width: 34ch; line-height: 1.65; } .secondaryAction { padding-inline: 9px; font-size: 0; } .progress { gap: 6px; padding-inline: 10px; } .progress span { gap: 5px; font-size: 9px; } .progress i { width: 12px; } .editor { padding: 19px 14px; } .twoFields { grid-template-columns: 1fr; gap: 0; } .outputPanel { padding: 19px 14px; } .sectionHead { align-items: flex-start; flex-direction: column; } .projectActions { justify-content: flex-start; } .projectSelect select { width: 145px; } .assetList { grid-template-columns: 1fr; } .assetPickerHead { align-items: flex-start; flex-direction: column; } .assetPickerHead small { text-align: left; } }

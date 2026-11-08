@@ -6,7 +6,7 @@ import { ArrowDownToLine, ArrowRight, Check, CircleAlert, Clapperboard, FileText
 import type { ChannelConnection } from "@/lib/channels";
 import type { Product } from "@/lib/catalog";
 import type { CreationOutputMode, CreationProject } from "@/lib/creation-projects";
-import { splitNarrationScript } from "@/lib/shared/content-script.mjs";
+import { generateProductScript, splitNarrationScript } from "@/lib/shared/content-script.mjs";
 import { canResumeLiveOutput } from "@/lib/shared/live-output-resume.mjs";
 import { clientFetch } from "@/lib/client-request";
 import { PhotoRecordingComposer } from "@/components/photo-recording-composer";
@@ -17,6 +17,8 @@ type Props = { products: Product[]; channels: ChannelConnection[]; assets: Asset
 type OutputMode = "recording" | "live" | "both";
 type LiveRun = { id: string; showName: string };
 type PendingOutput = { projectId: string; productVersionId: string; channelId: string; run: LiveRun };
+type ScriptStyle = "friendly" | "professional" | "faq";
+type ScriptLength = "short" | "standard" | "detailed";
 
 export function StudioWorkspace({ products, channels, assets, initialProjects, canCreate }: Props) {
   const versions = useMemo(() => products.flatMap((product) => product.versions.filter((version) => version.status === "approved").map((version) => ({ product, version }))), [products]);
@@ -35,6 +37,8 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const [scheduledAt, setScheduledAt] = useState("");
   const [assetIds, setAssetIds] = useState<string[]>(firstProject?.assetIds ?? []);
   const [script, setScript] = useState(firstProject?.script ?? "");
+  const [scriptStyle, setScriptStyle] = useState<ScriptStyle>("friendly");
+  const [scriptLength, setScriptLength] = useState<ScriptLength>("standard");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -47,11 +51,8 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
   const projectPhotos = assets.filter((asset) => asset.kind === "portrait_photo" && asset.approval === "approved" && assetIds.includes(asset.id));
   const starterScript = useMemo(() => {
     if (!selected || !facts) return "请先在商品中心准备并审核商品事实。";
-    const highlights = facts.highlights.filter(Boolean).join("、");
-    const price = Number.isFinite(facts.priceCent) ? `已审核商品信息中的价格为 ${(facts.priceCent / 100).toFixed(2)} 元。` : "价格以已审核商品卡为准。";
-    const faq = facts.faq.filter(Boolean).slice(0, 2).join("；");
-    return `欢迎来到直播间，今天我们介绍${selected.product.name}。${highlights ? `已审核资料提到：${highlights}。` : "具体特点请查看已审核商品资料。"}${price}${faq ? `常见信息：${faq}。` : "下单与售后信息请以商品页为准。"}如果你刚接触这类产品，可以先根据自己的需求查看商品详情，再决定是否适合。`;
-  }, [selected, facts]);
+    return generateProductScript({ name: selected.product.name, goal, audience, priceCent: facts.priceCent, highlights: facts.highlights, faq: facts.faq, style: scriptStyle, length: scriptLength });
+  }, [selected, facts, goal, audience, scriptStyle, scriptLength]);
 
   function projectPayload() {
     if (!selected) throw new Error("请先选择已审核的商品事实版本");
@@ -247,7 +248,7 @@ export function StudioWorkspace({ products, channels, assets, initialProjects, c
         </div>
         {selected ? <div className={styles.factStrip}><span>事实版本 {selected.version.id}</span><span>¥{(selected.version.facts.priceCent / 100).toFixed(2)}</span><span>库存 {selected.version.facts.stock}</span><span>{selected.version.facts.highlights.slice(0, 2).join(" · ") || "未录入卖点"}</span></div> : <div className={styles.empty}>暂无已审核商品。请先到 <Link href="/products">商品中心</Link> 完成商品资料审核。</div>}
         <div className={styles.assetPicker}><div className={styles.assetPickerHead}><span><Paperclip size={14} />项目素材</span><small>选择已有的已批准素材，原文件由素材资产管理</small></div>{assets.some((asset) => asset.approval === "approved") ? <div className={styles.assetList}>{assets.filter((asset) => asset.approval === "approved").map((asset) => <label className={styles.assetOption} key={asset.id}><input type="checkbox" checked={assetIds.includes(asset.id)} onChange={(event) => setAssetIds((current) => event.target.checked ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} /><span><strong>{asset.name}</strong><small>{asset.kind === "portrait_photo" ? "照片形象 · 仅录播" : asset.kind === "portrait" ? "肖像视频" : asset.kind}{asset.contentType ? ` · ${asset.contentType}` : ""} · {asset.rightsScope}</small></span></label>)}</div> : <p className={styles.noAssets}>暂无已批准素材，可先保存项目并稍后补充。</p>}{selectedPhotoPortrait && output !== "recording" ? <p className={styles.assetBoundary}>已选照片只进入录播制作素材；直播输出不会把照片当作可直播 Avatar。</p> : null}</div>
-        <div className={styles.scriptHeader}><div><span className={styles.kicker}>SHARED SCRIPT</span><h3>同一份脚本草稿</h3></div><button type="button" className={styles.textAction} onClick={() => setScript(starterScript)} disabled={!selected}><Sparkles size={15} />按审核资料起草</button></div>
+        <div className={styles.scriptHeader}><div><span className={styles.kicker}>SHARED SCRIPT</span><h3>同一份脚本草稿</h3></div><div className={styles.scriptTools}><label>篇幅<select aria-label="脚本篇幅" value={scriptLength} onChange={(event) => setScriptLength(event.target.value as ScriptLength)}><option value="short">简短</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>表达<select aria-label="脚本表达方式" value={scriptStyle} onChange={(event) => setScriptStyle(event.target.value as ScriptStyle)}><option value="friendly">亲切讲解</option><option value="professional">专业说明</option><option value="faq">问题优先</option></select></label><button type="button" className={styles.textAction} onClick={() => setScript(starterScript)} disabled={!selected}><Sparkles size={15} />按审核资料生成</button></div></div>
         <textarea className={styles.script} value={script || starterScript} onChange={(event) => setScript(event.target.value)} maxLength={4000} aria-label="内容脚本草稿" />
         <p className={styles.helper}>脚本草稿由已审核商品事实整理，可直接修改；发布前仍需人工复核。素材授权与人物形象审核在素材资产中管理。</p>
       </section>

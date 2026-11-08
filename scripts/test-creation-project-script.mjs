@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { splitNarrationScript } from "../apps/console/lib/shared/content-script.mjs";
+import { generateProductScript, splitNarrationScript } from "../apps/console/lib/shared/content-script.mjs";
 import { canResumeLiveOutput } from "../apps/console/lib/shared/live-output-resume.mjs";
 import { preferProjectLiveAssets } from "../apps/console/lib/shared/live-asset-selection.mjs";
 
@@ -20,6 +20,20 @@ test("narration splitting returns no empty segment", () => {
 
 test("narration splitting rejects an invalid segment limit", () => {
   assert.throws(() => splitNarrationScript("text", 0), TypeError);
+});
+
+test("product scripts use only supplied approved facts and vary length and style", () => {
+  const facts = { name: "清洁泡沫", goal: "日常清洁", audience: "初次购买者", priceCent: 5990, highlights: ["按压出泡", "易于冲洗", "净含量 150 毫升"], faq: ["适用方法：湿润后按压使用。", "储存方式：置于阴凉处。"] };
+  const short = generateProductScript({ ...facts, length: "short" });
+  const detailed = generateProductScript({ ...facts, style: "professional", length: "detailed" });
+  assert.match(short, /清洁泡沫/);
+  assert.match(short, /按压出泡/);
+  assert.doesNotMatch(short, /易于冲洗/);
+  assert.match(detailed, /净含量 150 毫升/);
+  assert.match(detailed, /59\.90/);
+  assert.match(detailed, /适用方法/);
+  assert.match(detailed, /仅依据已审核的商品资料/);
+  assert.throws(() => generateProductScript({ ...facts, style: "viral" }), TypeError);
 });
 
 test("live output retries reuse a draft only when project, product and channel still match", () => {
