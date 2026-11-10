@@ -3,7 +3,7 @@ USER root
 RUN apk add --no-cache ffmpeg
 RUN ffprobe -version >/dev/null
 WORKDIR /app
-COPY --chown=node:node server.mjs dev-init.mjs recording-quality.mjs .
+COPY --chown=node:node server.mjs dev-init.mjs recording-quality.mjs ./
 USER node
 EXPOSE 8089
 CMD ["node", "server.mjs"]
