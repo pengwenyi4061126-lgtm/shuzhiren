@@ -30,6 +30,9 @@ if (!consoleRunnerStage(NODE_LTS_MAJOR).test(dockerfile)) {
 for (const source of ["FROM dependencies AS build", ".next/standalone", ".next/static", "USER console", 'CMD ["node", "server.js"]']) {
   if (!dockerfile.includes(source)) throw new Error(`Console Dockerfile must retain a production standalone runtime: ${source}`);
 }
+for (const source of ["FROM dependencies AS development", "ENV NODE_ENV=development", "RUN mkdir -p .next && chown node:node .next", "USER node", 'CMD ["node", "scripts/dev.mjs"]']) {
+  if (!dockerfile.includes(source)) throw new Error(`Console Dockerfile must retain a writable non-root development runtime: ${source}`);
+}
 for (const source of ["node_modules", "vendor", "apps/*/.next", ".env", ".env.*", "secrets", "config", "models", "weights", "recordings", "exports", "cache", "logs"]) {
   if (!dockerignore.includes(source)) throw new Error(`Console Docker build context must exclude local runtime artifacts: ${source}`);
 }
