@@ -23,7 +23,9 @@ COPY runtime/patches/livetalking.series runtime/patches/livetalking-*.patch /tmp
 # Apply runtime/patches/livetalking.series in order; any failing patch fails the
 # build. models/ and data/ are excluded from the build context; keep them as the
 # Runtime Compose mount points.
-RUN set -eu; cr="$(printf '\r')"; \
+# The LiveTalking submodule may carry a .git pointer; it is not part of the
+# runtime image and can make git apply resolve a nonexistent host checkout.
+RUN rm -rf /app/.git; set -eu; cr="$(printf '\r')"; \
     while IFS= read -r patch; do patch="${patch%"$cr"}"; case "$patch" in ''|'#'*) continue;; esac; \
       git apply --check --recount "/tmp/livetalking-patches/$patch"; git apply --recount "/tmp/livetalking-patches/$patch"; \
     done < /tmp/livetalking-patches/livetalking.series; \
