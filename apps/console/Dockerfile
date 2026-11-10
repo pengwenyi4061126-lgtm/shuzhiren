@@ -29,6 +29,10 @@ WORKDIR /app/apps/console
 ENV NODE_ENV=development
 ENV PORT=3000
 ENV HOSTNAME=127.0.0.1
+# The development server writes Turbopack state under .next.  The COPY
+# instruction does not make the destination directory itself writable for the
+# non-root runtime user, so provision that cache root explicitly.
+RUN mkdir -p .next && chown node:node .next
 USER node
 EXPOSE 3000
 CMD ["node", "scripts/dev.mjs"]
