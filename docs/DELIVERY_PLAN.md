@@ -17,18 +17,24 @@
 - `/studio` 已形成项目工作台：项目选择、素材上传与审核、商品事实、脚本生成与审核、照片口播录播、数字人形象构建/审核/发布、直播草稿与 AI 身份提示规则均在同一界面路径中。
 - 本机 `npm run verify:local` 的最终结果为 `PASS  local verification completed (93 checks; PostgreSQL, Docker, GPU, and platform acceptance are intentionally external; 50 CI verification steps not run locally are listed above; add --with-gateway --python after installing runtime/gateway/requirements.txt to verify Gateway Python)`，退出码为 `0`。
 - `/studio` 的 HTTP GET 返回 `200`；生产构建列出了 Studio、录播、直播场次、脚本播放、形象构建与预览授权对应的路由。
-- 4090 主机的 `scripts/check-runtime-host.sh` 记录了 RTX 4090、24,564 MiB 显存、Docker NVIDIA runtime 和 239 GiB 空闲磁盘；CUDA 基础容器已枚举到同一张 GPU。
+- 4090 主机的 `scripts/check-runtime-host.sh` 记录了 RTX 4090、24,564 MiB 显存、Docker NVIDIA runtime 和约 239 GiB 初始空闲磁盘；CUDA 基础容器已枚举到同一张 GPU。
+
+### 4090 实机镜像构建结果
+
+- `shuzhiren/livetalking:00350f2` 已在 4090 主机构建完成，镜像 ID 为 `sha256:c891ce912e01492dc36d842d939bb1ae30a7c90e21ae98e9747e4a743afa7275`。镜像内的 LiveTalking `LICENSE`、项目修改说明分别与源码 SHA-256 一致；`torch 2.9.1+cu128`、`shuzhiren_overlay` 导入通过，并实际报告 `CUDA=True` 与 `NVIDIA GeForce RTX 4090`。
+- `shuzhiren/cosyvoice:00350f2` 已在同一主机构建完成，镜像 ID 为 `sha256:b891657a2ff33f327199262d188ba374756c7168cc767663b6edb27a503bbc86`，OCI revision 为 `88d4630726aafbbf178d0302aa0763f02c610f75`。CosyVoice 与 Matcha-TTS 的许可证文件均与源码 SHA-256 一致；`torch 2.3.1+cu121` 与 `AutoModel` 导入通过，并实际报告 `CUDA=True` 与同一张 RTX 4090。
+- 当前镜像是主机本地标签，尚未写入带签名证明的镜像仓库，也尚未挂载模型、声线或形象，因此这两项结果证明 GPU 镜像可构建、可导入和可访问显卡，不等同于数字人画面或语音输出验收。
 
 ### 当前环境缺口
 
 | 项目 | 当前状态 | 后续动作 |
 | --- | --- | --- |
-| LiveTalking 与 CosyVoice 运行时镜像 | 源码、Dockerfile、补丁和基础服务镜像在位；GPU 推理镜像尚未在租机完成构建 | 先准备可靠镜像源，再构建并做 `import`、健康检查和 GPU 推理冒烟 |
+| LiveTalking 与 CosyVoice 运行时镜像 | 两个 GPU 镜像已在 4090 主机构建，许可证源/镜像哈希、Python import 与 CUDA/RTX 4090 冒烟均通过；尚未启动带模型的服务 | 将本地标签发布为受签名 release manifest 约束的镜像引用，再挂载权重并做服务健康检查 |
 | 模型权重 | 主机目录中未发现 LiveTalking/MuseTalk 或 CosyVoice 可运行权重 | 按锁定版本下载、校验哈希、记录许可证和挂载路径 |
 | 数字人形象与声线 | 尚未挂入真实素材、授权记录和声线库 | 在 Studio 中上传，完成审核，再创建形象构建任务 |
 | PostgreSQL、对象存储、OIDC 与生产环境文件 | 租机只有示例环境文件 | 创建独立服务账号、私网数据库、对象存储桶、生产环境文件与密钥目录 |
 | RTMP 目的端、推流密钥和独立输出探针 | 尚未配置 | 先接内部 RTMP 中继，再接目标端；以探针记录帧率、码率、音频活动和音画同步 |
-| GitHub 同步 | 本地 `master` 比 `origin/master` 多 28 个提交 | 配置可用 GitHub SSH key 或 PAT 后推送，再复核远端分支 |
+| GitHub 同步 | 本地 `master` 与 `origin/master` 已复核为 `0 0`，当前提交为 `88d4630726aafbbf178d0302aa0763f02c610f75` | 为 4090 主机配置可读取的受控 release 来源，替换现有上传式部署副本 |
 
 ## 分阶段执行方案
 
@@ -36,8 +42,8 @@
 
 目标：让一台 4090 从 Docker GPU runtime 走到 LiveTalking、CosyVoice 与 Gateway 的健康链路。
 
-1. 固定 Docker 镜像来源，拉取 CUDA devel 基础镜像并构建 `livetalking`、`cosyvoice` 镜像。
-2. 为镜像运行 `nvidia-smi`、Python import、补丁完整性、`/api/admin/sessions` 与 `/openapi.json` 健康检查。
+1. **已完成**：固定可用镜像源，拉取 CUDA devel 基础镜像并构建 `livetalking`、`cosyvoice` 两个 4090 GPU 镜像。
+2. **已完成（镜像层）**：为两镜像运行许可证哈希比对、Python import 和 CUDA/RTX 4090 冒烟；**待完成（服务层）**：在权重挂载后检查 `/api/admin/sessions` 与 `/openapi.json`。
 3. 创建 `/srv/shuzhiren` 的模型、形象、候选形象、录制、Gateway 命令日志、observer 配置和密钥目录；卷均采用最小权限挂载。
 4. 启动 Gateway、LiveTalking、CosyVoice、avatar-builder 与 avatar-publisher 的私网 Compose 组合，确认单卡预约逻辑使直播与形象构建不并发抢占 GPU。
 
@@ -80,8 +86,8 @@
 
 ### P4：交付与 Git 收敛
 
-1. 把本轮主机预检、容器 GPU 冒烟、镜像构建、Compose 健康、试播和故障演练结果逐项登记。
-2. 将本地 28 个待推送提交推到 `origin/master`，随后以 `git rev-list --left-right --count origin/master...master` 复核为 `0 0`。
+1. 把本轮主机预检、两个 GPU 镜像构建、许可证哈希与 CUDA 冒烟、Compose 健康、试播和故障演练结果逐项登记。
+2. 已将本地提交推到 `origin/master`，并以 `git rev-list --left-right --count origin/master...master` 复核为 `0 0`。
 3. 远程主机改为从 Git 提交或签名 release manifest 获取部署包，不再依赖手工压缩包副本。
 4. 打包运行手册：模型/权重清单、目录权限、环境变量来源、启动顺序、回滚步骤、日常录播与直播操作步骤。
 
@@ -98,7 +104,7 @@
 
 ## 本轮下一动作
 
-1. 在 4090 主机完成 GPU 推理镜像构建；网络下载需使用稳定镜像源，避免直接访问超时的 Docker Hub。
-2. 准备模型权重和声线/形象目录后，先打通 LiveTalking + CosyVoice + Gateway 三服务私网健康检查。
-3. 同步补齐 PostgreSQL、对象存储和内部 RTMP 接收端，再从 Studio 创建第一个完整内容项目。
-4. 配置 GitHub 凭据后推送本地提交，令仓库、租机部署包和 Git 版本一致。
+1. 为 LiveTalking MuseTalk 与 CosyVoice 准备有来源、许可证、哈希和挂载清单的模型权重；同时从 Studio 完成首个形象与声线的审核发布。
+2. 创建模型、已发布形象、候选形象、录制、Gateway 命令日志、observer 配置和密钥目录后，打通 LiveTalking + CosyVoice + Gateway 三服务私网健康检查。
+3. 同步补齐 PostgreSQL、对象存储和内部 RTMP 接收端，再从 Studio 创建第一个完整内容项目并生成录播。
+4. 将当前主机本地镜像发布为受签名 release manifest 约束的镜像引用；让租机从该 release 获取部署包，取代上传式部署副本。
