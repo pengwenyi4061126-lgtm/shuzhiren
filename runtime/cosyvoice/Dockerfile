@@ -24,7 +24,8 @@ COPY --chown=cosyvoice:cosyvoice vendor/CosyVoice /opt/CosyVoice/CosyVoice
 # Source-only requirements such as openai-whisper==20231117 import pkg_resources
 # from setup.py. pip builds them in isolated environments that fetch the newest
 # setuptools, and setuptools 82.0.0 removed pkg_resources (81.x is the last major
-# that ships it). Build-time setuptools is held below 81 to stay on the 80.x line.
+# that ships it). Build-time and runtime setuptools are held below 81 to stay on
+# the 80.x line.
 # pip 26.2+ no longer applies PIP_CONSTRAINT to isolated build environments, so
 # the file is passed with --build-constraint (pip >= 25.3), which affects only
 # build dependencies and leaves the installed runtime packages unconstrained.
@@ -34,6 +35,7 @@ RUN conda config --system --add channels conda-forge && \
     conda install -y -n cosyvoice -c conda-forge pynini==2.1.5 && \
     printf 'setuptools<81\n' > /tmp/pip-build-constraints.txt && \
     /opt/conda/envs/cosyvoice/bin/pip install --no-cache-dir --build-constraint /tmp/pip-build-constraints.txt -r /opt/CosyVoice/CosyVoice/requirements.txt && \
+    /opt/conda/envs/cosyvoice/bin/pip install --no-cache-dir 'setuptools<81' && \
     rm /tmp/pip-build-constraints.txt && \
     chown -R cosyvoice:cosyvoice /opt/CosyVoice
 
