@@ -16,6 +16,9 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 t
 RUN python3 -m pip install --break-system-packages --no-cache-dir dlib-bin==20.0.1.post1 face-recognition-models==0.3.0 && \
     python3 -m pip install --break-system-packages --no-cache-dir --no-deps face-recognition==1.3.0
 COPY vendor/LiveTalking/ ./
+# Avatar Builder runs on an internal network, so prefetch LiveTalking's SFD
+# detector into the torch hub cache instead of relying on runtime egress.
+RUN python3 -c 'import hashlib,pathlib,urllib.request; u="https://www.adrianbulat.com/downloads/python-fan/s3fd-619a316812.pth"; p=pathlib.Path("/tmp/.cache/torch/hub/checkpoints/s3fd-619a316812.pth"); p.parent.mkdir(parents=True,exist_ok=True); d=urllib.request.urlopen(u,timeout=120).read(); assert hashlib.sha256(d).hexdigest()=="619a31681264d3f7f7fc7a16a42cbbe8b23f31a256f75a366e5a1bcd59b33543"; p.write_bytes(d)'
 COPY runtime/patches/livetalking.series runtime/patches/livetalking-*.patch /tmp/livetalking-patches/
 # Apply runtime/patches/livetalking.series in order; any failing patch fails the
 # build. models/ and data/ are excluded from the build context; keep them as the
