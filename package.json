@@ -102,6 +102,7 @@
     "runtime:worker:avatar-publishing:test": "node --test scripts/test-runtime-worker-avatar-publishing.mjs",
     "runtime:acceptance:verify": "node scripts/verify-4090-acceptance.mjs",
     "runtime:acceptance:test": "node scripts/test-4090-acceptance.mjs",
+    "runtime:acceptance:scripts:test": "node --test scripts/test-runtime-acceptance-scripts.mjs",
     "verify:local": "node scripts/verify-local.mjs",
     "ci:gates:test": "node scripts/test-ci-gates.mjs",
     "ci:coverage:check": "node scripts/check-ci-coverage.mjs",

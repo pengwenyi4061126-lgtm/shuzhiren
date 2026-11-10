@@ -31,6 +31,9 @@ jobs:
       - run: npm run ci:action-pins:verify
       - run: npm run docs:governance:check
       - run: bash -n scripts/check-runtime-host.sh
+      - run: bash -n scripts/acceptance/runtime-compose.sh
+      - run: bash -n scripts/acceptance/runtime-network-isolation.sh
+      - run: bash -n scripts/acceptance/livetalking-session-zero.sh
       - run: bash -n scripts/backup-postgres.sh
       - run: bash -n scripts/test-postgres-backup-direct.sh
       - run: bash -n scripts/restore-postgres-drill.sh
@@ -141,6 +144,7 @@ jobs:
       - run: npm run runtime:worker:avatar-builds:test
       - run: npm run runtime:worker:avatar-publishing:test
       - run: npm run runtime:acceptance:test
+      - run: npm run runtime:acceptance:scripts:test
       - run: npm run observer:runtime:test
       - run: npm run observer:targets:test
       - run: npm run observer:targets:apply:test

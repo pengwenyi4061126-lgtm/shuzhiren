@@ -16,6 +16,9 @@ const NO_POSTGRES = "本机缺少 PostgreSQL";
 export const CI_ONLY_STEPS = Object.freeze([
   { job: "static-gates", command: "npm run ci:action-pins:verify", localReason: "需要访问 github.com 的网络（Local_Verification 不访问网络）", label: "static" },
   { job: "static-gates", command: "bash -n scripts/check-runtime-host.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
+  { job: "static-gates", command: "bash -n scripts/acceptance/runtime-compose.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
+  { job: "static-gates", command: "bash -n scripts/acceptance/runtime-network-isolation.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
+  { job: "static-gates", command: "bash -n scripts/acceptance/livetalking-session-zero.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
   { job: "static-gates", command: "bash -n scripts/backup-postgres.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
   { job: "static-gates", command: "bash -n scripts/test-postgres-backup-direct.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },
   { job: "static-gates", command: "bash -n scripts/restore-postgres-drill.sh", localReason: NOT_A_LOCAL_CHECK_KIND, label: "static" },

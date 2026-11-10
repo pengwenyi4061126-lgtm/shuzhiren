@@ -143,6 +143,44 @@ async def check_read_only_token() -> None:
         gateway.RUNTIME_READ_TOKEN = ""
 
 
+async def check_rtmp_session_zero_passthrough() -> None:
+    """Requirement 32.3-32.9: the RTMP session ID is the literal string "0" all the way downstream."""
+    original_post = gateway.livetalking_post
+    original_token = gateway.RUNTIME_TOKEN
+    original_journal_path = gateway.RUNTIME_COMMAND_JOURNAL_PATH
+    original_journal_required = gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED
+    original_memory_journal = gateway.memory_journal_connection
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_livetalking_post(path: str, payload: dict) -> dict:
+        calls.append((path, payload))
+        return {"code": 0, "data": {}}
+
+    gateway.RUNTIME_TOKEN = "g" * 32
+    gateway.RUNTIME_COMMAND_JOURNAL_PATH = ""
+    gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = False
+    gateway.memory_journal_connection = None
+    gateway.runtime_command_cache.clear()
+    gateway.livetalking_post = fake_livetalking_post
+    try:
+        result = await gateway.media(
+            gateway.MediaRequest(command_id="session_zero_passthrough", session_id="0", action="start_program"),
+            f"Bearer {'g' * 32}",
+        )
+    finally:
+        gateway.livetalking_post = original_post
+        gateway.RUNTIME_TOKEN = original_token
+        gateway.RUNTIME_COMMAND_JOURNAL_PATH = original_journal_path
+        gateway.RUNTIME_COMMAND_JOURNAL_REQUIRED = original_journal_required
+        gateway.memory_journal_connection = original_memory_journal
+
+    assert result["accepted"] is True and result["session_id"] == "0"
+    assert result["receipt"]["session_id"] == "0"
+    assert calls and all(payload.get("sessionid") == "0" for _, payload in calls), calls
+    assert [path for path, _ in calls] == ["/set_audiotype", "/record", "/api/admin/stream/start"], calls
+    print('PASS  RTMP session ID "0" is preserved through start_program and its receipt')
+
+
 async def reject_read_token(value: str, expected: str, *, preview_token: str = "") -> None:
     gateway.RUNTIME_TOKEN = "g" * 32
     gateway.RUNTIME_READ_TOKEN = value
@@ -201,6 +239,7 @@ async def main() -> None:
     gateway.COSYVOICE_VOICE_LIBRARY_DIR = str(pathlib.Path(tempfile.gettempdir()).resolve() / "shuzhiren-voices-not-required-at-startup")
     await check_unauthenticated_surfaces()
     await check_read_only_token()
+    await check_rtmp_session_zero_passthrough()
     for value in ("short", "r" * 31, "read only token with whitespace inside it", f"{'r' * 32}\t"):
         await reject_read_token(value, "RUNTIME_GATEWAY_READ_TOKEN must contain at least 32 non-whitespace characters")
     await reject_read_token("g" * 32, "RUNTIME_GATEWAY_READ_TOKEN must differ from every other runtime gateway credential")
