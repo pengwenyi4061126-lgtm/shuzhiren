@@ -34,7 +34,7 @@
 | 数字人形象与声线 | 尚未挂入真实素材、授权记录和声线库 | 在 Studio 中上传，完成审核，再创建形象构建任务 |
 | PostgreSQL、对象存储、OIDC 与生产环境文件 | 租机只有示例环境文件 | 创建独立服务账号、私网数据库、对象存储桶、生产环境文件与密钥目录 |
 | RTMP 目的端、推流密钥和独立输出探针 | 尚未配置 | 先接内部 RTMP 中继，再接目标端；以探针记录帧率、码率、音频活动和音画同步 |
-| GitHub 同步 | 本地 `master` 与 `origin/master` 已复核为 `0 0`，当前提交为 `88d4630726aafbbf178d0302aa0763f02c610f75` | 为 4090 主机配置可读取的受控 release 来源，替换现有上传式部署副本 |
+| GitHub 同步 | 本地 `master` 与 `origin/master` 已复核为 `0 0`；核心运行时提交 `7164993` 已同步 | 为 4090 主机配置可读取的受控 release 来源，替换现有上传式部署副本 |
 
 ## 分阶段执行方案
 
@@ -87,7 +87,7 @@
 ### P4：交付与 Git 收敛
 
 1. 把本轮主机预检、两个 GPU 镜像构建、许可证哈希与 CUDA 冒烟、Compose 健康、试播和故障演练结果逐项登记。
-2. 已将本地提交推到 `origin/master`，并以 `git rev-list --left-right --count origin/master...master` 复核为 `0 0`。
+2. 本轮核心运行时变更已推送到 `origin/master`（`7164993`），并以 `git rev-list --left-right --count origin/master...master` 复核为 `0 0`；本次文档修正随当前提交同步，再把主机部署来源切换到 Git 提交或签名 release manifest。
 3. 远程主机改为从 Git 提交或签名 release manifest 获取部署包，不再依赖手工压缩包副本。
 4. 打包运行手册：模型/权重清单、目录权限、环境变量来源、启动顺序、回滚步骤、日常录播与直播操作步骤。
 
