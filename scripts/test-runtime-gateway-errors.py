@@ -51,8 +51,8 @@ RealAsyncClient = httpx.AsyncClient
 
 
 def upstream_answering(status: int, body: bytes):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(status, content=body, headers={"content-type": "application/json"})
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, content=body, headers={"content-type": "application/json"}, request=request)
 
     return lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(handler), **kwargs)
 
@@ -136,7 +136,7 @@ async def main() -> None:
                     body = {"code": 0, "data": {"sessions": [{"sessionid": "avatar-session", "speaking": False, "recording": False, "metrics": {}}]}}
                 else:
                     body = {"code": 0, "data": {"sessions": [{"sessionid": "avatar-session", "avatar_id": "sr_0123456789abcdef0123456789abcdef"}]}}
-                return httpx.Response(200, json=body)
+                return httpx.Response(200, json=body, request=httpx.Request("GET", url))
 
         gateway.httpx.AsyncClient = lambda **_kwargs: AvatarObservationClient()
         observed = await gateway.observation("avatar-session", f"Bearer {gateway.RUNTIME_TOKEN}")
@@ -146,7 +146,7 @@ async def main() -> None:
         def offer_handler(upstream_request: httpx.Request) -> httpx.Response:
             assert upstream_request.url.path == "/offer"
             offer_payloads.append(json.loads(upstream_request.content))
-            return httpx.Response(200, json={"sdp": "v=0\\r\\nanswer", "type": "answer", "sessionid": "preview-session"})
+            return httpx.Response(200, json={"sdp": "v=0\\r\\nanswer", "type": "answer", "sessionid": "preview-session"}, request=upstream_request)
         gateway.httpx.AsyncClient = lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(offer_handler), **kwargs)
         offer = gateway.RuntimeOfferRequest(sdp="v=0\\r\\noffer", type="offer", runtime_avatar_id="sr_0123456789abcdef0123456789abcdef")
         answer = await gateway.create_runtime_offer(offer, f"Bearer {gateway.RUNTIME_TOKEN}")

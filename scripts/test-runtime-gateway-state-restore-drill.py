@@ -81,7 +81,7 @@ async def main() -> None:
         original_speech = await gateway.speak(speech_request, authorization)
         assert original_media["duplicate"] is False
         assert original_speech["duplicate"] is False
-        assert len(media_calls) == 2
+        assert [path for path, _payload in media_calls] == ["/set_audiotype", "/record", "/api/admin/stream/start"]
         assert synthesis_calls == [(speech_request.text, speech_request.voice)]
         assert audio_calls == [(speech_request.session_id, gateway.pcm_s16le_to_wav(b"\x01\x00\x02\x00", gateway.COSYVOICE_SAMPLE_RATE))]
 

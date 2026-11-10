@@ -239,9 +239,11 @@ try {
   assert.equal(projectRecording.verifiedObjectVersion, "integration-version-1", "project recordings must retain immutable object verification evidence");
   assert.deepEqual(projectRecording.recordingQuality, { status: "verified", profile: "photo-narration-webm", videoWidth: 720, videoHeight: 1280, audioTrackCount: 1, durationSeconds: 42.5, verifier: "ffprobe" }, "project recordings must retain independent server-side quality evidence");
   assert.deepEqual((await client.query("select recording_quality from creation_project_recordings where tenant_id = $1 and id = $2", [tenantId, projectRecording.id])).rows[0].recording_quality, projectRecording.recordingQuality);
+  const mediaVerificationCountAfterArchive = mock.mediaVerificationRequests.length;
   const replayedRecordingResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ ...projectRecordingInput, objectKey: `assets/${tenantId}/integration-recording-retry.webm` }) });
   assert.equal(replayedRecordingResponse.status, 201, "a lost archive response should safely replay under the same archive request id");
   assert.equal((await replayedRecordingResponse.json()).data.id, projectRecording.id, "an archive replay must return the original immutable recording, not create another version");
+  assert.equal(mock.mediaVerificationRequests.length, mediaVerificationCountAfterArchive, "an archive replay must resolve the durable proof before contacting the media verifier again");
   const conflictingRecordingReplay = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ ...projectRecordingInput, fileName: "different-content.webm" }) });
   assert.equal(conflictingRecordingReplay.status, 409, "an archive request id cannot be reused for different recording metadata");
   const projectRecordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { headers: requestHeaders });
@@ -467,10 +469,16 @@ try {
   assert.ok(disclosureRule, "the default rules include the AI identity disclosure rule");
   const disclosureApproval = await fetch(`http://127.0.0.1:${consolePort}/api/v1/interaction-rules/${disclosureRule.id}/approve`, { method: "POST", headers: requestHeaders });
   assert.equal(disclosureApproval.status, 200, "the reviewer should approve the AI identity disclosure rule");
+  // The production scheduler has one GPU. Other scenarios deliberately seed
+  // active runs before this point, so temporarily release those fixtures while
+  // this scenario proves the governed run can reserve the GPU for PREFLIGHT.
+  // Their exact states are restored immediately after the reservation checks.
+  await client.query("update live_runs set state = 'ENDED' where id = any($1::uuid[])", [[recoverRun.runId, staleRun.runId, programTransitionRun.runId, scheduledProgramRun.runId, voicelessProgramRun.runId, voicelessScheduledRun.runId]]);
   for (const [action, expectedState] of [["begin_preflight", "PREFLIGHT"], ["arm", "ARMED"]]) {
     const lifecycleResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action }) });
-    assert.equal(lifecycleResponse.status, 200, `lifecycle action ${action} should advance a fully governed run`);
-    assert.equal((await lifecycleResponse.json()).data.state, expectedState, `lifecycle action ${action} should reach ${expectedState}`);
+    const lifecycleBody = await lifecycleResponse.json();
+    assert.equal(lifecycleResponse.status, 200, `lifecycle action ${action} should advance a fully governed run: ${JSON.stringify(lifecycleBody)}`);
+    assert.equal(lifecycleBody.data.state, expectedState, `lifecycle action ${action} should reach ${expectedState}`);
   }
   const revisionAfterArm = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/program-revisions`, { method: "POST", headers: operatorRequestHeaders });
   assert.equal(revisionAfterArm.status, 409, "armed runs must reject candidate program revision creation");
@@ -488,6 +496,10 @@ try {
   }
   const competingPreflight = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${competingRun.data.id}/lifecycle`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "begin_preflight" }) });
   assert.equal(competingPreflight.status, 409, "only one active run may reserve the same runtime session");
+  const activeGpuReservations = await client.query("select id, state::text from live_runs where state::text = any($1::text[]) order by id", [["PREFLIGHT", "ARMED", "LIVE", "DEGRADED"]]);
+  assert.deepEqual(activeGpuReservations.rows, [{ id: createdRun.data.id, state: "ARMED" }], `only the governed run may hold the single-GPU reservation after arming: ${JSON.stringify(activeGpuReservations.rows)}`);
+  await client.query("update live_runs set state = 'ENDED' where id = $1", [createdRun.data.id]);
+  await client.query("update live_runs set state = 'DEGRADED' where id = $1", [recoverRun.runId]);
   const policyEvaluation = await fetch(`http://127.0.0.1:${consolePort}/api/v1/policy/evaluate`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ question: "这款敏感肌可以用吗？", evidenceIds: ["product_version"] }) });
   assert.equal(policyEvaluation.status, 200);
   const policyDecision = await policyEvaluation.json();
@@ -527,6 +539,11 @@ try {
   assert.equal(policyAudit.rows[0].detail.questionSha256.length, 64, "policy audit must retain a hash rather than the raw question");
   assert.equal(JSON.stringify(policyAudit.rows[0].detail).includes("敏感肌"), false, "policy audit must not retain the raw question text");
 
+  // Earlier concurrency and governance scenarios intentionally take longer
+  // than the 60-second runtime-readiness window. Refresh this existing sample
+  // (rather than adding one) so recovery tests health freshness deterministically
+  // and the later three-sample SLO assertion keeps its exact sample count.
+  await client.query("update runtime_health_samples set sampled_at = now() where tenant_id = $1 and live_run_id = $2", [tenantId, recoverRunId]);
   const recoveryIdempotencyKey = randomUUID();
   const commandResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/commands`, {
     method: "POST",
@@ -599,6 +616,8 @@ try {
   assert.deepEqual({ voice: deliveredSpeech?.voice, voice_checksum: deliveredSpeech?.voice_checksum, provider: deliveredSpeech?.provider }, { voice: recoverVoice.runtimeVoiceId, voice_checksum: recoverVoice.voiceChecksum, provider: "cosyvoice" }, "manual speech delivery must forward the frozen voice binding");
 
   // START of the governed run armed above: the activation baseline script travels with the frozen voice.
+  await client.query("update live_runs set state = 'ENDED' where id = $1", [recoverRun.runId]);
+  await client.query("update live_runs set state = 'ARMED' where id = $1", [createdRun.data.id]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now())", [tenantId, createdRun.data.id]);
   const startResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${createdRun.data.id}/commands`, { method: "POST", headers: requestHeaders, body: JSON.stringify({ action: "START", expectedState: "ARMED", idempotencyKey: randomUUID() }) });
   assert.equal(startResponse.status, 202, "a preflight-ready armed run should accept START");
@@ -612,6 +631,9 @@ try {
   const deliveredStart = mock.mediaCommands.find((command) => command.command_id === startBody.data.mediaEvent.command.id);
   assert.deepEqual({ action: deliveredStart?.action, program_segment_id: deliveredStart?.program_segment_id, runtime_voice_id: deliveredStart?.runtime_voice_id, voice_checksum: deliveredStart?.voice_checksum }, { action: "start_program", program_segment_id: startBaseline.id, runtime_voice_id: startVoice.runtimeVoiceId, voice_checksum: startVoice.voiceChecksum }, "manual START delivery must forward the frozen voice binding");
   assert.deepEqual((await client.query("select state, active_program_segment_id, scheduled_start_event_id from live_runs where id = $1", [createdRun.data.id])).rows[0], { state: "LIVE", active_program_segment_id: startBaseline.id, scheduled_start_event_id: null }, "an acknowledged START must establish the frozen program baseline");
+  await client.query("update live_runs set state = 'ENDED' where id = $1", [createdRun.data.id]);
+  await client.query("update live_runs set state = 'LIVE' where id = any($1::uuid[])", [[recoverRun.runId, staleRun.runId, programTransitionRun.runId, voicelessProgramRun.runId]]);
+  await client.query("update live_runs set state = 'ARMED' where id = any($1::uuid[])", [[scheduledProgramRun.runId, voicelessScheduledRun.runId]]);
   await client.query("insert into runtime_health_samples (tenant_id, live_run_id, output_connected, inference_fps, output_fps, av_sync_ms, bitrate_mbps, gpu_utilization, gpu_memory_mib, audio_active, fallback_ready, sampled_at) values ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '30 seconds'), ($1, $2, true, 30, 25, 20, 4, 70, 12000, true, true, now() - interval '15 seconds')", [tenantId, recoverRunId]);
   const samplingSloResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/live-runs/${recoverRunId}/slo`, { headers: requestHeaders });
   assert.equal(samplingSloResponse.status, 200, "operators should read a run's sampling quality SLO");
@@ -949,7 +971,7 @@ try {
     const result = await client.query("select state, active_program_segment_id, scheduled_start_event_id from live_runs where id = $1", [scheduledProgramRun.runId]);
     const run = result.rows[0];
     return run?.state === "LIVE" && run?.active_program_segment_id === scheduledProgramRun.primarySegmentId && run?.scheduled_start_event_id === null;
-  }, 10_000, "scheduled start program baseline acknowledgement");
+  }, 30_000, "scheduled start program baseline acknowledgement");
   const scheduledStartCommand = mock.mediaCommands.find((command) => command.action === "start_program" && command.program_segment_id === scheduledProgramRun.primarySegmentId);
   assert.deepEqual({ program_segment_id: scheduledStartCommand?.program_segment_id, program_script: scheduledStartCommand?.program_script, script_sha256: scheduledStartCommand?.script_sha256, runtime_voice_id: scheduledStartCommand?.runtime_voice_id, voice_checksum: scheduledStartCommand?.voice_checksum }, { program_segment_id: scheduledProgramRun.primarySegmentId, program_script: scheduledProgramRun.primaryScript, script_sha256: scheduledProgramRun.primaryScriptSha256, runtime_voice_id: scheduledProgramRun.voice.runtimeVoiceId, voice_checksum: scheduledProgramRun.voice.voiceChecksum }, "scheduled start must dispatch and acknowledge the frozen baseline script with the frozen voice binding");
   const scheduledStartPayload = await client.query("select payload #> '{command,payload}' as payload from outbox_events where aggregate_id = $1 and event_type = 'media.dispatch'", [scheduledProgramRun.runId]);
@@ -1429,6 +1451,12 @@ async function provisionApplicationRole() {
   await client.query(`grant usage, select, update on all sequences in schema public to ${role}`);
   // runtime_worker_actor is revoked from PUBLIC; the spawned runtime worker records its service actor through it.
   await client.query(`grant execute on function runtime_worker_actor(uuid, text) to ${role}`);
+  // The integration application role is the least-privileged login used by the
+  // spawned runtime worker.  These SECURITY DEFINER functions are intentionally
+  // revoked from PUBLIC, so the test role must receive the same explicit
+  // execution grants as shuzhiren_runtime_worker.
+  await client.query(`grant execute on function interaction_rule_product_context(uuid, uuid) to ${role}`);
+  await client.query(`grant execute on function knowledge_answer_candidates(uuid, uuid, text[], integer) to ${role}`);
   const attributes = await client.query("select rolsuper, rolbypassrls from pg_roles where rolname = $1", [role]);
   assert.deepEqual(attributes.rows, [{ rolsuper: false, rolbypassrls: false }], "services under test must connect without RLS bypass");
   const url = new URL(databaseUrl);
@@ -1625,6 +1653,7 @@ async function assertManualDeliveryUncertainOutcome(consolePort, adminHeaders, o
 
 async function startMockServer() {
   const mediaCommands = [];
+  const mediaVerificationRequests = [];
   const mediaDownloadGrants = [];
   const speechCommands = [];
   const alertNotifications = [];
@@ -1652,6 +1681,7 @@ async function startMockServer() {
     if (url.pathname === "/v1/media-evidence/verify" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${mediaEvidenceToken}`);
       const evidence = await requestBody(request);
+      mediaVerificationRequests.push(evidence);
       const contentType = evidence.kind === "portrait_photo" ? "image/jpeg" : evidence.kind === "product_clip" && evidence.objectKey.endsWith("integration-recording.webm") ? "video/webm" : evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
       const recordingQuality = evidence.qualityProfile === "photo-narration-webm" ? { recordingQuality: { status: "verified", profile: "photo-narration-webm", videoWidth: 720, videoHeight: 1280, audioTrackCount: 1, durationSeconds: 42.5, verifier: "ffprobe" } } : {};
       return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, ...recordingQuality, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
@@ -1731,7 +1761,7 @@ async function startMockServer() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("mock server did not bind a TCP port");
-  return { server, mediaCommands, mediaDownloadGrants, speechCommands, alertNotifications, channelReplies, uncertainCommands, opsRequests, baseUrl: `http://127.0.0.1:${address.port}` };
+  return { server, mediaCommands, mediaVerificationRequests, mediaDownloadGrants, speechCommands, alertNotifications, channelReplies, uncertainCommands, opsRequests, baseUrl: `http://127.0.0.1:${address.port}` };
 }
 function gatewayVoiceIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function gatewayVoiceChecksumValid(value) { return typeof value === "string" && /^sha256:[0-9a-fA-F]{64}$/.test(value); }

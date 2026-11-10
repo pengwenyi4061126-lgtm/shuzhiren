@@ -69,6 +69,12 @@ export async function registerProjectRecording(context: RequestContext, projectI
   if (!isUuid(projectId)) throw new Response("Content project was not found", { status: 404 });
   if (!databasePool()) throw new Response("Server-side recording archive requires PostgreSQL", { status: 503, statusText: "recording_archive_unavailable" });
   const checksum = input.checksum.toLowerCase().replace(/^sha256:/, "");
+  // Resolve a lost-response replay before contacting the verifier again.  The
+  // original immutable archive already carries the version-bound proof; a
+  // retry may point at a temporary replacement upload key, and that object is
+  // neither authoritative nor needed once the archive request id is durable.
+  const replay = await findRecordingByArchiveRequest(context, input.archiveRequestId);
+  if (replay) return matchIdempotentRecording(replay, projectId, input, checksum, creationProjectScriptReviewSha256(input.productVersionId, input.scriptSnapshot));
   const proof = await verifyMediaAssetContent(context, { kind: "product_clip", objectKey: input.objectKey, checksum: `sha256:${checksum}`, qualityProfile: "photo-narration-webm" });
   if (proof.bytes !== input.bytes || proof.contentType !== "video/webm" || !proof.recordingQuality) throw new Response("Uploaded recording did not pass independent server quality verification", { status: 422, statusText: "project_recording_quality_failed" });
   const recordingQuality = proof.recordingQuality;
@@ -101,6 +107,13 @@ export async function registerProjectRecording(context: RequestContext, projectI
     await recordAuditEventInTransaction(client, context, { type: "creation_project.recording_archived", resource: "creation_project_recording", resourceId: recording.id, detail: { projectId, projectRevision: recording.projectRevision, productVersionId: recording.productVersionId, scriptSha256, photoAssetId: recording.photoAssetId, bytes: recording.bytes, checksumSha256: checksum, objectVersion: proof.objectVersion, evidenceRef: proof.evidenceRef, qualityProfile: recordingQuality.profile, qualityDurationSeconds: recordingQuality.durationSeconds } });
     return recording;
   });
+}
+
+async function findRecordingByArchiveRequest(context: RequestContext, archiveRequestId: string) {
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const existing = await client.query<RecordingRow>(`select id, tenant_id, project_id, archive_request_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, recording_quality, verified_object_version, verification_evidence_ref, verified_at, created_by, created_at from creation_project_recordings where tenant_id = $1 and archive_request_id = $2`, [context.tenantId, archiveRequestId]);
+    return existing.rows[0] ?? null;
+  }, { readOnly: true });
 }
 
 function matchIdempotentRecording(row: RecordingRow, projectId: string, input: ProjectRecordingInput, checksum: string, scriptSha256: string): ProjectRecording {

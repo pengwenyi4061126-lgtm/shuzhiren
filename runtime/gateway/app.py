@@ -1177,11 +1177,16 @@ async def cosyvoice_chunk(text: str, voice: VoiceSpec, chunk_index: int, remaini
         raise cosyvoice_failure(502, "CosyVoice returned incomplete audio", "cosyvoice_odd_audio_length", chunk_index)
     return bytes(audio)
 
-async def cosyvoice_synthesize(text: str, voice: VoiceSpec, deadline: float, max_seconds: int = COSYVOICE_MAX_AUDIO_SECONDS) -> SynthesisResult:
+async def cosyvoice_synthesize(text: str, voice: VoiceSpec, deadline: float, max_seconds: float | None = None) -> SynthesisResult:
     """Synthesize every segment in order before anything reaches LiveTalking (D2)."""
     started = time.monotonic()
     chunks = split_script(text, COSYVOICE_CHUNK_MAX_CHARS)
-    max_bytes = COSYVOICE_SAMPLE_RATE * 2 * max_seconds
+    # Resolve the default at call time. Tests and the runtime configuration may adjust the
+    # process-level audio budget after this module is imported; a definition-time default would
+    # silently keep the old budget and let an oversized upstream response through.
+    if max_seconds is None:
+        max_seconds = COSYVOICE_MAX_AUDIO_SECONDS
+    max_bytes = int(COSYVOICE_SAMPLE_RATE * 2 * max_seconds)
     pcm = bytearray()
     chunk_samples: list[int] = []
     for index, chunk in enumerate(chunks):

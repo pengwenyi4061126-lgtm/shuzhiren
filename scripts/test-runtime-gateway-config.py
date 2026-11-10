@@ -43,6 +43,8 @@ async def check_unauthenticated_surfaces() -> None:
         ("GET", "/healthz"),
         ("GET", "/v1/observations/{session_id}"),
         ("GET", "/v1/previews/{session_id}"),
+        ("POST", "/v1/synthesize"),
+        ("POST", "/v1/rtc/offers"),
         ("POST", "/v1/speak"),
         ("POST", "/v1/media"),
         ("GET", "/v1/ops/uncertain-commands"),
@@ -59,8 +61,10 @@ async def check_unauthenticated_surfaces() -> None:
         wrong = {"authorization": f"Bearer {'h' * 32}"}
         speak_body = {"command_id": "c1", "session_id": "s1", "text": "hello", "voice": "v", "provider": "cosyvoice"}
         media_body = {"command_id": "c1", "session_id": "s1", "action": "stop_program"}
+        synthesis_body = {"text": "hello"}
+        offer_body = {"sdp": "v=0\\r\\n", "type": "offer", "runtime_avatar_id": f"sr_{'a' * 32}"}
         resolution_body = {"resolution": "failed_definite", "note": "checked"}
-        for method, path, body in (("GET", "/v1/observations/s1", None), ("GET", "/v1/previews/s1", None), ("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body), ("GET", "/v1/ops/uncertain-commands", None), ("POST", "/v1/ops/uncertain-commands/c1/resolution", resolution_body)):
+        for method, path, body in (("GET", "/v1/observations/s1", None), ("GET", "/v1/previews/s1", None), ("POST", "/v1/synthesize", synthesis_body), ("POST", "/v1/rtc/offers", offer_body), ("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body), ("GET", "/v1/ops/uncertain-commands", None), ("POST", "/v1/ops/uncertain-commands/c1/resolution", resolution_body)):
             rejected = await client.request(method, path, headers=non_ascii, json=body)
             mismatched = await client.request(method, path, headers=wrong, json=body)
             assert rejected.status_code == 401, f"a non-ASCII bearer token on {path} must be rejected as unauthorized (got {rejected.status_code})"
@@ -83,16 +87,20 @@ async def check_read_only_token() -> None:
     read = {"authorization": f"Bearer {read_token}"}
     downstream: list[str] = []
     original_get = gateway.livetalking_get
+    original_gpu_observation = gateway.gpu_observation
 
     async def runtime_metrics(path: str) -> dict:
         downstream.append(path)
         return {"code": 0, "data": {"sessions": [{"sessionid": "0", "metrics": {"output_connected": True}}]}}
 
     gateway.livetalking_get = runtime_metrics
+    gateway.gpu_observation = lambda: {"available": True, "utilization_percent": 25, "memory_used_mib": 1024, "memory_total_mib": 24576}
     speak_body = {"command_id": "c1", "session_id": "s1", "text": "hello", "voice": "v", "provider": "cosyvoice"}
     media_body = {"command_id": "c1", "session_id": "s1", "action": "stop_program"}
+    synthesis_body = {"text": "hello"}
+    offer_body = {"sdp": "v=0\\r\\n", "type": "offer", "runtime_avatar_id": f"sr_{'a' * 32}"}
     resolution_body = {"resolution": "failed_definite", "note": "checked"}
-    commands = (("GET", "/v1/previews/0", None), ("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body), ("GET", "/v1/ops/uncertain-commands", None), ("POST", "/v1/ops/uncertain-commands/c1/resolution", resolution_body))
+    commands = (("GET", "/v1/previews/0", None), ("POST", "/v1/synthesize", synthesis_body), ("POST", "/v1/rtc/offers", offer_body), ("POST", "/v1/speak", speak_body), ("POST", "/v1/media", media_body), ("GET", "/v1/ops/uncertain-commands", None), ("POST", "/v1/ops/uncertain-commands/c1/resolution", resolution_body))
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway.app), base_url="http://gateway") as client:
             for session in ("0", "1", "bad id"):
@@ -120,6 +128,7 @@ async def check_read_only_token() -> None:
             assert (await client.get("/v1/observations/0", headers=shared)).status_code == 200
     finally:
         gateway.livetalking_get = original_get
+        gateway.gpu_observation = original_gpu_observation
         gateway.RUNTIME_READ_TOKEN = ""
     assert gateway.authorize(f"Bearer {shared_token}") == "command"
     gateway.RUNTIME_READ_TOKEN = read_token

@@ -733,12 +733,12 @@ async def main() -> None:
     )
     assert first["duplicate"] is False
     assert retry["duplicate"] is True
-    assert len(calls) == 2, "a retried media command must not replay downstream actions"
+    assert [path for path, _payload in calls] == ["/set_audiotype", "/record", "/api/admin/stream/start"], "a retried media command must not replay downstream actions"
 
     gateway.runtime_command_cache.clear()
     after_restart = await gateway.media(gateway.MediaRequest(command_id="command_same", session_id="session_1", action="start_program"), authorization)
     assert after_restart["duplicate"] is True
-    assert len(calls) == 2, "a completed command must survive an in-memory cache loss without replaying downstream actions"
+    assert [path for path, _payload in calls] == ["/set_audiotype", "/record", "/api/admin/stream/start"], "a completed command must survive an in-memory cache loss without replaying downstream actions"
     stored = await gateway.reserve_runtime_command("command_same", "media", {"session_id": "session_1", "action": "start_program", "program_segment_id": None, "script_sha256": None})
     assert stored is not None and stored["duplicate"] is True and stored["receipt"] == first["receipt"], "reserving a completed command id must return its stored result instead of allowing a second execution"
 

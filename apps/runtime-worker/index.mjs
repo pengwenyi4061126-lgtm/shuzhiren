@@ -89,46 +89,54 @@ function inTenantTransaction(tenantId, operation) {
 async function claimEvent() {
   const ids = await tenantIds();
   const ordered = tenantOrder(ids, nextOutboxTenantCursor);
-  for (const tenantId of ordered) {
-    // The database's now() for the lease is not earlier than this moment, so the lease ends no earlier than
-    // claimStartedAt + leaseMs on this process's monotonic clock.
-    const claimStartedAt = performance.now();
-    const event = await inTenantTransaction(tenantId, async (client) => {
-      await sweepExhaustedLeases(client, tenantId);
-      // The tenant filter repeats row-level security, so a privileged connection also stays in this tenant.
-      // A media.dispatch event waits until every earlier media.dispatch event of the same live run is delivered,
-      // cancelled or exhausted, so the commands of one run reach the runtime in the order they were issued.
-      const result = await client.query(`
-      with candidate as (
-        select o.id
-        from outbox_events o
-        where o.tenant_id = $3::uuid and o.state in ('pending', 'failed', 'delivering') and o.available_at <= now()
-          and o.attempts < $1
-          -- An event the Gateway answered command_outcome_uncertain waits for an operator, whatever its attempts.
-          -- A delivering event is still reclaimed: a manual redelivery may have been accepted without being recorded.
-          and (o.outcome_uncertain_at is null or o.state = 'delivering')
-          and (o.event_type <> 'media.dispatch' or o.aggregate_id is null or not exists (
-            select 1 from outbox_events prior
-            where prior.tenant_id = o.tenant_id and prior.event_type = 'media.dispatch'
-              and prior.aggregate_id = o.aggregate_id
-              and (prior.created_at, prior.id) < (o.created_at, o.id)
-              and prior.state in ('pending', 'failed', 'delivering')
-              and not (prior.state = 'failed' and prior.attempts >= $1)))
-        order by o.available_at, o.created_at, o.id
-        for update of o skip locked
-        limit 1
-      )
-      update outbox_events event
-      set state = 'delivering', attempts = event.attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second')
-      from candidate
-      where event.id = candidate.id
-      returning event.id, event.tenant_id, event.event_type, event.aggregate_id, event.payload, event.attempts, event.created_at
-    `, [maxAttempts, leaseSeconds, tenantId]);
-      return result.rows[0] ?? null;
-    });
-    if (event) {
-      nextOutboxTenantCursor = (ids.indexOf(tenantId) + 1) % ids.length;
-      return { ...event, claimStartedAt };
+  // Activations and program transitions have a wall-clock/control-room deadline. Give them a tenant-fair priority
+  // pass before ordinary delivery so an unrelated watchdog or interaction backlog cannot postpone a live transition
+  // indefinitely. The same-run media ordering predicate below still prevents a priority command from overtaking an
+  // earlier command for that run.
+  const priorityControlActions = ["SCHEDULED_START", "START", "RECOVER", "END", "INSERT_PROGRAM", "ROLLBACK_PROGRAM", "GOVERNANCE_REVOCATION"];
+  for (const priorityActions of [priorityControlActions, null]) {
+    for (const tenantId of ordered) {
+      // The database's now() for the lease is not earlier than this moment, so the lease ends no earlier than
+      // claimStartedAt + leaseMs on this process's monotonic clock.
+      const claimStartedAt = performance.now();
+      const event = await inTenantTransaction(tenantId, async (client) => {
+        await sweepExhaustedLeases(client, tenantId);
+        // The tenant filter repeats row-level security, so a privileged connection also stays in this tenant.
+        // A media.dispatch event waits until every earlier media.dispatch event of the same live run is delivered,
+        // cancelled or exhausted, so the commands of one run reach the runtime in the order they were issued.
+        const result = await client.query(`
+        with candidate as (
+          select o.id
+          from outbox_events o
+          where o.tenant_id = $3::uuid and o.state in ('pending', 'failed', 'delivering') and o.available_at <= now()
+            and o.attempts < $1
+            -- An event the Gateway answered command_outcome_uncertain waits for an operator, whatever its attempts.
+            -- A delivering event is still reclaimed: a manual redelivery may have been accepted without being recorded.
+            and (o.outcome_uncertain_at is null or o.state = 'delivering')
+            and ($4::text[] is null or (o.event_type = 'media.dispatch' and o.payload #>> '{command,payload,controlAction}' = any($4::text[])))
+            and (o.event_type <> 'media.dispatch' or o.aggregate_id is null or not exists (
+              select 1 from outbox_events prior
+              where prior.tenant_id = o.tenant_id and prior.event_type = 'media.dispatch'
+                and prior.aggregate_id = o.aggregate_id
+                and (prior.created_at, prior.id) < (o.created_at, o.id)
+                and prior.state in ('pending', 'failed', 'delivering')
+                and not (prior.state = 'failed' and prior.attempts >= $1)))
+          order by o.available_at, o.created_at, o.id
+          for update of o skip locked
+          limit 1
+        )
+        update outbox_events event
+        set state = 'delivering', attempts = event.attempts + 1, last_error = null, available_at = now() + ($2 * interval '1 second')
+        from candidate
+        where event.id = candidate.id
+        returning event.id, event.tenant_id, event.event_type, event.aggregate_id, event.payload, event.attempts, event.created_at
+      `, [maxAttempts, leaseSeconds, tenantId, priorityActions]);
+        return result.rows[0] ?? null;
+      });
+      if (event) {
+        nextOutboxTenantCursor = (ids.indexOf(tenantId) + 1) % ids.length;
+        return { ...event, claimStartedAt };
+      }
     }
   }
   if (ids.length) nextOutboxTenantCursor = (nextOutboxTenantCursor + 1) % ids.length;

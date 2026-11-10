@@ -782,7 +782,13 @@ def patched_base_avatar(required: bool) -> str | None:
         skipped("git is not installed; the patched process_frames was not parsed", required)
         return None
     series = [line.strip() for line in (PATCH_DIR / "livetalking.series").read_text(encoding="utf-8").splitlines() if line.strip() and not line.lstrip().startswith("#")]
-    assert series and series[-1] == "livetalking-overlay.patch", f"livetalking-overlay.patch must be the last patch of the series, got {series}"
+    assert "livetalking-overlay.patch" in series, f"livetalking-overlay.patch is missing from the series: {series}"
+    overlay_index = series.index("livetalking-overlay.patch")
+    later_base_avatar_patches = [
+        name for name in series[overlay_index + 1:]
+        if f"diff --git a/{BASE_AVATAR_PATH} " in (PATCH_DIR / name).read_text(encoding="utf-8")
+    ]
+    assert not later_base_avatar_patches, f"a patch touching {BASE_AVATAR_PATH} follows livetalking-overlay.patch: {later_base_avatar_patches}"
     with tempfile.TemporaryDirectory(prefix="base-avatar-") as directory:
         target = Path(directory) / BASE_AVATAR_PATH
         target.parent.mkdir(parents=True)
