@@ -1,29 +1,37 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowDownToLine, ArrowRight, Check, CircleAlert, Clapperboard, FileText, FolderOpen, Paperclip, Radio, RefreshCw, Save, Sparkles, Upload } from "lucide-react";
+import Image from "next/image";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ArrowDownToLine, ArrowRight, Check, CircleAlert, Clapperboard, FileText, FolderOpen, Paperclip, Radio, RefreshCw, Save, Sparkles, Upload, X } from "lucide-react";
 import type { ChannelConnection } from "@/lib/channels";
 import type { Product } from "@/lib/catalog";
 import type { CreationOutputMode, CreationProject } from "@/lib/creation-projects";
 import { generateProductScript, splitNarrationScript } from "@/lib/shared/content-script.mjs";
-import { canResumeLiveOutput, clearLiveOutputCheckpoint, readLiveOutputCheckpoint, saveLiveOutputCheckpoint, type PendingLiveOutput } from "@/lib/shared/live-output-resume.mjs";
+import { buildLiveOutputRequest, canResumeLiveOutput, clearLiveOutputCheckpoint, readLiveOutputCheckpoint, saveLiveOutputCheckpoint, type PendingLiveOutput } from "@/lib/shared/live-output-resume.mjs";
+import { getLiveOutputRevisionDisplay } from "@/lib/shared/live-output-revision.mjs";
+import { getProductFactsStatus, type ProductFactsStatus } from "@/lib/shared/product-facts-current.mjs";
+import { isAssetCurrentlyUsable } from "@/lib/shared/asset-eligibility.mjs";
 import { clientFetch } from "@/lib/client-request";
 import { PhotoRecordingComposer } from "@/components/photo-recording-composer";
+import { LiveAvatarPreview } from "@/components/live-avatar-preview";
+import { AssetWorkspace } from "@/components/asset-workspace";
 import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
 import { listProjectRecordings } from "@/lib/project-recording-vault";
 import styles from "./studio-workspace.module.css";
 
 type AssetOption = { id: string; kind: string; name: string; approval: string; expiresAt?: string; rightsScope: string; contentType: string; checksum: string; runtimeVoiceId?: string };
-type Props = { products: Product[]; channels: ChannelConnection[]; assets: AssetOption[]; initialProjects: CreationProject[]; canCreate: boolean };
+type Props = { products: Product[]; channels: ChannelConnection[]; assets: AssetOption[]; initialProjects: CreationProject[]; canCreate: boolean; canApproveAssets: boolean };
 type OutputMode = "recording" | "live" | "both";
 type LiveRun = { id: string; showName: string };
+type AvatarBuildJob = { id: string; projectRevision: number; sourceAssetId: string; status: "queued" | "running" | "preview_ready" | "failed" | "cancelled"; reviewStatus: "pending" | "approved" | "rejected"; publishStatus: "not_approved" | "queued" | "publishing" | "published" | "failed"; publishAttempts: number; runtimeAvatarId?: string; publishErrorCode?: string; reviewNote?: string; progress: number; attempts: number; failureCode?: string; failureDetail?: string; createdAt: string };
 type PendingOutput = PendingLiveOutput;
 type ScriptStyle = "friendly" | "professional" | "faq";
 type ScriptLength = "short" | "standard" | "detailed";
 
-export function StudioWorkspace({ products, channels, assets: initialAssets, initialProjects, canCreate }: Props) {
-  const versions = useMemo(() => products.flatMap((product) => product.versions.filter((version) => version.status === "approved").map((version) => ({ product, version }))), [products]);
+export function StudioWorkspace({ products, channels, assets: initialAssets, initialProjects, canCreate, canApproveAssets }: Props) {
+  const [catalogProducts, setCatalogProducts] = useState(products);
+  const versions = useMemo(() => catalogProducts.flatMap((product) => product.versions.filter((version) => version.status === "approved").map((version) => ({ product, version }))), [catalogProducts]);
   const connectedChannels = channels.filter((channel) => channel.status === "connected");
   const firstProject = initialProjects[0];
   const [projects, setProjects] = useState(initialProjects);
@@ -51,10 +59,26 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [assetNotice, setAssetNotice] = useState("");
+  const [assetUploadOpen, setAssetUploadOpen] = useState(false);
+  const assetDialog = useRef<HTMLDialogElement>(null);
   const [refreshingAssets, setRefreshingAssets] = useState(false);
+  const [approvingAssetId, setApprovingAssetId] = useState("");
   const [createdRun, setCreatedRun] = useState<LiveRun | null>(null);
+  const [previewRunId, setPreviewRunId] = useState("");
   const [pendingOutput, setPendingOutput] = useState<PendingOutput | null>(null);
   const [recordingOutputState, setRecordingOutputState] = useState<{ projectId: string; count: number; serverCount: number | null }>({ projectId: "", count: 0, serverCount: null });
+  const [avatarJobState, setAvatarJobState] = useState<{ projectId: string; jobs: AvatarBuildJob[] }>({ projectId: firstProject?.id ?? "", jobs: [] });
+  const avatarJobs = avatarJobState.projectId === projectId ? avatarJobState.jobs : [];
+  const [avatarJobBusy, setAvatarJobBusy] = useState(false);
+  const [avatarReviewBusy, setAvatarReviewBusy] = useState("");
+  const [avatarSourceId, setAvatarSourceId] = useState("");
+
+  useEffect(() => {
+    const dialog = assetDialog.current;
+    if (!dialog) return;
+    if (assetUploadOpen && !dialog.open) dialog.showModal();
+    if (!assetUploadOpen && dialog.open) dialog.close();
+  }, [assetUploadOpen]);
 
   useEffect(() => {
     let active = true;
@@ -75,6 +99,21 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   }, [projectId]);
 
   useEffect(() => {
+    let active = true;
+    if (!projectId) return () => { active = false; };
+    const refresh = () => {
+      clientFetch(`/api/v1/studio/projects/${encodeURIComponent(projectId)}/avatar-builds`, { cache: "no-store" })
+        .then(async (response) => {
+          const result = await response.json() as { data?: AvatarBuildJob[] };
+          if (active && response.ok && Array.isArray(result.data)) setAvatarJobState({ projectId, jobs: result.data });
+        }).catch(() => { if (active) setAvatarJobState({ projectId, jobs: [] }); });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 8000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [projectId]);
+
+  useEffect(() => {
     const restore = () => {
       if (!projectId) { setPendingOutput(null); return; }
       const pending = readLiveOutputCheckpoint(window.localStorage, projectId);
@@ -89,12 +128,15 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   }, [projectId]);
 
   const facts = selected?.version.facts;
+  const factsStatus: ProductFactsStatus | null = facts ? getProductFactsStatus(facts) : null;
+  const factsCurrent = factsStatus === "current";
   const activeProject = projects.find((project) => project.id === projectId);
-  const selectedPhotoPortrait = assets.some((asset) => asset.kind === "portrait_photo" && assetIds.includes(asset.id));
-  const selectedLivePortrait = assets.some((asset) => asset.kind === "portrait" && asset.approval === "approved" && assetIds.includes(asset.id)
-    && (!asset.expiresAt || asset.expiresAt >= new Date().toISOString().slice(0, 10))
-    && /^video\//i.test(asset.contentType) && /^sha256:[a-f0-9]{64}$/i.test(asset.checksum));
-  const projectPhotos = assets.filter((asset) => asset.kind === "portrait_photo" && asset.approval === "approved" && assetIds.includes(asset.id));
+  const usableAssetIds = useMemo(() => new Set(assets.filter((asset) => isAssetCurrentlyUsable(asset)).map((asset) => asset.id)), [assets]);
+  const activeAssetIds = useMemo(() => assetIds.filter((id) => usableAssetIds.has(id)), [assetIds, usableAssetIds]);
+  const selectedPhotoPortrait = assets.some((asset) => asset.kind === "portrait_photo" && activeAssetIds.includes(asset.id));
+  const projectPhotos = assets.filter((asset) => asset.kind === "portrait_photo" && isAssetCurrentlyUsable(asset) && activeAssetIds.includes(asset.id));
+  const projectPortraitVideos = assets.filter((asset) => asset.kind === "portrait" && isAssetCurrentlyUsable(asset) && activeAssetIds.includes(asset.id) && /^video\//i.test(asset.contentType) && /^sha256:[a-f0-9]{64}$/i.test(asset.checksum));
+  const selectedAvatarSourceId = projectPortraitVideos.some((asset) => asset.id === avatarSourceId) ? avatarSourceId : projectPortraitVideos[0]?.id ?? "";
   const starterScript = useMemo(() => {
     if (!selected || !facts) return "请先在商品中心准备并审核商品事实。";
     return generateProductScript({ name: selected.product.name, goal, audience, priceCent: facts.priceCent, highlights: facts.highlights, faq: facts.faq, style: scriptStyle, length: scriptLength });
@@ -102,8 +144,8 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   const currentScript = script || starterScript;
   const scriptReviewed = scriptReviewMark?.epoch === scriptReviewEpoch && scriptReviewMark.productVersionId === productVersionId && scriptReviewMark.text === currentScript;
   const hasUnsavedChanges = activeProject
-    ? projectName.trim() !== activeProject.name || goal.trim() !== activeProject.goal || audience.trim() !== activeProject.audience || output !== activeProject.outputMode || productVersionId !== activeProject.productVersionId || JSON.stringify([...new Set(assetIds)].sort()) !== JSON.stringify([...activeProject.assetIds].sort()) || (script.trim() || starterScript) !== activeProject.script
-    : Boolean(projectName.trim() || script.trim() || assetIds.length || goal !== "介绍商品特点与使用方式" || audience !== "第一次了解这类产品的用户" || output !== "both" || productVersionId !== (firstProject?.productVersionId ?? versions[0]?.version.id ?? ""));
+    ? projectName.trim() !== activeProject.name || goal.trim() !== activeProject.goal || audience.trim() !== activeProject.audience || output !== activeProject.outputMode || productVersionId !== activeProject.productVersionId || JSON.stringify([...new Set(activeAssetIds)].sort()) !== JSON.stringify([...activeProject.assetIds].sort()) || (script.trim() || starterScript) !== activeProject.script
+    : Boolean(projectName.trim() || script.trim() || activeAssetIds.length || goal !== "介绍商品特点与使用方式" || audience !== "第一次了解这类产品的用户" || output !== "both" || productVersionId !== (firstProject?.productVersionId ?? versions[0]?.version.id ?? ""));
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
@@ -116,19 +158,20 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   }, [hasUnsavedChanges]);
 
   function projectPayload() {
-    if (!selected) throw new Error("请先选择已审核的商品事实版本");
+    if (!selected || !factsCurrent) throw new Error("当前商品事实已过期或尚未生效；请更新并批准有效版本后继续。");
     return {
       name: projectName.trim() || selected.product.name,
       goal: goal.trim(),
       audience: audience.trim(),
       outputMode: output as CreationOutputMode,
       productVersionId: selected.version.id,
-      assetIds,
+      assetIds: activeAssetIds,
       script: script.trim() || starterScript
     };
   }
 
   async function persistProject() {
+    if (activeProject && !hasUnsavedChanges) return activeProject;
     const response = await clientFetch(projectId ? `/api/v1/studio/projects/${encodeURIComponent(projectId)}` : "/api/v1/studio/projects", {
       method: projectId ? "PUT" : "POST",
       headers: { "content-type": "application/json" },
@@ -147,6 +190,66 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
     return saved;
   }
 
+  async function queueAvatarBuild() {
+    if (!canCreate || !selectedAvatarSourceId || avatarJobBusy) return;
+    setAvatarJobBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const saved = await persistProject();
+      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(saved.id)}/avatar-builds`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceAssetId: selectedAvatarSourceId })
+      });
+      const result = await response.json() as { data?: AvatarBuildJob; error?: string };
+      if (!response.ok || !result.data) throw new Error(result.error ?? "提交 Avatar 生成任务失败");
+      setAvatarJobState((current) => ({ projectId: saved.id, jobs: [result.data!, ...(current.projectId === saved.id ? current.jobs : []).filter((job) => job.id !== result.data!.id)] }));
+      setNotice(`形象生成任务已进入队列，绑定项目修订 r${result.data.projectRevision}；完成审核、发布和运行时验收后才能用于直播。`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提交 Avatar 生成任务失败，请重试。");
+    } finally {
+      setAvatarJobBusy(false);
+    }
+  }
+
+  async function reviewAvatarBuild(job: AvatarBuildJob, decision: "approved" | "rejected") {
+    if (!canApproveAssets || avatarReviewBusy) return;
+    setAvatarReviewBusy(job.id);
+    setError("");
+    setNotice("");
+    try {
+      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(projectId)}/avatar-builds/${encodeURIComponent(job.id)}/review`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision, ...(decision === "rejected" ? { note: "请检查人像视频质量与构图后重新生成。" } : {}) })
+      });
+      const result = await response.json() as { data?: AvatarBuildJob; error?: string };
+      if (!response.ok || !result.data) throw new Error(result.error ?? "保存形象审核结果失败");
+      setAvatarJobState((current) => ({ ...current, jobs: current.jobs.map((item) => item.id === job.id ? result.data! : item) }));
+      setNotice(decision === "approved" ? "候选已通过审核并进入发布队列；运行时加载与 4090 实机验收通过后才能直播。" : "候选形象已退回；修正项目素材后可重新生成。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存形象审核结果失败，请重试。");
+    } finally {
+      setAvatarReviewBusy("");
+    }
+  }
+
+  async function selectAvatarBuild(job: AvatarBuildJob) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project || job.publishStatus !== "published" || !job.runtimeAvatarId || avatarReviewBusy) return;
+    setAvatarReviewBusy(job.id);
+    setError("");
+    try {
+      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(project.id)}/avatar-builds/${encodeURIComponent(job.id)}/select`, { method: "POST" });
+      const result = await response.json() as { data?: { avatarBuildJobId: string }; error?: string };
+      if (!response.ok || !result.data) throw new Error(result.error ?? "形象选择失败");
+      setProjects((current) => current.map((item) => item.id === project.id ? { ...item, selectedAvatarBuildJobId: result.data!.avatarBuildJobId } : item));
+      setNotice("项目直播形象已选定；创建场次时会再次核验形象版本。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "形象选择失败");
+    } finally {
+      setAvatarReviewBusy("");
+    }
+  }
+
   async function refreshProjectAssets() {
     if (refreshingAssets) return;
     setRefreshingAssets(true);
@@ -157,13 +260,57 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
       if (!response.ok || !Array.isArray(result.data)) throw new Error(result.error ?? "刷新素材列表失败");
       const refreshed: AssetOption[] = result.data.map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name, approval: asset.approval, expiresAt: asset.expiresAt, rightsScope: asset.rightsScope, checksum: asset.checksum, contentType: asset.contentVerification?.contentType ?? "", ...(asset.runtimeVoiceId ? { runtimeVoiceId: asset.runtimeVoiceId } : {}) }));
       setAssets(refreshed);
-      const approvedCount = refreshed.filter((asset) => asset.approval === "approved").length;
+      const approvedCount = refreshed.filter((asset) => isAssetCurrentlyUsable(asset)).length;
       const pendingCount = refreshed.filter((asset) => asset.approval === "pending").length;
-      setAssetNotice(`素材已更新：${approvedCount} 项可加入项目${pendingCount ? `，${pendingCount} 项待审核` : ""}。`);
+      const expiredCount = refreshed.filter((asset) => asset.approval === "approved" && !isAssetCurrentlyUsable(asset)).length;
+      setAssetNotice(`素材已更新：${approvedCount} 项可加入项目${pendingCount ? `，${pendingCount} 项待审核` : ""}${expiredCount ? `，${expiredCount} 项已过期且不可用于输出` : ""}。`);
     } catch (cause) {
       setAssetNotice(cause instanceof Error ? cause.message : "刷新素材列表失败，请重试。");
     } finally {
       setRefreshingAssets(false);
+    }
+  }
+
+  async function approveProjectAsset(assetId: string) {
+    setApprovingAssetId(assetId);
+    setError("");
+    try {
+      const response = await clientFetch(`/api/v1/assets/${encodeURIComponent(assetId)}/approve`, { method: "POST" });
+      const result = await response.json() as { data?: AssetOption; error?: string };
+      if (!response.ok || !result.data) throw new Error(result.error ?? "素材批准失败");
+      setAssetIds((current) => [...new Set([...current, assetId])]);
+      await refreshProjectAssets();
+      setAssetNotice("素材已批准并加入当前项目；照片只用于录播，肖像视频仍须完成直播预检。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "素材批准失败，请重试。");
+    } finally {
+      setApprovingAssetId("");
+    }
+  }
+
+  async function refreshProductFacts() {
+    setError("");
+    setNotice("");
+    try {
+      const response = await clientFetch("/api/v1/products", { cache: "no-store" });
+      const result = await response.json() as { data?: Product[]; error?: string };
+      if (!response.ok || !Array.isArray(result.data)) throw new Error(result.error ?? "刷新商品资料失败");
+      setCatalogProducts(result.data);
+      const previous = versions.find(({ version }) => version.id === productVersionId);
+      const isCurrentApproved = (version: Product["versions"][number]) => version.status === "approved" && getProductFactsStatus(version.facts) === "current";
+      const next = (previous ? result.data.find((product) => product.id === previous.product.id)?.versions.find(isCurrentApproved) : undefined)
+        ?? result.data.flatMap((product) => product.versions).find(isCurrentApproved);
+      if (next) {
+        setProductVersionId(next.id);
+        setScript("");
+        setScriptReviewEpoch((epoch) => epoch + 1);
+        setScriptReviewMark(null);
+        setNotice(`已切换到当前有效商品事实 v${next.revision}，请重新生成并审核脚本。`);
+      } else {
+        setNotice("商品列表已更新；当前商品尚无有效的已批准事实版本。");
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "刷新商品资料失败");
     }
   }
 
@@ -303,17 +450,17 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
     setCreatedRun(null);
     try {
       const project = await persistProject();
+      if (!project.selectedAvatarBuildJobId) throw new Error("请先在视频形象制作中选择一个已发布的 Avatar，再创建直播输出。");
       const scriptChunks = splitNarrationScript(project.script);
-      const request = { showName: project.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: project.id, mediaAssetIds: project.assetIds, aiDisclosureEnabled: true as const };
-      const requestFingerprint = JSON.stringify(request);
+      const { request, requestFingerprint } = buildLiveOutputRequest({ showName: project.name, scheduledAt, channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: project.id, mediaAssetIds: project.assetIds, avatarBuildJobId: project.selectedAvatarBuildJobId });
       const resume = canResumeLiveOutput(pendingOutput, project.id, requestFingerprint);
       const idempotencyKey = resume ? pendingOutput!.idempotencyKey : crypto.randomUUID();
-      const checkpoint: PendingOutput = { projectId: project.id, requestFingerprint, idempotencyKey, request, run: null };
+      const checkpoint: PendingOutput = { projectId: project.id, requestFingerprint, idempotencyKey, request, avatarBuildJobId: project.selectedAvatarBuildJobId, run: null };
       let run: LiveRun;
       if (resume && pendingOutput?.run) {
         run = pendingOutput.run;
       } else {
-        saveLiveOutputCheckpoint(window.localStorage, checkpoint);
+        if (!saveLiveOutputCheckpoint(window.localStorage, checkpoint)) throw new Error("浏览器无法保存场次续办记录，请启用本地存储后重试；尚未创建直播场次。");
         setPendingOutput(checkpoint);
         const response = await clientFetch("/api/v1/live-runs", {
           method: "POST",
@@ -344,10 +491,19 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
       const linkResponse = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(project.id)}/live-outputs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runId: run.id })
+        body: JSON.stringify({ runId: run.id, projectRevision: project.revision, avatarBuildJobId: project.selectedAvatarBuildJobId })
       });
       const linkResult = await linkResponse.json();
-      if (!linkResponse.ok) throw new Error(linkResult.error ?? "节目单已创建，但项目输出关联失败。");
+      if (!linkResponse.ok) {
+        const message = linkResult.error === "creation_project_live_output_script_mismatch"
+          ? "直播节目单与当前审核脚本不一致。系统已保留草稿，请继续重试以重新写入当前脚本。"
+          : linkResult.error === "creation_project_script_not_reviewed"
+            ? "项目脚本审核已失效，请重新审核后继续完成直播输出。"
+            : linkResult.error === "creation_project_revision_changed"
+              ? "项目已在其他页面更新，请刷新项目并确认内容后重试。"
+              : linkResult.error ?? "节目单已创建，但项目输出关联失败。";
+        throw new Error(message);
+      }
       setProjects((current) => [linkResult.data as CreationProject, ...current.filter((item) => item.id !== project.id)]);
       clearLiveOutputCheckpoint(window.localStorage, project.id);
       setPendingOutput(null);
@@ -360,9 +516,27 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   }
 
   const channelReady = connectedChannels.some((channel) => channel.id === channelId);
-  const canCreateLive = canCreate && versions.length > 0 && channelReady && scriptReviewed;
-  const pendingRequest = selected && projectId ? { showName: projectName.trim() || selected.product.name, ...(scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}), channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: projectId, mediaAssetIds: assetIds, aiDisclosureEnabled: true as const } : null;
-  const canResumePending = Boolean(pendingRequest && canResumeLiveOutput(pendingOutput, projectId, JSON.stringify(pendingRequest)));
+  const canCreateLive = canCreate && versions.length > 0 && factsCurrent && channelReady && scriptReviewed && Boolean(activeProject?.selectedAvatarBuildJobId);
+  const hasLocalRecording = recordingOutputState.projectId === projectId && recordingOutputState.count > 0;
+  const hasServerRecording = recordingOutputState.projectId === projectId && (recordingOutputState.serverCount ?? 0) > 0;
+  const hasRecordingOutput = hasLocalRecording || hasServerRecording;
+  const liveOutputDisplays = (activeProject?.liveRunIds ?? []).map((runId) => getLiveOutputRevisionDisplay(activeProject?.revision ?? 0, activeProject?.liveOutputRevisions[runId]));
+  const hasLiveOutput = liveOutputDisplays.length > 0;
+  const hasCurrentLiveOutput = liveOutputDisplays.some((item) => item.state === "current");
+  const hasStaleLiveOutput = liveOutputDisplays.some((item) => item.state === "stale");
+  const canStartRecording = canCreate && factsCurrent && scriptReviewed && !scriptReviewBusy && projectPhotos.length > 0;
+  const recordingStatusHint = hasServerRecording
+    ? "已有服务端归档版本，可跨设备打开"
+    : hasLocalRecording && recordingOutputState.serverCount === null ? "本机有版本；服务端归档状态未确认"
+      : hasLocalRecording ? "仅保存在此浏览器，尚未服务端归档"
+    : !canCreate ? "当前账号只有查看权限"
+      : !factsCurrent ? "先准备有效的已审核商品事实"
+        : !scriptReviewed || scriptReviewBusy ? "先审核当前共用脚本"
+          : !projectPhotos.length ? "需要加入已批准的照片素材"
+            : "照片和审核已就绪，可录制、上传或生成口播";
+  const recordingStatusLabel = hasServerRecording ? "已归档" : hasLocalRecording && recordingOutputState.serverCount === null ? "待核验" : hasLocalRecording ? "本机生成" : !canCreate ? "只读" : canStartRecording ? "可制作" : "待准备";
+  const pendingRequest = selected && projectId ? buildLiveOutputRequest({ showName: projectName.trim() || selected.product.name, scheduledAt, channelConnectionId: channelId, productVersionId: selected.version.id, creationProjectId: projectId, mediaAssetIds: activeAssetIds, avatarBuildJobId: activeProject?.selectedAvatarBuildJobId ?? "" }) : null;
+  const canResumePending = Boolean(pendingRequest && canResumeLiveOutput(pendingOutput, projectId, pendingRequest.requestFingerprint));
 
   function navigateStep(step: 1 | 2 | 3, targetId: string) {
     setActiveStep(step);
@@ -383,21 +557,57 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
       <button type="button" className={`${styles.progressStep} ${activeStep === 3 ? styles.current : ""}`} aria-current={activeStep === 3 ? "step" : undefined} onClick={() => navigateStep(3, "studio-output-step")}><b>3</b> 输出与审核</button>
     </nav>
 
+    <section className={styles.workflowStatus} aria-label="内容项目准备状态">
+      <button type="button" className={styles.workflowItem} onClick={() => navigateStep(1, "studio-project-step")}>
+        <span className={styles.workflowIndex}>01</span><span className={styles.workflowCopy}><strong>商品事实</strong><small>{factsCurrent ? "已批准，可用于内容" : "需要有效的已审核版本"}</small></span><span className={`${styles.workflowState} ${factsCurrent ? styles.workflowReady : styles.workflowPending}`}>{factsCurrent ? "就绪" : "待准备"}</span>
+      </button>
+      <button type="button" className={styles.workflowItem} onClick={() => navigateStep(2, "studio-script-step")}>
+        <span className={styles.workflowIndex}>02</span><span className={styles.workflowCopy}><strong>共用脚本</strong><small>{scriptReviewed ? "当前版本已人工确认" : "确认后可进入任一输出"}</small></span><span className={`${styles.workflowState} ${scriptReviewed ? styles.workflowReady : styles.workflowPending}`}>{scriptReviewed ? "已审核" : "待审核"}</span>
+      </button>
+      <button type="button" className={styles.workflowItem} onClick={() => { setOutput("recording"); navigateStep(3, "studio-output-step"); }}>
+        <span className={styles.workflowIndex}>03</span><span className={styles.workflowCopy}><strong>录播视频</strong><small>{recordingStatusHint}</small></span><span className={`${styles.workflowState} ${hasRecordingOutput ? styles.workflowDone : canStartRecording ? styles.workflowReady : styles.workflowPending}`}>{recordingStatusLabel}</span>
+      </button>
+      <button type="button" className={styles.workflowItem} onClick={() => { setOutput("live"); navigateStep(3, "studio-output-step"); }}>
+        <span className={styles.workflowIndex}>04</span><span className={styles.workflowCopy}><strong>直播场次</strong><small>{hasStaleLiveOutput ? "项目已更新，旧场次需同步节目单" : hasCurrentLiveOutput ? "已有场次基于当前项目版本" : hasLiveOutput ? "已有场次，来源版本待确认" : canCreateLive ? "可创建草稿并继续预检" : "需形象、渠道与脚本审核"}</small></span><span className={`${styles.workflowState} ${hasStaleLiveOutput ? styles.workflowPending : hasCurrentLiveOutput ? styles.workflowDone : canCreateLive ? styles.workflowReady : styles.workflowPending}`}>{hasStaleLiveOutput ? "需同步" : hasCurrentLiveOutput ? "当前版本" : hasLiveOutput ? "版本未知" : canCreateLive ? "可创建" : "待准备"}</span>
+      </button>
+    </section>
+
     <form className={styles.layout} onSubmit={createLiveOutput}>
       <section className={styles.editor} id="studio-project-step" tabIndex={-1} onFocusCapture={() => setActiveStep(1)}>
         <div className={styles.sectionHead}><div><span className={styles.kicker}>PROJECT</span><h2>一个内容项目</h2></div><div className={styles.projectActions}>{projects.length ? <label className={styles.projectSelect}><FolderOpen size={14} /><select aria-label="打开已保存项目" value={projectId} onChange={(event) => selectProject(event.target.value)}><option value="">新建项目</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name} · r{project.revision}</option>)}</select></label> : null}<button className={styles.newProject} type="button" onClick={startNewProject}>新建</button><span className={`${styles.projectBadge} ${hasUnsavedChanges ? styles.projectDirty : ""}`}><Clapperboard size={15} />{hasUnsavedChanges ? "有未保存更改" : projectId ? `已保存 r${projectRevision}` : "新草稿"}</span></div></div>
         <label className={styles.field}>项目名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder={selected?.product.name ?? "例：周末护肤专题"} /></label>
-        <label className={styles.field}>商品与已审核事实<select value={productVersionId} onChange={(event) => { setProductVersionId(event.target.value); setScript(""); }} disabled={!versions.length}>{versions.map(({ product, version }) => <option key={version.id} value={version.id}>{product.name} · v{version.revision} · 已审核</option>)}</select></label>
+        <label className={styles.field}>商品与已审核事实<select value={productVersionId} onChange={(event) => { setProductVersionId(event.target.value); setScript(""); setScriptReviewEpoch((epoch) => epoch + 1); setScriptReviewMark(null); }} disabled={!versions.length}>{versions.map(({ product, version }) => <option key={version.id} value={version.id}>{product.name} · v{version.revision} · 已审核{getProductFactsStatus(version.facts) !== "current" ? " · 需更新" : ""}</option>)}</select></label>
+        {factsStatus && factsStatus !== "current" ? <div className={styles.factsWarning} role="status"><CircleAlert size={16} /><div><strong>{productFactsStatusLabel(factsStatus)}</strong><span>{productFactsStatusDetail(factsStatus)}</span><div><Link href="/products" target="_blank" rel="noreferrer">在新标签页更新商品事实</Link><button type="button" onClick={() => void refreshProductFacts()}>刷新并检查版本</button></div></div></div> : null}
+        {!versions.length ? <div className={styles.factsWarning} role="status"><CircleAlert size={16} /><div><strong>先准备一份商品资料</strong><span>需要商品名称、价格、库存、至少一条卖点和 FAQ，并由审核员批准后才能生成脚本。</span><div><Link href="/products" target="_blank" rel="noreferrer">打开商品中心录入资料</Link><button type="button" onClick={() => void refreshProductFacts()}>刷新并选择已批准版本</button></div></div></div> : null}
         <div className={styles.twoFields}>
           <label className={styles.field}>本次内容主题（用于生成开场）<input value={goal} onChange={(event) => setGoal(event.target.value)} maxLength={120} placeholder="例：第一次选购时重点看哪些信息" /></label>
           <label className={styles.field}>面向受众<input value={audience} onChange={(event) => setAudience(event.target.value)} maxLength={120} /></label>
         </div>
         {selected ? <div className={styles.factStrip}><span>事实版本 {selected.version.id}</span><span>¥{(selected.version.facts.priceCent / 100).toFixed(2)}</span><span>库存 {selected.version.facts.stock}</span><span>{selected.version.facts.highlights.slice(0, 2).join(" · ") || "未录入卖点"}</span></div> : <div className={styles.empty}>暂无已审核商品。请先到 <Link href="/products">商品中心</Link> 完成商品资料审核。</div>}
-        <div className={styles.assetPicker} onFocusCapture={() => setActiveStep(2)}><div className={styles.assetPickerHead}><span><Paperclip size={14} />项目素材</span><div className={styles.assetTools}><small>只选择已审核通过的素材</small><Link href="/assets" target="_blank" rel="noreferrer" title="在新标签页管理和审核素材"><Upload size={13} />上传素材</Link><button type="button" onClick={() => void refreshProjectAssets()} disabled={refreshingAssets} aria-label="刷新项目素材" title="刷新已审核素材"> <RefreshCw size={14} className={refreshingAssets ? styles.spinning : undefined} />{refreshingAssets ? "刷新中" : "刷新"}</button></div></div>{assetNotice ? <p className={styles.assetNotice} role="status">{assetNotice}</p> : null}{assets.some((asset) => asset.approval === "approved") ? <div className={styles.assetList}>{assets.filter((asset) => asset.approval === "approved").map((asset) => <label className={styles.assetOption} key={asset.id}><input type="checkbox" checked={assetIds.includes(asset.id)} onChange={(event) => setAssetIds((current) => event.target.checked ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} /><span><strong>{asset.name}</strong><small>{asset.kind === "portrait_photo" ? "照片形象 · 仅录播" : asset.kind === "portrait" ? "肖像视频" : asset.kind === "voice" ? "声音" : asset.kind}{asset.contentType ? ` · ${asset.contentType}` : ""} · {asset.rightsScope}</small></span></label>)}</div> : <p className={styles.noAssets}>暂无已审核素材；可上传并提交审核，通过后点“刷新”加入项目。</p>}{selectedPhotoPortrait && output !== "recording" ? <p className={styles.assetBoundary}>已选照片只进入录播制作素材；直播输出不会把照片当作可直播 Avatar。</p> : null}</div>
-        <div className={styles.scriptHeader} id="studio-script-step" tabIndex={-1} onFocusCapture={() => setActiveStep(2)}><div><span className={styles.kicker}>SHARED SCRIPT</span><h3>同一份脚本草稿</h3></div><div className={styles.scriptTools}><label>篇幅<select aria-label="脚本篇幅" value={scriptLength} onChange={(event) => setScriptLength(event.target.value as ScriptLength)}><option value="short">简短</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>表达<select aria-label="脚本表达方式" value={scriptStyle} onChange={(event) => setScriptStyle(event.target.value as ScriptStyle)}><option value="friendly">亲切讲解</option><option value="professional">专业说明</option><option value="faq">问题优先</option></select></label><button type="button" className={styles.textAction} onClick={() => setScript(starterScript)} disabled={!selected}><Sparkles size={15} />生成口播草稿</button></div></div>
+        <div className={styles.assetPicker} onFocusCapture={() => setActiveStep(2)}><div className={styles.assetPickerHead}><span><Paperclip size={14} />项目素材</span><div className={styles.assetTools}><small>只选择已审核且未过期的素材</small><button type="button" onClick={() => setAssetUploadOpen(true)} disabled={!canCreate} title="在此页面上传素材"><Upload size={13} />上传素材</button><button type="button" onClick={() => void refreshProjectAssets()} disabled={refreshingAssets} aria-label="刷新项目素材" title="刷新已审核素材"> <RefreshCw size={14} className={refreshingAssets ? styles.spinning : undefined} />{refreshingAssets ? "刷新中" : "刷新"}</button></div></div>{assetNotice ? <p className={styles.assetNotice} role="status">{assetNotice}</p> : null}{assets.some((asset) => asset.approval === "approved") ? <div className={styles.assetList}>{assets.filter((asset) => asset.approval === "approved").map((asset) => { const currentlyUsable = isAssetCurrentlyUsable(asset); const checked = activeAssetIds.includes(asset.id); return <label className={styles.assetOption} key={asset.id}><input type="checkbox" checked={checked} disabled={!currentlyUsable && !checked} onChange={(event) => setAssetIds((current) => event.target.checked ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} /><span><strong>{asset.name}</strong><small>{asset.kind === "portrait_photo" ? "照片形象 · 仅录播" : asset.kind === "portrait" ? "肖像视频" : asset.kind === "voice" ? "声音" : asset.kind}{asset.contentType ? ` · ${asset.contentType}` : ""} · {asset.rightsScope}{!currentlyUsable ? " · 已过期，不可用于输出" : ""}</small></span></label>; })}</div> : <p className={styles.noAssets}>暂无已审核素材；可在此上传并提交审核，通过后自动刷新加入项目。</p>}{selectedPhotoPortrait && output !== "recording" ? <p className={styles.assetBoundary}>已选照片只进入录播制作素材；直播输出不会把照片当作可直播 Avatar。</p> : null}</div>
+        {(output === "live" || output === "both") ? <section className={styles.avatarBuild} aria-labelledby="studio-avatar-build-title">
+          <div className={styles.avatarBuildHead}><div><span className={styles.kicker}>AVATAR BUILDER</span><h3 id="studio-avatar-build-title">视频形象制作</h3></div><span>{avatarJobs.length ? `${avatarJobs.length} 个任务` : "尚无任务"}</span></div>
+          <p>任务只会在没有活动直播、单卡 GPU 空闲时运行。照片仍走照片播报录播，不会作为实时 Avatar；候选帧可在下方预览，形象仍需人工审核和运行时验收。</p>
+          {projectPortraitVideos.length ? <div className={styles.avatarBuildForm}>
+            <label className={styles.field}>形象源视频<select aria-label="Avatar 形象源视频" value={selectedAvatarSourceId} onChange={(event) => setAvatarSourceId(event.target.value)}>{projectPortraitVideos.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+            <button type="button" className={styles.avatarBuildAction} onClick={() => void queueAvatarBuild()} disabled={!canCreate || avatarJobBusy || avatarJobs.some((job) => job.sourceAssetId === selectedAvatarSourceId && (job.status === "queued" || job.status === "running"))}><Sparkles size={15} />{avatarJobBusy ? "提交中…" : "提交形象生成"}</button>
+          </div> : <div className={styles.avatarBuildEmpty}><p>还没有可用于直播形象制作的人像视频。上传后完成素材审核，再回来提交生成；照片素材只用于录播。</p><button type="button" className={styles.avatarBuildAction} onClick={() => setAssetUploadOpen(true)} disabled={!canCreate}><Upload size={14} />上传人物视频</button></div>}
+          {avatarJobs.length ? <ul className={styles.avatarJobList}>{avatarJobs.map((job) => {
+            const status = job.status !== "preview_ready" ? job.status === "queued" ? "排队中" : job.status === "running" ? `生成中 ${job.progress}%` : job.status === "failed" ? "生成失败" : "已取消"
+              : job.reviewStatus === "rejected" ? "审核退回 · 需重做"
+                : job.reviewStatus === "pending" ? "候选待审核"
+                  : job.publishStatus === "queued" || job.publishStatus === "publishing" ? "审核通过 · 正在发布"
+                    : job.publishStatus === "published" ? "已发布 · 待运行时加载"
+                    : job.publishStatus === "failed" ? job.publishErrorCode === "avatar_source_stale" ? "源版本已变化 · 需重新生成" : job.publishAttempts < 3 ? "发布失败 · 自动重试中" : "发布失败 · 请检查部署"
+                      : "审核通过 · 待发布";
+            const selectedForProject = projects.find((item) => item.id === projectId)?.selectedAvatarBuildJobId === job.id;
+            return <li className={styles.avatarJob} key={job.id}><span><strong>{selectedForProject ? "项目已选" : status}</strong><small>源素材 {assets.find((asset) => asset.id === job.sourceAssetId)?.name ?? "已移除素材"} · 项目修订 r{job.projectRevision}{job.runtimeAvatarId ? ` · 运行时形象 ${job.runtimeAvatarId}` : ""}{job.reviewNote ? ` · ${job.reviewNote}` : job.failureDetail ? ` · ${job.failureDetail}` : job.publishErrorCode ? ` · ${job.publishErrorCode}` : ""}</small>{job.status === "preview_ready" ? <Image className={styles.avatarJobPreview} src={`/api/v1/studio/projects/${encodeURIComponent(projectId)}/avatar-builds/${encodeURIComponent(job.id)}/preview`} alt="Avatar 候选形象预览" width={112} height={150} unoptimized /> : null}{job.status === "preview_ready" && job.reviewStatus === "pending" && canApproveAssets ? <div className={styles.avatarReviewActions}><button type="button" onClick={() => void reviewAvatarBuild(job, "approved")} disabled={Boolean(avatarReviewBusy)}>{avatarReviewBusy === job.id ? "保存中…" : "批准候选"}</button><button type="button" onClick={() => void reviewAvatarBuild(job, "rejected")} disabled={Boolean(avatarReviewBusy)}>退回重做</button></div> : null}{job.publishStatus === "published" && canCreate && !selectedForProject ? <button type="button" onClick={() => void selectAvatarBuild(job)} disabled={Boolean(avatarReviewBusy)}>{avatarReviewBusy === job.id ? "选择中…" : "选为直播形象"}</button> : null}</span></li>;
+          })}</ul> : null}
+        </section> : null}
+        <div className={styles.scriptHeader} id="studio-script-step" tabIndex={-1} onFocusCapture={() => setActiveStep(2)}><div><span className={styles.kicker}>SHARED SCRIPT</span><h3>同一份脚本草稿</h3></div><div className={styles.scriptTools}><label>篇幅<select aria-label="脚本篇幅" value={scriptLength} onChange={(event) => setScriptLength(event.target.value as ScriptLength)}><option value="short">简短</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><label>表达<select aria-label="脚本表达方式" value={scriptStyle} onChange={(event) => setScriptStyle(event.target.value as ScriptStyle)}><option value="friendly">亲切讲解</option><option value="professional">专业说明</option><option value="faq">问题优先</option></select></label><button type="button" className={styles.textAction} onClick={() => setScript(starterScript)} disabled={!selected || !factsCurrent}><Sparkles size={15} />生成口播草稿</button></div></div>
         <textarea className={styles.script} value={currentScript} onFocusCapture={() => setActiveStep(2)} onChange={(event) => setScript(event.target.value)} maxLength={4000} aria-label="内容脚本草稿" />
         <div onFocusCapture={() => setActiveStep(2)}><ProhibitedTermHints text={currentScript} context="script" onChange={setScript} /></div>
-        <label className={styles.scriptReview} onFocusCapture={() => setActiveStep(2)}><input type="checkbox" checked={scriptReviewed} disabled={!canCreate || scriptReviewBusy} onChange={(event) => void updateScriptReview(event.target.checked)} /><span><strong>{scriptReviewBusy ? "正在保存审核记录…" : "我已核对当前脚本"}</strong><small>请对照已审核的商品资料，检查价格、卖点和口播表达。确认会写入项目审计；修改脚本、切换商品或切换项目后，需要重新确认。</small></span></label>
+        <label className={styles.scriptReview} onFocusCapture={() => setActiveStep(2)}><input type="checkbox" checked={scriptReviewed} disabled={!canCreate || !factsCurrent || scriptReviewBusy} onChange={(event) => void updateScriptReview(event.target.checked)} /><span><strong>{scriptReviewBusy ? "正在保存审核记录…" : "我已核对当前脚本"}</strong><small>请对照已审核的商品资料，检查价格、卖点和口播表达。确认会写入项目审计；修改脚本、切换商品或切换项目后，需要重新确认。</small></span></label>
         <p className={styles.helper}>脚本草稿由已审核商品事实整理，可直接修改；发布前仍需人工复核。素材授权与人物形象审核在素材资产中管理。</p>
       </section>
 
@@ -411,16 +621,30 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
           <span><Clapperboard size={14} />录播成片 <strong>{recordingOutputState.projectId !== projectId ? "读取中" : recordingOutputState.count || (recordingOutputState.serverCount ?? 0) ? `${recordingOutputState.count ? `本机 ${recordingOutputState.count} 版` : ""}${recordingOutputState.count && recordingOutputState.serverCount !== null ? " · " : ""}${recordingOutputState.serverCount === null ? "" : `服务端 ${recordingOutputState.serverCount} 版`}` : "尚未生成"}</strong></span>
           <span><Radio size={14} />直播场次 <strong>{activeProject?.liveRunIds.length ? `已关联 ${activeProject.liveRunIds.length} 场` : "尚未创建"}</strong></span>
         </div>
-        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>静态照片 + 口播 + 字幕，可恢复预览并下载 WebM</small></span></div><PhotoRecordingComposer key={recordingComposerKey} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} voiceAssets={assets.filter((asset) => asset.kind === "voice" && asset.approval === "approved" && assetIds.includes(asset.id) && asset.runtimeVoiceId && /^sha256:[a-f0-9]{64}$/i.test(asset.checksum)).map(({ id, name, runtimeVoiceId, checksum }) => ({ id, name, runtimeVoiceId: runtimeVoiceId!, checksum }))} selectedPhotoIds={assetIds} script={currentScript} projectName={projectName || selected?.product.name || "内容项目"} projectId={projectId} productVersionId={productVersionId} onEnsureProject={persistProject} onRecordingSaved={(result) => setRecordingOutputState((current) => ({ projectId, count: current.count + Number(result.localSaved), serverCount: result.serverArchived ? (current.projectId === projectId ? (current.serverCount ?? 0) + 1 : 1) : current.serverCount }))} canCreate={canCreate && scriptReviewed && !scriptReviewBusy} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
+        {activeProject?.liveRunIds.length ? <div className={styles.outputList} aria-label="项目直播输出">
+          {activeProject.liveRunIds.map((runId, index) => {
+            const source = getLiveOutputRevisionDisplay(activeProject.revision, activeProject.liveOutputRevisions[runId]);
+            return <div className={styles.outputListItem} key={runId}>
+              <strong>直播场次 {index + 1}</strong>
+              <span className={styles.outputListActions}>
+                <small className={styles[`output${source.state[0].toUpperCase()}${source.state.slice(1)}`]}>{source.label}</small>
+                <button type="button" onClick={() => setPreviewRunId(previewRunId === runId ? "" : runId)}>{previewRunId === runId ? "收起预览" : "形象预览"}</button>
+                <Link href={`/shows/${runId}/program`}>节目单 <ArrowRight size={13} /></Link><Link href={`/shows/${runId}/preflight`}>开播预检 <ArrowRight size={13} /></Link>
+              </span>
+              {previewRunId === runId ? <div className={styles.outputListPreview}><LiveAvatarPreview projectId={activeProject.id} runId={runId} /></div> : null}
+            </div>;
+          })}
+        </div> : null}
+        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>照片 + 口播字幕 + 已审核商品名、价格与卖点</small></span></div><PhotoRecordingComposer key={`${recordingComposerKey}:${projectId}`} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} voiceAssets={assets.filter((asset) => asset.kind === "voice" && isAssetCurrentlyUsable(asset) && activeAssetIds.includes(asset.id) && asset.runtimeVoiceId && /^sha256:[a-f0-9]{64}$/i.test(asset.checksum)).map(({ id, name, runtimeVoiceId, checksum }) => ({ id, name, runtimeVoiceId: runtimeVoiceId!, checksum }))} selectedPhotoIds={activeAssetIds} script={currentScript} projectName={projectName || selected?.product.name || "内容项目"} productName={selected?.product.name ?? ""} productPriceCent={facts?.priceCent ?? -1} productHighlights={facts?.highlights ?? []} projectId={projectId} productVersionId={productVersionId} onEnsureProject={persistProject} onRecordingSaved={(result) => setRecordingOutputState((current) => ({ projectId, count: current.count + Number(result.localSaved), serverCount: result.serverArchived ? (current.projectId === projectId ? (current.serverCount ?? 0) + 1 : 1) : current.serverCount }))} canCreate={canCreate && factsCurrent && scriptReviewed && !scriptReviewBusy} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
         {(output === "live" || output === "both") ? <>
           <label className={styles.field}>直播渠道<select value={channelId} onChange={(event) => setChannelId(event.target.value)} disabled={!connectedChannels.length}>{connectedChannels.map((channel: ChannelConnection) => <option value={channel.id} key={channel.id}>{channel.name} · {channel.outputProtocol.toUpperCase()}</option>)}</select></label>
           <label className={styles.field}>计划开播时间 <span className={styles.optional}>可稍后排期</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>
           <div className={styles.liveReadiness} aria-label="直播输出准备状态">
             <div><span className={styles.readinessLabel}>已审核脚本</span><strong className={scriptReviewed ? styles.readinessReady : styles.readinessPending}>{scriptReviewed ? "就绪" : "待审核"}</strong></div>
             <div><span className={styles.readinessLabel}>直播渠道</span><strong className={channelReady ? styles.readinessReady : styles.readinessPending}>{channelReady ? "已连接" : "待连接或选择"}</strong></div>
-            <div><span className={styles.readinessLabel}>直播形象视频</span><strong className={selectedLivePortrait ? styles.readinessReady : styles.readinessPending}>{selectedLivePortrait ? "已选可用形象" : "尚未选择"}</strong></div>
+            <div><span className={styles.readinessLabel}>直播形象</span><strong className={projects.find((item) => item.id === projectId)?.selectedAvatarBuildJobId ? styles.readinessReady : styles.readinessPending}>{projects.find((item) => item.id === projectId)?.selectedAvatarBuildJobId ? "已选已发布形象" : "待生成、审核并选择"}</strong></div>
             <p>运行容量：当前部署最多支持 1 路实时数字人直播；直播期间暂停离线语音预览。</p>
-            {!selectedLivePortrait ? <p>{selectedPhotoPortrait ? "项目中的照片只用于照片播报录播，不能作为实时直播形象。" : "直播需要已审核、授权有效且内容核验通过的肖像视频素材。"} <Link href="/assets" target="_blank" rel="noreferrer">管理形象素材</Link></p> : null}
+            {!projects.find((item) => item.id === projectId)?.selectedAvatarBuildJobId ? <p>{selectedPhotoPortrait ? "项目中的照片只用于照片播报录播；直播需选定已发布的数字人形象。" : "直播需先生成候选、审核并发布，再选择为本项目形象。"} <Link href="/assets" target="_blank" rel="noreferrer">管理形象素材</Link></p> : null}
             {!channelReady ? <p>选择一个仍处于已连接状态的直播渠道，或前往 <Link href="/channels">渠道设置</Link> 完成连接。</p> : null}
             <small>此处可先创建直播草稿；正式开播仍以运行时与场次预检结果为准。</small>
           </div>
@@ -429,12 +653,10 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
 
         {notice ? <div className={styles.success} role="status"><Check size={17} /><span>{notice}</span></div> : null}
         {error ? <div className={styles.error} role="alert"><CircleAlert size={17} /><span>{error}</span></div> : null}
-        {createdRun ? <div className={styles.runLinks}><strong>已创建：{createdRun.showName}</strong><Link href={`/shows/${createdRun.id}/program`}>打开节目单 <ArrowRight size={14} /></Link><Link href={`/shows/${createdRun.id}/preflight`}>查看开播预检 <ArrowRight size={14} /></Link></div> : null}
-        {activeProject?.liveRunIds.length ? <div className={styles.runLinks}><strong>该项目已关联的直播输出</strong>{activeProject.liveRunIds.map((runId) => <span key={runId}><Link href={`/shows/${runId}/program`}>节目单 {runId.slice(0, 8)} <ArrowRight size={14} /></Link><Link href={`/shows/${runId}/preflight`}>预检 <ArrowRight size={14} /></Link></span>)}</div> : null}
-
+        {createdRun ? <div className={styles.runLinks}><strong>已创建：{createdRun.showName}</strong><Link href={`/shows/${createdRun.id}/program`}>打开节目单 <ArrowRight size={14} /></Link><Link href={`/shows/${createdRun.id}/preflight`}>查看开播预检 <ArrowRight size={14} /></Link>{activeProject ? <LiveAvatarPreview projectId={activeProject.id} runId={createdRun.id} /> : null}</div> : null}
         <div className={styles.outputFooter}>
-          <button type="button" className={styles.saveAction} onClick={saveProject} disabled={busy || !canCreate || !selected}><Save size={15} />{busy ? "保存中…" : projectId ? "保存项目更改" : "保存内容项目"}</button>
-          {output !== "live" ? <button type="button" className={styles.primaryAction} onClick={downloadRecordingPack} disabled={busy || !selected}><ArrowDownToLine size={16} />导出录播制作包</button> : null}
+          <button type="button" className={styles.saveAction} onClick={saveProject} disabled={busy || !canCreate || !selected || !factsCurrent}><Save size={15} />{busy ? "保存中…" : projectId ? "保存项目更改" : "保存内容项目"}</button>
+          {output !== "live" ? <button type="button" className={styles.primaryAction} onClick={downloadRecordingPack} disabled={busy || !selected || !factsCurrent}><ArrowDownToLine size={16} />导出录播制作包</button> : null}
           {output !== "recording" ? <button type="submit" className={styles.primaryAction} disabled={busy || scriptReviewBusy || !canCreateLive || !selected}>{busy ? "正在处理…" : canResumePending ? "继续完成直播输出" : "创建直播草稿场次"}<ArrowRight size={16} /></button> : null}
           {!canCreate && output !== "recording" ? <p className={styles.helper}>当前账号只有查看权限。</p> : null}
           {!scriptReviewed ? <p className={styles.helper}>完成当前脚本审核后，才能生成录播视频或直播草稿输出。</p> : null}
@@ -442,8 +664,31 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
         </div>
       </aside>
     </form>
-    <footer className={styles.limitNote}><Radio size={16} /><span><strong>生成边界</strong>照片播报视频在浏览器本地生成，并可登记为项目服务端版本；演示模式仍只保存本机副本。服务端跨设备播放下载、动态口型 Avatar 和 4090 实机验收尚未完成。直播场次不会自动开播，仍须经过脚本审核和预检。</span></footer>
+    <dialog ref={assetDialog} className={styles.assetDialog} aria-labelledby="studio-asset-dialog-title" onClose={() => setAssetUploadOpen(false)} onCancel={(event) => { event.preventDefault(); setAssetUploadOpen(false); }}>
+      <div className={styles.assetDialogBody}>
+        <header className={styles.assetDialogHeader}><div><span className={styles.kicker}>PROJECT MATERIALS</span><h2 id="studio-asset-dialog-title">为当前项目上传素材</h2></div><button type="button" onClick={() => setAssetUploadOpen(false)} aria-label="关闭素材上传"><X size={16} /></button></header>
+        <p className={styles.assetDialogHint}>上传会提交审核，审核通过后自动刷新到当前项目；待审核素材不会进入录播或直播输出。当前项目草稿会保留。</p>
+        {canApproveAssets && assets.some((asset) => asset.approval === "pending") ? <section className={styles.assetReviewQueue} aria-labelledby="studio-asset-review-title"><h3 id="studio-asset-review-title">待审核素材 <span>{assets.filter((asset) => asset.approval === "pending").length}</span></h3>{assets.filter((asset) => asset.approval === "pending").map((asset) => <div className={styles.assetReviewItem} key={asset.id}><span><strong>{asset.name}</strong><small>{asset.kind === "portrait_photo" ? "照片形象 · 仅录播" : asset.kind === "portrait" ? "肖像视频 · 直播需运行时验收" : asset.kind} · {asset.rightsScope}</small></span><button type="button" onClick={() => void approveProjectAsset(asset.id)} disabled={Boolean(approvingAssetId)}>{approvingAssetId === asset.id ? "批准中…" : "批准并加入项目"}</button></div>)}</section> : null}
+        <AssetWorkspace initialAssets={[]} canManage={canCreate} canApprove={false} compact onAssetCreated={() => void refreshProjectAssets()} />
+        <Link className={styles.assetDialogManage} href="/assets" target="_blank" rel="noreferrer">打开完整素材库与审核记录 <ArrowRight size={14} /></Link>
+      </div>
+    </dialog>
+    <footer className={styles.limitNote}><Radio size={16} /><span><strong>生成边界</strong>照片播报视频目前在浏览器本机生成；归档到项目后可跨设备预览和下载。服务端统一渲染、照片动态口型 Avatar 和 4090 实机验收尚未完成。直播场次不会自动开播，仍须经过脚本审核和预检。</span></footer>
   </main>;
+}
+
+function productFactsStatusLabel(status: ProductFactsStatus) {
+  if (status === "source_stale") return "商品来源资料已过期";
+  if (status === "not_yet_valid") return "商品事实尚未到生效时间";
+  if (status === "expired") return "商品事实已超过有效期";
+  return "商品事实资料不完整";
+}
+
+function productFactsStatusDetail(status: ProductFactsStatus) {
+  if (status === "source_stale") return "来源同步时间超过 24 小时，或同步时间异常。请录入最新来源并重新审批。";
+  if (status === "not_yet_valid") return "请等待生效时间，或修正生效日期并重新审批。";
+  if (status === "expired") return "请创建新的事实版本并重新审批；旧版本不会被覆盖。";
+  return "请补齐可核验的来源凭据与有效期。";
 }
 
 function toLocalDateTime(value: string) {

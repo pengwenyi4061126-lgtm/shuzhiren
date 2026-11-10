@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import type { LiveCommand, LiveCommandAction, LiveRun, LiveRunState } from "@/lib/domain";
 import { canTransition, nextStateFor } from "@/lib/live-run";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
-import { findApprovedProductVersion, frozenProductVersionStatusForRun, frozenProductVersionStatusForRunInTransaction, type ProductVersion } from "@/lib/catalog";
+import { findApprovedProductVersion, frozenProductVersionStatusForRun, frozenProductVersionStatusForRunInTransaction, isProductFactsCurrent, type ProductFacts, type ProductVersion } from "@/lib/catalog";
 import { evaluatePreflight } from "@/lib/control-plane/preflight";
 import { approveShowProgramInTransaction, getShowProgram, hasApprovedFallbackProgram, hasApprovedFallbackProgramInTransaction, registerDemoProgram, updateDemoProgramLifecycle, validateShowProgramInTransaction, type ShowProgram } from "@/lib/show-program";
 import { activeMediaAssetStatus, activeMediaAssetStatusInTransaction, currentApprovedMediaAssetsInTransaction, hasApprovedLiveRights, requiredLiveAssetKinds, runtimeVoiceForRun, runtimeVoiceForRunInTransaction, isVoiceChecksum, type RuntimeVoiceBinding } from "@/lib/assets";
@@ -20,9 +20,11 @@ import { assertLiveActivationAllowed } from "@/lib/entitlements";
 import { activePolicyProfileStatusForRun, activePolicyProfileStatusForRunInTransaction, latestApprovedPolicyProfile, policyRulesForRun } from "@/lib/policy-profiles";
 import { createReleaseManifestSnapshotInTransaction, frozenAigcLabelTextInTransaction } from "@/lib/release-manifest";
 import { creationProjectScriptReviewSha256 } from "@/lib/creation-project-review";
+import { ACTIVE_RUNTIME_GPU_RUN_STATES, RUNTIME_GPU_ADVISORY_LOCK_KEY } from "@/lib/shared/runtime-gpu-lock.mjs";
 import { aigcLabelText, evaluateAigcLabelReadiness } from "@/lib/aigc-label";
 import { aiDisclosureRuleStatus, aiDisclosureRuleStatusInTransaction } from "@/lib/interaction-rules";
 import { evaluateOverlayReadinessForRun } from "@/lib/overlay-scene";
+import { observeRuntimeSession } from "@/lib/runtime-gateway";
 import { demoRunLexicon, programScriptPolicyAuditDetail, runLexiconInTransaction } from "@/lib/prohibited-terms";
 import type { PolicyRule } from "@/lib/policy-engine";
 import { demoScriptGuardContext, frozenScripts, recordDemoScriptPlay, recordScriptPlayInTransaction, scriptGuardContextInTransaction, selectDemoScriptForDispatch, selectScriptForDispatch, type FrozenRuntimeSegment, type ScriptDispatchAction, type SelectedScript } from "@/lib/script-plays";
@@ -246,6 +248,10 @@ async function assertCreationProjectScriptReviewInTransaction(client: PoolClient
     || project.script_review_sha256 !== creationProjectScriptReviewSha256(project.product_version_id, project.script)) {
     throw new Response("Current project script must be reviewed before creating outputs", { status: 409, statusText: "creation_project_script_not_reviewed" });
   }
+  const currentVersion = await client.query<{ facts: unknown }>("select facts from product_versions where tenant_id = $1 and id = $2 and approval_status = 'approved'", [tenantId, productVersionId]);
+  if (!currentVersion.rows[0] || !isProductFactsCurrent(currentVersion.rows[0].facts as ProductFacts)) {
+    throw new Response("An approved, current product facts version is required", { status: 409, statusText: "approved_product_facts_required" });
+  }
 }
 
 export async function advanceRunLifecycle(context: RequestContext, runId: string, action: RunLifecycleAction) {
@@ -283,6 +289,7 @@ export async function advanceRunLifecycle(context: RequestContext, runId: string
     if (!run) throw new Response("Live run not found", { status: 404 });
     revisionId = run.revisionId;
     const next = lifecycleTarget(run.state, action);
+    if (action === "begin_preflight" || action === "arm") await reserveRuntimeGpuInTransaction(client, context.tenantId, action === "arm" ? run.id : null);
     if (action === "submit_review") await validateShowProgramInTransaction(client, run.id, run.revisionId, run.productVersionId);
     const approval = action === "approve" ? await approveShowProgramInTransaction(client, context, run.id, run.revisionId, run.productVersionId) : null;
     if (action === "arm" && !(await evaluateRunPreflightInTransaction(client, context, run)).passed) throw new Response("Preflight requirements are not satisfied", { status: 409 });
@@ -323,6 +330,24 @@ async function disarmPersistentRun(client: PoolClient, context: RequestContext, 
   const updated = await client.query<{ id: string }>("update live_runs set state = $2, scheduled_start_event_id = null, updated_at = now() where id = $1 and state = 'ARMED' and scheduled_start_event_id is not distinct from $3 returning id", [run.id, next, eventId]);
   if (!updated.rows[0]) throw new Response("Live run changed while cancelling activation", { status: 409 });
   return { ...run, state: next };
+}
+
+async function reserveRuntimeGpuInTransaction(client: PoolClient, tenantId: string, exceptRunId: string | null) {
+  const lock = await client.query<{ acquired: boolean }>("select pg_try_advisory_xact_lock($1::bigint) as acquired", [RUNTIME_GPU_ADVISORY_LOCK_KEY]);
+  if (!lock.rows[0]?.acquired) throw new Response("The single-GPU runtime is reserved by an offline build", { status: 409, statusText: "runtime_gpu_reserved" });
+  const tenants = await client.query<{ id: string }>("select id from tenants order by id");
+  try {
+    for (const tenant of tenants.rows) {
+      await client.query("select set_config('app.tenant_id', $1, true)", [tenant.id]);
+      const active = await client.query<{ id: string }>(
+        "select id from live_runs where state::text = any($1::text[]) and ($2::uuid is null or id <> $2::uuid) limit 1",
+        [ACTIVE_RUNTIME_GPU_RUN_STATES, exceptRunId]
+      );
+      if (active.rowCount) throw new Response("Another live run already reserves the single-GPU runtime", { status: 409, statusText: "runtime_gpu_reserved" });
+    }
+  } finally {
+    await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+  }
 }
 
 function reservesRuntimeSession(state: LiveRunState) {
@@ -386,7 +411,32 @@ export async function evaluateRunPreflightInTransaction(client: PoolClient, cont
   // The run's sealed label text (release manifest snapshot), then the Gateway health with a bounded timeout.
   const aigcLabel = await evaluateAigcLabelReadiness(await frozenAigcLabelTextInTransaction(client, run.id) ?? aigcLabelText());
   const overlay = await evaluateOverlayReadinessForRun(client, run.id);
-  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay, hasFallbackProgram });
+  const projectAvatar = await projectAvatarReadinessInTransaction(client, context, run);
+  return composeRunPreflight(run, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay, projectAvatar, hasFallbackProgram });
+}
+
+async function projectAvatarReadinessInTransaction(client: PoolClient, context: RequestContext, run: StoredRun) {
+  const binding = await client.query<{ project_id: string; project_revision: number | null; current_project_revision: number | null; avatar_build_job_id: string | null; job_project_revision: number | null; status: string | null; review_status: string | null; publish_status: string | null; runtime_avatar_id: string | null }>(`select output.project_id, output.project_revision,
+      project.revision as current_project_revision, output.avatar_build_job_id, job.project_revision as job_project_revision,
+      job.status, job.review_status, job.publish_status, job.runtime_avatar_id
+    from creation_project_live_outputs output
+    left join creation_projects project on project.tenant_id = output.tenant_id and project.id = output.project_id
+    left join avatar_build_jobs job on job.tenant_id = output.tenant_id and job.project_id = output.project_id and job.id = output.avatar_build_job_id
+    where output.tenant_id = $1 and output.live_run_id = $2`, [context.tenantId, run.id]);
+  const row = binding.rows[0];
+  if (!row) return { passed: true, detail: "非内容项目场次，无项目 Avatar 绑定要求" };
+  if (!row.avatar_build_job_id || row.project_revision !== row.current_project_revision || row.job_project_revision !== row.current_project_revision || row.status !== "preview_ready" || row.review_status !== "approved" || row.publish_status !== "published" || !row.runtime_avatar_id || !/^sr_[0-9a-f]{32}$/.test(row.runtime_avatar_id)) {
+    return { passed: false, detail: "项目形象未发布或项目修订已变化，请重新审核并选择当前形象" };
+  }
+  if (!run.runtimeSessionId) return { passed: false, detail: "项目形象已就绪，但尚未绑定 LiveTalking 会话" };
+  try {
+    const observation = await observeRuntimeSession(run.runtimeSessionId);
+    if (!observation.session.active) return { passed: false, detail: "绑定的 LiveTalking 会话当前不活跃" };
+    if (observation.session.avatarId !== row.runtime_avatar_id) return { passed: false, detail: observation.session.avatarId ? `当前会话形象 ${observation.session.avatarId} 与项目形象不一致` : "运行时未报告当前会话 Avatar ID" };
+    return { passed: true, detail: `运行时已加载项目形象 ${row.runtime_avatar_id}`, runtimeAvatarId: row.runtime_avatar_id };
+  } catch {
+    return { passed: false, detail: "无法读取 LiveTalking 会话形象，项目直播预检未通过" };
+  }
 }
 
 type RunPreflightInputs = {
@@ -399,10 +449,11 @@ type RunPreflightInputs = {
   aiDisclosureRule: { passed: boolean; detail: string };
   aigcLabel: { passed: boolean; detail: string };
   overlay: { passed: boolean; detail: string };
+  projectAvatar?: { passed: boolean; detail: string };
   hasFallbackProgram: boolean;
 };
 
-function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay, hasFallbackProgram }: RunPreflightInputs) {
+function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, modelRelease, mediaAssets, product, aiDisclosureRule, aigcLabel, overlay, projectAvatar = { passed: true, detail: "非内容项目场次，无项目 Avatar 绑定要求" }, hasFallbackProgram }: RunPreflightInputs) {
   return evaluatePreflight({
     ...run,
     hasApprovedRights: mediaAssets.active,
@@ -427,7 +478,9 @@ function composeRunPreflight(run: StoredRun, { channel, runtime, policyProfile, 
     aigcLabelReady: aigcLabel.passed,
     aigcLabelDetail: aigcLabel.detail,
     overlayReady: overlay.passed,
-    overlayDetail: overlay.detail
+    overlayDetail: overlay.detail,
+    projectAvatarReady: projectAvatar.passed,
+    projectAvatarDetail: projectAvatar.detail
   });
 }
 
@@ -499,6 +552,8 @@ export async function issueCommand(context: RequestContext, runId: string, input
     if (input.action === "RECOVER" && !(await evaluateRuntimeReadinessInTransaction(client, context, run.id)).passed) {
       throw new Response("Runtime health is not ready for recovery", { status: 409 });
     }
+    const projectAvatar = requiresActivationConfirmation ? await projectAvatarReadinessInTransaction(client, context, run) : undefined;
+    if (projectAvatar && !projectAvatar.passed) throw new Response("Project Avatar is not loaded in the bound LiveTalking session", { status: 409, statusText: "project_avatar_not_ready" });
     if (input.action === "START" || input.action === "RECOVER") await assertLiveActivationAllowed(client, context, run.id);
     if (requiresActivationConfirmation) {
       const pending = await client.query<{ scheduled_start_event_id: string | null }>("select scheduled_start_event_id from live_runs where id = $1", [run.id]);
@@ -526,7 +581,7 @@ export async function issueCommand(context: RequestContext, runId: string, input
     );
     const command = persistentCommand(inserted.rows[0]);
     const overlayScene = input.action === "START" || input.action === "RECOVER" ? await overlaySceneForRunInTransaction(client, run) : undefined;
-    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript, overlayScene)), run.runtimeSessionId);
+    const mediaEvent = await enqueueMediaCommandInTransaction(client, context, createMediaCommand(mediaCommandFor(run, input.action, programTransition, activationProgram, programVoice, selectedScript, overlayScene, projectAvatar?.runtimeAvatarId)), run.runtimeSessionId);
     // The command, its outbox event, the rotation ledger row and their audit events commit together: a failed
     // write rolls back the command instead of leaving an unaudited command queued for the runtime.
     for (const event of commandAuditEvents(runId, input, command, mediaEvent)) await recordAuditEventInTransaction(client, context, event);
@@ -759,7 +814,7 @@ function demoOverlaySceneForRun(run: StoredRun) {
   return { sceneJson: record.sceneJson, sceneSha256: record.sceneSha256 };
 }
 
-export function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment, voice?: RuntimeVoiceBinding, selected?: SelectedScript, overlayScene?: { sceneJson: string; sceneSha256: string }): Omit<MediaCommand, "id" | "issuedAt"> {
+export function mediaCommandFor(run: StoredRun, action: LiveCommandAction, transition?: ProgramTransition, activationProgram?: FrozenRuntimeSegment, voice?: RuntimeVoiceBinding, selected?: SelectedScript, overlayScene?: { sceneJson: string; sceneSha256: string }, runtimeAvatarId?: string): Omit<MediaCommand, "id" | "issuedAt"> {
   const typeByAction = { START: "start_program", PAUSE: "switch_to_fallback", HANDOFF: "switch_to_human", RECOVER: "start_program", END: "stop_program", INSERT_PROGRAM: "insert_program", ROLLBACK_PROGRAM: "resume_program" } as const;
   // START/RECOVER carry the activation baseline segment and INSERT/ROLLBACK their target, each with the
   // frozen voice that the Gateway synthesizes the script with.
@@ -770,7 +825,8 @@ export function mediaCommandFor(run: StoredRun, action: LiveCommandAction, trans
   if (segment && (!selected || selected.segmentId !== segment.id)) throw new Error("A dispatched program segment requires its selected script version");
   const segmentPayload: Record<string, string> = segment && selected && voice ? { programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtimeVoiceId, voiceChecksum: voice.voiceChecksum } : {};
   const overlayPayload: MediaCommandPayload = (action === "START" || action === "RECOVER") && overlayScene ? { overlaySceneJson: overlayScene.sceneJson, overlaySceneSha256: overlayScene.sceneSha256 } : {};
-  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...transitionPayload, ...segmentPayload, ...overlayPayload } };
+  const avatarPayload: MediaCommandPayload = (action === "START" || action === "RECOVER") && runtimeAvatarId ? { runtimeAvatarId } : {};
+  return { runId: run.id, traceId: run.traceId, type: typeByAction[action], payload: { controlAction: action, ...transitionPayload, ...segmentPayload, ...overlayPayload, ...avatarPayload } };
 }
 
 export async function bindRuntimeSession(context: RequestContext, runId: string, runtimeSessionId: string) {

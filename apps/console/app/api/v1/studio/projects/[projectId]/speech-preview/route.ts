@@ -3,6 +3,7 @@ import { isRuntimeVoiceId, isVoiceChecksum, listAssets } from "@/lib/assets";
 import { assertCreationProjectScriptReviewed, listCreationProjects } from "@/lib/creation-projects";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { RuntimeGatewayError, synthesizeRuntimeSpeechPreview } from "@/lib/runtime-gateway";
+import { isAssetCurrentlyUsable } from "@/lib/shared/asset-eligibility.mjs";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,7 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/stud
     const voiceAssetId = (body as { voiceAssetId: string }).voiceAssetId;
     if (!project.assetIds.includes(voiceAssetId)) return Response.json({ error: "voice_asset_not_attached" }, { status: 409 });
     const asset = (await listAssets(actor)).find((item) => item.id === voiceAssetId);
-    if (!asset || asset.kind !== "voice" || asset.approval !== "approved" || (asset.expiresAt && asset.expiresAt < new Date().toISOString().slice(0, 10))
+    if (!asset || asset.kind !== "voice" || !isAssetCurrentlyUsable(asset)
       || !isRuntimeVoiceId(asset.runtimeVoiceId) || !isVoiceChecksum(asset.checksum) || !asset.contentVerification) {
       return Response.json({ error: "approved_runtime_voice_required" }, { status: 409 });
     }

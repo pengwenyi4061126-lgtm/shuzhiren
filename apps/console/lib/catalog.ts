@@ -2,6 +2,8 @@ import type { PoolClient } from "pg";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
+import { isProductFactsCurrent } from "@/lib/shared/product-facts-current.mjs";
+export { isProductFactsCurrent } from "@/lib/shared/product-facts-current.mjs";
 
 export type ProductFacts = { priceCent: number; unitCostCent?: number; stock: number; highlights: string[]; faq: string[]; sourceRef: string; sourceSyncedAt: string; validFrom: string; validUntil?: string };
 export type ProductVersion = { id: string; revision: number; status: "draft" | "approved" | "rejected"; facts: ProductFacts; createdAt: string; approvedAt?: string };
@@ -232,16 +234,6 @@ function persistentVersion(row: { id: string; revision: number; approval_status:
     createdAt: new Date(row.created_at).toISOString(),
     approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : undefined
   };
-}
-
-export function isProductFactsCurrent(facts: ProductFacts, now = new Date()) {
-  const syncedAt = Date.parse(facts.sourceSyncedAt);
-  const validFrom = Date.parse(facts.validFrom);
-  const validUntil = facts.validUntil ? Date.parse(facts.validUntil) : undefined;
-  if (!facts.sourceRef.trim() || !Number.isFinite(syncedAt) || !Number.isFinite(validFrom)) return false;
-  if (syncedAt > now.getTime() + 5 * 60_000 || now.getTime() - syncedAt > 24 * 60 * 60_000) return false;
-  if (validFrom > now.getTime()) return false;
-  return validUntil === undefined || (Number.isFinite(validUntil) && validUntil > now.getTime());
 }
 
 function databaseErrorCode(error: unknown) {

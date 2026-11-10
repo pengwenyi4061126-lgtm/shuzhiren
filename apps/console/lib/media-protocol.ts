@@ -1,4 +1,4 @@
-export type MediaCommandPayload = Record<string, string> & { overlaySceneJson?: string; overlaySceneSha256?: string };
+export type MediaCommandPayload = Record<string, string> & { overlaySceneJson?: string; overlaySceneSha256?: string; runtimeAvatarId?: string };
 export type MediaCommand = {
   id: string;
   runId: string;

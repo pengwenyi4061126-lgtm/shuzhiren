@@ -1,6 +1,6 @@
 # Media Evidence Verifier
 
-This private Node service implements the upload-grant, object-verification, and download-grant endpoints in [`docs/MEDIA_UPLOAD_CONTRACT.md`](../../docs/MEDIA_UPLOAD_CONTRACT.md). It uses only Node built-ins. The control plane receives signed URLs and evidence metadata, never object-storage credentials.
+This private Node service implements the upload-grant, object-verification, and download-grant endpoints in [`docs/MEDIA_UPLOAD_CONTRACT.md`](../../docs/MEDIA_UPLOAD_CONTRACT.md). It uses Node built-ins for the S3-compatible protocol and an isolated `ffprobe` process for photo-narration archive quality checks. The control plane receives signed URLs and evidence metadata, never object-storage credentials.
 
 ## Configuration
 
@@ -36,6 +36,7 @@ MinIO publishes only loopback ports. This Compose stack is for development and l
 
 - Upload grants are bound to tenant UUID, supported kind/MIME, SHA-256 hex and base64 digests, and a maximum 100 MiB file. Keys use an opaque UUID under the tenant prefix. Grants last 15 minutes and sign only the host, content type, and SHA-256 checksum header.
 - Verification reads the stored bytes, enforces the size limit, calculates SHA-256, detects supported JPEG, PNG, MP4, WebM, WAV, MP3, or Ogg content, and requires a non-null immutable S3 version ID.
+- Project photo-narration verification additionally probes the stored WebM and requires a 720x1280 video stream, an audio stream, and a finite duration from 1 to 300 seconds. At most two ffprobe processes run concurrently; overload and probe failures fail closed. The version-bound report is stored with the immutable project recording.
 - Download grants re-read and hash the exact requested version, include that version in the signed GET, set an attachment filename, and last five minutes.
 - API errors do not return storage endpoint credentials, object bytes, or signed URLs beyond the grant response that was requested. `/healthz` is the only unauthenticated route.
 
@@ -43,7 +44,7 @@ MinIO publishes only loopback ports. This Compose stack is for development and l
 
 ```sh
 node services/media-evidence-verifier/server.mjs
-node --test services/media-evidence-verifier/test.mjs
+npm run media:evidence:service:test
 ```
 
-The tests use a local fake S3 endpoint and verify SigV4 signatures independently. The container image is built from `services/media-evidence-verifier/Dockerfile`. A production deployment still needs a versioned private bucket, dedicated credentials, HTTPS routing, and an end-to-end browser upload/download check.
+The tests use a local fake S3 endpoint and injected ffprobe results; the container image build separately installs ffmpeg and checks that `ffprobe` is executable. A production deployment still needs a versioned private bucket, dedicated credentials, HTTPS routing, and an end-to-end browser upload/download check.

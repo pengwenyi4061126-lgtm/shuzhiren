@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { after, before, test } from "node:test";
 import { createMediaEvidenceServer, initializeDevelopmentBucket } from "./server.mjs";
@@ -31,7 +32,10 @@ before(async () => {
   await new Promise((resolve) => s3.listen(0, "127.0.0.1", resolve));
   const s3Address = s3.address();
   const endpoint = `http://127.0.0.1:${s3Address.port}`;
-  media = createMediaEvidenceServer({ token, bucket: "test-media-bucket", region: "us-east-1", accessKey: "access-key-123", secretKey: "s".repeat(40), internalEndpoint: endpoint, publicEndpoint: endpoint });
+  media = createMediaEvidenceServer({ token, bucket: "test-media-bucket", region: "us-east-1", accessKey: "access-key-123", secretKey: "s".repeat(40), internalEndpoint: endpoint, publicEndpoint: endpoint }, fetch, async (filePath) => {
+    assert.ok((await readFile(filePath)).length > 0);
+    return { stdout: JSON.stringify({ streams: [{ codec_type: "video", width: 720, height: 1280 }, { codec_type: "audio" }], format: { duration: "42.5" } }) };
+  });
   await new Promise((resolve) => media.listen(0, "127.0.0.1", resolve));
   mediaBase = `http://127.0.0.1:${media.address().port}`;
 });
@@ -76,7 +80,26 @@ test("download grants bind the exact version, checksum and attachment name", asy
   assert.match(download.searchParams.get("response-content-disposition"), /filename\*=UTF-8''/);
   assert.match(download.searchParams.get("X-Amz-Signature"), /^[a-f0-9]{64}$/);
   assertValidPresignedSignature(grant.downloadUrl, "GET", {});
+  const inlineResponse = await post("/v1/media-evidence/download-grant", { tenantId, objectKey: uploadedObjectKey, objectVersion: "version-001", expectedChecksum: checksum, fileName: "项目成片.webm", disposition: "inline" });
+  assert.equal(inlineResponse.status, 200);
+  const inlineGrant = await inlineResponse.json();
+  assert.equal(new URL(inlineGrant.downloadUrl).searchParams.get("response-content-disposition"), "inline");
+  assertValidPresignedSignature(inlineGrant.downloadUrl, "GET", {});
+  assert.equal((await post("/v1/media-evidence/download-grant", { tenantId, objectKey: uploadedObjectKey, objectVersion: "version-001", expectedChecksum: checksum, fileName: "clip.webm", disposition: "attachment; filename=unsafe" })).status, 400);
   assert.equal((await post("/v1/media-evidence/download-grant", { tenantId, objectKey: "other-tenant/forged.jpg", objectVersion: "version-001", expectedChecksum: checksum, fileName: "clip.webm" })).status, 400);
+});
+
+test("photo narration archive verification returns an independent server quality report", async () => {
+  const webm = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x02, 0x03]);
+  const webmChecksum = `sha256:${createHash("sha256").update(webm).digest("hex")}`;
+  const grantResponse = await post("/v1/media-evidence/upload-grant", { tenantId, kind: "product_clip", checksum: webmChecksum, checksumBase64: Buffer.from(webmChecksum.slice(7), "hex").toString("base64"), contentType: "video/webm", bytes: webm.length });
+  assert.equal(grantResponse.status, 200);
+  const grant = await grantResponse.json();
+  assert.equal((await fetch(grant.uploadUrl, { method: "PUT", headers: grant.headers, body: webm })).status, 200);
+  const response = await post("/v1/media-evidence/verify", { tenantId, kind: "product_clip", objectKey: grant.objectKey, expectedChecksum: webmChecksum, qualityProfile: "photo-narration-webm" });
+  assert.equal(response.status, 200);
+  const proof = await response.json();
+  assert.deepEqual(proof.recordingQuality, { status: "verified", profile: "photo-narration-webm", videoWidth: 720, videoHeight: 1280, audioTrackCount: 1, durationSeconds: 42.5, verifier: "ffprobe" });
 });
 
 function assertValidPresignedSignature(rawUrl, method, extraHeaders) {

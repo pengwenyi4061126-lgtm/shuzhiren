@@ -1,3 +1,16 @@
+export function buildLiveOutputRequest(input) {
+  const request = {
+    showName: input.showName,
+    ...(input.scheduledAt ? { scheduledAt: new Date(input.scheduledAt).toISOString() } : {}),
+    channelConnectionId: input.channelConnectionId,
+    productVersionId: input.productVersionId,
+    creationProjectId: input.creationProjectId,
+    mediaAssetIds: [...new Set(input.mediaAssetIds)],
+    aiDisclosureEnabled: true
+  };
+  return { request, requestFingerprint: JSON.stringify({ request, avatarBuildJobId: input.avatarBuildJobId }) };
+}
+
 export function canResumeLiveOutput(pending, projectId, requestFingerprint) {
   return Boolean(pending
     && pending.projectId === projectId
@@ -17,6 +30,7 @@ export function readLiveOutputCheckpoint(storage, projectId) {
     if (!serialized) return null;
     const pending = JSON.parse(serialized);
     const request = pending?.request;
+    const avatarBuildJobId = pending?.avatarBuildJobId;
     const validRequest = request && typeof request.showName === "string"
       && typeof request.channelConnectionId === "string"
       && typeof request.productVersionId === "string"
@@ -24,9 +38,10 @@ export function readLiveOutputCheckpoint(storage, projectId) {
       && request.aiDisclosureEnabled === true
       && Array.isArray(request.mediaAssetIds)
       && (request.scheduledAt === undefined || typeof request.scheduledAt === "string");
+    const validAvatar = typeof avatarBuildJobId === "string" && avatarBuildJobId.length > 0;
     const validRun = pending?.run === null || (pending?.run && typeof pending.run.id === "string" && typeof pending.run.showName === "string");
-    if (!validRequest || !validRun || !canResumeLiveOutput(pending, projectId, pending.requestFingerprint)
-      || JSON.stringify(request) !== pending.requestFingerprint) {
+    if (!validRequest || !validAvatar || !validRun || !canResumeLiveOutput(pending, projectId, pending.requestFingerprint)
+      || JSON.stringify({ request, avatarBuildJobId }) !== pending.requestFingerprint) {
       storage.removeItem(checkpointKey(projectId));
       return null;
     }

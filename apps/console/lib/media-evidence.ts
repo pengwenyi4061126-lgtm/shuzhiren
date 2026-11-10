@@ -9,7 +9,10 @@ export type MediaContentVerification = {
   contentType: string;
   evidenceRef: string;
   verifiedAt: string;
+  recordingQuality?: PhotoNarrationQualityReport;
 };
+
+export type PhotoNarrationQualityReport = { status: "verified"; profile: "photo-narration-webm"; videoWidth: 720; videoHeight: 1280; audioTrackCount: number; durationSeconds: number; verifier: "ffprobe" };
 
 type VerifierConfig = { url?: string; token?: string; demoMode: boolean; timeoutMs: number };
 
@@ -34,7 +37,7 @@ export async function createMediaUploadGrant(context: { tenantId: string }, inpu
   return validateUploadGrant(await response.json(), input);
 }
 
-export async function createMediaDownloadGrant(context: { tenantId: string }, input: { objectKey: string; objectVersion: string; checksum: string; fileName: string }): Promise<MediaDownloadGrant> {
+export async function createMediaDownloadGrant(context: { tenantId: string }, input: { objectKey: string; objectVersion: string; checksum: string; fileName: string; disposition?: "attachment" | "inline" }): Promise<MediaDownloadGrant> {
   if (!isSafeObjectKey(input.objectKey) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.objectVersion) || !isSha256Digest(input.checksum)
     || input.fileName.length < 1 || input.fileName.length > 160 || /[\\/:*?"<>|\u0000-\u001f]/.test(input.fileName)) {
     throw new Response("Media download input is invalid", { status: 400 });
@@ -44,7 +47,7 @@ export async function createMediaDownloadGrant(context: { tenantId: string }, in
   const response = await fetch(`${config.url}/v1/media-evidence/download-grant`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ tenantId: context.tenantId, objectKey: input.objectKey, objectVersion: input.objectVersion, expectedChecksum: input.checksum, fileName: input.fileName }),
+    body: JSON.stringify({ tenantId: context.tenantId, objectKey: input.objectKey, objectVersion: input.objectVersion, expectedChecksum: input.checksum, fileName: input.fileName, ...(input.disposition ? { disposition: input.disposition } : {}) }),
     cache: "no-store",
     signal: AbortSignal.timeout(config.timeoutMs)
   });
@@ -52,17 +55,32 @@ export async function createMediaDownloadGrant(context: { tenantId: string }, in
   return validateDownloadGrant(await response.json());
 }
 
-export async function verifyMediaAssetContent(context: { tenantId: string }, input: Pick<CreateMediaAssetInput, "kind" | "objectKey" | "checksum">): Promise<MediaContentVerification> {
+export async function verifyMediaAssetContent(context: { tenantId: string }, input: Pick<CreateMediaAssetInput, "kind" | "objectKey" | "checksum"> & { qualityProfile?: "photo-narration-webm" }): Promise<MediaContentVerification> {
   const config = verifierConfig();
-  if (config.demoMode) return { objectVersion: "demo", bytes: 1, contentType: expectedContentType(input.kind), evidenceRef: "demo://media-evidence", verifiedAt: new Date().toISOString() };
+  if (config.demoMode) {
+    if (input.qualityProfile) throw new Response("Independent recording quality verification is unavailable in demo mode", { status: 503 });
+    return { objectVersion: "demo", bytes: 1, contentType: expectedContentType(input.kind), evidenceRef: "demo://media-evidence", verifiedAt: new Date().toISOString() };
+  }
   const response = await fetch(`${config.url}/v1/media-evidence/verify`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ tenantId: context.tenantId, kind: input.kind, objectKey: input.objectKey, expectedChecksum: input.checksum }),
+    body: JSON.stringify({ tenantId: context.tenantId, kind: input.kind, objectKey: input.objectKey, expectedChecksum: input.checksum, ...(input.qualityProfile ? { qualityProfile: input.qualityProfile } : {}) }),
     cache: "no-store",
     signal: AbortSignal.timeout(config.timeoutMs)
   });
-  if (!response.ok) throw new Response("Media evidence verification failed", { status: 502 });
+  if (!response.ok) {
+    const verifierError = await response.json().catch(() => null) as { error?: unknown } | null;
+    const qualityErrorCodes = new Set([
+      "recording_quality_probe_busy", "recording_quality_probe_unavailable", "recording_quality_probe_timeout",
+      "recording_quality_decode_failed", "recording_quality_invalid_probe_output", "recording_quality_video_track_missing",
+      "recording_quality_dimensions_invalid", "recording_quality_audio_track_missing", "recording_quality_duration_invalid"
+    ]);
+    if (input.qualityProfile && typeof verifierError?.error === "string" && qualityErrorCodes.has(verifierError.error)) {
+      const retryable = ["recording_quality_probe_busy", "recording_quality_probe_unavailable", "recording_quality_probe_timeout"].includes(verifierError.error);
+      throw new Response("Independent recording quality verification failed", { status: retryable ? 503 : 422, statusText: verifierError.error });
+    }
+    throw new Response("Media evidence verification failed", { status: 502 });
+  }
   return validateVerification(await response.json(), input);
 }
 
@@ -86,7 +104,7 @@ function boundedTimeout() {
   return value;
 }
 
-function validateVerification(value: unknown, input: Pick<CreateMediaAssetInput, "kind" | "objectKey" | "checksum">): MediaContentVerification {
+function validateVerification(value: unknown, input: Pick<CreateMediaAssetInput, "kind" | "objectKey" | "checksum"> & { qualityProfile?: "photo-narration-webm" }): MediaContentVerification {
   if (!value || typeof value !== "object") throw new Response("Media evidence verifier response is invalid", { status: 502 });
   const proof = value as Record<string, unknown>;
   if (proof.objectKey !== input.objectKey || proof.checksum !== input.checksum || !isSafeObjectKey(proof.objectKey) || !isSha256Digest(proof.checksum)
@@ -98,7 +116,16 @@ function validateVerification(value: unknown, input: Pick<CreateMediaAssetInput,
   const verifiedAt = new Date(proof.verifiedAt);
   const age = Date.now() - verifiedAt.getTime();
   if (Number.isNaN(verifiedAt.getTime()) || age < -60_000 || age > 10 * 60_000) throw new Response("Media evidence verifier response is invalid", { status: 502 });
-  return { objectVersion: proof.objectVersion, bytes: proof.bytes, contentType: normalizedContentType(proof.contentType), evidenceRef: proof.evidenceRef, verifiedAt: verifiedAt.toISOString() };
+  let recordingQuality: PhotoNarrationQualityReport | undefined;
+  if (input.qualityProfile) {
+    const report = proof.recordingQuality as Record<string, unknown> | undefined;
+    if (!report || report.status !== "verified" || report.profile !== input.qualityProfile || report.videoWidth !== 720 || report.videoHeight !== 1280
+      || !Number.isSafeInteger(report.audioTrackCount) || Number(report.audioTrackCount) < 1
+      || typeof report.durationSeconds !== "number" || !Number.isFinite(report.durationSeconds) || report.durationSeconds < 1 || report.durationSeconds > 300
+      || report.verifier !== "ffprobe" || normalizedContentType(proof.contentType) !== "video/webm") throw new Response("Independent recording quality evidence is invalid", { status: 502 });
+    recordingQuality = report as PhotoNarrationQualityReport;
+  }
+  return { objectVersion: proof.objectVersion, bytes: proof.bytes, contentType: normalizedContentType(proof.contentType), evidenceRef: proof.evidenceRef, verifiedAt: verifiedAt.toISOString(), ...(recordingQuality ? { recordingQuality } : {}) };
 }
 
 function validateUploadGrant(value: unknown, input: { checksumBase64: string; contentType: string }): MediaUploadGrant {

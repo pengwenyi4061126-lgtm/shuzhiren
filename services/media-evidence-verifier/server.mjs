@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { inspectPhotoNarrationWebm } from "./recording-quality.mjs";
 
 const MAX_BYTES = 100 * 1024 * 1024;
 const MAX_CONCURRENT_OBJECT_READS = 2;
@@ -16,7 +17,7 @@ const MIME_BY_KIND = {
   overlay_background: new Set(["image/jpeg", "image/png"])
 };
 
-export function createMediaEvidenceServer(config, fetchImpl = fetch) {
+export function createMediaEvidenceServer(config, fetchImpl = fetch, recordingProbe) {
   const settings = validateConfig(config);
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -26,7 +27,7 @@ export function createMediaEvidenceServer(config, fetchImpl = fetch) {
     try {
       const input = await readJson(request);
       if (url.pathname.endsWith("/upload-grant")) return json(response, 200, await uploadGrant(settings, input));
-      if (url.pathname.endsWith("/verify")) return json(response, 200, await verifyObject(settings, input, fetchImpl));
+      if (url.pathname.endsWith("/verify")) return json(response, 200, await verifyObject(settings, input, fetchImpl, recordingProbe));
       return json(response, 200, await downloadGrant(settings, input, fetchImpl));
     } catch (error) {
       const status = error?.status ?? 500;
@@ -82,7 +83,7 @@ async function uploadGrant(config, input) {
   return { objectKey, uploadUrl: presignedUrl(config, "PUT", objectKey, 900, headers), headers, expiresAt: expiresAt.toISOString() };
 }
 
-async function verifyObject(config, input, fetchImpl) {
+async function verifyObject(config, input, fetchImpl, recordingProbe) {
   const tenantId = requireTenant(input.tenantId);
   const objectKey = requireObjectKey(input.objectKey, tenantId);
   const expectedChecksum = requireChecksum(input.expectedChecksum);
@@ -90,7 +91,12 @@ async function verifyObject(config, input, fetchImpl) {
   if (object.checksum !== expectedChecksum) throw fault(409, "checksum_mismatch");
   const contentType = detectContentType(object.bytes);
   if (!contentType || !MIME_BY_KIND[input.kind]?.has(contentType)) throw fault(415, "unsupported_content");
-  return { objectKey, checksum: object.checksum, objectVersion: object.version, bytes: object.bytes.length, contentType, evidenceRef: `urn:media-evidence:${randomUUID()}`, verifiedAt: new Date().toISOString() };
+  let recordingQuality;
+  if (input.qualityProfile !== undefined) {
+    if (input.qualityProfile !== "photo-narration-webm" || input.kind !== "product_clip" || contentType !== "video/webm") throw fault(400, "invalid_quality_profile");
+    recordingQuality = await inspectPhotoNarrationWebm(object.bytes, recordingProbe);
+  }
+  return { objectKey, checksum: object.checksum, objectVersion: object.version, bytes: object.bytes.length, contentType, ...(recordingQuality ? { recordingQuality } : {}), evidenceRef: `urn:media-evidence:${randomUUID()}`, verifiedAt: new Date().toISOString() };
 }
 
 async function downloadGrant(config, input, fetchImpl) {
@@ -99,9 +105,11 @@ async function downloadGrant(config, input, fetchImpl) {
   const version = requireVersion(input.objectVersion);
   const expectedChecksum = requireChecksum(input.expectedChecksum);
   const fileName = requireFileName(input.fileName);
+  const dispositionMode = input.disposition ?? "attachment";
+  if (dispositionMode !== "attachment" && dispositionMode !== "inline") throw fault(400, "invalid_disposition");
   const object = await readObject(config, objectKey, version, fetchImpl);
   if (object.checksum !== expectedChecksum || object.version !== version) throw fault(409, "object_version_mismatch");
-  const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+  const disposition = dispositionMode === "inline" ? "inline" : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`;
   const expiresAt = new Date(Date.now() + 5 * 60_000);
   return { downloadUrl: presignedUrl(config, "GET", objectKey, 300, {}, { versionId: version, "response-content-disposition": disposition, "response-content-type": object.contentType }), expiresAt: expiresAt.toISOString() };
 }

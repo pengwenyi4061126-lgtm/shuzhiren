@@ -2,6 +2,7 @@ import { readBoundedJson } from "@/lib/bounded-json";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
 import { bindRuntimeSession, canBindRuntimeSession, getRun } from "@/lib/control-plane/store";
 import { observeRuntimeSession } from "@/lib/runtime-gateway";
+import { isRuntimeSessionId } from "@/lib/shared/runtime-session-id.mjs";
 
 export const dynamic = "force-dynamic";
 
@@ -33,5 +34,5 @@ export async function PUT(request: Request, context: RouteContext<"/api/v1/live-
 }
 
 function isBinding(value: unknown): value is { runtimeSessionId: string } {
-  return Boolean(value) && typeof value === "object" && typeof (value as Record<string, unknown>).runtimeSessionId === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test((value as Record<string, string>).runtimeSessionId);
+  return Boolean(value) && typeof value === "object" && isRuntimeSessionId((value as Record<string, unknown>).runtimeSessionId);
 }

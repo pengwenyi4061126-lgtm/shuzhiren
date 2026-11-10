@@ -2,43 +2,48 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { AudioLines, CircleAlert, CloudUpload, Download, Mic, Square } from "lucide-react";
+import { AudioLines, CircleAlert, CloudUpload, Download, Eye, Mic, Square, X } from "lucide-react";
 import type { CreationProject } from "@/lib/creation-projects";
 import { clientFetch } from "@/lib/client-request";
 import { listProjectRecordings, saveProjectRecording, updateProjectRecordingArchive, type ProjectRecordingOutput } from "@/lib/project-recording-vault";
 import { getPhotoSource } from "@/lib/photo-source-vault";
-import { photoNarrationQualityProblems } from "@/lib/photo-recording-quality.mjs";
+import { photoNarrationQualityProblems, photoRecordingArchiveQualityError } from "@/lib/photo-recording-quality.mjs";
+import { formatCnyPrice, recordingHighlights } from "@/lib/shared/recording-facts.mjs";
+import { photoMotionAt } from "@/lib/shared/photo-recording-motion.mjs";
 import { splitNarrationScript } from "@/lib/shared/content-script.mjs";
 import styles from "./photo-recording-composer.module.css";
 
 type PhotoAsset = { id: string; name: string; checksum: string };
 type VoiceAsset = { id: string; name: string; runtimeVoiceId: string; checksum: string };
-type ServerRecording = { id: string; fileName: string; bytes: number; createdAt: string };
+type ServerRecording = { id: string; fileName: string; bytes: number; createdAt: string; recordingQuality?: { status: "verified" | "legacy_unverified"; durationSeconds?: number; audioTrackCount?: number } };
 
-export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, script, projectName, projectId, productVersionId, onEnsureProject, onRecordingSaved, canCreate }: { photos: PhotoAsset[]; voiceAssets: VoiceAsset[]; selectedPhotoIds: string[]; script: string; projectName: string; projectId: string; productVersionId: string; onEnsureProject: () => Promise<CreationProject>; onRecordingSaved: (result: { localSaved: boolean; serverArchived: boolean }) => void; canCreate: boolean }) {
+export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, script, projectName, productName, productPriceCent, productHighlights, projectId, productVersionId, onEnsureProject, onRecordingSaved, canCreate }: { photos: PhotoAsset[]; voiceAssets: VoiceAsset[]; selectedPhotoIds: string[]; script: string; projectName: string; productName: string; productPriceCent: number; productHighlights: string[]; projectId: string; productVersionId: string; onEnsureProject: () => Promise<CreationProject>; onRecordingSaved: (result: { localSaved: boolean; serverArchived: boolean }) => void; canCreate: boolean }) {
   const preferred = photos.find((photo) => selectedPhotoIds.includes(photo.id)) ?? photos[0];
   const [photoId, setPhotoId] = useState(preferred?.id ?? "");
   const [imageFile, setImageFile] = useState<File | null>(null);
-  const [photoSourceStatus, setPhotoSourceStatus] = useState(preferred ? "正在查找此设备上的照片副本…" : "请先选择一张项目照片。");
+  const [photoSourceStatus, setPhotoSourceStatus] = useState(preferred ? "正在查找已批准的项目照片…" : "请先选择一张项目照片。");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [recordedAudio, setRecordedAudio] = useState<Blob | null>(null);
   const [generatedAudio, setGeneratedAudio] = useState<{ blob: Blob; script: string; voiceAssetId: string } | null>(null);
   const [voiceAssetId, setVoiceAssetId] = useState(voiceAssets[0]?.id ?? "");
   const [recording, setRecording] = useState(false);
   const [working, setWorking] = useState(false);
+  const [renderProgress, setRenderProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [archiveNotice, setArchiveNotice] = useState("");
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const [qualityCheckPassed, setQualityCheckPassed] = useState(false);
   const [videoProjectId, setVideoProjectId] = useState(projectId);
-  const [videoSnapshot, setVideoSnapshot] = useState<{ script: string; photoAssetId: string; projectName: string; productVersionId?: string; voiceAssetId: string | null } | null>(null);
+  const [videoSnapshot, setVideoSnapshot] = useState<{ script: string; photoAssetId: string; projectName: string; productVersionId?: string; productName?: string; productPriceCent?: number; productHighlights?: string[]; voiceAssetId: string | null } | null>(null);
   const [reviewed, setReviewed] = useState(false);
   const [audioUrl, setAudioUrl] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
   const [savedOutputs, setSavedOutputs] = useState<ProjectRecordingOutput[]>([]);
   const [serverOutputs, setServerOutputs] = useState<ServerRecording[]>([]);
+  const [serverPreview, setServerPreview] = useState<{ recordingId: string; url: string; expiresAt: string } | null>(null);
   const [selectedOutputId, setSelectedOutputId] = useState("");
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const renderAbortRef = useRef<AbortController | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const audioUrlRef = useRef("");
@@ -50,7 +55,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
   const audioBlob = recordedAudio ?? audioFile ?? (generatedAudioMatches ? generatedAudio?.blob ?? null : null);
   const savedOutput = savedOutputs.find((output) => output.id === selectedOutputId) ?? savedOutputs[0] ?? null;
   const selectedSavedOutput = Boolean(savedOutput && savedOutput.projectId === projectId && savedOutput.blob === videoBlob);
-  const previewDiffersFromProject = Boolean(videoSnapshot && (videoSnapshot.script !== script || videoSnapshot.photoAssetId !== activePhotoId || videoSnapshot.projectName !== projectName || videoSnapshot.productVersionId !== productVersionId || (videoSnapshot.voiceAssetId !== null && videoSnapshot.voiceAssetId !== selectedVoice?.id)));
+  const previewDiffersFromProject = Boolean(videoSnapshot && (videoSnapshot.script !== script || videoSnapshot.photoAssetId !== activePhotoId || videoSnapshot.projectName !== projectName || videoSnapshot.productVersionId !== productVersionId || videoSnapshot.productName !== productName || videoSnapshot.productPriceCent !== productPriceCent || JSON.stringify(videoSnapshot.productHighlights ?? []) !== JSON.stringify(recordingHighlights(productHighlights)) || (videoSnapshot.voiceAssetId !== null && videoSnapshot.voiceAssetId !== selectedVoice?.id)));
 
   useEffect(() => () => {
     microphoneRef.current?.getTracks().forEach((track) => track.stop());
@@ -67,7 +72,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       const output = outputs[0];
       setSelectedOutputId(output?.id ?? "");
       if (!output) return;
-      setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName, productVersionId: output.productVersionId, voiceAssetId: output.voiceAssetId ?? null }); setVideoPreview(output.blob); setReviewed(false);
+      setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName, productVersionId: output.productVersionId, productName: output.productName, productPriceCent: output.productPriceCent, productHighlights: output.productHighlights, voiceAssetId: output.voiceAssetId ?? null }); setVideoPreview(output.blob); setReviewed(false);
     }).catch((cause) => {
       if (active) setError(cause instanceof Error ? cause.message : "读取本机项目输出失败。");
     });
@@ -86,15 +91,28 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
   useEffect(() => {
     let active = true;
     if (!activePhotoId) return () => { active = false; };
-    getPhotoSource(activePhotoId).then((file) => {
+    (async () => {
+      const local = await getPhotoSource(activePhotoId).catch(() => null);
+      if (local) return { file: local, source: "local" as const };
+      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(activePhotoId)}/source`, { cache: "no-store" });
+      if (!response.ok) throw new Error(response.status === 404 ? "project_photo_not_available" : "project_photo_source_unavailable");
+      const blob = await response.blob();
+      const type = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
+      if (!/^image\/(jpeg|png)$/.test(type) || blob.size < 1 || blob.size > 100 * 1024 * 1024) throw new Error("project_photo_source_invalid");
+      const extension = type === "image/png" ? ".png" : ".jpg";
+      const file = new File([blob], `${activePhotoId}${extension}`, { type });
+      return { file, source: "project" as const };
+    })().then(({ file, source }) => {
       if (!active) return;
       setImageFile(file);
-      setPhotoSourceStatus(file ? `已自动载入本机副本：${file.name}` : "此设备没有本机副本；请重新选择与已批准素材完全相同的照片。");
-    }).catch(() => {
-      if (active) setPhotoSourceStatus("本机照片读取失败；请重新选择与已批准素材完全相同的照片。");
+      setPhotoSourceStatus(source === "local" ? `已载入本机副本：${file.name}` : `已从项目批准素材载入：${file.name}`);
+    }).catch((cause) => {
+      if (active) setPhotoSourceStatus(cause instanceof Error && cause.message === "project_photo_not_available"
+        ? "照片当前未批准、未加入此项目或授权已过期；请确认项目素材状态。"
+        : "当前设备没有可用的照片副本；请重新选择与已批准素材完全相同的照片。");
     });
     return () => { active = false; };
-  }, [activePhotoId]);
+  }, [activePhotoId, projectId]);
 
   function setAudioPreview(blob: Blob | null) {
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
@@ -169,15 +187,24 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       const demo = photo.checksum.startsWith("demo-");
       if (!demo && checksum !== photo.checksum.toLowerCase()) throw new Error("照片文件与已批准素材校验和不一致。");
       if (!demo && !/^sha256:[a-f0-9]{64}$/.test(photo.checksum)) throw new Error("照片素材缺少有效 SHA-256，不能用于成片。");
-      const result = await renderPhotoNarration(imageFile, audioBlob, script, projectName);
+      const productPrice = formatCnyPrice(productPriceCent);
+      if (!productPrice) throw new Error("当前商品价格事实无效，请刷新商品资料后重试。");
+      const factsHighlights = recordingHighlights(productHighlights);
+      const controller = new AbortController();
+      renderAbortRef.current = controller;
+      setRenderProgress(0);
+      const result = await renderPhotoNarration(imageFile, audioBlob, script, projectName, productName, productPrice, factsHighlights, setRenderProgress, controller.signal);
+      setRenderProgress(null);
       if (result.size < 1024) throw new Error("生成的视频文件为空，请检查音频后重试。");
       if (!result.type.startsWith("video/webm")) throw new Error("浏览器返回了不支持的视频格式，请使用最新版桌面 Chrome 或 Edge。");
       const qualityProblems = await inspectPhotoNarrationVideo(result, audioBlob);
       if (qualityProblems.length) throw new Error(qualityProblems[0]);
       setQualityCheckPassed(true);
-      setVideoBlob(result); setVideoSnapshot({ script, photoAssetId: photo.id, projectName, productVersionId, voiceAssetId: generatedAudioMatches ? selectedVoice?.id ?? null : null }); setVideoPreview(result);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "视频生成失败，请重试。"); }
-    finally { setWorking(false); }
+      setVideoBlob(result); setVideoSnapshot({ script, photoAssetId: photo.id, projectName, productVersionId, productName, productPriceCent, productHighlights: factsHighlights, voiceAssetId: generatedAudioMatches ? selectedVoice?.id ?? null : null }); setVideoPreview(result);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") setArchiveNotice("本次视频生成已取消。");
+      else setError(cause instanceof Error ? cause.message : "视频生成失败，请重试。");
+    } finally { renderAbortRef.current = null; setRenderProgress(null); setWorking(false); }
   }
 
   async function downloadVideo() {
@@ -191,19 +218,22 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
         const project = await onEnsureProject();
         fileName = `${safeName(project.name)}-照片播报-r${savedOutputs.length + 1}.webm`;
         if (!videoSnapshot || videoSnapshot.productVersionId !== project.productVersionId || videoSnapshot.script !== project.script || !project.scriptReview || project.scriptReview.productVersionId !== project.productVersionId) throw new Error("项目商品资料或脚本审核已变化，请重新预览并审核后再保存成片。");
-        const archiveStatus = await archiveProjectRecording(project, videoBlob, {
+        const archiveRequestId = crypto.randomUUID();
+        const metadata = {
           projectRevision: project.revision,
           productVersionId: project.productVersionId,
           scriptSnapshot: videoSnapshot.script,
           photoAssetId: videoSnapshot.photoAssetId,
           ...(videoSnapshot.voiceAssetId ? { voiceAssetId: videoSnapshot.voiceAssetId } : {}),
           fileName
-        });
-        fileName = `${safeName(project.name)}-照片播报-r${savedOutputs.length + 1}.webm`;
-        const output = await saveProjectRecording({ projectId: project.id, projectName: project.name, projectRevision: project.revision, productVersionId: project.productVersionId, scriptSnapshot: videoSnapshot.script, photoAssetId: videoSnapshot.photoAssetId, ...(videoSnapshot.voiceAssetId && generatedAudio ? { voiceAssetId: generatedAudio.voiceAssetId, voiceAssetName: selectedVoice?.name } : {}), fileName, createdAt: new Date().toISOString(), size: videoBlob.size, contentType: videoBlob.type || "video/webm", blob: videoBlob, serverArchive: archiveStatus });
+        };
+        const output = await saveProjectRecording({ projectId: project.id, projectName: project.name, projectRevision: project.revision, productVersionId: project.productVersionId, productName: videoSnapshot.productName, productPriceCent: videoSnapshot.productPriceCent, productHighlights: videoSnapshot.productHighlights, scriptSnapshot: videoSnapshot.script, photoAssetId: videoSnapshot.photoAssetId, ...(videoSnapshot.voiceAssetId && generatedAudio ? { voiceAssetId: generatedAudio.voiceAssetId, voiceAssetName: selectedVoice?.name } : {}), fileName, createdAt: new Date().toISOString(), size: videoBlob.size, contentType: videoBlob.type || "video/webm", blob: videoBlob, archiveRequestId, serverArchive: { status: "pending" } });
         setSavedOutputs((current) => [output, ...current]);
         setSelectedOutputId(output.id);
         setVideoProjectId(project.id);
+        const archiveStatus = await archiveProjectRecording(project, videoBlob, metadata, archiveRequestId);
+        const archivedOutput = await updateProjectRecordingArchive(project.id, output.id, archiveStatus, archiveRequestId);
+        setSavedOutputs((current) => current.map((item) => item.id === archivedOutput.id ? archivedOutput : item));
         onRecordingSaved({ localSaved: true, serverArchived: archiveStatus.status === "archived" });
         if (archiveStatus.status === "archived") { refreshServerRecordings(); setArchiveNotice("已保存到本机项目空间并完成服务端归档。"); }
         else setError(`本机项目版本已保存并可下载；${archiveStatus.message ?? "服务端归档待重试"}`);
@@ -224,17 +254,24 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
     try {
       const project = await onEnsureProject();
       if (!output.productVersionId || output.productVersionId !== project.productVersionId || output.scriptSnapshot !== project.script || !project.scriptReview || project.scriptReview.productVersionId !== project.productVersionId) {
-        throw new Error("当前商品版本或脚本审核已变化；请按当前内容重新审核并生成成片。");
+        const message = "当前商品版本或脚本审核已变化；此版本仅保留本机下载，请按当前内容重新审核并生成成片。";
+        const staleOutput = await updateProjectRecordingArchive(output.projectId, output.id, { status: "stale", message });
+        setSavedOutputs((current) => current.map((item) => item.id === staleOutput.id ? staleOutput : item));
+        setError(message);
+        return;
       }
+      const archiveRequestId = output.archiveRequestId ?? crypto.randomUUID();
+      const pendingOutput = await updateProjectRecordingArchive(output.projectId, output.id, { status: "pending" }, archiveRequestId);
+      setSavedOutputs((current) => current.map((item) => item.id === pendingOutput.id ? pendingOutput : item));
       const result = await archiveProjectRecording(project, output.blob, {
-        projectRevision: project.revision,
+        projectRevision: output.projectRevision,
         productVersionId: project.productVersionId,
         scriptSnapshot: output.scriptSnapshot,
         photoAssetId: output.photoAssetId,
         ...(output.voiceAssetId ? { voiceAssetId: output.voiceAssetId } : {}),
         fileName: output.fileName
-      });
-      const updated = await updateProjectRecordingArchive(project.id, output.id, result);
+      }, archiveRequestId);
+      const updated = await updateProjectRecordingArchive(project.id, output.id, result, archiveRequestId);
       setSavedOutputs((current) => current.map((item) => item.id === updated.id ? updated : item));
       if (result.status === "archived") {
         refreshServerRecordings();
@@ -245,9 +282,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "服务端归档重试失败。");
-    } finally {
-      setWorking(false);
-    }
+    } finally { setWorking(false); }
   }
 
   function refreshServerRecordings() {
@@ -275,6 +310,20 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
     }
   }
 
+  async function previewServerRecording(recording: ServerRecording) {
+    setWorking(true); setError("");
+    try {
+      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(projectId)}/recordings/${encodeURIComponent(recording.id)}/preview-grant`, { method: "POST" });
+      const result = await response.json().catch(() => null) as { data?: { downloadUrl: string; expiresAt: string }; error?: string } | null;
+      if (!response.ok || !result?.data?.downloadUrl || !result.data.expiresAt) throw new Error(result?.error ?? "获取成片预览授权失败。");
+      setServerPreview({ recordingId: recording.id, url: result.data.downloadUrl, expiresAt: result.data.expiresAt });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "服务端成片预览失败。");
+    } finally {
+      setWorking(false);
+    }
+  }
+
   return <section className={styles.composer} aria-labelledby="photo-recording-title">
     <div className={styles.heading}><div><span>PHOTO NARRATION</span><h3 id="photo-recording-title">照片播报视频</h3></div><small>720 × 1280 · WebM</small></div>
     {!photos.length ? <div className={styles.empty}>先把一张已批准照片加入当前项目。<Link href="/assets">打开素材资产</Link></div> : <div className={styles.fields}>
@@ -288,11 +337,26 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       {audioBlob ? <audio className={styles.audio} controls src={audioUrl} /> : <p className={styles.hint}>也可上传音频，或照着共享脚本录制本人声音。</p>}
       {photo?.checksum.startsWith("demo-") ? <p className={styles.demo}>演示素材只用于本地试做，不代表正式授权核验。</p> : <p className={styles.hint}>正式照片会比对已批准素材 SHA-256；不匹配时不会生成视频。</p>}
       <button type="button" onClick={renderVideo} disabled={!canCreate || working || recording || !imageFile || !audioBlob} className={styles.render}>{working ? "正在生成本地预览…" : "生成并预览视频"}</button>
+      {renderProgress !== null ? <div className={styles.renderProgress} role="status" aria-live="polite"><progress max={100} value={renderProgress} /><span>正在生成视频 · {renderProgress}%</span><button type="button" title="取消生成视频" aria-label="取消生成视频" onClick={() => renderAbortRef.current?.abort()}><X size={14} /></button></div> : null}
     </div>}
     {error ? <div className={styles.error} role="alert"><CircleAlert size={15} />{error}</div> : null}{archiveNotice ? <p className={styles.archiveNotice} role="status">{archiveNotice}</p> : null}
-    {serverOutputs.length ? <div className={styles.serverArchive}><strong>项目服务端成片</strong>{serverOutputs.map((recording) => <div key={recording.id}><span>{recording.fileName}<small>{(recording.bytes / (1024 * 1024)).toFixed(1)} MB · {new Date(recording.createdAt).toLocaleString()}</small></span><button type="button" className={styles.serverDownload} disabled={working} title="下载服务端归档成片" aria-label={`下载 ${recording.fileName}`} onClick={() => void downloadServerRecording(recording)}><Download size={15} /></button></div>)}</div> : null}
-    {videoUrl && videoProjectId === projectId ? <div className={styles.review}>{savedOutputs.length > 1 ? <label className={styles.versionPicker}>项目成片版本<select value={savedOutput?.id ?? ""} onChange={(event) => { const output = savedOutputs.find((item) => item.id === event.target.value); if (!output) return; setSelectedOutputId(output.id); setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName, productVersionId: output.productVersionId, voiceAssetId: output.voiceAssetId ?? null }); setVideoPreview(output.blob); setReviewed(false); setQualityCheckPassed(false); }} aria-label="选择项目成片版本">{savedOutputs.map((output, index) => <option key={output.id} value={output.id}>第 {savedOutputs.length - index} 版 · {new Date(output.createdAt).toLocaleString()}</option>)}</select></label> : null}<video className={styles.video} controls playsInline src={videoUrl} />{qualityCheckPassed ? <p className={styles.hint}>自动质量检查通过：画面尺寸和首帧解码正常；浏览器可读取时长时已核对口播长度。</p> : null}<label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label><button type="button" disabled={!reviewed || (!selectedSavedOutput && (!canCreate || previewDiffersFromProject)) || working} onClick={downloadVideo} className={styles.download}><Download size={15} />{working ? "正在保存…" : selectedSavedOutput ? "下载已保存版本" : `保存为第 ${savedOutputs.length + 1} 版并下载`}</button>{savedOutput?.projectId === projectId ? <><p className={styles.hint}>项目成片第 {savedOutputs.findIndex((output) => output.id === savedOutput.id) >= 0 ? savedOutputs.length - savedOutputs.findIndex((output) => output.id === savedOutput.id) : 1} 版 · {(savedOutput.size / (1024 * 1024)).toFixed(1)} MB · {new Date(savedOutput.createdAt).toLocaleString()}{savedOutput.voiceAssetName ? ` · 配音 ${savedOutput.voiceAssetName}` : ""}</p><p className={styles.archiveState}>{savedOutput.serverArchive?.status === "archived" ? "服务端已归档" : savedOutput.serverArchive?.status === "failed" ? `服务端归档待重试：${savedOutput.serverArchive.message ?? "暂时失败"}` : savedOutput.serverArchive?.status === "local-only" ? `仅本机保存：${savedOutput.serverArchive.message ?? "演示模式"}` : "本机项目版本"}</p>{savedOutput.serverArchive?.status === "failed" ? <button type="button" className={styles.retry} title="重试服务端归档" aria-label="重试服务端归档" disabled={working} onClick={() => void retryArchive(savedOutput)}><CloudUpload size={15} />重试归档</button> : null}</> : null}{previewDiffersFromProject && !selectedSavedOutput ? <p className={styles.demo}>当前项目脚本、商品版本、照片、标题或配音声线已变化；此预览不能保存为当前成片，请重新预览并完成脚本审核。</p> : !canCreate && !selectedSavedOutput ? <p className={styles.demo}>当前项目的脚本审核已失效；重新审核后才能保存新成片。</p> : null}</div> : null}
-    <p className={styles.note}>输出为静态照片配口播字幕，不是动态口型 Avatar。项目服务端归档列表可从其他设备下载；本机副本用于离线预览。</p>
+    {serverOutputs.length ? <div className={styles.serverArchive}><strong>项目服务端成片</strong>{serverOutputs.map((recording) => <div key={recording.id}><span>{recording.fileName}<small>{(recording.bytes / (1024 * 1024)).toFixed(1)} MB · {recording.recordingQuality?.status === "verified" ? `服务端质检通过 · ${recording.recordingQuality.durationSeconds?.toFixed(1)} 秒` : "历史版本未做服务端质检"} · {new Date(recording.createdAt).toLocaleString()}</small></span><span className={styles.serverActions}><button type="button" className={styles.serverPreviewAction} disabled={working} title={`在线预览 ${recording.fileName}`} aria-label={`在线预览 ${recording.fileName}`} onClick={() => void previewServerRecording(recording)}><Eye size={15} /><span>预览</span></button><button type="button" className={styles.serverDownload} disabled={working} title="下载服务端归档成片" aria-label={`下载 ${recording.fileName}`} onClick={() => void downloadServerRecording(recording)}><Download size={15} /></button></span></div>)}</div> : null}
+    {serverPreview ? <div className={styles.serverPreview}><video className={styles.video} controls playsInline preload="metadata" src={serverPreview.url} key={serverPreview.url} /><div><small>预览授权有效至 {new Date(serverPreview.expiresAt).toLocaleTimeString()}</small><button type="button" disabled={working} onClick={() => { const recording = serverOutputs.find((item) => item.id === serverPreview.recordingId); if (recording) void previewServerRecording(recording); }}>刷新授权</button><button type="button" aria-label="关闭服务端成片预览" title="关闭预览" onClick={() => setServerPreview(null)}><X size={15} /></button></div></div> : null}
+    {videoUrl && videoProjectId === projectId ? <div className={styles.review}>
+      {savedOutputs.length > 1 ? <label className={styles.versionPicker}>项目成片版本<select value={savedOutput?.id ?? ""} onChange={(event) => { const output = savedOutputs.find((item) => item.id === event.target.value); if (!output) return; setSelectedOutputId(output.id); setVideoBlob(output.blob); setVideoProjectId(projectId); setVideoSnapshot({ script: output.scriptSnapshot, photoAssetId: output.photoAssetId, projectName: output.projectName, productVersionId: output.productVersionId, productName: output.productName, productPriceCent: output.productPriceCent, productHighlights: output.productHighlights, voiceAssetId: output.voiceAssetId ?? null }); setVideoPreview(output.blob); setReviewed(false); setQualityCheckPassed(false); }} aria-label="选择项目成片版本">{savedOutputs.map((output, index) => <option key={output.id} value={output.id}>第 {savedOutputs.length - index} 版 · {new Date(output.createdAt).toLocaleString()}</option>)}</select></label> : null}
+      <video className={styles.video} controls playsInline src={videoUrl} />
+      {qualityCheckPassed ? <p className={styles.hint}>自动质量检查通过：画面尺寸、首帧解码和成片/口播时长均已核对。</p> : null}
+      <label><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />我已检查画面、字幕和口播音频</label>
+      <button type="button" disabled={!reviewed || (!selectedSavedOutput && (!canCreate || previewDiffersFromProject)) || working} onClick={downloadVideo} className={styles.download}><Download size={15} />{working ? "正在保存…" : selectedSavedOutput ? "下载已保存版本" : `保存为第 ${savedOutputs.length + 1} 版并下载`}</button>
+      {savedOutput?.projectId === projectId ? <>
+        <p className={styles.hint}>项目成片第 {savedOutputs.findIndex((output) => output.id === savedOutput.id) >= 0 ? savedOutputs.length - savedOutputs.findIndex((output) => output.id === savedOutput.id) : 1} 版 · {(savedOutput.size / (1024 * 1024)).toFixed(1)} MB · {new Date(savedOutput.createdAt).toLocaleString()}{savedOutput.voiceAssetName ? ` · 配音 ${savedOutput.voiceAssetName}` : ""}</p>
+        <p className={styles.archiveState}>{savedOutput.serverArchive?.status === "archived" ? "服务端已归档" : savedOutput.serverArchive?.status === "failed" ? `服务端归档待重试：${savedOutput.serverArchive.message ?? "暂时失败"}` : savedOutput.serverArchive?.status === "pending" ? "服务端归档待处理；可安全关闭页面，之后继续重试。" : savedOutput.serverArchive?.status === "local-only" ? `仅本机保存：${savedOutput.serverArchive.message ?? "演示模式"}` : "本机项目版本"}</p>
+        {savedOutput.serverArchive?.status === "failed" || savedOutput.serverArchive?.status === "pending" ? <button type="button" className={styles.retry} title="重试服务端归档" aria-label="重试服务端归档" disabled={working} onClick={() => void retryArchive(savedOutput)}><CloudUpload size={15} />重试归档</button> : null}
+        {savedOutput.serverArchive?.status === "stale" ? <p className={styles.archiveState}>{savedOutput.serverArchive.message}</p> : null}
+      </> : null}
+      {previewDiffersFromProject && !selectedSavedOutput ? <p className={styles.demo}>当前项目脚本、商品版本、照片、商品价格/卖点或配音声线已变化；此预览不能保存为当前项目成片，请重新预览并完成脚本审核。</p> : !canCreate && !selectedSavedOutput ? <p className={styles.demo}>当前项目的脚本审核已失效；重新审核后才能保存新成片。</p> : null}
+    </div> : null}
+    <p className={styles.note}>输出为照片镜头移动配口播字幕，不是动态口型 Avatar。项目服务端归档可跨设备预览和下载；本机副本用于离线预览。</p>
   </section>;
 }
 
@@ -353,7 +417,7 @@ async function inspectPhotoNarrationVideo(blob: Blob, audioBlob: Blob) {
   }
 }
 
-async function archiveProjectRecording(project: CreationProject, blob: Blob, metadata: { projectRevision: number; productVersionId: string; scriptSnapshot: string; photoAssetId: string; voiceAssetId?: string; fileName: string }): Promise<NonNullable<ProjectRecordingOutput["serverArchive"]>> {
+async function archiveProjectRecording(project: CreationProject, blob: Blob, metadata: { projectRevision: number; productVersionId: string; scriptSnapshot: string; photoAssetId: string; voiceAssetId?: string; fileName: string }, archiveRequestId: string): Promise<NonNullable<ProjectRecordingOutput["serverArchive"]>> {
   try {
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
     const checksum = `sha256:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -373,10 +437,10 @@ async function archiveProjectRecording(project: CreationProject, blob: Blob, met
     const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(project.id)}/recordings`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...metadata, objectKey: grantResult.data.objectKey, checksum, bytes: blob.size })
+      body: JSON.stringify({ ...metadata, archiveRequestId, objectKey: grantResult.data.objectKey, checksum, bytes: blob.size })
     });
     const result = await response.json().catch(() => null) as { data?: { id?: string }; error?: string } | null;
-    if (!response.ok) throw new Error(result?.error ?? "录播服务端校验登记失败");
+    if (!response.ok) throw new Error(result?.error?.startsWith("recording_quality_") ? photoRecordingArchiveQualityError(result.error) : result?.error ?? "录播服务端校验登记失败");
     if (!result?.data?.id) throw new Error("录播服务端未返回归档编号");
     return { status: "archived", recordingId: result.data.id };
   } catch (cause) {
@@ -384,20 +448,24 @@ async function archiveProjectRecording(project: CreationProject, blob: Blob, met
   }
 }
 
-async function renderPhotoNarration(imageFile: File, audioBlob: Blob, script: string, title: string) {
+async function renderPhotoNarration(imageFile: File, audioBlob: Blob, script: string, title: string, productName: string, productPrice: string, highlights: string[], onProgress: (progress: number) => void, signal: AbortSignal) {
+  if (signal.aborted) throw new DOMException("Video generation cancelled", "AbortError");
   if (typeof MediaRecorder === "undefined" || !HTMLCanvasElement.prototype.captureStream) throw new Error("请使用最新版桌面 Chrome 或 Edge 生成视频。");
   const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((type) => MediaRecorder.isTypeSupported(type));
   if (!mimeType) throw new Error("此浏览器没有可用的 WebM 编码器。");
   const imageUrl = URL.createObjectURL(imageFile); const image = new Image();
   try { image.src = imageUrl; await image.decode(); } catch { URL.revokeObjectURL(imageUrl); throw new Error("照片读取失败，请换一张 JPEG 或 PNG。"); }
   URL.revokeObjectURL(imageUrl);
+  if (signal.aborted) throw new DOMException("Video generation cancelled", "AbortError");
   const canvas = document.createElement("canvas"); canvas.width = 720; canvas.height = 1280;
   const context = canvas.getContext("2d"); if (!context) throw new Error("无法初始化视频画布。");
   const canvasStream = canvas.captureStream(30); const audioContext = new AudioContext();
   const audioUrl = URL.createObjectURL(audioBlob); const audio = new Audio(audioUrl); audio.preload = "auto";
   let recorder: MediaRecorder | null = null;
+  let stopOnAbort: (() => void) | null = null;
   try {
     await new Promise<void>((resolve, reject) => { audio.onloadedmetadata = () => resolve(); audio.onerror = () => reject(new Error("口播音频读取失败，请更换文件。")); audio.load(); });
+    if (signal.aborted) throw new DOMException("Video generation cancelled", "AbortError");
     if (!Number.isFinite(audio.duration) || audio.duration < 1 || audio.duration > 300) throw new Error("口播音频时长需在 1 秒到 5 分钟之间。");
     const destination = audioContext.createMediaStreamDestination();
     audioContext.createMediaElementSource(audio).connect(destination);
@@ -409,29 +477,41 @@ async function renderPhotoNarration(imageFile: File, audioBlob: Blob, script: st
       recorder!.onerror = () => reject(new Error("浏览器编码失败，请缩短音频后重试。"));
       audio.onended = () => { if (recorder?.state === "recording") recorder.stop(); };
     });
+    stopOnAbort = () => { audio.pause(); if (recorder?.state === "recording") recorder.stop(); };
+    signal.addEventListener("abort", stopOnAbort, { once: true });
     const captions = splitNarrationScript(script, 42); const startedAt = performance.now();
     const draw = (now: number) => {
       const elapsed = Math.min((now - startedAt) / 1000, audio.duration);
-      drawPhotoFrame(context, image, title, captions, elapsed, audio.duration);
+      drawPhotoFrame(context, image, title, productName, productPrice, highlights, captions, elapsed, audio.duration);
+      onProgress(Math.min(99, Math.floor(elapsed / audio.duration * 100)));
       if (elapsed < audio.duration && recorder?.state === "recording") requestAnimationFrame(draw);
     };
-    draw(startedAt); recorder.start(250); await audioContext.resume(); await audio.play();
-    return await finished;
+    draw(startedAt); recorder.start(250); await audioContext.resume();
+    if (signal.aborted) { stopOnAbort(); throw new DOMException("Video generation cancelled", "AbortError"); }
+    await audio.play();
+    const result = await finished;
+    if (signal.aborted) throw new DOMException("Video generation cancelled", "AbortError");
+    return result;
   } finally {
+    if (stopOnAbort) signal.removeEventListener("abort", stopOnAbort);
     if (recorder?.state === "recording") recorder.stop();
     canvasStream.getTracks().forEach((track) => track.stop()); audio.pause(); URL.revokeObjectURL(audioUrl);
     await audioContext.close().catch(() => undefined);
   }
 }
 
-function drawPhotoFrame(context: CanvasRenderingContext2D, image: HTMLImageElement, title: string, captions: string[], elapsed: number, duration: number) {
-  const canvas = context.canvas; const scale = Math.max(canvas.width / image.width, canvas.height / image.height);
+function drawPhotoFrame(context: CanvasRenderingContext2D, image: HTMLImageElement, title: string, productName: string, productPrice: string, highlights: string[], captions: string[], elapsed: number, duration: number) {
+  const canvas = context.canvas; const motion = photoMotionAt(elapsed, duration); const scale = Math.max(canvas.width / image.width, canvas.height / image.height) * motion.scale;
   const width = image.width * scale; const height = image.height * scale;
   context.fillStyle = "#15211e"; context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
-  context.fillStyle = "rgba(11, 22, 19, .66)"; context.fillRect(0, 0, canvas.width, 154);
-  context.fillStyle = "#ffffff"; context.textAlign = "left"; context.font = "700 22px system-ui, sans-serif"; context.fillText("AI 辅助内容", 44, 54);
-  context.font = "600 28px system-ui, sans-serif"; context.fillText(fitCanvasText(context, title || "内容项目", 620), 44, 108);
+  context.drawImage(image, (canvas.width - width) / 2 + (width - canvas.width) * motion.panX * 0.55, (canvas.height - height) / 2 + (height - canvas.height) * motion.panY * 0.35, width, height);
+  context.fillStyle = "rgba(11, 22, 19, .78)"; context.fillRect(0, 0, canvas.width, 244);
+  context.fillStyle = "#9ce8ce"; context.textAlign = "left"; context.font = "700 18px system-ui, sans-serif"; context.fillText("AI 辅助内容", 40, 38);
+  context.fillStyle = "rgba(255, 255, 255, .82)"; context.font = "500 17px system-ui, sans-serif"; context.fillText(fitCanvasText(context, title || "内容项目", 630), 40, 68);
+  context.fillStyle = "#ffffff"; context.font = "700 31px system-ui, sans-serif"; context.fillText(fitCanvasText(context, productName, 630), 40, 112);
+  context.fillStyle = "#9ce8ce"; context.font = "700 27px system-ui, sans-serif"; context.fillText(`商品价 ${productPrice}`, 40, 155);
+  context.fillStyle = "rgba(255, 255, 255, .92)"; context.font = "500 17px system-ui, sans-serif";
+  highlights.slice(0, 2).forEach((highlight, index) => context.fillText(`· ${fitCanvasText(context, highlight, 620)}`, 40, 193 + index * 25));
   const length = captions.reduce((sum, caption) => sum + caption.length, 0);
   let cursor = Math.min(length - 1, Math.floor(elapsed / duration * length)); let caption = captions[0] ?? "";
   for (const value of captions) { if (cursor < value.length) { caption = value; break; } cursor -= value.length; }

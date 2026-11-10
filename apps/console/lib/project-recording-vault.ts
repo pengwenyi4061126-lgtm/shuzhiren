@@ -4,6 +4,9 @@ export type ProjectRecordingOutput = {
   projectName: string;
   projectRevision: number;
   productVersionId?: string;
+  productName?: string;
+  productPriceCent?: number;
+  productHighlights?: string[];
   scriptSnapshot: string;
   photoAssetId: string;
   voiceAssetId?: string;
@@ -13,7 +16,8 @@ export type ProjectRecordingOutput = {
   size: number;
   contentType: string;
   blob: Blob;
-  serverArchive?: { status: "archived" | "failed" | "local-only"; recordingId?: string; message?: string };
+  archiveRequestId?: string;
+  serverArchive?: { status: "pending" | "archived" | "failed" | "local-only" | "stale"; recordingId?: string; message?: string };
 };
 
 const databaseName = "shuzhiren-project-recordings";
@@ -92,7 +96,7 @@ export async function listProjectRecordings(projectId: string) {
   }
 }
 
-export async function updateProjectRecordingArchive(projectId: string, outputId: string, serverArchive: ProjectRecordingOutput["serverArchive"]) {
+export async function updateProjectRecordingArchive(projectId: string, outputId: string, serverArchive: ProjectRecordingOutput["serverArchive"], archiveRequestId?: string) {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(storeName, "readwrite");
@@ -106,7 +110,7 @@ export async function updateProjectRecordingArchive(projectId: string, outputId:
       transaction.abort();
       throw new Error("找不到要更新的本机项目版本。");
     }
-    const updated = { ...output, serverArchive };
+    const updated = { ...output, ...(archiveRequestId ? { archiveRequestId } : {}), serverArchive };
     store.put(updated);
     await transactionDone(transaction);
     return updated;

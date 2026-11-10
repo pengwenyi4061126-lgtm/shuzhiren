@@ -388,7 +388,7 @@ const workerSegment = { id: "10000000-0000-4000-8000-0000000000c1", runtime_scri
 const workerProfile = { rules: [{ id: "r1", terms: ["违规词"], reason: "测试拦截", action: "refuse", riskLevel: "high", requiredEvidence: [] }], evidence_ref: "evidence://probe/policy", validation_summary: "ok", approval_status: "approved" };
 const workerVoice = { runtime_voice_id: "voice_1", checksum: `sha256:${"a".repeat(64)}` };
 // Runs scheduleDueRun once against a fake client; `state` selects what the reads return. Every statement is logged with its transaction.
-async function runWorkerSchedule({ segment = workerSegment, last = null, profile = workerProfile, voice = workerVoice, terms = [], snapshot = null, failOn = null } = {}) {
+async function runWorkerSchedule({ segment = workerSegment, last = null, profile = workerProfile, voice = workerVoice, terms = [], snapshot = null, failOn = null, avatarBinding = null } = {}) {
   const log = [];
   let transactions = 0;
   const client = {
@@ -397,6 +397,7 @@ async function runWorkerSchedule({ segment = workerSegment, last = null, profile
       log.push({ sql, params, tx: transactions });
       if (failOn && failOn.test(sql)) throw new Error("injected failure");
       if (/from live_runs where state = 'ARMED'/.test(sql)) return { rows: [workerRun] };
+      if (sql.includes("from creation_project_live_outputs output")) return { rows: avatarBinding ? [avatarBinding] : [] };
       if (sql.startsWith("select id, runtime_script, runtime_script_variants from show_revision_segments")) return { rows: segment ? [segment] : [] };
       if (sql.startsWith("select scene_json, scene_sha256 from show_revision_overlays")) return { rows: [] };
       if (sql.includes("from show_revision_media_assets binding")) return { rows: voice ? [voice] : [] };
@@ -455,6 +456,15 @@ test("worker scheduled start selects version 0 on the first play and records the
   assert.ok(audit && audit.tx === outbox.tx);
   assert.deepEqual(JSON.parse(audit.params[3]), { segmentId: workerSegment.id, variantIndex: 0, variantCount: 3, scriptSha256: hashOf("主版本话术"), playSeq: 1, outboxEventId: "10000000-0000-4000-8000-0000000000e1", skippedVariantIndexes: "", controlAction: "SCHEDULED_START" });
   assert.equal(find("insert into runtime_alerts").length, 0);
+});
+test("worker scheduled start carries only a current approved and published project Avatar binding", async () => {
+  const avatarBinding = { project_id: "project-1", project_revision: 3, avatar_build_job_id: "job-1", current_project_revision: 3, job_project_revision: 3, status: "preview_ready", review_status: "approved", publish_status: "published", runtime_avatar_id: "sr_0123456789abcdef0123456789abcdef" };
+  const { command } = await runWorkerSchedule({ avatarBinding });
+  assert.equal(command.payload.runtimeAvatarId, avatarBinding.runtime_avatar_id);
+  const blocked = await runWorkerSchedule({ avatarBinding: { ...avatarBinding, publish_status: "failed" } });
+  assert.equal(blocked.result, null);
+  assert.equal(blocked.find("insert into outbox_events").length, 0);
+  assert.match(blocked.find("insert into runtime_alerts")[0].sql, /project_avatar_not_ready/);
 });
 test("worker scheduled start continues the rotation after the last ledger row", async () => {
   const second = await runWorkerSchedule({ last: { variant_index: 0, play_seq: 1 } });

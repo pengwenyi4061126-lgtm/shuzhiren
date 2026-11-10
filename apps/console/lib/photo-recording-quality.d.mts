@@ -6,3 +6,4 @@ export interface PhotoNarrationMetadata {
 }
 
 export declare function photoNarrationQualityProblems(metadata: PhotoNarrationMetadata, expectedDuration: number): string[];
+export declare function photoRecordingArchiveQualityError(code: string): string;

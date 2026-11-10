@@ -136,7 +136,8 @@ test("Gateway receives frozen overlay fields and receipts must bind the matching
   const saved = { url: process.env.RUNTIME_GATEWAY_URL, token: process.env.RUNTIME_SHARED_TOKEN, demo: process.env.RUNTIME_GATEWAY_DEMO_MODE, fetch: globalThis.fetch };
   process.env.RUNTIME_GATEWAY_URL = "http://gateway.test"; process.env.RUNTIME_SHARED_TOKEN = "x".repeat(48); process.env.RUNTIME_GATEWAY_DEMO_MODE = "false";
   const sceneJson = canonicalJson({ version: 1 }); const sceneSha256 = digest(sceneJson); let received;
-  const command = createMediaCommand({ runId: "00000000-0000-4000-8000-000000000099", traceId: "trace-overlay", type: "start_program", payload: { controlAction: "START", overlaySceneJson: sceneJson, overlaySceneSha256: sceneSha256 } });
+  const runtimeAvatarId = "sr_0123456789abcdef0123456789abcdef";
+  const command = createMediaCommand({ runId: "00000000-0000-4000-8000-000000000099", traceId: "trace-overlay", type: "start_program", payload: { controlAction: "START", runtimeAvatarId, overlaySceneJson: sceneJson, overlaySceneSha256: sceneSha256 } });
   assert.throws(() => createMediaCommand({ runId: command.runId, traceId: command.traceId, type: "start_program", payload: { controlAction: "START", overlaySceneJson: sceneJson } }), /provided together/);
   globalThis.fetch = async (_url, options) => {
     received = JSON.parse(options.body);
@@ -146,11 +147,12 @@ test("Gateway receives frozen overlay fields and receipts must bind the matching
     for (const receiptHash of [undefined, "0".repeat(64)]) {
       received = undefined;
       globalThis.fetch = async (_url, options) => { received = JSON.parse(options.body); return Response.json({ accepted: true, receipt: { command_id: command.id, session_id: "session-overlay", action: command.type, accepted_at: new Date().toISOString(), ...(receiptHash ? { overlay_scene_sha256: receiptHash } : {}) } }); };
-      await assert.rejects(runtimeGateway.dispatchMediaCommand(command, "session-overlay"), /receipt does not bind the media command/);
+      await assert.rejects(runtimeGateway.dispatchMediaCommand(command, "session-overlay"), /receipt does not bind/);
       assert.equal(received.overlay_scene_json, sceneJson);
       assert.equal(received.overlay_scene_sha256, sceneSha256);
+      assert.equal(received.runtime_avatar_id, runtimeAvatarId);
     }
-    globalThis.fetch = async (_url, options) => { received = JSON.parse(options.body); return Response.json({ accepted: true, receipt: { command_id: command.id, session_id: "session-overlay", action: command.type, accepted_at: new Date().toISOString(), overlay_scene_sha256: sceneSha256 } }); };
+    globalThis.fetch = async (_url, options) => { received = JSON.parse(options.body); return Response.json({ accepted: true, receipt: { command_id: command.id, session_id: "session-overlay", action: command.type, accepted_at: new Date().toISOString(), runtime_avatar_id: runtimeAvatarId, overlay_scene_sha256: sceneSha256 } }); };
     assert.equal((await runtimeGateway.dispatchMediaCommand(command, "session-overlay")).delivery, "accepted");
   } finally {
     globalThis.fetch = saved.fetch;
@@ -255,9 +257,10 @@ function demoProgram(overlayConfig) {
 test("START and RECOVER dispatch only verified frozen scenes and never bind overlays to program transitions", async () => {
   const run = { id: "run_overlay_dispatch_unit", tenantId: demoContext.tenantId, revisionId: "revision_overlay_dispatch_unit", traceId: "trace_overlay_dispatch_unit", state: "LIVE", channelConnectionId: "channel_demo", productVersionId: "pv_a102_v1", hasOperator: true, hasApprovedRights: true, hasApprovedSkuVersion: true, hasFallbackProgram: true, channelReady: true, outputReady: true, aiDisclosureEnabled: true, runtimeSessionId: "session_overlay_dispatch_unit", commandHistory: [], questions: [] };
   const sceneJson = canonicalJson({ version: 1 }); const sceneSha256 = digest(sceneJson);
+  const runtimeAvatarId = "sr_0123456789abcdef0123456789abcdef";
   for (const action of ["START", "RECOVER"]) {
-    const command = mediaCommandFor(run, action, undefined, undefined, undefined, undefined, { sceneJson, sceneSha256 });
-    assert.deepEqual({ scene: command.payload.overlaySceneJson, hash: command.payload.overlaySceneSha256 }, { scene: sceneJson, hash: sceneSha256 });
+    const command = mediaCommandFor(run, action, undefined, undefined, undefined, undefined, { sceneJson, sceneSha256 }, runtimeAvatarId);
+    assert.deepEqual({ scene: command.payload.overlaySceneJson, hash: command.payload.overlaySceneSha256, avatar: command.payload.runtimeAvatarId }, { scene: sceneJson, hash: sceneSha256, avatar: runtimeAvatarId });
   }
   for (const action of ["INSERT_PROGRAM", "ROLLBACK_PROGRAM"]) {
     const command = mediaCommandFor(run, action, { kind: action === "INSERT_PROGRAM" ? "insert" : "rollback" });
@@ -590,6 +593,7 @@ test("worker scheduled starts dispatch only hash-verified frozen overlays and bi
       const sql = text.replace(/\s+/g, " ").trim();
       log.push({ sql, params, tx: transaction });
       if (/from live_runs where state = 'ARMED'/.test(sql)) return { rows: [run] };
+      if (sql.includes("from creation_project_live_outputs output")) return { rows: [] };
       if (sql.startsWith("select id, runtime_script, runtime_script_variants from show_revision_segments")) return { rows: [segment] };
       if (sql.startsWith("select scene_json, scene_sha256 from show_revision_overlays")) return { rows: overlayRow ? [overlayRow] : [] };
       if (sql.includes("from show_revision_media_assets binding")) return { rows: [{ runtime_voice_id: "voice_1", checksum: `sha256:${"a".repeat(64)}` }] };
@@ -632,12 +636,15 @@ test("worker scheduled starts dispatch only hash-verified frozen overlays and bi
   assert.equal(damaged.log.filter((entry) => entry.sql.startsWith("update live_runs set scheduled_at = null")).length, 1);
 
   const dispatchSource = slice("function deliveryRequest(", "function commandIdValid(");
-  const validators = ["function commandIdValid", "function sessionIdValid", "function runtimeVoiceIdValid", "function voiceChecksumValid", "function programSegmentIdValid"].map((name) => workerSource.match(new RegExp(`^${name}.*$`, "m"))[0]).join("\n");
+  const validators = ["function commandIdValid", "function sessionIdValid", "function runtimeVoiceIdValid", "function runtimeAvatarIdValid", "function voiceChecksumValid", "function programSegmentIdValid"].map((name) => workerSource.match(new RegExp(`^${name}.*$`, "m"))[0]).join("\n");
   const deliveryRequest = new Function("createHash", `class DeliveryError extends Error {} ${validators} ${dispatchSource} return deliveryRequest;`)(createHash);
   const event = { event_type: "media.dispatch", payload: { sessionId: "session-1", command: good.command } };
   const delivery = deliveryRequest(event);
   assert.equal(delivery.body.overlay_scene_json, overlayJson);
   assert.equal(delivery.body.overlay_scene_sha256, digest(overlayJson));
+  const avatarId = "sr_0123456789abcdef0123456789abcdef";
+  const avatarCommand = { ...good.command, payload: { ...good.command.payload, runtimeAvatarId: avatarId } };
+  assert.equal(deliveryRequest({ ...event, payload: { ...event.payload, command: avatarCommand } }).body.runtime_avatar_id, avatarId);
   for (const type of ["insert_program", "resume_program"]) {
     const transition = { ...event, payload: { sessionId: "session-1", command: { ...good.command, type, payload: { programSegmentId: segment.id, runtimeScript: "话术", scriptSha256: digest("话术"), runtimeVoiceId: "voice_1", voiceChecksum: good.command.payload.voiceChecksum } } } };
     const body = deliveryRequest(transition).body;

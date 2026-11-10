@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import type { MediaCommand } from "@/lib/media-protocol";
 import type { SpeechCommand } from "@/lib/speech-protocol";
+import { isRuntimeSessionId } from "@/lib/shared/runtime-session-id.mjs";
 
 type RuntimeGatewayConfig = { url?: string; token?: string; demoMode: boolean; requestTimeoutMs: number };
-type RuntimeSessionObservation = { session: { id: string; active: boolean } };
+type RuntimeSessionObservation = { session: { id: string; active: boolean; avatarId?: string | null } };
 export type RuntimePreview = { available: false; reason: "demo_mode" | "not_configured" | "session_inactive" } | { available: true; url: string; mode: "webrtc"; expiresAt: string };
 
 function runtimeGatewayConfig(): RuntimeGatewayConfig {
@@ -47,8 +48,27 @@ export async function observeRuntimeSession(sessionId: string): Promise<RuntimeS
   if (!response.ok) throw new Error(`Runtime session observation failed: ${response.status}`);
   const body = await response.json() as { session?: unknown };
   const session = body.session;
-  if (!session || typeof session !== "object" || typeof (session as { id?: unknown }).id !== "string" || typeof (session as { active?: unknown }).active !== "boolean") throw new Error("Runtime session observation response is invalid");
+  if (!session || typeof session !== "object" || typeof (session as { id?: unknown }).id !== "string" || typeof (session as { active?: unknown }).active !== "boolean" || ((session as { avatarId?: unknown }).avatarId !== undefined && (session as { avatarId?: unknown }).avatarId !== null && typeof (session as { avatarId?: unknown }).avatarId !== "string")) throw new Error("Runtime session observation response is invalid");
   return { session: session as RuntimeSessionObservation["session"] };
+}
+
+export async function createRuntimeAvatarOffer(sdp: string, runtimeAvatarId: string) {
+  const config = runtimeGatewayConfig();
+  if (config.demoMode) throw new Error("Live avatar preview requires a configured Runtime Gateway");
+  if (!sdp || sdp.length > 262144 || !/^sr_[0-9a-f]{32}$/.test(runtimeAvatarId)) throw new Error("Live avatar offer is invalid");
+  const response = await fetch(`${config.url}/v1/rtc/offers`, {
+    method: "POST", cache: "no-store",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+    body: JSON.stringify({ sdp, type: "offer", runtime_avatar_id: runtimeAvatarId }),
+    signal: AbortSignal.timeout(config.requestTimeoutMs)
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+    throw new RuntimeGatewayError(typeof body?.detail === "string" ? body.detail : "Runtime Gateway rejected the live preview", response.status, "runtime_offer_rejected");
+  }
+  const body = await response.json() as Record<string, unknown>;
+  if (typeof body.sdp !== "string" || !body.sdp || body.type !== "answer" || !isRuntimeSessionId(body.session_id) || body.runtime_avatar_id !== runtimeAvatarId) throw new Error("Runtime Gateway returned an invalid live preview answer");
+  return { sdp: body.sdp, type: "answer" as const, sessionId: body.session_id };
 }
 
 export async function getRuntimePreview(sessionId: string): Promise<RuntimePreview> {
@@ -116,12 +136,14 @@ export async function dispatchMediaCommand(command: MediaCommand, sessionId: str
   // The Gateway synthesizes a script only with the frozen approved voice (CosyVoice) and rejects one without it.
   const runtimeVoiceId = command.payload.runtimeVoiceId;
   const voiceChecksum = command.payload.voiceChecksum;
+  const runtimeAvatarId = command.payload.runtimeAvatarId;
+  if (runtimeAvatarId !== undefined && (!/^sr_[0-9a-f]{32}$/.test(runtimeAvatarId) || command.type !== "start_program")) throw new Error("Program command has an invalid project avatar binding");
   if (runtimeScript && (!runtimeVoiceIdValid(runtimeVoiceId) || !voiceChecksumValid(voiceChecksum))) throw new Error("Program command is missing its frozen voice binding");
   if (!runtimeScript && (runtimeVoiceId !== undefined || voiceChecksum !== undefined)) throw new Error("Only a program command with a script may carry a voice");
   const response = await fetch(`${config.url}/v1/media`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeScript ? { runtime_voice_id: runtimeVoiceId, voice_checksum: voiceChecksum } : {}), ...(overlaySceneJson !== undefined ? { overlay_scene_json: overlaySceneJson, overlay_scene_sha256: overlaySceneSha256 } : {}) }),
+    body: JSON.stringify({ command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeScript ? { runtime_voice_id: runtimeVoiceId, voice_checksum: voiceChecksum } : {}), ...(runtimeAvatarId ? { runtime_avatar_id: runtimeAvatarId } : {}), ...(overlaySceneJson !== undefined ? { overlay_scene_json: overlaySceneJson, overlay_scene_sha256: overlaySceneSha256 } : {}) }),
     signal: requestSignal(config, options)
   });
   if (!response.ok) throw await gatewayError(response, "Runtime gateway rejected media command");
@@ -145,6 +167,7 @@ function assertMediaGatewayReceipt(value: unknown, command: MediaCommand, sessio
   const acceptedAt = typeof fields.accepted_at === "string" ? new Date(fields.accepted_at) : undefined;
   if ((value as { accepted?: unknown }).accepted !== true || fields.command_id !== command.id || fields.session_id !== sessionId || fields.action !== command.type || !acceptedAt || Number.isNaN(acceptedAt.getTime()) || !receiptTimeAcceptable(acceptedAt, notBefore)) throw new Error("Runtime gateway receipt does not bind the media command");
   if (command.payload.programSegmentId && fields.program_segment_id !== command.payload.programSegmentId) throw new Error("Runtime gateway receipt does not bind the program segment");
+  if (command.payload.runtimeAvatarId && fields.runtime_avatar_id !== command.payload.runtimeAvatarId) throw new Error("Runtime gateway receipt does not bind the project avatar");
   if (command.payload.overlaySceneSha256 && fields.overlay_scene_sha256 !== command.payload.overlaySceneSha256) throw new Error("Runtime gateway receipt does not bind the media command");
 }
 

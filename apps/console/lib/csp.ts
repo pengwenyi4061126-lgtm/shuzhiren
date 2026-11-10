@@ -30,7 +30,7 @@ export function mediaUploadOrigins(value = process.env.MEDIA_UPLOAD_ALLOWED_ORIG
 // 'unsafe-inline' without a nonce because a nonce in the directive would make
 // browsers ignore 'unsafe-inline' and block React style attributes.
 export function pageCsp(nonce: string, options: { development?: boolean; mediaUploadOrigins?: string[] } = {}) {
-  const connectOrigins = [...new Set([...(options.mediaUploadOrigins ?? []), ...(options.development ? ["http://127.0.0.1:9000"] : [])])];
+  const mediaOrigins = [...new Set([...(options.mediaUploadOrigins ?? []), ...(options.development ? ["http://127.0.0.1:9000"] : [])])];
   return [
     "default-src 'self'",
     "base-uri 'self'",
@@ -41,8 +41,8 @@ export function pageCsp(nonce: string, options: { development?: boolean; mediaUp
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    `connect-src 'self'${connectOrigins.length ? ` ${connectOrigins.join(" ")}` : ""}`,
-    "media-src 'self' blob:",
+    `connect-src 'self'${mediaOrigins.length ? ` ${mediaOrigins.join(" ")}` : ""}`,
+    `media-src 'self' blob:${mediaOrigins.length ? ` ${mediaOrigins.join(" ")}` : ""}`,
     "worker-src 'self' blob:"
   ].join("; ");
 }

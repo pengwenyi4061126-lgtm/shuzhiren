@@ -11,9 +11,11 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/stud
     let body: unknown;
     try { body = await readBoundedJson(request); }
     catch (error) { if (error instanceof Response) return Response.json({ error: error.statusText || "request_too_large" }, { status: error.status }); throw error; }
-    if (!body || typeof body !== "object" || typeof (body as Record<string, unknown>).runId !== "string" || !(body as Record<string, string>).runId) return Response.json({ error: "invalid_live_output" }, { status: 400 });
+    if (!body || typeof body !== "object" || typeof (body as Record<string, unknown>).runId !== "string" || !(body as Record<string, string>).runId
+      || typeof (body as Record<string, unknown>).avatarBuildJobId !== "string"
+      || !Number.isSafeInteger((body as Record<string, unknown>).projectRevision) || Number((body as Record<string, unknown>).projectRevision) < 1) return Response.json({ error: "invalid_live_output" }, { status: 400 });
     const { projectId } = await context.params;
-    const project = await attachLiveOutput(actor, projectId, (body as Record<string, string>).runId);
+    const project = await attachLiveOutput(actor, projectId, (body as Record<string, string>).runId, Number((body as Record<string, unknown>).projectRevision), (body as Record<string, string>).avatarBuildJobId);
     return project ? Response.json({ data: project }) : Response.json({ error: "not_found" }, { status: 404 });
   } catch (error) {
     if (error instanceof Response) return Response.json({ error: error.statusText || "live_output_rejected" }, { status: error.status });

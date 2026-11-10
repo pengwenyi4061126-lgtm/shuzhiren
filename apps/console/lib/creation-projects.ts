@@ -8,11 +8,13 @@ import { listRuns } from "@/lib/control-plane/store";
 import { scanProhibitedTermText } from "@/lib/prohibited-terms";
 import { creationProjectScriptReviewSha256 } from "@/lib/creation-project-review";
 import { databasePool, withTenantTransaction } from "@/lib/database";
+import { matchesProjectRevision, matchesProjectScriptToPreparedSegments } from "@/lib/shared/live-output-revision.mjs";
+import { getShowProgram } from "@/lib/show-program";
 
 export type CreationOutputMode = "recording" | "live" | "both";
 export type CreationProjectInput = { name: string; goal: string; audience: string; outputMode: CreationOutputMode; productVersionId: string; assetIds: string[]; script: string };
 export type CreationProjectScriptReview = { sha256: string; productVersionId: string; reviewedBy: string; reviewedAt: string };
-export type CreationProject = CreationProjectInput & { id: string; tenantId: string; assetIds: string[]; liveRunIds: string[]; revision: number; createdAt: string; updatedAt: string; scriptReview: CreationProjectScriptReview | null };
+export type CreationProject = CreationProjectInput & { id: string; tenantId: string; assetIds: string[]; liveRunIds: string[]; liveOutputRevisions: Record<string, number | null>; liveOutputAvatarBuildJobs: Record<string, string | null>; selectedAvatarBuildJobId?: string; revision: number; createdAt: string; updatedAt: string; scriptReview: CreationProjectScriptReview | null };
 
 export function isCreationProjectInput(value: unknown): value is CreationProjectInput {
   if (!value || typeof value !== "object") return false;
@@ -26,7 +28,7 @@ export function isCreationProjectInput(value: unknown): value is CreationProject
     && typeof item.script === "string" && item.script.length <= 12000;
 }
 
-type ProjectRow = Omit<CreationProject, "assetIds" | "liveRunIds" | "createdAt" | "updatedAt" | "scriptReview"> & { scriptReviewSha256: string | null; scriptReviewProductVersionId: string | null; scriptReviewedBy: string | null; scriptReviewedAt: Date | string | null; created_at: Date | string; updated_at: Date | string };
+type ProjectRow = Omit<CreationProject, "assetIds" | "liveRunIds" | "liveOutputRevisions" | "liveOutputAvatarBuildJobs" | "createdAt" | "updatedAt" | "scriptReview"> & { scriptReviewSha256: string | null; scriptReviewProductVersionId: string | null; scriptReviewedBy: string | null; scriptReviewedAt: Date | string | null; created_at: Date | string; updated_at: Date | string };
 type ProjectStore = { projects: Map<string, CreationProject> };
 
 declare global { var shuzhirenCreationProjects: ProjectStore | undefined; }
@@ -53,7 +55,7 @@ export async function createCreationProject(context: RequestContext, input: Crea
   const normalized = await validateReferences(context, input);
   if (!databasePool()) {
     const now = new Date().toISOString();
-    const project: CreationProject = { ...normalized, id: `project_${crypto.randomUUID()}`, tenantId: context.tenantId, liveRunIds: [], revision: 1, createdAt: now, updatedAt: now, scriptReview: null };
+    const project: CreationProject = { ...normalized, id: `project_${crypto.randomUUID()}`, tenantId: context.tenantId, liveRunIds: [], liveOutputRevisions: {}, liveOutputAvatarBuildJobs: {}, revision: 1, createdAt: now, updatedAt: now, scriptReview: null };
     projectStore().projects.set(project.id, project);
     await recordAuditEvent(context, projectAudit("creation_project.created", project));
     return project;
@@ -67,7 +69,7 @@ export async function createCreationProject(context: RequestContext, input: Crea
       [context.tenantId, normalized.name, normalized.goal, normalized.audience, normalized.outputMode, normalized.productVersionId, normalized.script]
     )).rows[0];
     await replaceProjectAssets(client, context.tenantId, row.id, normalized.assetIds);
-    const project = { ...mapProjectRow(row), assetIds: normalized.assetIds, liveRunIds: [] };
+    const project = { ...mapProjectRow(row), assetIds: normalized.assetIds, liveRunIds: [], liveOutputRevisions: {}, liveOutputAvatarBuildJobs: {} };
     await recordAuditEventInTransaction(client, context, projectAudit("creation_project.created", project));
     return project;
   });
@@ -80,7 +82,7 @@ export async function updateCreationProject(context: RequestContext, projectId: 
     const project = projectStore().projects.get(projectId);
     if (!project || project.tenantId !== context.tenantId) return null;
     const reviewUnchanged = project.script === normalized.script && project.productVersionId === normalized.productVersionId;
-    const updated: CreationProject = { ...project, ...normalized, revision: project.revision + 1, updatedAt: new Date().toISOString(), scriptReview: reviewUnchanged ? project.scriptReview : null };
+    const updated: CreationProject = { ...project, ...normalized, selectedAvatarBuildJobId: undefined, revision: project.revision + 1, updatedAt: new Date().toISOString(), scriptReview: reviewUnchanged ? project.scriptReview : null };
     projectStore().projects.set(projectId, updated);
     await recordAuditEvent(context, projectAudit("creation_project.updated", updated));
     return updated;
@@ -96,6 +98,7 @@ export async function updateCreationProject(context: RequestContext, projectId: 
     )).rows[0];
     if (!row) return null;
     await replaceProjectAssets(client, context.tenantId, projectId, normalized.assetIds);
+    await client.query("delete from creation_project_avatar_selections where tenant_id = $1 and project_id = $2", [context.tenantId, projectId]);
     const relations = await loadProjectRelations(client, context.tenantId, [row]);
     const project = relations[0];
     await recordAuditEventInTransaction(client, context, projectAudit("creation_project.updated", project));
@@ -200,21 +203,25 @@ export async function assertCreationProjectScriptReviewed(context: RequestContex
       || project.scriptReview.sha256 !== creationProjectScriptReviewSha256(project.productVersionId, project.script)) {
       throw new Response("Current project script must be reviewed before creating outputs", { status: 409, statusText: "creation_project_script_not_reviewed" });
     }
+    const currentVersion = (await listProducts(context)).flatMap((product) => product.versions).find((candidate) => candidate.id === productVersionId && candidate.status === "approved" && isProductFactsCurrent(candidate.facts));
+    if (!currentVersion) throw new Response("An approved, current product facts version is required", { status: 409, statusText: "approved_product_facts_required" });
     return;
   }
   await withTenantTransaction(context.tenantId, async (client) => {
-    const row = (await client.query<{ productVersionId: string; script: string; reviewSha256: string | null; reviewProductVersionId: string | null }>(
-      `select product_version_id as "productVersionId", script, script_review_sha256 as "reviewSha256", script_review_product_version_id as "reviewProductVersionId"
-       from creation_projects where tenant_id = $1 and id = $2`, [context.tenantId, projectId]
+    const row = (await client.query<{ productVersionId: string; script: string; reviewSha256: string | null; reviewProductVersionId: string | null; facts: unknown | null; approvalStatus: string | null }>(
+      `select cp.product_version_id as "productVersionId", cp.script, cp.script_review_sha256 as "reviewSha256", cp.script_review_product_version_id as "reviewProductVersionId", pv.facts, pv.approval_status as "approvalStatus"
+       from creation_projects cp left join product_versions pv on pv.tenant_id = cp.tenant_id and pv.id = cp.product_version_id
+       where cp.tenant_id = $1 and cp.id = $2`, [context.tenantId, projectId]
     )).rows[0];
     if (!row) throw new Response("Content project was not found", { status: 404, statusText: "creation_project_not_found" });
     if (row.productVersionId !== productVersionId || row.reviewProductVersionId !== productVersionId || row.reviewSha256 !== creationProjectScriptReviewSha256(row.productVersionId, row.script)) {
       throw new Response("Current project script must be reviewed before creating outputs", { status: 409, statusText: "creation_project_script_not_reviewed" });
     }
+    if (row.approvalStatus !== "approved" || !isProductFactsCurrent(row.facts as ProductFacts)) throw new Response("An approved, current product facts version is required", { status: 409, statusText: "approved_product_facts_required" });
   }, { readOnly: true });
 }
 
-export async function attachLiveOutput(context: RequestContext, projectId: string, runId: string) {
+export async function attachLiveOutput(context: RequestContext, projectId: string, runId: string, expectedProjectRevision: number, avatarBuildJobId: string) {
   requireTenantWideAccess(context);
   const runs = await listRuns(context);
   const run = runs.find((candidate) => candidate.id === runId && candidate.state === "DRAFT");
@@ -222,25 +229,69 @@ export async function attachLiveOutput(context: RequestContext, projectId: strin
   if (!databasePool()) {
     const project = projectStore().projects.get(projectId);
     if (!project || project.tenantId !== context.tenantId) return null;
+    if (!project.selectedAvatarBuildJobId || project.selectedAvatarBuildJobId !== avatarBuildJobId) throw new Response("Select a published Avatar for this project before creating a live output", { status: 409, statusText: "avatar_selection_required" });
+    if (!matchesProjectRevision(project.revision, expectedProjectRevision)) throw new Response("Content project changed before the live output was attached", { status: 409, statusText: "creation_project_revision_changed" });
     if (project.productVersionId !== run.productVersionId) throw new Response("Live run product version does not match the project", { status: 409 });
+    const currentVersion = (await listProducts(context)).flatMap((product) => product.versions).find((candidate) => candidate.id === project.productVersionId && candidate.status === "approved" && isProductFactsCurrent(candidate.facts));
+    if (!currentVersion) throw new Response("An approved, current product facts version is required", { status: 409, statusText: "approved_product_facts_required" });
+    if (!project.scriptReview || project.scriptReview.productVersionId !== project.productVersionId
+      || project.scriptReview.sha256 !== creationProjectScriptReviewSha256(project.productVersionId, project.script)) {
+      throw new Response("Current project script must remain reviewed before attaching a live output", { status: 409, statusText: "creation_project_script_not_reviewed" });
+    }
+    const program = await getShowProgram(context, runId);
+    if (!program || !matchesProjectScriptToPreparedSegments(project.script, program.segments)) {
+      throw new Response("Live program script must match the reviewed content project", { status: 409, statusText: "creation_project_live_output_script_mismatch" });
+    }
     if (!project.liveRunIds.includes(runId)) project.liveRunIds.push(runId);
+    project.liveOutputRevisions ??= {};
+    project.liveOutputRevisions[runId] = project.revision;
+    project.liveOutputAvatarBuildJobs ??= {};
+    project.liveOutputAvatarBuildJobs[runId] = avatarBuildJobId;
     project.updatedAt = new Date().toISOString();
     await recordAuditEvent(context, { type: "creation_project.live_output_attached", resource: "creation_project", resourceId: project.id, detail: { runId, projectRevision: project.revision } });
     return project;
   }
   return withTenantTransaction(context.tenantId, async (client) => {
-    const draftRun = await client.query<{ product_version_id: string | null }>(
-      "select product_version_id from live_runs where tenant_id = $1 and id = $2 and state = 'DRAFT' for update", [context.tenantId, runId]
+    const draftRun = await client.query<{ product_version_id: string | null; show_revision_id: string }>(
+      "select product_version_id, show_revision_id from live_runs where tenant_id = $1 and id = $2 and state = 'DRAFT' for update", [context.tenantId, runId]
     );
     if (!draftRun.rows[0] || draftRun.rows[0].product_version_id !== run.productVersionId) throw new Response("Draft live run changed before it could be attached", { status: 409 });
-    const project = (await client.query<{ id: string; product_version_id: string; revision: number }>(
-      "select id, product_version_id, revision from creation_projects where tenant_id = $1 and id = $2 for update", [context.tenantId, projectId]
+    const project = (await client.query<{ id: string; product_version_id: string; revision: number; script: string; script_review_sha256: string | null; script_review_product_version_id: string | null }>(
+      "select id, product_version_id, revision, script, script_review_sha256, script_review_product_version_id from creation_projects where tenant_id = $1 and id = $2 for update", [context.tenantId, projectId]
     )).rows[0];
     if (!project) return null;
+    const selectedAvatar = await client.query<{ id: string }>(`select job.id from creation_project_avatar_selections selection
+      join avatar_build_jobs job on job.tenant_id = selection.tenant_id and job.id = selection.avatar_build_job_id
+      join creation_project_assets binding on binding.tenant_id = job.tenant_id and binding.project_id = job.project_id and binding.media_asset_id = job.source_asset_id
+      join media_assets asset on asset.tenant_id = binding.tenant_id and asset.id = binding.media_asset_id
+      where selection.tenant_id = $1 and selection.project_id = $2 and selection.avatar_build_job_id = $3
+        and job.project_id = selection.project_id and job.project_revision = $4 and job.status = 'preview_ready'
+        and job.review_status = 'approved' and job.publish_status = 'published' and job.runtime_avatar_id is not null
+        and asset.kind = 'portrait' and asset.approval_status = 'approved'
+        and (asset.expires_at is null or asset.expires_at >= current_date)
+        and asset.checksum = job.source_checksum and asset.verified_object_version = job.source_object_version
+        and asset.verified_bytes = job.source_bytes and asset.verified_content_type = job.source_content_type
+        and asset.verification_evidence_ref = job.source_evidence_ref and asset.verified_at is not null
+      for update of selection, job, asset`,
+    [context.tenantId, projectId, avatarBuildJobId, project.revision]);
+    if (!selectedAvatar.rowCount) throw new Response("Selected Avatar is no longer current or published", { status: 409, statusText: "avatar_selection_not_ready" });
+    if (!matchesProjectRevision(project.revision, expectedProjectRevision)) throw new Response("Content project changed before the live output was attached", { status: 409, statusText: "creation_project_revision_changed" });
     if (project.product_version_id !== run.productVersionId) throw new Response("Live run product version does not match the project", { status: 409 });
-    await client.query("insert into creation_project_live_outputs (tenant_id, project_id, live_run_id) values ($1, $2, $3) on conflict do nothing", [context.tenantId, projectId, runId]);
+    const currentVersion = await client.query<{ facts: unknown }>("select facts from product_versions where tenant_id = $1 and id = $2 and approval_status = 'approved'", [context.tenantId, project.product_version_id]);
+    if (!currentVersion.rows[0] || !isProductFactsCurrent(currentVersion.rows[0].facts as ProductFacts)) throw new Response("An approved, current product facts version is required", { status: 409, statusText: "approved_product_facts_required" });
+    if (project.script_review_product_version_id !== project.product_version_id
+      || project.script_review_sha256 !== creationProjectScriptReviewSha256(project.product_version_id, project.script)) {
+      throw new Response("Current project script must remain reviewed before attaching a live output", { status: 409, statusText: "creation_project_script_not_reviewed" });
+    }
+    const programSegments = await client.query<{ kind: string; runtime_script: string | null }>(
+      "select kind, runtime_script from show_revision_segments where tenant_id = $1 and show_revision_id = $2 order by position", [context.tenantId, draftRun.rows[0].show_revision_id]
+    );
+    if (!matchesProjectScriptToPreparedSegments(project.script, programSegments.rows.map((segment) => ({ kind: segment.kind, runtimeScript: segment.runtime_script ?? undefined })))) {
+      throw new Response("Live program script must match the reviewed content project", { status: 409, statusText: "creation_project_live_output_script_mismatch" });
+    }
+    await client.query("insert into creation_project_live_outputs (tenant_id, project_id, live_run_id, project_revision, avatar_build_job_id) values ($1, $2, $3, $4, $5) on conflict (tenant_id, project_id, live_run_id) do update set project_revision = excluded.project_revision, avatar_build_job_id = excluded.avatar_build_job_id", [context.tenantId, projectId, runId, project.revision, avatarBuildJobId]);
     await client.query("update creation_projects set updated_at = now() where tenant_id = $1 and id = $2", [context.tenantId, projectId]);
-    await recordAuditEventInTransaction(client, context, { type: "creation_project.live_output_attached", resource: "creation_project", resourceId: projectId, detail: { runId, projectRevision: project.revision } });
+    await recordAuditEventInTransaction(client, context, { type: "creation_project.live_output_attached", resource: "creation_project", resourceId: projectId, detail: { runId, projectRevision: project.revision, avatarBuildJobId } });
     return (await listCreationProjectsInTransaction(client, context.tenantId, projectId))[0] ?? null;
   });
 }
@@ -279,14 +330,18 @@ async function replaceProjectAssets(client: PoolClient, tenantId: string, projec
 async function loadProjectRelations(client: PoolClient, tenantId: string, rows: ProjectRow[]) {
   if (!rows.length) return [];
   const ids = rows.map((row) => row.id);
-  const [assets, outputs] = await Promise.all([
+  const [assets, outputs, selections] = await Promise.all([
     client.query<{ project_id: string; media_asset_id: string }>("select project_id, media_asset_id from creation_project_assets where tenant_id = $1 and project_id = any($2::uuid[])", [tenantId, ids]),
-    client.query<{ project_id: string; live_run_id: string }>("select project_id, live_run_id from creation_project_live_outputs where tenant_id = $1 and project_id = any($2::uuid[])", [tenantId, ids])
+    client.query<{ project_id: string; live_run_id: string; project_revision: number | null; avatar_build_job_id: string | null }>("select project_id, live_run_id, project_revision, avatar_build_job_id from creation_project_live_outputs where tenant_id = $1 and project_id = any($2::uuid[])", [tenantId, ids]),
+    client.query<{ project_id: string; avatar_build_job_id: string }>("select project_id, avatar_build_job_id from creation_project_avatar_selections where tenant_id = $1 and project_id = any($2::uuid[])", [tenantId, ids])
   ]);
   return rows.map((row) => ({
     ...mapProjectRow(row),
     assetIds: assets.rows.filter((asset) => asset.project_id === row.id).map((asset) => asset.media_asset_id),
-    liveRunIds: outputs.rows.filter((output) => output.project_id === row.id).map((output) => output.live_run_id)
+    liveRunIds: outputs.rows.filter((output) => output.project_id === row.id).map((output) => output.live_run_id),
+    liveOutputRevisions: Object.fromEntries(outputs.rows.filter((output) => output.project_id === row.id).map((output) => [output.live_run_id, output.project_revision])),
+    liveOutputAvatarBuildJobs: Object.fromEntries(outputs.rows.filter((output) => output.project_id === row.id).map((output) => [output.live_run_id, output.avatar_build_job_id])),
+    ...(selections.rows.find((selection) => selection.project_id === row.id) ? { selectedAvatarBuildJobId: selections.rows.find((selection) => selection.project_id === row.id)!.avatar_build_job_id } : {})
   }));
 }
 
@@ -302,7 +357,7 @@ function mapProjectRow(row: ProjectRow) {
   const scriptReview = row.scriptReviewSha256 && row.scriptReviewProductVersionId && row.scriptReviewedBy && row.scriptReviewedAt
     ? { sha256: row.scriptReviewSha256, productVersionId: row.scriptReviewProductVersionId, reviewedBy: row.scriptReviewedBy, reviewedAt: new Date(row.scriptReviewedAt).toISOString() }
     : null;
-  return { id: row.id, tenantId: row.tenantId, name: row.name, goal: row.goal, audience: row.audience, outputMode: row.outputMode, productVersionId: row.productVersionId, assetIds: [], liveRunIds: [], script: row.script, revision: row.revision, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(), scriptReview };
+  return { id: row.id, tenantId: row.tenantId, name: row.name, goal: row.goal, audience: row.audience, outputMode: row.outputMode, productVersionId: row.productVersionId, assetIds: [], liveRunIds: [], liveOutputRevisions: {}, liveOutputAvatarBuildJobs: {}, script: row.script, revision: row.revision, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(), scriptReview };
 }
 
 function projectAudit(type: "creation_project.created" | "creation_project.updated", project: CreationProject) {

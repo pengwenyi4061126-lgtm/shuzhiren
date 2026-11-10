@@ -2,11 +2,13 @@ import type { PoolClient } from "pg";
 import { recordAuditEventInTransaction } from "@/lib/audit";
 import { requireTenantWideAccess, type RequestContext } from "@/lib/control-plane/auth-context";
 import { creationProjectScriptReviewSha256 } from "@/lib/creation-project-review";
+import { isProductFactsCurrent, type ProductFacts } from "@/lib/catalog";
 import { databasePool, withTenantTransaction } from "@/lib/database";
-import { createMediaDownloadGrant, verifyMediaAssetContent } from "@/lib/media-evidence";
+import { createMediaDownloadGrant, verifyMediaAssetContent, type PhotoNarrationQualityReport } from "@/lib/media-evidence";
 import { isSafeObjectKey, isSha256Digest } from "@/lib/governance-input";
 
 export type ProjectRecordingInput = {
+  archiveRequestId: string;
   projectRevision: number;
   productVersionId: string;
   scriptSnapshot: string;
@@ -27,18 +29,20 @@ export type ProjectRecording = Omit<ProjectRecordingInput, "checksum"> & {
   contentType: "video/webm";
   verifiedObjectVersion: string;
   verificationEvidenceRef: string;
+  recordingQuality: PhotoNarrationQualityReport | { status: "legacy_unverified" };
   verifiedAt: string;
   createdBy: string;
   createdAt: string;
 };
 
 type ProjectRow = { revision: number; product_version_id: string; script: string; script_review_sha256: string | null; script_review_product_version_id: string | null };
-type RecordingRow = { id: string; tenant_id: string; project_id: string; project_revision: number; product_version_id: string; script_snapshot: string; script_sha256: string; photo_asset_id: string; voice_asset_id: string | null; file_name: string; object_key: string; checksum_sha256: string; bytes: string | number; content_type: "video/webm"; verified_object_version: string; verification_evidence_ref: string; verified_at: Date | string; created_by: string; created_at: Date | string };
+type RecordingRow = { id: string; tenant_id: string; project_id: string; archive_request_id: string; project_revision: number; product_version_id: string; script_snapshot: string; script_sha256: string; photo_asset_id: string; voice_asset_id: string | null; file_name: string; object_key: string; checksum_sha256: string; bytes: string | number; content_type: "video/webm"; recording_quality: PhotoNarrationQualityReport | { status: "legacy_unverified" }; verified_object_version: string; verification_evidence_ref: string; verified_at: Date | string; created_by: string; created_at: Date | string };
 
 export function isProjectRecordingInput(value: unknown): value is ProjectRecordingInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
-  return Number.isSafeInteger(input.projectRevision) && Number(input.projectRevision) > 0
+  return typeof input.archiveRequestId === "string" && isUuid(input.archiveRequestId)
+    && Number.isSafeInteger(input.projectRevision) && Number(input.projectRevision) > 0
     && typeof input.productVersionId === "string" && isUuid(input.productVersionId)
     && typeof input.scriptSnapshot === "string" && input.scriptSnapshot.trim().length > 0 && input.scriptSnapshot.length <= 12000
     && typeof input.photoAssetId === "string" && isUuid(input.photoAssetId)
@@ -55,7 +59,7 @@ export async function listProjectRecordings(context: RequestContext, projectId: 
   return withTenantTransaction(context.tenantId, async (client) => {
     const project = await client.query("select id from creation_projects where tenant_id = $1 and id = $2", [context.tenantId, projectId]);
     if (!project.rowCount) throw new Response("Content project was not found", { status: 404, statusText: "creation_project_not_found" });
-    const rows = await client.query<RecordingRow>(`select id, tenant_id, project_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, verified_object_version, verification_evidence_ref, verified_at, created_by, created_at from creation_project_recordings where tenant_id = $1 and project_id = $2 order by created_at desc, id desc limit 100`, [context.tenantId, projectId]);
+    const rows = await client.query<RecordingRow>(`select id, tenant_id, project_id, archive_request_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, recording_quality, verified_object_version, verification_evidence_ref, verified_at, created_by, created_at from creation_project_recordings where tenant_id = $1 and project_id = $2 order by created_at desc, id desc limit 100`, [context.tenantId, projectId]);
     return rows.rows.map(mapRecording);
   }, { readOnly: true });
 }
@@ -65,29 +69,57 @@ export async function registerProjectRecording(context: RequestContext, projectI
   if (!isUuid(projectId)) throw new Response("Content project was not found", { status: 404 });
   if (!databasePool()) throw new Response("Server-side recording archive requires PostgreSQL", { status: 503, statusText: "recording_archive_unavailable" });
   const checksum = input.checksum.toLowerCase().replace(/^sha256:/, "");
-  const proof = await verifyMediaAssetContent(context, { kind: "product_clip", objectKey: input.objectKey, checksum: `sha256:${checksum}` });
-  if (proof.bytes !== input.bytes || proof.contentType !== "video/webm") throw new Response("Uploaded recording does not match the verified WebM content", { status: 422, statusText: "project_recording_content_mismatch" });
+  const proof = await verifyMediaAssetContent(context, { kind: "product_clip", objectKey: input.objectKey, checksum: `sha256:${checksum}`, qualityProfile: "photo-narration-webm" });
+  if (proof.bytes !== input.bytes || proof.contentType !== "video/webm" || !proof.recordingQuality) throw new Response("Uploaded recording did not pass independent server quality verification", { status: 422, statusText: "project_recording_quality_failed" });
+  const recordingQuality = proof.recordingQuality;
   const scriptSha256 = creationProjectScriptReviewSha256(input.productVersionId, input.scriptSnapshot);
   return withTenantTransaction(context.tenantId, async (client) => {
+    const existing = await client.query<RecordingRow>(`select id, tenant_id, project_id, archive_request_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, recording_quality, verified_object_version, verification_evidence_ref, verified_at, created_by, created_at from creation_project_recordings where tenant_id = $1 and archive_request_id = $2`, [context.tenantId, input.archiveRequestId]);
+    if (existing.rows[0]) return matchIdempotentRecording(existing.rows[0], projectId, input, checksum, scriptSha256);
     const project = (await client.query<ProjectRow>(`select revision, product_version_id, script, script_review_sha256, script_review_product_version_id from creation_projects where tenant_id = $1 and id = $2 for update`, [context.tenantId, projectId])).rows[0];
     if (!project) throw new Response("Content project was not found", { status: 404, statusText: "creation_project_not_found" });
+    if (project.revision < input.projectRevision) throw new Response("Recording project revision is newer than the current project", { status: 409, statusText: "creation_project_revision_changed" });
     if (project.product_version_id !== input.productVersionId || project.script !== input.scriptSnapshot
       || project.script_review_product_version_id !== input.productVersionId || project.script_review_sha256 !== scriptSha256) {
       throw new Response("Current project content must remain reviewed before recording archive", { status: 409, statusText: "creation_project_script_not_reviewed" });
     }
+    const currentVersion = await client.query<{ facts: unknown }>("select facts from product_versions where tenant_id = $1 and id = $2 and approval_status = 'approved'", [context.tenantId, project.product_version_id]);
+    if (!currentVersion.rows[0] || !isProductFactsCurrent(currentVersion.rows[0].facts as ProductFacts)) throw new Response("An approved, current product facts version is required", { status: 409, statusText: "approved_product_facts_required" });
     await assertAttachedApprovedAsset(client, context.tenantId, projectId, input.photoAssetId, "portrait_photo");
     if (input.voiceAssetId) await assertAttachedApprovedAsset(client, context.tenantId, projectId, input.voiceAssetId, "voice");
-    const result = await client.query<RecordingRow>(`insert into creation_project_recordings (tenant_id, project_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, verified_object_version, verification_evidence_ref, verified_at, created_by)
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'video/webm', $13, $14, $15::timestamptz, $16)
-      returning id, tenant_id, project_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, verified_object_version, verification_evidence_ref, verified_at, created_by, created_at`,
-    [context.tenantId, projectId, input.projectRevision, input.productVersionId, input.scriptSnapshot, scriptSha256, input.photoAssetId, input.voiceAssetId ?? null, input.fileName, input.objectKey, checksum, input.bytes, proof.objectVersion, proof.evidenceRef, proof.verifiedAt, context.actorId]);
+    const result = await client.query<RecordingRow>(`insert into creation_project_recordings (tenant_id, project_id, archive_request_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, recording_quality, verified_object_version, verification_evidence_ref, verified_at, created_by)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'video/webm', $14::jsonb, $15, $16, $17::timestamptz, $18)
+      on conflict (tenant_id, archive_request_id) do nothing
+      returning id, tenant_id, project_id, archive_request_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, recording_quality, verified_object_version, verification_evidence_ref, verified_at, created_by, created_at`,
+    [context.tenantId, projectId, input.archiveRequestId, input.projectRevision, input.productVersionId, input.scriptSnapshot, scriptSha256, input.photoAssetId, input.voiceAssetId ?? null, input.fileName, input.objectKey, checksum, input.bytes, JSON.stringify(recordingQuality), proof.objectVersion, proof.evidenceRef, proof.verifiedAt, context.actorId]);
+    if (!result.rows[0]) {
+      const replay = await client.query<RecordingRow>(`select id, tenant_id, project_id, archive_request_id, project_revision, product_version_id, script_snapshot, script_sha256, photo_asset_id, voice_asset_id, file_name, object_key, checksum_sha256, bytes, content_type, recording_quality, verified_object_version, verification_evidence_ref, verified_at, created_by, created_at from creation_project_recordings where tenant_id = $1 and archive_request_id = $2`, [context.tenantId, input.archiveRequestId]);
+      if (!replay.rows[0]) throw new Response("Recording archive replay could not be resolved", { status: 503, statusText: "recording_archive_replay_unavailable" });
+      return matchIdempotentRecording(replay.rows[0], projectId, input, checksum, scriptSha256);
+    }
     const recording = mapRecording(result.rows[0]);
-    await recordAuditEventInTransaction(client, context, { type: "creation_project.recording_archived", resource: "creation_project_recording", resourceId: recording.id, detail: { projectId, projectRevision: recording.projectRevision, productVersionId: recording.productVersionId, scriptSha256, photoAssetId: recording.photoAssetId, bytes: recording.bytes, checksumSha256: checksum, objectVersion: proof.objectVersion, evidenceRef: proof.evidenceRef } });
+    await recordAuditEventInTransaction(client, context, { type: "creation_project.recording_archived", resource: "creation_project_recording", resourceId: recording.id, detail: { projectId, projectRevision: recording.projectRevision, productVersionId: recording.productVersionId, scriptSha256, photoAssetId: recording.photoAssetId, bytes: recording.bytes, checksumSha256: checksum, objectVersion: proof.objectVersion, evidenceRef: proof.evidenceRef, qualityProfile: recordingQuality.profile, qualityDurationSeconds: recordingQuality.durationSeconds } });
     return recording;
   });
 }
 
+function matchIdempotentRecording(row: RecordingRow, projectId: string, input: ProjectRecordingInput, checksum: string, scriptSha256: string): ProjectRecording {
+  const matches = row.project_id === projectId && row.project_revision === input.projectRevision && row.product_version_id === input.productVersionId
+    && row.script_snapshot === input.scriptSnapshot && row.script_sha256 === scriptSha256 && row.photo_asset_id === input.photoAssetId
+    && row.voice_asset_id === (input.voiceAssetId ?? null) && row.file_name === input.fileName && row.checksum_sha256 === checksum && Number(row.bytes) === input.bytes;
+  if (!matches) throw new Response("Recording archive request id was already used for different content", { status: 409, statusText: "recording_archive_idempotency_conflict" });
+  return mapRecording(row);
+}
+
 export async function createProjectRecordingDownloadGrant(context: RequestContext, projectId: string, recordingId: string) {
+  return createProjectRecordingGrant(context, projectId, recordingId, "attachment");
+}
+
+export async function createProjectRecordingPreviewGrant(context: RequestContext, projectId: string, recordingId: string) {
+  return createProjectRecordingGrant(context, projectId, recordingId, "inline");
+}
+
+async function createProjectRecordingGrant(context: RequestContext, projectId: string, recordingId: string, disposition: "attachment" | "inline") {
   requireTenantWideAccess(context);
   if (!isUuid(projectId) || !isUuid(recordingId)) throw new Response("Project recording was not found", { status: 404 });
   if (!databasePool()) throw new Response("Server-side recording archive requires PostgreSQL", { status: 503, statusText: "recording_archive_unavailable" });
@@ -99,7 +131,7 @@ export async function createProjectRecordingDownloadGrant(context: RequestContex
     return row.rows[0] ?? null;
   }, { readOnly: true });
   if (!recording) throw new Response("Project recording was not found", { status: 404, statusText: "project_recording_not_found" });
-  return createMediaDownloadGrant(context, { objectKey: recording.object_key, objectVersion: recording.verified_object_version, checksum: `sha256:${recording.checksum_sha256}`, fileName: recording.file_name });
+  return createMediaDownloadGrant(context, { objectKey: recording.object_key, objectVersion: recording.verified_object_version, checksum: `sha256:${recording.checksum_sha256}`, fileName: recording.file_name, disposition });
 }
 
 async function assertAttachedApprovedAsset(client: PoolClient, tenantId: string, projectId: string, assetId: string, kind: "portrait_photo" | "voice") {
@@ -108,7 +140,7 @@ async function assertAttachedApprovedAsset(client: PoolClient, tenantId: string,
 }
 
 function mapRecording(row: RecordingRow): ProjectRecording {
-  return { id: row.id, tenantId: row.tenant_id, projectId: row.project_id, projectRevision: row.project_revision, productVersionId: row.product_version_id, scriptSnapshot: row.script_snapshot, scriptSha256: row.script_sha256, photoAssetId: row.photo_asset_id, ...(row.voice_asset_id ? { voiceAssetId: row.voice_asset_id } : {}), fileName: row.file_name, objectKey: row.object_key, checksum: `sha256:${row.checksum_sha256}`, bytes: Number(row.bytes), contentType: row.content_type, verifiedObjectVersion: row.verified_object_version, verificationEvidenceRef: row.verification_evidence_ref, verifiedAt: new Date(row.verified_at).toISOString(), createdBy: row.created_by, createdAt: new Date(row.created_at).toISOString() };
+  return { id: row.id, tenantId: row.tenant_id, projectId: row.project_id, archiveRequestId: row.archive_request_id, projectRevision: row.project_revision, productVersionId: row.product_version_id, scriptSnapshot: row.script_snapshot, scriptSha256: row.script_sha256, photoAssetId: row.photo_asset_id, ...(row.voice_asset_id ? { voiceAssetId: row.voice_asset_id } : {}), fileName: row.file_name, objectKey: row.object_key, checksum: `sha256:${row.checksum_sha256}`, bytes: Number(row.bytes), contentType: row.content_type, recordingQuality: row.recording_quality, verifiedObjectVersion: row.verified_object_version, verificationEvidenceRef: row.verification_evidence_ref, verifiedAt: new Date(row.verified_at).toISOString(), createdBy: row.created_by, createdAt: new Date(row.created_at).toISOString() };
 }
 
 function isUuid(value: string) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
