@@ -16,6 +16,23 @@ COPY apps/console apps/console
 COPY infra/postgres/migrations infra/postgres/migrations
 RUN npm run build --workspace @shuzhiren/console
 
+# This target exists only for a loopback-bound P0 verification server.  A
+# Next standalone production server unconditionally assigns
+# NODE_ENV=production, so it cannot exercise the explicitly development-only
+# request-header identity guard.  Keep source plus dev dependencies available
+# and invoke the repository's loopback-enforcing dev launcher instead.
+FROM dependencies AS development
+
+COPY --chown=node:node apps/console apps/console
+COPY --chown=node:node infra/postgres/migrations infra/postgres/migrations
+WORKDIR /app/apps/console
+ENV NODE_ENV=development
+ENV PORT=3000
+ENV HOSTNAME=127.0.0.1
+USER node
+EXPOSE 3000
+CMD ["node", "scripts/dev.mjs"]
+
 FROM dependencies AS migrator
 
 COPY apps/console/scripts/migrate.mjs apps/console/scripts/migration-integrity.mjs ./apps/console/scripts/
