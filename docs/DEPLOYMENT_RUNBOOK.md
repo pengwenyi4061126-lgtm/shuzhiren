@@ -21,6 +21,13 @@ npm run observer:targets:apply -- --candidate /srv/shuzhiren/observer-config/run
 - 仅对反向代理公开控制台；PostgreSQL、MinIO、Redis、Gateway 与 Worker 位于私网。
 - 将模型、头像、录屏目录分别挂载到独立磁盘路径，不将权重、录屏或流密钥写入 Git。模型和头像目录以只读方式挂载；录屏目录必须可由 LiveTalking 容器 UID/GID `10002` 写入，例如 `sudo install -d -m 0700 -o 10002 -g 10002 /srv/shuzhiren/recordings`。
 
+先用仓库内的固定路径脚本创建宿主机目录。它只创建并核验 `/srv/shuzhiren` 下的最小权限目录和 Gateway 备份组；不会下载模型、生成密钥、写入环境文件或启动容器。完成后可用只读模式复核目录的 owner/group/mode：
+
+```bash
+sudo bash scripts/provision-runtime-host-paths.sh
+sudo bash scripts/provision-runtime-host-paths.sh --verify-only
+```
+
 先在仓库根目录执行只读主机预检。它检查 GPU 名称/显存、Docker NVIDIA runtime 和用于模型、镜像、录屏的可用磁盘空间；不会安装软件、拉取镜像或启动容器。默认只检查当前仓库所在磁盘；生产环境必须把模型、Avatar 和录屏的实际宿主机目录一并传入。
 
 ```bash
