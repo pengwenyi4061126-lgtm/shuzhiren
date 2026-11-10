@@ -63,7 +63,9 @@ backup_gid="$(getent group "$backup_group" | awk -F: 'NR == 1 { print $3 }')"
 [[ "$backup_gid" =~ ^[0-9]+$ ]] || fail "cannot resolve gid for $backup_group"
 
 declare -a paths=(
-  "$runtime_root|0|0|0750|runtime root"
+  # The deployment account needs search permission on the root to run the
+  # read-only preflight against fixed child paths, but must not list its names.
+  "$runtime_root|0|0|0751|runtime root"
   "$runtime_root/models|10002|10002|0750|LiveTalking model volume"
   "$runtime_root/cosyvoice-models|10003|10003|0750|CosyVoice model volume"
   "$runtime_root/avatars|10002|10002|0750|published avatar volume"
