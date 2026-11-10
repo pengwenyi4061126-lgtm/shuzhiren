@@ -21,7 +21,7 @@ Optional:
   RUNTIME_COMPOSE_PROJECT      Compose project name
   RUNTIME_COMPOSE_ENV_FILES    colon-separated Compose env files
   RUNTIME_GATEWAY_URL           Gateway URL (default http://127.0.0.1:8090)
-  RUNTIME_SESSION_ID            session to observe (default 0)
+  RUNTIME_SESSION_ID            session to observe (default: first active dynamic session)
   OUTPUT_PROBE_MAX_AV_SYNC_MS   maximum allowed probe sync error (default 120)
   EVIDENCE_FILE                 write redacted JSON observations to this path
 
@@ -106,7 +106,7 @@ printf 'PASS   non-media runtime services are absent from the media network\n'
 printf 'PASS   LiveTalking alone owns the egress network and media services publish no host ports\n'
 
 gateway_url="${RUNTIME_GATEWAY_URL:-http://127.0.0.1:8090}"
-session_id="${RUNTIME_SESSION_ID:-0}"
+session_id="${RUNTIME_SESSION_ID:-}"
 health_file="$(mktemp)"
 observation_file=""
 probe_file=""
@@ -145,6 +145,28 @@ PY
 if "$network_only"; then
   printf 'PASS   runtime network isolation acceptance completed (network-only)\n'
   exit 0
+fi
+
+if [[ -z "$session_id" ]]; then
+  session_id="$(docker exec "$gateway_container" python3 -c '
+import json
+import os
+import re
+import urllib.request
+
+base = os.environ["LIVETALKING_BASE_URL"].rstrip("/")
+with urllib.request.urlopen(base + "/api/admin/sessions", timeout=5) as response:
+    payload = json.load(response)
+sessions = payload.get("data", {}).get("sessions") if isinstance(payload.get("data"), dict) else None
+ids = [item.get("sessionid") for item in sessions or [] if isinstance(item, dict) and isinstance(item.get("sessionid"), str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", item["sessionid"])]
+if not ids:
+    raise SystemExit("no active dynamic LiveTalking session")
+print(ids[0])
+' 2>/dev/null)" || {
+    printf 'ERROR  could not discover an active dynamic LiveTalking session; set RUNTIME_SESSION_ID explicitly\n' >&2
+    exit 1
+  }
+  printf 'PASS   discovered dynamic runtime session %s\n' "$session_id"
 fi
 
 read_token="${RUNTIME_GATEWAY_READ_TOKEN:-}"

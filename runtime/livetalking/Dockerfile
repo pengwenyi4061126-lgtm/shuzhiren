@@ -4,9 +4,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/tmp
 WORKDIR /app
 
+ARG PYTHON_RTMPSTREAM_COMMIT=02b2ca0bafde75736ca4a4d28b820fafc147fb7b
+
 # fonts-noto-cjk (SIL Open Font License 1.1, THIRD_PARTY_NOTICES.md section 7) supplies the CJK glyphs of the
 # AIGC explicit label; shuzhiren_aigc_label.py reads /usr/share/fonts/opentype/noto/NotoSansCJK-*.ttc.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-psycopg2 ffmpeg libgl1 libglib2.0-0 git fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-dev python3-pip python3-psycopg2 ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libgl1 libglib2.0-0 git cmake pkg-config build-essential patch fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10002 livetalking && useradd --system --uid 10002 --gid 10002 --home-dir /tmp --no-create-home livetalking
 COPY vendor/LiveTalking/requirements.txt ./requirements.txt
 RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128 && python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
@@ -16,6 +18,23 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 t
 RUN python3 -m pip install --break-system-packages --no-cache-dir dlib-bin==20.0.1.post1 face-recognition-models==0.3.0 && \
     python3 -m pip install --break-system-packages --no-cache-dir --no-deps face-recognition==1.3.0
 COPY vendor/LiveTalking/ ./
+# LiveTalking's RTMP transport imports the native python_rtmpstream extension.
+# Build the pinned upstream commit against Ubuntu's Python/FFmpeg development
+# packages; the compatibility patches remove developer-local paths and add the
+# POSIX clock declaration required by Ubuntu 24.04.
+COPY runtime/patches/python-rtmpstream-*.patch /tmp/python-rtmpstream-patches/
+RUN set -eux; \
+    git init /tmp/python_rtmpstream-src; \
+    cd /tmp/python_rtmpstream-src; \
+    git remote add origin https://github.com/lipku/python_rtmpstream.git; \
+    git fetch --depth 1 origin "$PYTHON_RTMPSTREAM_COMMIT"; \
+    git checkout --detach FETCH_HEAD; \
+    git submodule update --init --recursive; \
+    patch -p1 < /tmp/python-rtmpstream-patches/python-rtmpstream-cmake.patch; \
+    patch -p1 < /tmp/python-rtmpstream-patches/python-rtmpstream-clock.patch; \
+    python3 -m pip install --break-system-packages --no-cache-dir ./python; \
+    python3 -c 'import rtmp_streaming; print("python_rtmpstream: ok")'; \
+    rm -rf /tmp/python_rtmpstream-src /tmp/python-rtmpstream-patches
 # Avatar Builder runs on an internal network, so prefetch LiveTalking's SFD
 # detector into the torch hub cache instead of relying on runtime egress.
 RUN python3 -c 'import hashlib,pathlib,urllib.request; u="https://www.adrianbulat.com/downloads/python-fan/s3fd-619a316812.pth"; p=pathlib.Path("/tmp/.cache/torch/hub/checkpoints/s3fd-619a316812.pth"); p.parent.mkdir(parents=True,exist_ok=True); d=urllib.request.urlopen(u,timeout=120).read(); assert hashlib.sha256(d).hexdigest()=="619a31681264d3f7f7fc7a16a42cbbe8b23f31a256f75a366e5a1bcd59b33543"; p.write_bytes(d)'

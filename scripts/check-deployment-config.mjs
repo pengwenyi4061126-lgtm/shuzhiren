@@ -28,7 +28,7 @@ const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "vendor/LiveTalking/avatars/musetalk/models/unet.py", "vendor/LiveTalking/web/rtmpapi.html", "runtime/patches/livetalking-observability.patch",
   "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking-local-tts.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py",
   "vendor/LiveTalking/LICENSE", "runtime/patches/LIVETALKING_MODIFICATIONS.md",
-  "runtime/patches/livetalking-aigc-label.patch", "runtime/livetalking/shuzhiren_aigc_label.py",
+  "runtime/patches/livetalking-aigc-label.patch", "runtime/patches/python-rtmpstream-cmake.patch", "runtime/patches/python-rtmpstream-clock.patch", "runtime/livetalking/shuzhiren_aigc_label.py",
   "runtime/patches/livetalking-overlay.patch", "runtime/patches/livetalking-session-admission.patch", "runtime/patches/livetalking-runtime-stream.patch", "runtime/livetalking/shuzhiren_overlay.py"
 ]);
 
@@ -692,7 +692,7 @@ try {
   for (const expected of ["parser.add_argument('--stream_key_file'", "apply_stream_key(opt)", "install_log_redaction([logger])", "logger.info(redacted_options(opt))", "middlewares=[secret_redaction_middleware()]", "redacted_options_dict(opt)", "redact_text(str(msg))", "redact_push_url(self.push_url)", "RTMP streamer init failed: {type(error).__name__}\") from None", "RTMP stream_frame failed: {type(error).__name__}\") from None"]) {
     if (!streamSecretText.includes(expected)) errors.push(`LiveTalking 推流密钥补丁缺少脱敏挂接：${expected}`);
   }
-  for (const expected of ["COPY runtime/patches/livetalking.series runtime/patches/livetalking-*.patch /tmp/livetalking-patches/", "done < /tmp/livetalking-patches/livetalking.series", "git apply --check --recount \"/tmp/livetalking-patches/$patch\"", "COPY runtime/livetalking/launcher.py runtime/livetalking/shuzhiren_secrets.py /opt/shuzhiren/", "ENV PYTHONPATH=/opt/shuzhiren:/app", "dlib-bin==20.0.1.post1", "face-recognition-models==0.3.0", "--no-deps face-recognition==1.3.0", "s3fd-619a316812.pth", "619a31681264d3f7f7fc7a16a42cbbe8b23f31a256f75a366e5a1bcd59b33543", "ENTRYPOINT [\"python3\", \"/opt/shuzhiren/launcher.py\"]"]) {
+  for (const expected of ["COPY runtime/patches/livetalking.series runtime/patches/livetalking-*.patch /tmp/livetalking-patches/", "done < /tmp/livetalking-patches/livetalking.series", "git apply --check --recount \"/tmp/livetalking-patches/$patch\"", "COPY runtime/patches/python-rtmpstream-*.patch /tmp/python-rtmpstream-patches/", "PYTHON_RTMPSTREAM_COMMIT=02b2ca0bafde75736ca4a4d28b820fafc147fb7b", "python3 -m pip install --break-system-packages --no-cache-dir ./python", "import rtmp_streaming", "COPY runtime/livetalking/launcher.py runtime/livetalking/shuzhiren_secrets.py /opt/shuzhiren/", "ENV PYTHONPATH=/opt/shuzhiren:/app", "dlib-bin==20.0.1.post1", "face-recognition-models==0.3.0", "--no-deps face-recognition==1.3.0", "s3fd-619a316812.pth", "619a31681264d3f7f7fc7a16a42cbbe8b23f31a256f75a366e5a1bcd59b33543", "ENTRYPOINT [\"python3\", \"/opt/shuzhiren/launcher.py\"]"]) {
     if (!dockerfileText.includes(expected)) errors.push(`LiveTalking 镜像没有按补丁序列构建或没有以脱敏启动器运行：${expected}`);
   }
   for (const expected of ["USER livetalking", "ENV HOME=/tmp", "chown -R livetalking:livetalking /app"]) if (!dockerfileText.includes(expected)) errors.push(`LiveTalking 镜像必须以非 root 用户运行：${expected}`);

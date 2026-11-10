@@ -5,6 +5,7 @@
 !vendor/LiveTalking/**
 !runtime/patches/livetalking-*.patch
 !runtime/patches/livetalking.series
+!runtime/patches/python-rtmpstream-*.patch
 !runtime/patches/LIVETALKING_MODIFICATIONS.md
 !runtime/livetalking/launcher.py
 !runtime/livetalking/shuzhiren_secrets.py

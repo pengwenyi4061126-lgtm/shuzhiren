@@ -51,6 +51,37 @@
 说明: <可选：补充事实、限制与待办>
 ```
 
+## V-20261111-02 远程 LiveTalking 动态会话、RTMP 与录播短时闭环通过
+
+```yaml
+编号: V-20261111-02
+类型: 结论
+结论: Ubuntu GPU 主机上的正式 LiveTalking/CosyVoice 运行时完成一次真实短时闭环：WebRTC 动态会话创建、Gateway start_program、内部 RTMP 输出、AIGC 标识指标、Gateway stop_program 和录播文件检查全部通过。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: Ubuntu GPU 云主机，单张 RTX 4090，Docker NVIDIA runtime
+    命令或验收步骤: bash scripts/acceptance/livetalking-session-zero.sh --execute --stop-after（远程工作树 revision 4b4bd115b22972d319a00dc2e0244e15360bb69b）
+    镜像:
+      - shuzhiren/livetalking:rtmp-final
+      - shuzhiren/cosyvoice:c1bed0a-cvfix5
+    检查:
+      - { 名称: dynamic_session, 结果: WebRTC offer 返回合法动态 sessionid，并在 /api/admin/sessions 中可见 }
+      - { 名称: start_program, 结果: HTTP 200，accepted=true，回执保留 sessionid }
+      - { 名称: rtmp_output, 结果: output_connected=true，output_fps=9.732，last_output_at 有值 }
+      - { 名称: rtmp_sink, 结果: 日志出现 fmle-publish、new live source、start publish、cleanup when unpublish }
+      - { 名称: aigc_label, 结果: enabled=true，文字为“本直播由AI数字人生成”，frames_labelled=14048，frames_dropped=0，last_error=null }
+      - { 名称: stop_program, 结果: HTTP 200，录制收尾成功 }
+      - { 名称: recording, 结果: 容器内生成 MP4；H.264 512x682，AAC 16000 Hz 单声道，时长 5.056 秒 }
+      - { 名称: recording_permissions, 结果: /srv/shuzhiren/recordings 已调整为 10002:wuyou、2750 setgid，主机用户可读取 }
+未覆盖:
+  - output-probe 当前未启动，OUTPUT_PROBE_TARGETS=[]，尚未取得真实外部目标端的帧率/码率/音频活动/音画同步证据
+  - 4090 实机画面观感、目标平台观看端和 4 小时连续开播
+  - 生产 release manifest、Git 提交来源和正式推流密钥的最终切换
+说明: >-
+  本条只证明短时内部 RTMP 接收端和录播收尾闭环。容器内的 AIGC 指标证明帧处理链已启用，不替代观看端逐帧确认；外部目标端与长时稳定性继续由后续独立证据登记。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。

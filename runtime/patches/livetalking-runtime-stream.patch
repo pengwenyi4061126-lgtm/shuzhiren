@@ -44,9 +44,6 @@ index c1e2bfa..96acb69 100644
 +        if output is None or not hasattr(output, 'stop_stream'):
 +            return json_error("stream output is unavailable")
 +        output.stop_stream()
-+        player = getattr(output, '_player', None)
-+        if player is None or not player.has_active_tracks:
-+            session_manager.remove_session(sessionid)
 +        return json_ok(data={"sessionid": sessionid, "streaming": False})
 +    except Exception as e:
 +        logger.exception('admin_stream_stop exception:')

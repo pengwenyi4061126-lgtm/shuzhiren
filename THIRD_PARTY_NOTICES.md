@@ -17,6 +17,14 @@ npm 依赖、Python 依赖（`requirements.txt` 安装的包）、CUDA 基础镜
 | Matcha-TTS（CosyVoice 的嵌套子模块） | `vendor/CosyVoice/third_party/Matcha-TTS` | https://github.com/shivammehta25/Matcha-TTS.git（`vendor/CosyVoice/.gitmodules`） | `dd9105b34bf2be2230f4aa1e4769fb586a3c824e` | MIT License，Copyright (c) 2023 Shivam Mehta | 无 | 是：随 CosyVoice 目录一起复制，`PYTHONPATH` 包含该目录 |
 | MuseTalk | `vendor/MuseTalk` | https://github.com/TMElyralab/MuseTalk.git | `0a89dec45a0192b824e3cf4daf96c239440c5ed8` | MIT License，Copyright (c) 2024 Tencent Music Entertainment Group；同一文件还列出 sd-vae-ft-mse、whisper、face-parsing.PyTorch（MIT）和 DWpose（Apache-2.0） | 无 | 否：没有 Dockerfile 复制该目录。LiveTalking 以 `--model musetalk` 运行时使用的是 `vendor/LiveTalking/avatars/musetalk` 下的代码 |
 
+### 构建时拉取的外部源码
+
+| 组件 | 上游仓库 | 锁定提交 | 许可证 | 是否进入镜像 |
+| --- | --- | --- | --- | --- |
+| `python_rtmpstream` | https://github.com/lipku/python_rtmpstream.git | `02b2ca0bafde75736ca4a4d28b820fafc147fb7b` | MIT License | 是：`runtime/livetalking/Dockerfile` 在构建时拉取 `python` 子目录并安装原生 `rtmp_streaming` 扩展，供 LiveTalking 的 RTMP 输出使用 |
+
+`python_rtmpstream` 不作为 Git 子模块提交到本仓库；LiveTalking 镜像通过 `PYTHON_RTMPSTREAM_COMMIT` 固定提交，并在构建时应用 `runtime/patches/python-rtmpstream-cmake.patch` 与 `runtime/patches/python-rtmpstream-clock.patch`。前者移除上游开发机路径并改用容器内 Python/FFmpeg，后者补充 Ubuntu 24.04 所需的 POSIX 时钟声明。该组件的许可证全文随其源码进入构建层并在安装后清理源码目录，SBOM 仍应记录已安装扩展及其依赖。
+
 说明：
 
 - `runtime/open-source.lock.json`（`schemaVersion` 2）记录上表四个组件的路径、父仓库、锁定提交、许可证名称和使用它的镜像；MuseTalk 的 `images` 为空，只为源码审阅和权重来源追溯保留。`npm run deploy:check` 核对每个条目的源码 HEAD、父仓库记录的子模块提交和干净工作树。

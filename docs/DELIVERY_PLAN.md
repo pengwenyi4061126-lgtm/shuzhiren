@@ -30,7 +30,7 @@
 
 | 项目 | 当前状态 | 后续动作 |
 | --- | --- | --- |
-| LiveTalking 与 CosyVoice 运行时镜像 | 两个 GPU 镜像已在 4090 主机构建，许可证源/镜像哈希、Python import 与 CUDA/RTX 4090 冒烟均通过；尚未启动带模型的服务 | 将本地标签发布为受签名 release manifest 约束的镜像引用，再挂载权重并做服务健康检查 |
+| LiveTalking 与 CosyVoice 运行时镜像 | 两个 GPU 镜像已在 4090 主机构建；Ubuntu GPU 主机已启动带模型服务，Gateway、LiveTalking、CosyVoice 健康检查与短时动态会话/RTMP 验收通过 | 将远程标签收敛为受签名 release manifest 约束的镜像引用，并补内部输出探针、目标端试播与长时稳定性证据 |
 | 模型权重 | 主机目录中未发现 LiveTalking/MuseTalk 或 CosyVoice 可运行权重 | 按锁定版本下载、校验哈希、记录许可证和挂载路径 |
 | 数字人形象与声线 | 尚未挂入真实素材、授权记录和声线库 | 在 Studio 中上传，完成审核，再创建形象构建任务 |
 | PostgreSQL、对象存储、OIDC 与生产环境文件 | 租机只有示例环境文件 | 创建独立服务账号、私网数据库、对象存储桶、生产环境文件与密钥目录 |
@@ -44,11 +44,11 @@
 目标：让一台 4090 从 Docker GPU runtime 走到 LiveTalking、CosyVoice 与 Gateway 的健康链路。
 
 1. **已完成**：固定可用镜像源，拉取 CUDA devel 基础镜像并构建 `livetalking`、`cosyvoice` 两个 4090 GPU 镜像。
-2. **已完成（镜像层）**：为两镜像运行许可证哈希比对、Python import 和 CUDA/RTX 4090 冒烟；**待完成（服务层）**：在权重挂载后检查 `/api/admin/sessions` 与 `/openapi.json`。
+2. **已完成（镜像层与短时服务层）**：为两镜像运行许可证哈希比对、Python import 和 CUDA/RTX 4090 冒烟；远程带权重服务的 `/api/admin/sessions`、`/openapi.json`、动态 WebRTC 会话和 RTMP 短时输出已有记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）；**待完成**：外部目标端探针、4 小时连续试播和 4090 画面观感验收。
 3. 创建 `/srv/shuzhiren` 的模型、形象、候选形象、录制、Gateway 命令日志、observer 配置和密钥目录；卷均采用最小权限挂载。
 4. 启动 Gateway、LiveTalking、CosyVoice、avatar-builder 与 avatar-publisher 的私网 Compose 组合，确认单卡预约逻辑使直播与形象构建不并发抢占 GPU。
 
-验收：Gateway 能读到会话 `0`、AIGC 角标状态、GPU 利用率与显存事实；CosyVoice 合成语音可注入 LiveTalking；命令日志在重启后保持幂等。
+验收：Gateway 能读到动态会话、AIGC 角标状态、GPU 利用率与显存事实；CosyVoice 合成语音可注入 LiveTalking；命令日志在重启后保持幂等。
 
 ### P1：一个项目生成录播视频
 
@@ -109,3 +109,20 @@
 2. 创建模型、已发布形象、候选形象、录制、Gateway 命令日志、observer 配置和密钥目录后，打通 LiveTalking + CosyVoice + Gateway 三服务私网健康检查。
 3. 同步补齐 PostgreSQL、对象存储和内部 RTMP 接收端，再从 Studio 创建第一个完整内容项目并生成录播。
 4. 将当前主机本地镜像发布为受签名 release manifest 约束的镜像引用；让租机从该 release 获取部署包，取代上传式部署副本。
+
+## 最新远程运行进度（2026-11-11）
+
+本节覆盖上面 2026-11-10 检查点中已经被远程真实验收替代的部分，避免把历史“待启动”描述误读为当前状态。
+
+- **运行时已启动**：Ubuntu GPU 主机上的 `runtime-gateway`、`livetalking`、`cosyvoice`、`runtime-worker`、`runtime-observer` 与内部 `rtmp-sink` 均已运行；LiveTalking 与 CosyVoice 报告 healthy。
+- **动态会话闭环短时结果已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：验收客户端创建真实 WebRTC offer，LiveTalking 返回动态 `sessionid`；Gateway `start_program` 与 `stop_program` 均返回 HTTP 200，回执保留同一 session ID。已修复停止顺序导致的录制收尾 502。
+- **内部 RTMP 输出短时结果已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：RTMP sink 日志出现 `fmle-publish`、`new live source`、`start publish` 和 `cleanup when unpublish`；验收期间记录 `output_connected=true`、`output_fps=9.732`、`last_output_at` 有值。
+- **AIGC 标识运行时指标已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：`enabled=true`，文字为 `本直播由AI数字人生成`，`frames_labelled=14048`，`frames_dropped=0`，`last_error=null`。
+- **录播文件容器内 ffprobe 结果已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：生成 MP4，视频 H.264、512×682，音频 AAC、16 kHz、单声道，时长约 5.056 秒；录播目录已调整为容器 UID 10002、主机用户组可读的 setgid 目录。
+- **还没有冒充完成的部分**：当前 `OUTPUT_PROBE_TARGETS=[]`，所以尚未证明抖音/外部目标端输出、独立音画同步探针、长时连续开播和 4090 实机画面观感；这些仍是单独的外部验收项。
+
+### 下一步只剩三类工作
+
+1. 把远程部署副本切回 Git 提交/release manifest，避免手工改远程 Dockerfile。
+2. 配置真实 RTMP 目标与独立 `output-probe`/`avSyncProbeUrl`，再做目标端试播。
+3. 在 4090 上做画面逐项验收和 4 小时稳定性测试；这一步不在本机或短时 smoke test 中虚报完成。

@@ -1,0 +1,39 @@
+diff --git a/python/CMakeLists.txt b/python/CMakeLists.txt
+--- a/python/CMakeLists.txt
++++ b/python/CMakeLists.txt
+@@ -31,22 +31,16 @@
+
+ include_directories("../streamer")
+-#find_package(Python 3.7 COMPONENTS Interpreter Development REQUIRED)
+-if(WIN32)
+-#windwos,use conda install conda-forge::ffmpeg
+-set(PYTHON_EXECUTABLE D:\\anaconda3\\envs\\nerfstream\\python.exe)
+-include_directories("D:\\anaconda3\\envs\\nerfstream\\include")
+-include_directories("D:\\anaconda3\\pkgs\\ffmpeg-6.1.1-gpl_hb766fab_106\\Library\\include")
+-set(AVCODEC_LIBRARY "D:\\anaconda3\\pkgs\\ffmpeg-6.1.1-gpl_hb766fab_106\\Library\\lib\\avcodec.lib")
+-set(AVFORMAT_LIBRARY "D:\\anaconda3\\pkgs\\ffmpeg-6.1.1-gpl_hb766fab_106\\Library\\lib\\avformat.lib")
+-set(AVUTIL_LIBRARY "D:\\anaconda3\\pkgs\\ffmpeg-6.1.1-gpl_hb766fab_106\\Library\\lib\\avutil.lib")
+-set(SWSCALE_LIBRARY "D:\\anaconda3\\pkgs\\ffmpeg-6.1.1-gpl_hb766fab_106\\Library\\lib\\swscale.lib")
+-else()
+-set(PYTHON_EXECUTABLE /opt/anaconda3/envs/python37/bin/python)
+-include_directories("/opt/anaconda3/envs/python37/include")
+-find_library(AVCODEC_LIBRARY avcodec /opt/anaconda3/envs/python37/lib)
+-find_library(AVFORMAT_LIBRARY avformat /opt/anaconda3/envs/python37/lib)
+-find_library(AVUTIL_LIBRARY avutil /opt/anaconda3/envs/python37/lib)
+-find_library(SWSCALE_LIBRARY swscale /opt/anaconda3/envs/python37/lib)
+-endif()
++# The upstream file hard-codes developer-local Anaconda paths. Resolve the
++# interpreter and FFmpeg development libraries from the container instead.
++if(PYTHON_EXECUTABLE)
++set(Python3_EXECUTABLE "${PYTHON_EXECUTABLE}" CACHE FILEPATH "Python executable" FORCE)
++endif()
++find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
++set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
++include_directories("${Python3_INCLUDE_DIRS}")
++find_library(AVCODEC_LIBRARY avcodec REQUIRED)
++find_library(AVFORMAT_LIBRARY avformat REQUIRED)
++find_library(AVUTIL_LIBRARY avutil REQUIRED)
++find_library(SWSCALE_LIBRARY swscale REQUIRED)
+ #add_library(rtmp_streaming SHARED
+ #    rtmp_streaming.cpp ../streamer/streamer.cpp
+ #)

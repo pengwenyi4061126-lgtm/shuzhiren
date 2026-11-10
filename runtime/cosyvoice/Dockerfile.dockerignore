@@ -4,6 +4,7 @@
 *
 vendor/*
 !vendor/CosyVoice/**
+!runtime/patches/cosyvoice-*.patch
 **/.git
 **/.git/**
 vendor/CosyVoice/.git

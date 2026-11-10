@@ -1,0 +1,9 @@
+diff --git a/streamer/streamer.cpp b/streamer/streamer.cpp
+--- a/streamer/streamer.cpp
++++ b/streamer/streamer.cpp
+@@ -9,4 +9,5 @@
+ #else
+ #include <unistd.h>
+ #include <sys/time.h>
++#include <time.h>
+ #endif

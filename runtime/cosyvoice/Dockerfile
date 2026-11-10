@@ -14,13 +14,19 @@ ENV PYTHONPATH=/opt/CosyVoice/CosyVoice:/opt/CosyVoice/CosyVoice/third_party/Mat
 RUN test -n "$MINIFORGE_URL" && test -n "$MINIFORGE_SHA256" && \
     case "$MINIFORGE_URL" in https://*) ;; *) exit 1 ;; esac && \
     echo "$MINIFORGE_SHA256" | grep -Eq '^[a-f0-9]{64}$'
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl build-essential ffmpeg libsndfile1 sox libsox-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl build-essential patch ffmpeg libsndfile1 sox libsox-dev && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10003 cosyvoice && useradd --system --uid 10003 --gid 10003 --home-dir /tmp --no-create-home cosyvoice
 RUN curl --fail --location --retry 3 "$MINIFORGE_URL" --output /tmp/miniforge.sh && \
     echo "$MINIFORGE_SHA256  /tmp/miniforge.sh" | sha256sum -c - && \
     bash /tmp/miniforge.sh -b -p /opt/conda && \
     rm /tmp/miniforge.sh
 COPY --chown=cosyvoice:cosyvoice vendor/CosyVoice /opt/CosyVoice/CosyVoice
+COPY runtime/patches/cosyvoice-*.patch /tmp/cosyvoice-patches/
+# The upstream FastAPI sample server decodes the uploaded prompt into a tensor
+# and then passes that tensor back to frontend.load_wav(), which expects a path
+# or file-like object. Keep the upload stream intact and let the model frontend
+# perform the one decode/resample itself.
+RUN patch -p1 -d /opt/CosyVoice/CosyVoice < /tmp/cosyvoice-patches/cosyvoice-fastapi-file-input.patch && rm -rf /tmp/cosyvoice-patches
 # Source-only requirements such as openai-whisper==20231117 import pkg_resources
 # from setup.py. pip builds them in isolated environments that fetch the newest
 # setuptools, and setuptools 82.0.0 removed pkg_resources (81.x is the last major
