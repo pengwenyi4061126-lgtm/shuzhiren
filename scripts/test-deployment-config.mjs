@@ -380,7 +380,7 @@ try {
     const patchText = await readFile(path.join(root, "runtime", "patches", "livetalking-aigc-label.patch"), "utf8");
     const seriesPatches = ["livetalking-observability.patch", "livetalking-stream-secret.patch", "livetalking-local-tts.patch", "livetalking-aigc-label.patch"];
     assert.deepEqual(aigcLabelBuildProblems({ seriesPatches, patchText, dockerfileText }), []);
-    const buildProblems = aigcLabelBuildProblems({ seriesPatches: seriesPatches.slice(0, 3), patchText: patchText.replace("combine_frame = self.aigc_label.apply(combine_frame)", "pass"), dockerfileText: dockerfileText.replace("git fonts-noto-cjk", "git").replace("COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/", "") }).join("\n");
+    const buildProblems = aigcLabelBuildProblems({ seriesPatches: seriesPatches.slice(0, 3), patchText: patchText.replace("combine_frame = self.aigc_label.apply(combine_frame)", "pass"), dockerfileText: dockerfileText.replace(/\sfonts-noto-cjk\b/g, "").replace("COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/", "") }).join("\n");
     for (const pattern of [/补丁序列缺少 livetalking-aigc-label\.patch/, /AIGC 标识补丁缺少挂接：combine_frame = self\.aigc_label\.apply/, /没有复制 AIGC 标识模块/, /没有安装中文字体包 fonts-noto-cjk/]) assert.match(buildProblems, pattern);
     console.log("PASS  deployment configuration fails without an enabled AIGC label, a valid label text and position, a matching console text and a content producer");
     // Requirement 6.12, 6.13, 6.15, 6.19: the overlay patch draws the picture layers before the AIGC label,
