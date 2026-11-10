@@ -51,3 +51,21 @@ LiveTalking 以 Apache License 2.0 发布，许可证全文随镜像位于 `/app
 | --- | --- |
 | avatars/base_avatar.py | 修改 |
 | server/routes.py | 修改 |
+
+## runtime/patches/livetalking-session-admission.patch
+摘要：会话准入将正在构建的占位会话计入 `max_session`，并用异步互斥锁保护容量检查、会话 ID 占用和容量登记；并发 Offer 因而不能在单会话配置下同时触发多个 Avatar 构建。构建失败会释放预留；等待构建的请求取消时会等工作线程退出后才释放 GPU 预留。重复会话 ID 会被拒绝。
+
+| 文件 | 操作 |
+| --- | --- |
+| server/session_manager.py | 修改 |
+
+## runtime/patches/livetalking-runtime-stream.patch
+摘要：RTMP 模式不再启动时预建固定 Avatar，会话由项目专属 WebRTC Offer 创建；同一个 Avatar 渲染输出同时供浏览器预览与 RTMP 使用，但 RTMP 默认关闭，仅在受控 `POST /api/admin/stream/start` 后启用。`POST /api/admin/stream/stop` 结束 RTMP 并在没有预览轨道时释放会话；WebRTC 断开时保留仍在推流的会话，进程关闭时结束推流并回收会话。预览轨道队列有界且丢弃最旧帧，避免慢客户端阻塞 Avatar 输出线程。
+
+| 文件 | 操作 |
+| --- | --- |
+| app.py | 修改 |
+| server/rtc_manager.py | 修改 |
+| server/routes.py | 修改 |
+| server/webrtc.py | 修改 |
+| streamout/rtmp.py | 修改 |

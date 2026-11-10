@@ -138,6 +138,8 @@ jobs:
       - run: npm run policy:red-team
       - run: npm run runtime:worker:config:test
       - run: npm run runtime:worker:health:test
+      - run: npm run runtime:worker:avatar-builds:test
+      - run: npm run runtime:worker:avatar-publishing:test
       - run: npm run runtime:acceptance:test
       - run: npm run observer:runtime:test
       - run: npm run observer:targets:test
@@ -160,6 +162,7 @@ jobs:
       - run: npm run regression:evidence:test
       - run: npm run prohibited-terms:test
       - run: npm run program:variants:test
+      - run: npm run studio:content-workflow:test
       - run: npm run overlay:config:test
       - run: npm run knowledge:test
 

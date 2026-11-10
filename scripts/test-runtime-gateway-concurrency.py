@@ -189,8 +189,8 @@ async def check_cosyvoice_audio_path() -> None:
         first = len(upstreams.requests)
         started = await gateway.media(program("cv_start", "start_program"), authorization)
         assert_program_audio(first, script)
-        assert [path for host, path, _ in upstreams.requests[first:] if host == "livetalking"] == ["/interrupt_talk", "/set_audiotype", "/record", "/humanaudio"]
-        assert started["downstream_actions"] == ["interrupt_talk", "set_program_audiotype", "start_record", "play_frozen_program_script"]
+        assert [path for host, path, _ in upstreams.requests[first:] if host == "livetalking"] == ["/interrupt_talk", "/set_audiotype", "/record", "/api/admin/stream/start", "/humanaudio"]
+        assert started["downstream_actions"] == ["interrupt_talk", "set_program_audiotype", "start_record", "start_live_output", "play_frozen_program_script"]
         assert started["synthesis"]["model_kind"] == "zero_shot" and started["synthesis"]["chunks"] > 1
         for action in ("insert_program", "resume_program"):
             first = len(upstreams.requests)
@@ -206,7 +206,7 @@ async def check_cosyvoice_audio_path() -> None:
             assert spoken["provider"] == "cosyvoice_to_livetalking" and spoken["requested_provider"] == provider
         unscripted_first = len(upstreams.requests)
         await gateway.media(gateway.MediaRequest(command_id="cv_start_unscripted", session_id="session_1", action="start_program"), authorization)
-        assert [path for _host, path, _ in upstreams.requests[unscripted_first:]] == ["/set_audiotype", "/record"], "a start without a script must not synthesize anything"
+        assert [path for _host, path, _ in upstreams.requests[unscripted_first:]] == ["/set_audiotype", "/record", "/api/admin/stream/start"], "a start without a script must not synthesize anything"
 
         gateway.COSYVOICE_MODEL_KIND = "sft"
         first = len(upstreams.requests)
@@ -802,8 +802,8 @@ async def main() -> None:
     started = await gateway.media(gateway.MediaRequest(command_id="command_start_frozen", session_id="session_1", action="start_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest(), **voice), authorization)
     assert started["receipt"]["program_segment_id"] == approved_segment_id
     assert synthesis_calls[-1] == (frozen_script, "speaker_1") and audio_calls[-1] == ("session_1", speech_wav), "a governed start must play the frozen baseline script as CosyVoice audio"
-    assert [path for path, _payload in calls[calls_before_start:]] == ["/interrupt_talk", "/set_audiotype", "/record"]
-    assert started["downstream_actions"] == ["interrupt_talk", "set_program_audiotype", "start_record", "play_frozen_program_script"]
+    assert [path for path, _payload in calls[calls_before_start:]] == ["/interrupt_talk", "/set_audiotype", "/record", "/api/admin/stream/start"]
+    assert started["downstream_actions"] == ["interrupt_talk", "set_program_audiotype", "start_record", "start_live_output", "play_frozen_program_script"]
     inserted = await gateway.media(gateway.MediaRequest(command_id="command_insert", session_id="session_1", action="insert_program", program_segment_id=approved_segment_id, program_script=frozen_script, script_sha256=hashlib.sha256(frozen_script.encode("utf-8")).hexdigest(), **voice), authorization)
     assert inserted["accepted"] is True
     assert inserted["receipt"]["program_segment_id"] == approved_segment_id
@@ -843,7 +843,7 @@ async def main() -> None:
     calls_before_scene = len(calls)
     with_scene = await gateway.media(gateway.MediaRequest(command_id="command_scene", session_id="session_1", action="start_program", overlay_scene_json=scene_a[0], overlay_scene_sha256=scene_a[1]), authorization)
     assert with_scene["duplicate"] is False and with_scene["receipt"]["overlay_scene_sha256"] == scene_a[1]
-    assert [path for path, _payload in calls[calls_before_scene:]] == ["/api/admin/overlay/scene", "/set_audiotype", "/record"]
+    assert [path for path, _payload in calls[calls_before_scene:]] == ["/api/admin/overlay/scene", "/set_audiotype", "/record", "/api/admin/stream/start"]
     calls_after_scene = len(calls)
     for conflicting in (gateway.MediaRequest(command_id="command_scene", session_id="session_1", action="start_program", overlay_scene_json=scene_b[0], overlay_scene_sha256=scene_b[1]), gateway.MediaRequest(command_id="command_scene", session_id="session_1", action="start_program")):
         try:

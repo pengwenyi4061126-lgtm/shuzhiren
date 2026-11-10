@@ -7,6 +7,8 @@ import { parsePolicyRules } from "../console/lib/shared/policy-engine.mjs";
 import { BUILTIN_LEXICON } from "../console/lib/shared/prohibited-terms-builtin.mjs";
 import { compileLexicon, effectiveLexicon, runtimeLexicon } from "../console/lib/shared/prohibited-terms.mjs";
 import { chooseScriptVariant, scriptVariantsProblem } from "../console/lib/shared/script-rotation.mjs";
+import { createAvatarBuildProcessor } from "./avatar-builds.mjs";
+import { createAvatarPublishProcessor } from "./avatar-publishing.mjs";
 
 const databaseUrl = required("DATABASE_URL");
 const gatewayUrl = required("RUNTIME_GATEWAY_URL").replace(/\/$/, "");
@@ -27,6 +29,14 @@ const leaseSeconds = positiveInt(process.env.OUTBOX_LEASE_SECONDS, 60);
 const retryBaseMs = positiveInt(process.env.OUTBOX_RETRY_BASE_MS, 1000);
 const retryMaxMs = Math.max(retryBaseMs, positiveInt(process.env.OUTBOX_RETRY_MAX_MS, 60000));
 const healthPort = positiveInt(process.env.RUNTIME_WORKER_PORT, 8080);
+const avatarBuilderUrl = optionalHttpUrl("AVATAR_BUILDER_URL");
+const avatarBuilderToken = process.env.AVATAR_BUILDER_TOKEN;
+if (Boolean(avatarBuilderUrl) !== Boolean(avatarBuilderToken)) throw new Error("AVATAR_BUILDER_URL and AVATAR_BUILDER_TOKEN must be configured together");
+if (avatarBuilderToken && (avatarBuilderToken.length < 48 || /\s/.test(avatarBuilderToken))) throw new Error("AVATAR_BUILDER_TOKEN must contain at least 48 non-whitespace characters");
+const avatarPublisherUrl = optionalHttpUrl("AVATAR_PUBLISHER_URL");
+const avatarPublisherToken = process.env.AVATAR_PUBLISHER_TOKEN;
+if (Boolean(avatarPublisherUrl) !== Boolean(avatarPublisherToken)) throw new Error("AVATAR_PUBLISHER_URL and AVATAR_PUBLISHER_TOKEN must be configured together");
+if (avatarPublisherToken && (avatarPublisherToken.length < 48 || /\s/.test(avatarPublisherToken))) throw new Error("AVATAR_PUBLISHER_TOKEN must contain at least 48 non-whitespace characters");
 // Live interaction rules (apps/runtime-worker/interaction-rules.mjs, migration 084).
 const interactionRules = interactionRuleConfig(process.env);
 // Metering runs in its own loop at least every 30 s, so every minute a run stays LIVE or DEGRADED gets at least
@@ -40,6 +50,8 @@ const leaseMarginMs = Math.min(2000, Math.floor(leaseMs / 10));
 // first acceptance. It must not predate the event (minus clock skew between Gateway and database).
 const RECEIPT_CLOCK_SKEW_MS = 30_000;
 const pool = createServicePool({ service: "runtime-worker", connectionString: databaseUrl, max: 4, timeoutMs: databaseTimeoutMs, log });
+const avatarBuildProcessor = createAvatarBuildProcessor({ pool, tenantIds, inTenantTransaction, controlPlaneUrl: process.env.CONTROL_PLANE_URL?.replace(/\/$/, ""), runtimeToken: gatewayToken, builderUrl: avatarBuilderUrl, builderToken: avatarBuilderToken, log, isStopping: () => stopping });
+const avatarPublishProcessor = createAvatarPublishProcessor({ tenantIds, inTenantTransaction, controlPlaneUrl: process.env.CONTROL_PLANE_URL?.replace(/\/$/, ""), runtimeToken: gatewayToken, publisherUrl: avatarPublisherUrl, publisherToken: avatarPublisherToken, log });
 
 function required(name) { const value = process.env[name]; if (!value) throw new Error(`${name} is required`); return value; }
 function requiredSecret(name) { const value = required(name); if (value.length < 32 || /\s/.test(value)) throw new Error(`${name} must contain at least 32 non-whitespace characters`); return value; }
@@ -230,6 +242,28 @@ async function scheduleDueRun() {
     `);
       const run = due.rows[0];
       if (!run) return null;
+      const avatarBinding = await client.query(`select output.project_id, output.project_revision, output.avatar_build_job_id,
+          project.revision as current_project_revision, job.project_revision as job_project_revision,
+          job.status, job.review_status, job.publish_status, job.runtime_avatar_id
+        from creation_project_live_outputs output
+        left join creation_projects project on project.tenant_id = output.tenant_id and project.id = output.project_id
+        left join avatar_build_jobs job on job.tenant_id = output.tenant_id and job.project_id = output.project_id and job.id = output.avatar_build_job_id
+        where output.tenant_id = $1 and output.live_run_id = $2`, [run.tenant_id, run.id]);
+      const projectAvatar = avatarBinding.rows[0];
+      const runtimeAvatarId = projectAvatar?.avatar_build_job_id && projectAvatar.project_revision === projectAvatar.current_project_revision
+        && projectAvatar.job_project_revision === projectAvatar.current_project_revision && projectAvatar.status === "preview_ready"
+        && projectAvatar.review_status === "approved" && projectAvatar.publish_status === "published"
+        && typeof projectAvatar.runtime_avatar_id === "string" && /^sr_[0-9a-f]{32}$/.test(projectAvatar.runtime_avatar_id) ? projectAvatar.runtime_avatar_id : null;
+      if (projectAvatar && !runtimeAvatarId) {
+        await client.query("update live_runs set scheduled_at = null, updated_at = now() where id = $1 and scheduled_at is not null", [run.id]);
+        const opened = await client.query("insert into runtime_alerts (tenant_id, live_run_id, severity, code, message, status) values ($1, $2, 'critical', 'project_avatar_not_ready', '项目绑定的数字人未通过审核、发布或版本校验，已拒绝定时开播', 'open') on conflict (tenant_id, live_run_id, code) where (status = 'open') do nothing returning id", [run.tenant_id, run.id]);
+        if (opened.rows[0]) {
+          const actor = await client.query("select runtime_worker_actor($1::uuid, 'runtime-scheduler') as id", [run.tenant_id]);
+          await client.query(`insert into audit_events (tenant_id, actor_id, event_type, resource_type, resource_id, resource_key, detail)
+            values ($1, $2, 'live_run.start_blocked_by_project_avatar', 'live_run', $3::uuid, $3, $4::jsonb)`, [run.tenant_id, actor.rows[0].id, run.id, JSON.stringify({ projectId: projectAvatar.project_id, avatarBuildJobId: projectAvatar.avatar_build_job_id })]);
+        }
+        return null;
+      }
       const initialProgram = await client.query("select id, runtime_script, runtime_script_variants from show_revision_segments where tenant_id = $1 and show_revision_id = $2 and kind in ('prepared_product', 'interactive') and runtime_script is not null order by position limit 1", [run.tenant_id, run.show_revision_id]);
       const overlayResult = await client.query("select scene_json, scene_sha256 from show_revision_overlays where tenant_id = $1 and show_revision_id = $2", [run.tenant_id, run.show_revision_id]);
       const overlay = overlayResult.rows[0];
@@ -308,7 +342,7 @@ async function scheduleDueRun() {
         return null;
       }
       // scriptVariantIndex stays in the outbox payload for audit; deliveryRequest never sends it to the Gateway.
-      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtime_voice_id, voiceChecksum: voice.checksum, ...(overlay?.scene_json && overlay.scene_sha256 ? { overlaySceneJson: overlay.scene_json, overlaySceneSha256: overlay.scene_sha256 } : {}) } };
+      const command = { id: `media_${crypto.randomUUID()}`, runId: run.id, type: "start_program", issuedAt: new Date().toISOString(), traceId: run.trace_id, payload: { controlAction: "SCHEDULED_START", programSegmentId: segment.id, runtimeScript: selected.runtimeScript, scriptSha256: selected.scriptSha256, scriptVariantIndex: String(selected.variantIndex), runtimeVoiceId: voice.runtime_voice_id, voiceChecksum: voice.checksum, ...(runtimeAvatarId ? { runtimeAvatarId } : {}), ...(overlay?.scene_json && overlay.scene_sha256 ? { overlaySceneJson: overlay.scene_json, overlaySceneSha256: overlay.scene_sha256 } : {}) } };
       const event = await client.query(`
       insert into outbox_events (tenant_id, event_type, aggregate_type, aggregate_id, payload)
       values ($1, 'media.dispatch', 'live_run', $2, $3::jsonb)
@@ -596,9 +630,11 @@ function deliveryRequest(event) {
     // Gateway synthesizes the script with this frozen approved voice (CosyVoice) and rejects scripts without it.
     const runtimeVoiceId = command.payload?.runtimeVoiceId;
     const voiceChecksum = command.payload?.voiceChecksum;
+    const runtimeAvatarId = command.payload?.runtimeAvatarId;
+    if ((runtimeAvatarId !== undefined && !runtimeAvatarIdValid(runtimeAvatarId)) || (runtimeAvatarId !== undefined && command.type !== "start_program")) throw new Error("Invalid program avatar binding");
     if ((runtimeVoiceId !== undefined && !runtimeVoiceIdValid(runtimeVoiceId)) || (voiceChecksum !== undefined && !voiceChecksumValid(voiceChecksum))) throw new Error("Invalid program voice binding");
     if (typeof runtimeScript !== "string" && (runtimeVoiceId !== undefined || voiceChecksum !== undefined)) throw new Error("Invalid media command payload");
-    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeVoiceId ? { runtime_voice_id: runtimeVoiceId } : {}), ...(voiceChecksum ? { voice_checksum: voiceChecksum } : {}), ...(overlaySceneJson !== undefined ? { overlay_scene_json: overlaySceneJson, overlay_scene_sha256: overlaySceneSha256 } : {}) } };
+    return { target: "gateway", path: "/v1/media", body: { command_id: command.id, session_id: sessionId, action: command.type, ...(programSegmentId ? { program_segment_id: programSegmentId } : {}), ...(runtimeScript ? { program_script: runtimeScript } : {}), ...(scriptSha256 ? { script_sha256: scriptSha256 } : {}), ...(runtimeVoiceId ? { runtime_voice_id: runtimeVoiceId } : {}), ...(voiceChecksum ? { voice_checksum: voiceChecksum } : {}), ...(runtimeAvatarId ? { runtime_avatar_id: runtimeAvatarId } : {}), ...(overlaySceneJson !== undefined ? { overlay_scene_json: overlaySceneJson, overlay_scene_sha256: overlaySceneSha256 } : {}) } };
   }
   if (event.event_type === "speech.dispatch") {
     const { sessionId, command } = event.payload;
@@ -620,6 +656,7 @@ function deliveryRequest(event) {
 function commandIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function sessionIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
 function runtimeVoiceIdValid(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value); }
+function runtimeAvatarIdValid(value) { return typeof value === "string" && /^sr_[0-9a-f]{32}$/.test(value); }
 function voiceChecksumValid(value) { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/i.test(value); }
 function programSegmentIdValid(value) { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
 // The request may not outlive the claim's lease (minus a safety margin), even when the Gateway timeout is longer.
@@ -636,6 +673,7 @@ function assertMediaGatewayReceipt(value, command, sessionId, eventCreatedAt) {
   const notBefore = new Date(eventCreatedAt).getTime() - RECEIPT_CLOCK_SKEW_MS;
   if (receipt.command_id !== command.id || receipt.session_id !== sessionId || receipt.action !== command.type || Number.isNaN(acceptedAt) || !(acceptedAt >= notBefore) || acceptedAt > Date.now() + RECEIPT_CLOCK_SKEW_MS) throw new DeliveryError("Runtime gateway receipt does not bind the media command", false);
   if (command.payload?.programSegmentId && receipt.program_segment_id !== command.payload.programSegmentId) throw new DeliveryError("Runtime gateway receipt does not bind the program segment", false);
+  if (command.payload?.runtimeAvatarId && receipt.runtime_avatar_id !== command.payload.runtimeAvatarId) throw new DeliveryError("Runtime gateway receipt does not bind the project avatar", false);
   if (command.payload?.overlaySceneSha256 && receipt.overlay_scene_sha256 !== command.payload.overlaySceneSha256) throw new DeliveryError("Runtime gateway receipt does not bind the media command", false);
   return receipt;
 }
@@ -718,6 +756,30 @@ async function interactionRuleLoop() {
   }
 }
 
+async function avatarBuildLoop() {
+  while (!stopping) {
+    try {
+      const processed = await avatarBuildProcessor.runOnce();
+      if (processed) continue;
+    } catch (error) {
+      log("avatar_build.poll_failed", { error: error instanceof Error ? error.message : "avatar_build_worker_failed" });
+    }
+    await Promise.race([new Promise((resolve) => setTimeout(resolve, 5000)), stopped]);
+  }
+}
+
+async function avatarPublishLoop() {
+  while (!stopping) {
+    try {
+      const processed = await avatarPublishProcessor.runOnce();
+      if (processed) continue;
+    } catch (error) {
+      log("avatar_publish.poll_failed", { error: error instanceof Error ? error.message : "avatar_publish_worker_failed" });
+    }
+    await Promise.race([new Promise((resolve) => setTimeout(resolve, 5000)), stopped]);
+  }
+}
+
 let stopping = false;
 let nextSchedulerPollAt = 0;
 let nextOutboxTenantCursor = 0;
@@ -743,6 +805,8 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping 
 log("worker.started", { gatewayRequestTimeoutMs, databaseTimeoutMs, pollMs, schedulerPollMs, schedulerBatchSize, watchdogPollMs, watchdogBatchSize, usageMeterPollMs: usageMeterIntervalMs, maxTelemetryAgeSeconds, maxAttempts, leaseSeconds, retryBaseMs, retryMaxMs, healthPort, interactionRules });
 const metering = usageMeterLoop();
 const ruleEvaluation = interactionRules.enabled ? interactionRuleLoop() : Promise.resolve();
+const avatarBuilds = avatarBuildProcessor ? avatarBuildLoop() : Promise.resolve();
+const avatarPublishes = avatarPublishProcessor ? avatarPublishLoop() : Promise.resolve();
 while (!stopping) {
   try { await tick(); lastSuccessfulTickAt = Date.now(); lastTickError = null; } catch (error) { lastTickError = error instanceof Error ? error.message : "unknown"; log("worker.error", { error: lastTickError }); }
   const schedulerWaitMs = Math.max(1, nextSchedulerPollAt - Date.now());
@@ -751,6 +815,8 @@ while (!stopping) {
 }
 await metering;
 await ruleEvaluation;
+await avatarBuilds;
+await avatarPublishes;
 await new Promise((resolve) => healthServer.close(resolve));
 await pool.end();
 log("worker.stopped");

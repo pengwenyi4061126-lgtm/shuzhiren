@@ -1,0 +1,307 @@
+diff --git a/app.py b/app.py
+index c346a1b..fa2ccfb 100644
+--- a/app.py
++++ b/app.py
+@@ -162,8 +162,8 @@ def main():
+     rtc_manager = RTCManager(opt)
+     # share avatar_sessions (RTCManager handles it but routes.py expects it)
+ 
+-    # 虚拟摄像头或 RTMP 模式：启动后台渲染线程
+-    if opt.transport == 'virtualcam' or opt.transport == 'rtmp':
++    # Virtualcam uses a fixed session; the RTMP preview Offer builds the project's single Avatar session.
++    if opt.transport == 'virtualcam':
+         thread_quit = Event()
+         params = {}
+         # session 0 for virtualcam
+diff --git a/server/routes.py b/server/routes.py
+index c1e2bfa..96acb69 100644
+--- a/server/routes.py
++++ b/server/routes.py
+@@ -296,6 +296,37 @@ async def admin_overlay_scene(request):
+         logger.exception('admin_overlay_scene exception:')
+         return json_error(str(e))
+ 
++async def admin_stream_start(request):
++    try:
++        params = await request.json()
++        sessionid = params.get('sessionid', '')
++        avatar_session = get_session(request, sessionid)
++        output = getattr(avatar_session, 'output', None)
++        if output is None or not hasattr(output, 'start_stream'):
++            return json_error("stream output is unavailable")
++        output.start_stream()
++        return json_ok(data={"sessionid": sessionid, "streaming": True})
++    except Exception as e:
++        logger.exception('admin_stream_start exception:')
++        return json_error(str(e))
++
++async def admin_stream_stop(request):
++    try:
++        params = await request.json()
++        sessionid = params.get('sessionid', '')
++        avatar_session = get_session(request, sessionid)
++        output = getattr(avatar_session, 'output', None)
++        if output is None or not hasattr(output, 'stop_stream'):
++            return json_error("stream output is unavailable")
++        output.stop_stream()
++        player = getattr(output, '_player', None)
++        if player is None or not player.has_active_tracks:
++            session_manager.remove_session(sessionid)
++        return json_ok(data={"sessionid": sessionid, "streaming": False})
++    except Exception as e:
++        logger.exception('admin_stream_stop exception:')
++        return json_error(str(e))
++
+ 
+ # ─── 路由注册 ──────────────────────────────────────────────────────────────
+ 
+@@ -325,6 +356,8 @@ def setup_routes(app):
+     app.router.add_get("/api/admin/aigc-label", admin_aigc_label)
+     app.router.add_get("/api/admin/overlay", admin_overlay)
+     app.router.add_post("/api/admin/overlay/scene", admin_overlay_scene)
++    app.router.add_post("/api/admin/stream/start", admin_stream_start)
++    app.router.add_post("/api/admin/stream/stop", admin_stream_stop)
+     app.router.add_get('/sse', sse_handler)
+ 
+     # ── Local ASR endpoint (SenseVoice/FunASR) ── Issue #604 ──
+diff --git a/server/rtc_manager.py b/server/rtc_manager.py
+index c81068a..5fe1b3d 100644
+--- a/server/rtc_manager.py
++++ b/server/rtc_manager.py
+@@ -1,3 +1,4 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
+ ###############################################################################
+ #  WebRTC 连接管理 + RTC 音频/视频接收
+ ###############################################################################
+@@ -54,7 +55,10 @@ class RTCManager:
+             if pc.connectionState in ("failed", "closed"):
+                 await pc.close()
+                 self.pcs.discard(pc)
+-                session_manager.remove_session(sessionid)
++                avatar_session = session_manager.get_session(sessionid)
++                output = getattr(avatar_session, 'output', None)
++                if not getattr(output, 'streaming_enabled', False):
++                    session_manager.remove_session(sessionid)
+ 
+         # 添加发送轨道
+         from server.webrtc import HumanPlayer
+@@ -178,3 +182,10 @@ class RTCManager:
+         coros = [pc.close() for pc in self.pcs]
+         await asyncio.gather(*coros)
+         self.pcs.clear()
++        for sessionid in list(session_manager.sessions):
++            avatar_session = session_manager.get_session(sessionid)
++            output = getattr(avatar_session, 'output', None)
++            stop_stream = getattr(output, 'stop_stream', None)
++            if stop_stream is not None:
++                stop_stream()
++            session_manager.remove_session(sessionid)
+diff --git a/server/webrtc.py b/server/webrtc.py
+index 3382cc9..d9d13a1 100644
+--- a/server/webrtc.py
++++ b/server/webrtc.py
+@@ -1,3 +1,4 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
+ ###############################################################################
+ #  Copyright (C) 2024 LiveTalking@lipku https://github.com/lipku/LiveTalking
+ #  email: lipku@foxmail.com
+@@ -188,20 +189,50 @@ class HumanPlayer:
+             self.__container.output._player = self
+ 
+     def push_video(self, frame):
++        if self.__video.readyState != "live":
++            return
+         from av import VideoFrame
+         new_frame = VideoFrame.from_ndarray(frame, format="bgr24")
+-        self.__video._queue.put((new_frame, None))
++        try:
++            self.__video._queue.put_nowait((new_frame, None))
++        except queue.Full:
++            try:
++                self.__video._queue.get_nowait()
++            except queue.Empty:
++                pass
++            self.__video._queue.put_nowait((new_frame, None))
+ 
+     def push_audio(self, frame, eventpoint=None):
++        if self.__audio.readyState != "live":
++            return
+         from av import AudioFrame
+         new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
+         new_frame.planes[0].update(frame.tobytes())
+         new_frame.sample_rate = 16000
+-        self.__audio._queue.put((new_frame, eventpoint))
++        try:
++            self.__audio._queue.put_nowait((new_frame, eventpoint))
++        except queue.Full:
++            try:
++                self.__audio._queue.get_nowait()
++            except queue.Empty:
++                pass
++            self.__audio._queue.put_nowait((new_frame, eventpoint))
+ 
+     def get_buffer_size(self) -> int:
+         return self.__video._queue.qsize()
+ 
++    @property
++    def has_active_tracks(self) -> bool:
++        return bool(self.__started)
++
++    def stop_renderer(self) -> None:
++        if self.__thread is not None:
++            self.__thread_quit.set()
++            if self.__thread is not threading.current_thread():
++                self.__thread.join()
++            self.__thread = None
++        self.__container = None
++
+     def notify(self,eventpoint):
+         if self.__container is not None:
+             self.__container.notify(eventpoint)
+@@ -238,15 +269,9 @@ class HumanPlayer:
+     def _stop(self, track: PlayerStreamTrack) -> None:
+         self.__started.discard(track)
+ 
+-        if not self.__started and self.__thread is not None:
++        if not self.__started and self.__thread is not None and not getattr(getattr(self.__container, 'output', None), 'streaming_enabled', False):
+             self.__log_debug("Stopping worker thread")
+-            self.__thread_quit.set()
+-            self.__thread.join()
+-            self.__thread = None
+-
+-        if not self.__started and self.__container is not None:
+-            #self.__container.close()
+-            self.__container = None
++            self.stop_renderer()
+ 
+     def __log_debug(self, msg: str, *args) -> None:
+         mylogger.debug(f"HumanPlayer {msg}", *args)
+diff --git a/streamout/rtmp.py b/streamout/rtmp.py
+index 86705f7..fa9061a 100644
+--- a/streamout/rtmp.py
++++ b/streamout/rtmp.py
+@@ -4,6 +4,7 @@
+ ###############################################################################
+ 
+ import subprocess
++import threading
+ import time
+ import numpy as np
+ from streamout.base_output import BaseOutput
+@@ -28,6 +29,9 @@ class RTMPOutput(BaseOutput):
+         self.fps = getattr(opt, 'fps', 25)
+         self.bitrate = getattr(opt, 'bitrate', 1000000)
+         self._streamer = None
++        self._player = None
++        self.streaming_enabled = False
++        self._stream_lock = threading.RLock()
+ 
+         #统计视频帧率用
+         self.framecount = 0
+@@ -41,6 +45,23 @@ class RTMPOutput(BaseOutput):
+         self._quit_event = False
+         self._record_metrics(output_connected=False, last_output_error=None)
+ 
++    def start_stream(self) -> None:
++        with self._stream_lock:
++            self.streaming_enabled = True
++            self._record_metrics(output_connected=False, last_output_error=None)
++
++    def stop_stream(self) -> None:
++        with self._stream_lock:
++            self.streaming_enabled = False
++            self._streamer = None
++            if hasattr(self, '_audio_queue'):
++                while not self._audio_queue.empty():
++                    self._audio_queue.get_nowait()
++            self._record_metrics(output_connected=False)
++        player = self._player
++        if player is not None and not player.has_active_tracks:
++            player.stop_renderer()
++
+     def _init_streamer(self, frame_height, frame_width):
+         try:
+             from rtmp_streaming import StreamerConfig, Streamer
+@@ -79,18 +100,19 @@ class RTMPOutput(BaseOutput):
+         logger.info(f"RTMP output started via python_rtmpstream: {redact_push_url(self.push_url)} with resolution {frame_width}x{frame_height}")
+ 
+     def push_video_frame(self, frame) -> None:
+-        if isinstance(frame, np.ndarray):
++        if not isinstance(frame, np.ndarray):
++            return
++        if self._player is not None:
++            self._player.push_video(frame)
++        with self._stream_lock:
++            if not self.streaming_enabled:
++                return
+             if self._streamer is None:
+                 self.height, self.width = frame.shape[:2]
+                 self._init_streamer(self.height, self.width)
+-                
+-                # Consume any buffered audio that arrived before the first video frame
+                 while not self._audio_queue.empty():
+-                    buffered_audio = self._audio_queue.get()
+-                    self._streamer.stream_frame_audio(buffered_audio)
+-                    
++                    self._streamer.stream_frame_audio(self._audio_queue.get())
+             import cv2
+-            # Convert BGR (OpenCV) to RGB since Streamer expects RGB memory layout
+             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+             try:
+                 self._streamer.stream_frame(rgb_frame)
+@@ -98,38 +120,43 @@ class RTMPOutput(BaseOutput):
+                 self._record_metrics(output_connected=False, last_output_error=type(error).__name__)
+                 raise RuntimeError(f"RTMP stream_frame failed: {type(error).__name__}") from None
+             self._record_metrics(output_connected=True, last_output_at=time.time(), last_output_error=None)
+-
+-            delay = self._starttime+self._totalframe*0.04-time.perf_counter() #40ms
++            delay = self._starttime + self._totalframe * 0.04 - time.perf_counter()
+             if delay > 0:
+                 time.sleep(delay)
+             self._totalframe += 1
+-
+-            self.totaltime += (time.perf_counter() - self.lasttime)
++            self.totaltime += time.perf_counter() - self.lasttime
+             self.framecount += 1
+             self.lasttime = time.perf_counter()
+-            if self.framecount==100:
++            if self.framecount == 100:
+                 output_fps = self.framecount / self.totaltime if self.totaltime else 0
+                 self._record_metrics(output_fps=round(output_fps, 4))
+                 logger.info(f"------actual avg final fps:{output_fps:.4f}")
+                 self.framecount = 0
+-                self.totaltime=0
++                self.totaltime = 0
+ 
+     def push_audio_frame(self, frame, eventpoint=None) -> None:
+         if isinstance(frame, np.ndarray):
++            if self._player is not None:
++                self._player.push_audio(frame, eventpoint)
+             # The upstream pipeline typically passes np.int16 (after multiplying by 32767).
+             # The python_rtmpstream bindings expect np.float32 for AV_SAMPLE_FMT_FLTP.
+             if frame.dtype == np.int16:
+                 frame = frame.astype(np.float32) / 32767.0
+             
+-            if self._streamer:
+-                self._streamer.stream_frame_audio(frame)
+-                self.parent.notify(eventpoint)
+-            else:
+-                self._audio_queue.put(frame)
++            with self._stream_lock:
++                if not self.streaming_enabled:
++                    return
++                if self._streamer:
++                    self._streamer.stream_frame_audio(frame)
++                    self.parent.notify(eventpoint)
++                else:
++                    self._audio_queue.put(frame)
+ 
+     def stop(self) -> None:
+         self._quit_event = True
+-        self._streamer = None
++        with self._stream_lock:
++            self.streaming_enabled = False
++            self._streamer = None
+         self._record_metrics(output_connected=False)
+         logger.info("RTMP output stopped")
+     def _record_metrics(self, **metrics) -> None:

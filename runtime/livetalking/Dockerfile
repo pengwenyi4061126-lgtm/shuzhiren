@@ -6,7 +6,7 @@ WORKDIR /app
 
 # fonts-noto-cjk (SIL Open Font License 1.1, THIRD_PARTY_NOTICES.md section 7) supplies the CJK glyphs of the
 # AIGC explicit label; shuzhiren_aigc_label.py reads /usr/share/fonts/opentype/noto/NotoSansCJK-*.ttc.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg libgl1 libglib2.0-0 git fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-psycopg2 ffmpeg libgl1 libglib2.0-0 git fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10002 livetalking && useradd --system --uid 10002 --gid 10002 --home-dir /tmp --no-create-home livetalking
 COPY vendor/LiveTalking/requirements.txt ./requirements.txt
 RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128 && python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
@@ -32,6 +32,7 @@ COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/
 # Picture layer (captions, product card, background); the patched sources import shuzhiren_overlay from here.
 # Background assets are mounted read-only at /opt/shuzhiren/overlay-assets (Runtime Compose volume overlay-assets).
 COPY runtime/livetalking/shuzhiren_overlay.py /opt/shuzhiren/
+COPY runtime/livetalking/avatar_builder_api.py runtime/livetalking/avatar_publisher_api.py /opt/shuzhiren/
 ENV PYTHONPATH=/opt/shuzhiren
 
 EXPOSE 8010

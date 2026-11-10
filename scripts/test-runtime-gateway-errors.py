@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pathlib
 import sys
 import time
@@ -123,6 +124,42 @@ async def main() -> None:
         missing_metrics = await gateway.observation("session", f"Bearer {gateway.RUNTIME_TOKEN}")
         assert missing_metrics["session"]["active"] is False, "LiveTalking metrics without a data object still mean no active session"
 
+        class AvatarObservationClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def get(self, url, **_kwargs):
+                if url.endswith("/api/admin/runtime-metrics"):
+                    body = {"code": 0, "data": {"sessions": [{"sessionid": "avatar-session", "speaking": False, "recording": False, "metrics": {}}]}}
+                else:
+                    body = {"code": 0, "data": {"sessions": [{"sessionid": "avatar-session", "avatar_id": "sr_0123456789abcdef0123456789abcdef"}]}}
+                return httpx.Response(200, json=body)
+
+        gateway.httpx.AsyncClient = lambda **_kwargs: AvatarObservationClient()
+        observed = await gateway.observation("avatar-session", f"Bearer {gateway.RUNTIME_TOKEN}")
+        assert observed["session"]["avatarId"] == "sr_0123456789abcdef0123456789abcdef", observed
+
+        offer_payloads = []
+        def offer_handler(upstream_request: httpx.Request) -> httpx.Response:
+            assert upstream_request.url.path == "/offer"
+            offer_payloads.append(json.loads(upstream_request.content))
+            return httpx.Response(200, json={"sdp": "v=0\\r\\nanswer", "type": "answer", "sessionid": "preview-session"})
+        gateway.httpx.AsyncClient = lambda **kwargs: RealAsyncClient(transport=httpx.MockTransport(offer_handler), **kwargs)
+        offer = gateway.RuntimeOfferRequest(sdp="v=0\\r\\noffer", type="offer", runtime_avatar_id="sr_0123456789abcdef0123456789abcdef")
+        answer = await gateway.create_runtime_offer(offer, f"Bearer {gateway.RUNTIME_TOKEN}")
+        assert answer["session_id"] == "preview-session" and answer["runtime_avatar_id"] == offer.runtime_avatar_id, answer
+        assert offer_payloads == [{"sdp": offer.sdp, "type": "offer", "avatar": offer.runtime_avatar_id}], offer_payloads
+        gateway.httpx.AsyncClient = upstream_answering(200, b'{"code": -1, "msg": "capacity occupied"}')
+        try:
+            await gateway.create_runtime_offer(offer, f"Bearer {gateway.RUNTIME_TOKEN}")
+        except HTTPException as error:
+            assert error.status_code == 409
+        else:
+            raise AssertionError("an occupied LiveTalking session must reject a second preview offer")
+
         await check_livetalking_failure_classification()
     finally:
         gateway.httpx.AsyncClient = original_client
@@ -178,4 +215,4 @@ async def check_livetalking_failure_classification() -> None:
 
 asyncio.run(main())
 
-print("PASS  Runtime Gateway keeps downstream diagnostics out of API errors")
+print("PASS  Runtime Gateway keeps downstream diagnostics private and binds live preview to the selected Avatar")

@@ -120,6 +120,11 @@ class SynthesisPreviewRequest(BaseModel):
     voice: str | None = None
     voice_checksum: str | None = None
 
+class RuntimeOfferRequest(BaseModel):
+    sdp: str = Field(min_length=1, max_length=262144)
+    type: Literal["offer"]
+    runtime_avatar_id: str = Field(pattern=r"^sr_[0-9a-f]{32}$")
+
 class MediaRequest(BaseModel):
     command_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -129,6 +134,7 @@ class MediaRequest(BaseModel):
     script_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     runtime_voice_id: str | None = None
     voice_checksum: str | None = None
+    runtime_avatar_id: str | None = Field(default=None, pattern=r"^sr_[0-9a-f]{32}$")
     # The frozen picture-layer scene of the show; only start_program may carry it. Both fields are checked
     # in validate_media_request so every bad value is a 400 before the command id is reserved, not a 422.
     overlay_scene_json: str | None = None
@@ -140,7 +146,7 @@ VOICE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 VOICE_CHECKSUM_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 # The Gateway only drives LiveTalking avatar state; speech audio goes through /humanaudio.
 # /human would make LiveTalking synthesize the text with its own TTS plugin (edge-tts).
-LIVETALKING_POST_PATHS = frozenset({"/interrupt_talk", "/set_audiotype", "/record", "/api/admin/overlay/scene"})
+LIVETALKING_POST_PATHS = frozenset({"/interrupt_talk", "/set_audiotype", "/record", "/api/admin/overlay/scene", "/api/admin/stream/start", "/api/admin/stream/stop"})
 VOICE_PROMPT_WAV_MAX_BYTES = 16 * 1024 * 1024
 VOICE_PROMPT_TEXT_MAX_CHARS = 1000
 COSYVOICE_MAX_AUDIO_SECONDS = 600
@@ -1296,19 +1302,19 @@ async def observation(session_id: str, authorization: str | None = Header(defaul
     authorize(authorization, allow_read=True)
     if not SESSION_ID_PATTERN.fullmatch(session_id):
         raise HTTPException(status_code=400, detail="Invalid runtime session id")
-    data = await livetalking_get("/api/admin/runtime-metrics")
+    data, avatar_id = await asyncio.gather(livetalking_get("/api/admin/runtime-metrics"), runtime_session_avatar_id(session_id))
     sessions = livetalking_sessions(data)
     session = next((item for item in sessions if isinstance(item, dict) and item.get("sessionid") == session_id), None)
     if not session:
         return {
-            "session": {"id": session_id, "active": False, "speaking": False, "recording": False},
+            "session": {"id": session_id, "active": False, "speaking": False, "recording": False, "avatarId": None},
             "gpu": await asyncio.to_thread(gpu_observation),
             "quality": {"writer_accepting_frames": False, "output_fps": None, "inference_fps": None, "configured_bitrate_mbps": None, "actual_bitrate_mbps": None, "av_sync_ms": None, "destination_receipt": None},
             "limitations": ["session_not_found", "destination_receipt_not_available", "actual_bitrate_not_available", "av_sync_not_available"],
         }
     metrics = session.get("metrics") if isinstance(session.get("metrics"), dict) else {}
     return {
-        "session": {"id": session_id, "active": True, "speaking": bool(session.get("speaking")), "recording": bool(session.get("recording"))},
+        "session": {"id": session_id, "active": True, "speaking": bool(session.get("speaking")), "recording": bool(session.get("recording")), "avatarId": avatar_id},
         "gpu": await asyncio.to_thread(gpu_observation),
         "quality": {
             "writer_accepting_frames": bool(metrics.get("output_connected")),
@@ -1323,6 +1329,15 @@ async def observation(session_id: str, authorization: str | None = Header(defaul
         },
         "limitations": ["writer_accepting_frames_is_not_destination_receipt", "actual_bitrate_not_available", "av_sync_not_available"],
     }
+
+async def runtime_session_avatar_id(session_id: str) -> str | None:
+    try:
+        sessions = livetalking_sessions(await livetalking_get("/api/admin/sessions"))
+    except HTTPException:
+        return None
+    session = next((item for item in sessions if isinstance(item, dict) and item.get("sessionid") == session_id), None)
+    avatar_id = session.get("avatar_id") if isinstance(session, dict) else None
+    return avatar_id if isinstance(avatar_id, str) else None
 
 @app.get("/v1/previews/{session_id}")
 async def preview(session_id: str, authorization: str | None = Header(default=None)) -> dict:
@@ -1402,6 +1417,8 @@ def validate_overlay_scene(request: MediaRequest) -> None:
 
 def validate_media_request(request: MediaRequest) -> None:
     validate_overlay_scene(request)
+    if request.runtime_avatar_id is not None and request.action != "start_program":
+        raise HTTPException(status_code=400, detail="Project avatar binding is only valid for program start")
     if request.action == "insert_program":
         if not request.program_segment_id or not request.program_script or not request.script_sha256:
             raise HTTPException(status_code=400, detail="Program insertion requires segment, script, and script hash")
@@ -1467,6 +1484,31 @@ async def synthesize_preview(request: SynthesisPreviewRequest, authorization: st
     audio = pcm_s16le_to_wav(synthesis.pcm, COSYVOICE_SAMPLE_RATE)
     return Response(audio, media_type="audio/wav", headers={"cache-control": "no-store", "x-audio-sample-rate": str(COSYVOICE_SAMPLE_RATE)})
 
+@app.post("/v1/rtc/offers")
+async def create_runtime_offer(request: RuntimeOfferRequest, authorization: str | None = Header(default=None)) -> dict:
+    authorize(authorization)
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                f"{LIVE_TALKING_URL}/offer",
+                json={"sdp": request.sdp, "type": "offer", "avatar": request.runtime_avatar_id},
+            )
+    except httpx.TimeoutException as error:
+        logger.warning("LiveTalking RTC offer timed out: %s", type(error).__name__)
+        raise HTTPException(status_code=504, detail="Live preview negotiation timed out") from error
+    except httpx.HTTPError as error:
+        logger.warning("LiveTalking RTC offer failed: %s", type(error).__name__)
+        raise HTTPException(status_code=502, detail="Live preview service is unavailable") from error
+    data = parse_upstream_json(response, "LiveTalking")
+    if response.status_code in (429, 503) or data.get("code") == -1:
+        raise HTTPException(status_code=409, detail="Live preview capacity is occupied")
+    session_id = data.get("sessionid")
+    answer = data.get("sdp")
+    if not response.is_success or not isinstance(answer, str) or not answer or data.get("type") != "answer" or not isinstance(session_id, str) or not SESSION_ID_PATTERN.fullmatch(session_id):
+        logger.warning("LiveTalking returned an invalid RTC offer response (status %s)", response.status_code)
+        raise HTTPException(status_code=502, detail="LiveTalking returned an invalid live preview answer")
+    return {"sdp": answer, "type": "answer", "session_id": session_id, "runtime_avatar_id": request.runtime_avatar_id}
+
 @app.post("/v1/speak")
 async def speak(request: SpeakRequest, authorization: str | None = Header(default=None)) -> dict:
     authorize(authorization)
@@ -1506,6 +1548,8 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
     authorize(authorization)
     validate_media_request(request)
     identity = {"session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "script_sha256": request.script_sha256}
+    if request.runtime_avatar_id is not None:
+        identity["runtime_avatar_id"] = request.runtime_avatar_id
     if request.program_script:
         identity["runtime_voice_id"] = request.runtime_voice_id
         identity["voice_checksum"] = request.voice_checksum
@@ -1517,6 +1561,11 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
         cached = await cached_runtime_command(request.command_id, "media", identity)
         if cached:
             return cached
+        if request.runtime_avatar_id is not None:
+            sessions = livetalking_sessions(await livetalking_get("/api/admin/sessions"))
+            active_session = next((item for item in sessions if isinstance(item, dict) and item.get("sessionid") == request.session_id), None)
+            if active_session is None or active_session.get("avatar_id") != request.runtime_avatar_id:
+                raise CommandError(409, "LiveTalking session avatar does not match the selected project avatar", "runtime_avatar_mismatch")
         voice = await asyncio.to_thread(load_voice_spec, request.runtime_voice_id, request.voice_checksum) if request.program_script else None
         replay = await reserve_runtime_command(request.command_id, "media", identity)
         if replay:
@@ -1545,6 +1594,7 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
 
             if request.action == "stop_program":
                 await step("interrupt_talk", "/interrupt_talk", session)
+                await step("stop_live_output", "/api/admin/stream/stop", session)
                 await step("end_record", "/record", {**session, "type": "end_record"})
             elif request.action == "start_program":
                 if request.overlay_scene_json is not None and request.overlay_scene_sha256 is not None:
@@ -1555,6 +1605,7 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
                     await step("interrupt_talk", "/interrupt_talk", session)
                 await step("set_program_audiotype", "/set_audiotype", {**session, "audiotype": PROGRAM_AUDIOTYPE})
                 await step("start_record", "/record", {**session, "type": "start_record"})
+                await step("start_live_output", "/api/admin/stream/start", session)
                 if synthesis:
                     await play_program()
             elif request.action in ("insert_program", "resume_program"):
@@ -1568,6 +1619,8 @@ async def media(request: MediaRequest, authorization: str | None = Header(defaul
                 await step("set_fallback_audiotype" if request.action == "switch_to_fallback" else "set_human_handoff_audiotype", "/set_audiotype", {**session, "audiotype": audiotype})
             accepted_at = datetime.now(timezone.utc).isoformat()
             result = {"accepted": True, "provider": "livetalking", "command_id": request.command_id, "session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "downstream_actions": list(execution.succeeded_steps), "receipt": {"command_id": request.command_id, "session_id": request.session_id, "action": request.action, "program_segment_id": request.program_segment_id, "accepted_at": accepted_at, "evidence": "livetalking_api_accepted"}}
+            if request.runtime_avatar_id is not None:
+                result["receipt"]["runtime_avatar_id"] = request.runtime_avatar_id
             if request.overlay_scene_sha256 is not None:
                 result["receipt"]["overlay_scene_sha256"] = request.overlay_scene_sha256
             if synthesis:

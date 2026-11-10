@@ -413,24 +413,24 @@ async def check_overlay_scene_steps_and_receipt() -> None:
     journal_dir, saved = scene_gateway_setup(upstreams)
     authorization = "Bearer test-runtime-token"
     try:
-        # A scene-carrying start_program installs the scene first, then the existing steps follow.
+        # A scene-carrying start_program installs the scene before recording and stream activation.
         result = await gateway.media(scene_media("scene_start_1"), authorization)
-        assert upstreams.paths() == ["/api/admin/overlay/scene", "/set_audiotype", "/record"], upstreams.paths()
+        assert upstreams.paths() == ["/api/admin/overlay/scene", "/set_audiotype", "/record", "/api/admin/stream/start"], upstreams.paths()
         assert upstreams.requests[0][2] == {"sessionid": "session_1", "scene_json": SCENE_JSON, "scene_sha256": SCENE_SHA256}, upstreams.requests[0]
-        assert result["downstream_actions"] == ["set_overlay_scene", "set_program_audiotype", "start_record"], result["downstream_actions"]
+        assert result["downstream_actions"] == ["set_overlay_scene", "set_program_audiotype", "start_record", "start_live_output"], result["downstream_actions"]
         assert result["receipt"]["overlay_scene_sha256"] == SCENE_SHA256 and result["duplicate"] is False
-        print("PASS  start_program with a scene sets it first, then audiotype and record, and the receipt echoes the scene hash")
+        print("PASS  start_program installs the scene, then records and starts RTMP, and the receipt echoes the scene hash")
 
         upstreams.requests.clear()
         result = await gateway.media(scene_media("scene_start_2", with_script=True), authorization)
-        assert upstreams.paths() == ["/api/admin/overlay/scene", "/interrupt_talk", "/set_audiotype", "/record", "/humanaudio"], upstreams.paths()
+        assert upstreams.paths() == ["/api/admin/overlay/scene", "/interrupt_talk", "/set_audiotype", "/record", "/api/admin/stream/start", "/humanaudio"], upstreams.paths()
         assert result["downstream_actions"][0] == "set_overlay_scene" and result["receipt"]["overlay_scene_sha256"] == SCENE_SHA256
-        print("PASS  with a program script set_overlay_scene still comes before interrupt, audiotype, record and play")
+        print("PASS  with a program script the scene precedes interrupt, audiotype, recording, RTMP start and audio")
 
         # A start_program without a scene keeps its steps and receipt unchanged.
         upstreams.requests.clear()
         plain = await gateway.media(scene_media("scene_start_none", scene_json=None, scene_sha256=None), authorization)
-        assert upstreams.paths() == ["/set_audiotype", "/record"] and "overlay_scene_sha256" not in plain["receipt"], (upstreams.paths(), plain["receipt"])
+        assert upstreams.paths() == ["/set_audiotype", "/record", "/api/admin/stream/start"] and "overlay_scene_sha256" not in plain["receipt"], (upstreams.paths(), plain["receipt"])
         print("PASS  start_program without a scene has no set_overlay_scene step and no receipt hash")
 
         # The same command id is a duplicate for the same scene and an idempotency conflict for another one.
@@ -644,6 +644,7 @@ async def check_property_overlay_scene_before_reservation() -> None:
             first = await client.post("/v1/media", headers=headers, json={"command_id": "p25_control", "session_id": "session_1", "action": "stop_program"})
             assert first.status_code == 200, first.text  # creates the journal table, so "no journal row" below is not vacuous
             assert journal_state("p25_control") is not None
+            assert upstreams.paths() == ["/interrupt_talk", "/api/admin/stream/stop", "/record"], upstreams.paths()
             for case in range(SCENE_PROPERTY_CASES):
                 kind, fields, legal = random_scene_request(rng)
                 command_id = f"p25_{case}_{rng.getrandbits(32):08x}"

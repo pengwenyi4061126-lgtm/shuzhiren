@@ -74,6 +74,7 @@ export const LOCAL_CHECKS = Object.freeze([
   // static: its first three assertions match the source text of apps/runtime-worker/index.mjs.
   { id: "runtime:worker:config:test", kind: "npm", script: "runtime:worker:config:test", label: "static" },
   { id: "runtime:worker:health:test", kind: "npm", script: "runtime:worker:health:test", label: "behavioral" },
+  { id: "runtime:worker:avatar-builds:test", kind: "npm", script: "runtime:worker:avatar-builds:test", label: "behavioral" },
   { id: "runtime:acceptance:test", kind: "npm", script: "runtime:acceptance:test", label: "behavioral" },
   { id: "observer:runtime:test", kind: "npm", script: "observer:runtime:test", label: "behavioral" },
   { id: "observer:targets:test", kind: "npm", script: "observer:targets:test", label: "behavioral" },
@@ -127,6 +128,8 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "scripts/test-runtime-gateway-captions.py", kind: "python", file: "scripts/test-runtime-gateway-captions.py", label: "behavioral", gatewayOnly: true },
   { id: "prohibited-terms:test", kind: "npm", script: "prohibited-terms:test", label: "behavioral" },
   { id: "program:variants:test", kind: "npm", script: "program:variants:test", label: "behavioral" },
+  { id: "studio:content-workflow:test", kind: "npm", script: "studio:content-workflow:test", label: "static" },
+  { id: "runtime:worker:avatar-publishing:test", kind: "npm", script: "runtime:worker:avatar-publishing:test", label: "behavioral" },
   { id: "overlay:config:test", kind: "npm", script: "overlay:config:test", label: "behavioral" },
   { id: "knowledge:test", kind: "npm", script: "knowledge:test", label: "behavioral" }
 ].map(freezeCheck));

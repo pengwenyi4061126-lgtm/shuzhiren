@@ -1,5 +1,5 @@
 -- Run this file as the control-plane schema owner after migrations and after
--- the deployment secret manager has created the three LOGIN roles. Passwords
+-- the deployment secret manager has created the four LOGIN roles. Passwords
 -- and connection strings deliberately do not belong in this repository.
 do $$
 declare
@@ -7,6 +7,7 @@ declare
 begin
   foreach principal in array array[
     'shuzhiren_runtime_worker',
+    'shuzhiren_avatar_builder',
     'shuzhiren_channel_adapter',
     'shuzhiren_alert_notifier'
   ] loop
@@ -17,10 +18,12 @@ begin
 end;
 $$;
 
-revoke all privileges on all tables in schema public from shuzhiren_runtime_worker, shuzhiren_channel_adapter, shuzhiren_alert_notifier;
-revoke all privileges on all sequences in schema public from shuzhiren_runtime_worker, shuzhiren_channel_adapter, shuzhiren_alert_notifier;
+revoke all privileges on all tables in schema public from shuzhiren_runtime_worker, shuzhiren_avatar_builder, shuzhiren_channel_adapter, shuzhiren_alert_notifier;
+revoke all privileges on all sequences in schema public from shuzhiren_runtime_worker, shuzhiren_avatar_builder, shuzhiren_channel_adapter, shuzhiren_alert_notifier;
 
-grant usage on schema public to shuzhiren_runtime_worker, shuzhiren_channel_adapter, shuzhiren_alert_notifier;
+grant usage on schema public to shuzhiren_runtime_worker, shuzhiren_avatar_builder, shuzhiren_channel_adapter, shuzhiren_alert_notifier;
+
+-- Avatar builder holds only a session-level shared advisory lock while MuseTalk uses the GPU; it reads and writes no application tables.
 
 -- Channel webhook replay protection: no live-run, product, member, or audit access.
 grant select, insert, update on channel_webhook_replays to shuzhiren_channel_adapter;
@@ -35,6 +38,11 @@ grant select, update on outbox_events to shuzhiren_runtime_worker;
 -- scheduleDueRun and degradeStaleLiveRun enqueue media.dispatch events.
 grant insert on outbox_events to shuzhiren_runtime_worker;
 grant select, update on live_runs to shuzhiren_runtime_worker;
+-- Avatar build queue state is tenant-scoped by migration 097 RLS; the worker claims and advances leased jobs only.
+grant select, update on avatar_build_jobs to shuzhiren_runtime_worker;
+-- Scheduled Studio starts revalidate the project's bound, approved and published Avatar version.
+grant select (tenant_id, id, revision) on creation_projects to shuzhiren_runtime_worker;
+grant select (tenant_id, project_id, live_run_id, project_revision, avatar_build_job_id) on creation_project_live_outputs to shuzhiren_runtime_worker;
 -- The live_runs program-cursor trigger verifies referenced frozen segments.
 -- The worker needs this read-only access for receipt-bound cursor updates.
 grant select on show_revision_segments to shuzhiren_runtime_worker;

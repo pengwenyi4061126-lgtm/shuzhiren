@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-const [client, assets, route, approvalRoute, migration, integration, uploadRoute, uploadContract, workspace, service, serviceTest] = await Promise.all([
+const [client, assets, route, approvalRoute, migration, integration, uploadRoute, uploadContract, workspace, service, serviceTest, projectRecordings, recordingMigration, qualityProbe, qualityProbeTests, serviceDockerfile, studioComposer, qualityUi] = await Promise.all([
   readFile(new URL("../apps/console/lib/media-evidence.ts", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/lib/assets.ts", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/app/api/v1/assets/route.ts", import.meta.url), "utf8"),
@@ -11,7 +11,14 @@ const [client, assets, route, approvalRoute, migration, integration, uploadRoute
   readFile(new URL("../docs/MEDIA_UPLOAD_CONTRACT.md", import.meta.url), "utf8"),
   readFile(new URL("../apps/console/components/asset-workspace.tsx", import.meta.url), "utf8"),
   readFile(new URL("../services/media-evidence-verifier/server.mjs", import.meta.url), "utf8"),
-  readFile(new URL("../services/media-evidence-verifier/test.mjs", import.meta.url), "utf8")
+  readFile(new URL("../services/media-evidence-verifier/test.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../apps/console/lib/project-recordings.ts", import.meta.url), "utf8"),
+  readFile(new URL("../infra/postgres/migrations/103_project_recording_quality_report.sql", import.meta.url), "utf8"),
+  readFile(new URL("../services/media-evidence-verifier/recording-quality.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../services/media-evidence-verifier/recording-quality.test.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../services/media-evidence-verifier/Dockerfile", import.meta.url), "utf8"),
+  readFile(new URL("../apps/console/components/photo-recording-composer.tsx", import.meta.url), "utf8"),
+  readFile(new URL("../apps/console/lib/photo-recording-quality.mjs", import.meta.url), "utf8")
 ]);
 
 for (const source of ["MEDIA_EVIDENCE_VERIFIER_URL", "MEDIA_EVIDENCE_VERIFIER_TOKEN", "/v1/media-evidence/verify", "expectedChecksum", "contentTypeMatches", "isOpaqueEvidenceRef", "^(?:evidence|urn):", "objectVersion", "verifiedAt"]) {
@@ -40,6 +47,16 @@ for (const source of ["upload-grant", "download-grant", "verify", "x-amz-checksu
 for (const source of ["assertValidPresignedSignature", "stored bytes must match requested checksum", "detected content must match the declared media kind", "version-001", "other-tenant/forged.jpg"]) {
   if (!serviceTest.includes(source)) throw new Error(`Private media verifier tests must prove the storage contract: ${source}`);
 }
+for (const [name, source, required] of [
+  ["project recording", projectRecordings, ["qualityProfile: \"photo-narration-webm\"", "recording_quality", "recordingQuality"]],
+  ["recording quality migration", recordingMigration, ["creation_project_recordings_quality_check", "legacy_unverified"]],
+  ["quality probe", qualityProbe, ["ffprobe", "timeout: 10_000", "MAX_CONCURRENT_PROBES = 2", "recording_quality_probe_busy", "recording_quality_audio_track_missing", "recording_quality_duration_invalid"]],
+  ["quality probe tests", qualityProbeTests, ["missing audio", "wrong dimensions", "unsupported duration", "fails closed", "caps concurrent ffprobe processes"]],
+  ["media verifier image", serviceDockerfile, ["apk add --no-cache ffmpeg", "ffprobe -version", "recording-quality.mjs"]],
+  ["recording quality error handoff", client + studioComposer + qualityUi, ["qualityErrorCodes", "statusText: verifierError.error", "photoRecordingArchiveQualityError", "recording_quality_dimensions_invalid"]]
+]) {
+  for (const sourceText of required) if (!source.includes(sourceText)) throw new Error(`${name} must retain independent WebM quality verification: ${sourceText}`);
+}
 for (const source of ["type=\"file\"", "crypto.subtle.digest(\"SHA-256\"", "/api/v1/media-uploads/grant", "上传并提交审核"]) {
   if (!workspace.includes(source)) throw new Error(`Asset workspace must expose the real upload-and-register flow: ${source}`);
 }
@@ -57,4 +74,4 @@ for (const source of ["/v1/media-evidence/verify", "Integration verified music",
   if (!integration.includes(source)) throw new Error(`PostgreSQL integration test must exercise verified media evidence: ${source}`);
 }
 
-console.log("PASS  media assets require version-bound private object-content verification before approval");
+console.log("PASS  media assets require version-bound private verification; project recordings also require persisted server-side WebM quality evidence");

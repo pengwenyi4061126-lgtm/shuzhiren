@@ -7,7 +7,7 @@ import { substitutePsqlIdentifierVariable } from "./lib/sql-lexer.mjs";
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
 
-const principals = ["shuzhiren_runtime_worker", "shuzhiren_channel_adapter", "shuzhiren_alert_notifier"];
+const principals = ["shuzhiren_runtime_worker", "shuzhiren_avatar_builder", "shuzhiren_channel_adapter", "shuzhiren_alert_notifier"];
 const grants = await readFile(new URL("../infra/postgres/service-principals.sql", import.meta.url), "utf8");
 const backupGrants = await readFile(new URL("../infra/postgres/backup-principal.sql", import.meta.url), "utf8");
 const client = new pg.Client({ connectionString: databaseUrl });
@@ -32,6 +32,11 @@ try {
   await expectTable("shuzhiren_alert_notifier", "outbox_events", "select", false);
 
   await expectTable("shuzhiren_runtime_worker", "outbox_events", "update", true);
+  await expectTable("shuzhiren_runtime_worker", "avatar_build_jobs", "select", true);
+  await expectTable("shuzhiren_runtime_worker", "avatar_build_jobs", "update", true);
+  for (const table of ["avatar_build_jobs", "live_runs", "tenants"]) for (const privilege of ["select", "insert", "update", "delete"]) await expectTable("shuzhiren_avatar_builder", table, privilege, false);
+  await expectTable("shuzhiren_channel_adapter", "avatar_build_jobs", "select", false);
+  await expectTable("shuzhiren_alert_notifier", "avatar_build_jobs", "select", false);
   await expectTable("shuzhiren_runtime_worker", "show_revision_segments", "select", true);
   await expectTable("shuzhiren_runtime_worker", "audit_events", "insert", true);
   await expectTable("shuzhiren_runtime_worker", "memberships", "select", false);

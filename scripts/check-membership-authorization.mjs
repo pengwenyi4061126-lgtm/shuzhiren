@@ -30,10 +30,20 @@ const exempt = new Set([
   "runtime/telemetry/route.ts",
   "runtime/program-output-observations/route.ts"
 ]);
+const serviceRoutes = new Set(["runtime/avatar-build-jobs/[jobId]/source/route.ts", "runtime/avatar-build-jobs/[jobId]/publish-check/route.ts"]);
+for (const relative of serviceRoutes) {
+  const source = await readFile(path.join(routesRoot, relative), "utf8");
+  const requiredSources = relative.endsWith("/source/route.ts")
+    ? ["tokenMatches(request.headers.get(\"authorization\"), expected)", "createAvatarBuildSourceGrant("]
+    : ["tokenMatches(request.headers.get(\"authorization\"), expected)", "verifyAvatarBuildPublishInput("];
+  for (const required of requiredSources) {
+    if (!source.includes(required)) throw new Error(`internal service route is missing authorization or lease binding: ${relative} ${required}`);
+  }
+}
 const routeFiles = await collectRoutes(routesRoot);
 for (const file of routeFiles) {
   const relative = path.relative(routesRoot, file).replaceAll("\\", "/");
-  if (exempt.has(relative)) continue;
+  if (exempt.has(relative) || serviceRoutes.has(relative)) continue;
   const source = await readFile(file, "utf8");
   const handlers = [...source.matchAll(/export async function (GET|POST|PUT|PATCH|DELETE)\b/g)];
   for (let index = 0; index < handlers.length; index += 1) {
@@ -44,7 +54,7 @@ for (const file of routeFiles) {
   }
 }
 
-console.log(`PASS  governed database memberships authorize ${routeFiles.length - exempt.size} human API routes; JWT roles cannot restore access`);
+console.log(`PASS  governed database memberships authorize ${routeFiles.length - exempt.size - serviceRoutes.size} human API routes and ${serviceRoutes.size} token-authenticated service routes; JWT roles cannot restore access`);
 
 // A thrown Response built as new Response(message, { status }) has an empty
 // statusText, so mapping it with { error: error.statusText } alone answers

@@ -12,9 +12,10 @@ const [grants, backupGrants, migration, worker, compose, runtime, channel, notif
   readFile(new URL("../config/alert-notifier.example.env", import.meta.url), "utf8")
 ]);
 
-for (const principal of ["shuzhiren_runtime_worker", "shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) {
+for (const principal of ["shuzhiren_runtime_worker", "shuzhiren_avatar_builder", "shuzhiren_channel_adapter", "shuzhiren_alert_notifier"]) {
   if (!grants.includes(`'${principal}'`)) throw new Error(`Service principal grant file must require ${principal}`);
 }
+if (/grant\s+(?:select|insert|update|delete|all)[^;]*\bto\s+shuzhiren_avatar_builder\b/i.test(grants)) throw new Error("Avatar builder lock principal must not receive application table privileges");
 for (const source of ["shuzhiren_backup", "LOGIN NOINHERIT BYPASSRLS", "grant select on all tables in schema public to shuzhiren_backup", "grant usage, select on all sequences in schema public to shuzhiren_backup", "alter default privileges in schema public grant select on tables to shuzhiren_backup"]) if (!backupGrants.includes(source)) throw new Error(`Backup principal grant file missing: ${source}`);
 for (const forbidden of ["grant insert", "grant update", "grant delete", "grant execute", "grant all"]) if (backupGrants.toLowerCase().includes(forbidden)) throw new Error(`Backup principal grants must not include: ${forbidden}`);
 for (const source of ["security definer", "runtime_worker_actor(requested_tenant_id uuid, requested_subject text)", "requested_subject not in ('runtime-worker', 'runtime-scheduler', 'runtime-watchdog')", "revoke all on function runtime_worker_actor(uuid, text) from public"]) {
@@ -27,6 +28,9 @@ for (const source of [
   "grant select, insert, update on alert_notification_deliveries to shuzhiren_alert_notifier",
   "grant select, update on outbox_events to shuzhiren_runtime_worker",
   "grant select, update on live_runs to shuzhiren_runtime_worker",
+  "grant select, update on avatar_build_jobs to shuzhiren_runtime_worker",
+  "grant select (tenant_id, id, revision) on creation_projects to shuzhiren_runtime_worker",
+  "grant select (tenant_id, project_id, live_run_id, project_revision, avatar_build_job_id) on creation_project_live_outputs to shuzhiren_runtime_worker",
   "grant select on show_revision_segments to shuzhiren_runtime_worker",
   "grant select (tenant_id, show_revision_id, media_asset_id, kind) on show_revision_media_assets to shuzhiren_runtime_worker",
   "grant select (id, runtime_voice_id, checksum, approval_status, expires_at) on media_assets to shuzhiren_runtime_worker",

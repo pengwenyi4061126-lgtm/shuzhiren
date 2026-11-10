@@ -10,6 +10,8 @@
 !runtime/livetalking/shuzhiren_secrets.py
 !runtime/livetalking/shuzhiren_aigc_label.py
 !runtime/livetalking/shuzhiren_overlay.py
+!runtime/livetalking/avatar_builder_api.py
+!runtime/livetalking/avatar_publisher_api.py
 **/.git
 **/.git/**
 **/.env

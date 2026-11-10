@@ -1,0 +1,76 @@
+diff --git a/server/session_manager.py b/server/session_manager.py
+index c0389c3..e5e680b 100644
+--- a/server/session_manager.py
++++ b/server/session_manager.py
+@@ -1,3 +1,4 @@
++# Modified by the Shuzhiren project; see /app/LIVETALKING_MODIFICATIONS.md
+ ###############################################################################
+ #  全局会话管理器 (Session Manager)
+ ###############################################################################
+@@ -35,6 +36,7 @@ class SessionManager:
+             self.sessions: Dict[str, BaseAvatar] = {}
+             self.build_session_fn = None
+             self.max_session = 1   # default, override via set_max_session()
++            self._creation_lock = asyncio.Lock()
+             self.initialized = True
+ 
+     def set_max_session(self, n: int):
+@@ -64,21 +66,45 @@ class SessionManager:
+         if sessionid is None:
+             sessionid = _rand_session_id()
+             
+-        # 检查是否达到最大会话数
+-        active_count = sum(1 for s in self.sessions.values() if s is not None)
+-        if active_count >= self.max_session:
+-            raise MaxSessionError(
+-                f"Maximum session limit reached ({active_count}/{self.max_session})"
+-            )
++        # Count reservations as well as ready sessions before yielding to the
++        # executor so concurrent offers cannot load multiple models at max=1.
++        async with self._creation_lock:
++            if sessionid in self.sessions:
++                raise MaxSessionError("Session id is already reserved")
++            active_count = len(self.sessions)
++            if active_count >= self.max_session:
++                raise MaxSessionError(
++                    f"Maximum session limit reached ({active_count}/{self.max_session})"
++                )
+ 
+-        logger.info('Creating sessionid=%s, current session num=%d', sessionid, active_count)
+-        # 预先占位防止重复
+-        self.sessions[sessionid] = None
++            logger.info('Creating sessionid=%s, current session num=%d', sessionid, active_count)
++            self.sessions[sessionid] = None
+ 
+-        # 在线程池中构建 session（加载模型非常耗时）
+-        avatar_session = await asyncio.get_event_loop().run_in_executor(
+-            None, self.build_session_fn, sessionid, params
+-        )
++        build_task = asyncio.create_task(asyncio.to_thread(self.build_session_fn, sessionid, params))
++        try:
++            avatar_session = await asyncio.shield(build_task)
++        except asyncio.CancelledError:
++            # Cancelling an awaiting coroutine does not stop its worker thread;
++            # keep the GPU reservation until construction has actually ended.
++            try:
++                avatar_session = await asyncio.shield(build_task)
++            except BaseException:
++                self.sessions.pop(sessionid, None)
++            else:
++                quit_event = getattr(avatar_session, 'quit_event', None)
++                if quit_event is not None:
++                    quit_event.set()
++                self.sessions.pop(sessionid, None)
++            raise
++        except BaseException:
++            self.sessions.pop(sessionid, None)
++            raise
++
++        if sessionid not in self.sessions:
++            quit_event = getattr(avatar_session, 'quit_event', None)
++            if quit_event is not None:
++                quit_event.set()
++            raise MaxSessionError("Session reservation was removed during creation")
+         self.sessions[sessionid] = avatar_session
+         return sessionid
+         

@@ -14,6 +14,7 @@ const preflightSection = source.slice(source.indexOf("export async function eval
 if (!preflightSection.includes("outputReady: runtime.passed")) throw new Error("Preflight must use fresh runtime telemetry as the output readiness source");
 if (preflightSection.includes("run.outputReady && runtime.passed")) throw new Error("Legacy output_ready flag must not permanently block a healthy runtime");
 if (!preflightSection.includes("overlayReady: overlay.passed") || !preflightSection.includes("evaluateOverlayReadinessForRun(client, run.id)")) throw new Error("Preflight must evaluate overlay readiness on the caller's existing connection");
+if (!preflightSection.includes("projectAvatarReadinessInTransaction(client, context, run)") || !preflightSection.includes("observeRuntimeSession(run.runtimeSessionId)")) throw new Error("Studio preflight must verify the current LiveTalking Avatar against the project's published Avatar binding");
 
 console.log("PASS  preflight output readiness derives from fresh runtime telemetry");
 
@@ -122,17 +123,27 @@ const tenantId = "00000000-0000-4000-8000-000000000001";
 const runId = "00000000-0000-4000-8000-000000000002";
 const operatorContext = { tenantId, actorId: "preflight-check", actorName: "Preflight Check", role: "operator", accessScope: "tenant" };
 
-function preflightClient(state, { failOn } = {}) {
+function preflightClient(state, { failOn, gpuLockAcquired = true, activeRunTenantId = null, tenantIds = [tenantId] } = {}) {
   const client = fakeClient();
   client.statements = [];
+  client.tenantContexts = [];
   let inFlight = 0;
-  client.query = async (sql) => {
+  let currentTenantId = tenantId;
+  client.query = async (sql, params = []) => {
     if (inFlight > 0) throw new Error("preflight issued concurrent queries on one connection");
     inFlight += 1;
     try {
       client.statements.push(sql);
       await new Promise((resolve) => setImmediate(resolve));
       if (failOn && sql.includes(failOn)) throw new Error(`injected failure for ${failOn}`);
+      if (sql.includes("set_config")) {
+        currentTenantId = params[0];
+        client.tenantContexts.push(currentTenantId);
+        return { rows: [] };
+      }
+      if (sql.includes("pg_try_advisory_xact_lock")) return { rows: [{ acquired: gpuLockAcquired }] };
+      if (sql.includes("select id from tenants order by id")) return { rows: tenantIds.map((id) => ({ id })) };
+      if (sql.includes("state::text = any($1::text[])")) { const active = currentTenantId === activeRunTenantId; return { rows: active ? [{ id: "00000000-0000-4000-8000-000000000009" }] : [], rowCount: active ? 1 : 0 }; }
       if (sql.includes("from live_runs r left join show_revision_overlays")) return { rows: [{ tenant_id: tenantId, run_revision_id: "00000000-0000-4000-8000-000000000003", show_revision_id: "00000000-0000-4000-8000-000000000003", background_mode: null, scene_json: null, scene_sha256: null, background_approval: null, background_expires_at: null, price_valid_until: null }] };
       if (sql.includes("for update of r")) return { rows: [{ id: runId, tenant_id: tenantId, show_revision_id: "00000000-0000-4000-8000-000000000003", show_name: "Preflight check", state, trace_id: "trace", channel_connection_id: "00000000-0000-4000-8000-000000000004", product_version_id: "00000000-0000-4000-8000-000000000005", has_operator: true, rights_approved: true, has_approved_sku_version: true, has_fallback_program: true, channel_ready: true, output_ready: true, ai_disclosure_enabled: true, runtime_session_id: "session-preflight-check", scheduled_at: null, active_program_segment_id: null, active_insert_source_segment_id: null, active_insert_program_segment_id: null, pending_program_transition_event_id: null }] };
       if (sql.includes("select id from live_runs where id = $1::uuid")) return { rows: [{ id: runId }] };
@@ -160,6 +171,20 @@ const rejectedPreflight = (error) => error instanceof Response && error.status =
   assert.ok(client.statements.some((sql) => sql.includes("from runtime_health_samples")), "arm must read runtime readiness inside its transaction");
   assert.ok(client.statements.some((sql) => sql.includes("from interaction_rules where default_key = 'ai_disclosure'")), "arm must read the AI disclosure rule inside its transaction");
   assert.ok(client.statements.includes("rollback"), "a failed arm preflight must roll back");
+}
+{
+  const client = preflightClient("PREFLIGHT", { gpuLockAcquired: false });
+  await withCountingPool(client, () => assert.rejects(store.advanceRunLifecycle(operatorContext, runId, "arm"), (error) => error instanceof Response && error.statusText === "runtime_gpu_reserved"));
+  assert.ok(client.statements.includes("rollback"), "an offline GPU reservation must roll back lifecycle arm");
+  assert.equal(client.statements.some((sql) => sql.includes("from runtime_health_samples")), false, "arm must stop before preflight when the offline build owns the GPU");
+}
+{
+  const bystanderTenantId = "00000000-0000-4000-8000-000000000007";
+  const client = preflightClient("PREFLIGHT", { activeRunTenantId: bystanderTenantId, tenantIds: [bystanderTenantId, tenantId] });
+  await withCountingPool(client, () => assert.rejects(store.advanceRunLifecycle(operatorContext, runId, "arm"), (error) => error instanceof Response && error.statusText === "runtime_gpu_reserved"));
+  assert.ok(client.statements.includes("select id from tenants order by id"), "GPU admission must enumerate tenants before a new run is armed");
+  assert.ok(client.tenantContexts.includes(bystanderTenantId), "GPU admission must check active runs under each tenant RLS context");
+  assert.equal(client.statements.some((sql) => sql.includes("from runtime_health_samples")), false, "an existing active run must block arming before preflight");
 }
 {
   const client = preflightClient("ARMED");
@@ -201,6 +226,10 @@ if (!preflightSection.includes("aigcLabelReady: aigcLabel.passed") || !preflight
   const blocked = evaluatePreflight({ ...base, aigcLabelReady: false, aigcLabelDetail: "LiveTalking 未启用 AIGC 画面标识" });
   assert.equal(blocked.passed, false, "a disabled AIGC label must block arm and START");
   assert.deepEqual(blocked.checks.find((check) => check.id === "aigc_label"), { id: "aigc_label", label: "AIGC 标识已启用", status: "blocked", detail: "LiveTalking 未启用 AIGC 画面标识" });
+  const avatarMismatch = evaluatePreflight({ ...base, projectAvatarReady: false, projectAvatarDetail: "当前会话形象与项目形象不一致" });
+  assert.equal(avatarMismatch.passed, false, "a Studio project cannot arm with a different runtime Avatar");
+  assert.deepEqual(avatarMismatch.checks.find((check) => check.id === "project_avatar"), { id: "project_avatar", label: "项目数字人形象", status: "blocked", detail: "当前会话形象与项目形象不一致" });
+  assert.equal(evaluatePreflight({ ...base, aigcLabelReady: true, aigcLabelDetail: "ok", projectAvatarReady: true, projectAvatarDetail: "运行时已加载项目形象 sr_0123456789abcdef0123456789abcdef" }).passed, true);
   const overlayBlocked = evaluatePreflight({ ...base, aigcLabelReady: true, aigcLabelDetail: "ok", overlayReady: false, overlayDetail: "画面层配置未冻结或已损坏" });
   assert.deepEqual(overlayBlocked.checks.find((check) => check.id === "overlay"), { id: "overlay", label: "画面层", status: "blocked", detail: "画面层配置未冻结或已损坏" });
   assert.equal(aigc.aigcLabelMetadata("00000000-0000-4000-8000-000000000002").contentId, "live-run:00000000-0000-4000-8000-000000000002");

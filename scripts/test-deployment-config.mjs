@@ -207,6 +207,10 @@ function runtime(outputProbeTargets, observerTargets = [{ tenantId, runId: "run_
     OUTBOX_RETRY_BASE_MS: "1000",
     OUTBOX_RETRY_MAX_MS: "60000",
     RUNTIME_WORKER_PORT: "8080",
+    AVATAR_BUILDER_TOKEN: "avatar-builder-token-at-least-48-random-characters-long",
+    AVATAR_PUBLISHER_TOKEN: "avatar-publisher-token-at-least-48-random-characters-long",
+    AVATAR_BUILDER_LOCK_DATABASE_URL: "postgresql://avatar_builder:fixture-password@postgres.internal:5432/shuzhiren",
+    AVATAR_CANDIDATE_VOLUME_PATH: "/srv/shuzhiren/avatar-candidates",
     INTERACTION_RULES_ENABLED: "true",
     INTERACTION_RULE_POLL_MS: "2000",
     INTERACTION_RULE_MIN_SPEECH_INTERVAL_SECONDS: "30",
@@ -361,10 +365,10 @@ try {
     const buildProblems = aigcLabelBuildProblems({ seriesPatches: seriesPatches.slice(0, 3), patchText: patchText.replace("combine_frame = self.aigc_label.apply(combine_frame)", "pass"), dockerfileText: dockerfileText.replace("git fonts-noto-cjk", "git").replace("COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/", "") }).join("\n");
     for (const pattern of [/补丁序列缺少 livetalking-aigc-label\.patch/, /AIGC 标识补丁缺少挂接：combine_frame = self\.aigc_label\.apply/, /没有复制 AIGC 标识模块/, /没有安装中文字体包 fonts-noto-cjk/]) assert.match(buildProblems, pattern);
     console.log("PASS  deployment configuration fails without an enabled AIGC label, a valid label text and position, a matching console text and a content producer");
-    // Requirement 6.12, 6.13, 6.15, 6.19: the overlay patch closes the series, draws the picture layers before the AIGC
-    // label, the image ships the module, and LiveTalking reads background assets from a read-only volume.
+    // Requirement 6.12, 6.13, 6.15, 6.19: the overlay patch draws the picture layers before the AIGC label,
+    // and LiveTalking reads background assets from a read-only volume.
     const seriesLines = (await readFile(path.join(root, "runtime", "patches", "livetalking.series"), "utf8")).split(/\r?\n/).filter((line) => line && !line.startsWith("#"));
-    assert.equal(seriesLines.at(-1), "livetalking-overlay.patch", "livetalking-overlay.patch must be the last patch of the series");
+    assert.equal(seriesLines.at(-1), "livetalking-runtime-stream.patch", "the runtime stream patch must be last in the LiveTalking series");
     const overlayPatch = await readFile(path.join(root, "runtime", "patches", "livetalking-overlay.patch"), "utf8");
     const overlayAdded = overlayPatch.split(/\r?\n/).filter((line) => line.startsWith("+")).join("\n");
     assert.match(overlayAdded, /render_output_frame\(self\.overlay, self\.aigc_label, combine_frame,/, "process_frames must render through render_output_frame");
@@ -377,7 +381,25 @@ try {
     assert.ok((await readFile(path.join(root, "runtime", "livetalking", "Dockerfile.dockerignore"), "utf8")).split(/\r?\n/).includes("!runtime/livetalking/shuzhiren_overlay.py"), "the build context must allow shuzhiren_overlay.py");
     assert.ok(composeDoc.services.livetalking.volumes.includes("overlay-assets:/opt/shuzhiren/overlay-assets:ro"), "LiveTalking must mount the overlay-assets volume read-only");
     assert.ok(composeDoc.volumes && Object.hasOwn(composeDoc.volumes, "overlay-assets"), "the overlay-assets volume must be declared");
-    console.log("PASS  the overlay patch closes the series, composes before the AIGC label, and the image, build context and Compose carry the module and the read-only asset volume");
+    console.log("PASS  the overlay patch composes before the AIGC label, and the image, build context and Compose carry the module and the read-only asset volume");
+    const sessionAdmissionPatch = await readFile(path.join(root, "runtime", "patches", "livetalking-session-admission.patch"), "utf8");
+    assert.match(sessionAdmissionPatch, /self\._creation_lock = asyncio\.Lock\(\)/);
+    assert.match(sessionAdmissionPatch, /async with self\._creation_lock:/);
+    assert.match(sessionAdmissionPatch, /active_count = len\(self\.sessions\)/);
+    assert.match(sessionAdmissionPatch, /await asyncio\.shield\(build_task\)/);
+    assert.match(sessionAdmissionPatch, /self\.sessions\.pop\(sessionid, None\)/);
+    console.log("PASS  LiveTalking session admission counts in-progress reservations and releases failed or cancelled builds without exceeding max_session");
+    const runtimeStreamPatch = await readFile(path.join(root, "runtime", "patches", "livetalking-runtime-stream.patch"), "utf8");
+    assert.match(runtimeStreamPatch, /if opt\.transport == 'virtualcam':/);
+    assert.match(runtimeStreamPatch, /self\.streaming_enabled = False/);
+    assert.match(runtimeStreamPatch, /def start_stream\(self\)/);
+    assert.match(runtimeStreamPatch, /def stop_stream\(self\)/);
+    assert.match(runtimeStreamPatch, /self\._player\.push_video\(frame\)/);
+    assert.match(runtimeStreamPatch, /self\._player\.push_audio\(frame, eventpoint\)/);
+    assert.match(runtimeStreamPatch, /\/api\/admin\/stream\/start/);
+    assert.match(runtimeStreamPatch, /\/api\/admin\/stream\/stop/);
+    assert.match(runtimeStreamPatch, /put_nowait\(\(new_frame, None\)\)/);
+    console.log("PASS  LiveTalking creates one project Avatar for preview, gates RTMP until approved start, and bounds preview queues");
   }
   // L17 (39.1-39.5, 39.7): lock entries against Git fixtures, nested submodules and *_REF template rules.
   const openSourceLock = spawnSync(process.execPath, [path.join(root, "scripts", "test-open-source-lock.mjs")], { cwd: root, encoding: "utf8" });
@@ -449,7 +471,7 @@ try {
   await writeFile(files.channel, channel.replace("postgresql://channel_adapter:fixture-password", "postgresql://runtime_worker:fixture-password"));
   const reusedDatabasePrincipal = check(["--require-cosyvoice"]);
   assert.notEqual(reusedDatabasePrincipal.status, 0, "service deployments must not reuse a database principal");
-  assert.match(reusedDatabasePrincipal.stderr, /四个不同的 PostgreSQL 用户名/, "database-principal reuse must identify the least-privilege deployment gate");
+  assert.match(reusedDatabasePrincipal.stderr, /五个不同的 PostgreSQL 用户名/, "database-principal reuse must identify the least-privilege deployment gate");
   await writeFile(files.channel, channel);
 
   // D4: the migration owner is its own PostgreSQL user in its own env file, and no application account uses it.
@@ -549,6 +571,20 @@ try {
   assert.match(shortRuntimeToken.stderr, /RUNTIME_SHARED_TOKEN/, "short runtime token rejection must identify the shared-token gate");
   await writeFile(files.runtime, runtime(validProbeTarget));
   await writeFile(files.gateway, gateway);
+
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("AVATAR_BUILDER_TOKEN=avatar-builder-token-at-least-48-random-characters-long", "AVATAR_BUILDER_TOKEN=short"));
+  const shortAvatarBuilderToken = check(["--require-cosyvoice"]);
+  assert.notEqual(shortAvatarBuilderToken.status, 0, "avatar builder must reject a token shorter than its API startup requirement");
+  assert.match(shortAvatarBuilderToken.stderr, /AVATAR_BUILDER_TOKEN 必须是至少 48 个字符/, "short avatar-builder token rejection must identify the API requirement");
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("AVATAR_PUBLISHER_TOKEN=avatar-publisher-token-at-least-48-random-characters-long", "AVATAR_PUBLISHER_TOKEN=short"));
+  const shortAvatarPublisherToken = check(["--require-cosyvoice"]);
+  assert.notEqual(shortAvatarPublisherToken.status, 0, "avatar publisher must reject a token shorter than its API startup requirement");
+  assert.match(shortAvatarPublisherToken.stderr, /AVATAR_PUBLISHER_TOKEN 必须是至少 48 个字符/, "short avatar-publisher token rejection must identify the API requirement");
+  await writeFile(files.runtime, runtime(validProbeTarget).replace("AVATAR_CANDIDATE_VOLUME_PATH=/srv/shuzhiren/avatar-candidates", "AVATAR_CANDIDATE_VOLUME_PATH=relative/avatar-candidates"));
+  const relativeAvatarCandidatePath = check(["--require-cosyvoice"]);
+  assert.notEqual(relativeAvatarCandidatePath.status, 0, "avatar candidate volume must be a Linux absolute host path");
+  assert.match(relativeAvatarCandidatePath.stderr, /AVATAR_CANDIDATE_VOLUME_PATH 必须是 Linux 主机绝对路径/, "relative avatar-candidate path rejection must identify the host-volume contract");
+  await writeFile(files.runtime, runtime(validProbeTarget));
 
   // M17 (Requirement 31.9): RUNTIME_GATEWAY_READ_TOKEN is a separate private credential of runtime-observer.
   const withReadToken = (value) => runtime(validProbeTarget).replace(`RUNTIME_GATEWAY_READ_TOKEN=${gatewayReadToken}\n`, value === undefined ? "" : `RUNTIME_GATEWAY_READ_TOKEN=${value}\n`);
@@ -930,11 +966,14 @@ try {
     console.warn("SKIP  Python 3 not found; LiveTalking stream-key behavior tests not run (set PYTHON to enable)");
   } else {
     const patchedSource = path.join(fixtureDirectory, "livetalking-patched");
-    const series = checkPatchSeries({ sourceDir: path.join(root, "vendor", "LiveTalking"), seriesFile: path.join(root, "runtime", "patches", "livetalking.series"), checkoutTo: patchedSource, paths: ["app.py", "config.py", "registry.py", "utils/logger.py", "server/__init__.py", "server/routes.py", "streamout/__init__.py", "streamout/rtmp.py", "avatars/base_avatar.py"] });
+    const series = checkPatchSeries({ sourceDir: path.join(root, "vendor", "LiveTalking"), seriesFile: path.join(root, "runtime", "patches", "livetalking.series"), checkoutTo: patchedSource, paths: ["app.py", "config.py", "registry.py", "utils/logger.py", "server/__init__.py", "server/routes.py", "server/session_manager.py", "server/rtc_manager.py", "server/webrtc.py", "streamout/__init__.py", "streamout/rtmp.py", "avatars/base_avatar.py"] });
     assert.deepEqual(series.failures, [], "the LiveTalking patch series must apply to the locked commit");
     const pythonTest = spawnSync(python, [path.join(root, "runtime", "livetalking", "tests", "test_stream_secret.py"), "--livetalking-source", patchedSource], { cwd: root, encoding: "utf8", timeout: 240_000 });
     assert.equal(pythonTest.status, 0, `LiveTalking stream-key behavior tests failed:\n${pythonTest.stdout}\n${pythonTest.stderr}`);
     process.stdout.write(pythonTest.stdout);
+    const admissionTest = spawnSync(python, [path.join(root, "runtime", "livetalking", "tests", "test_session_admission.py"), "--livetalking-source", patchedSource], { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
+    assert.equal(admissionTest.status, 0, `LiveTalking session-admission tests failed:\n${admissionTest.stdout}\n${admissionTest.stderr}`);
+    process.stdout.write(admissionTest.stdout);
     // AIGC explicit label: configuration and launcher tests always run; the drawing tests need numpy, Pillow and a
     // CJK font and print SKIP without them (AIGC_LABEL_REQUIRE_IMAGING=true turns a SKIP into a failure).
     const labelArgs = [path.join(root, "runtime", "livetalking", "tests", "test_aigc_label.py"), "--livetalking-source", patchedSource, ...(process.env.AIGC_LABEL_REQUIRE_IMAGING === "true" ? ["--require-imaging"] : [])];

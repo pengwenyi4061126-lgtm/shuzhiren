@@ -78,6 +78,11 @@ services:
       INTERACTION_RULE_MAX_EVENT_AGE_SECONDS: ${INTERACTION_RULE_MAX_EVENT_AGE_SECONDS:-60}
       INTERACTION_RULE_BATCH_SIZE: ${INTERACTION_RULE_BATCH_SIZE:-20}
       INTERACTION_RULE_NICKNAME_MAX_LENGTH: ${INTERACTION_RULE_NICKNAME_MAX_LENGTH:-12}
+      AVATAR_BUILDER_URL: http://avatar-builder:8020
+      AVATAR_BUILDER_TOKEN: ${AVATAR_BUILDER_TOKEN:?set-in-runtime-env}
+      AVATAR_PUBLISHER_URL: http://avatar-publisher:8021
+      AVATAR_PUBLISHER_TOKEN: ${AVATAR_PUBLISHER_TOKEN:?set-in-runtime-env}
+    networks: [default, avatar-build]
     restart: unless-stopped
     expose:
       - "${RUNTIME_WORKER_PORT:-8080}"
@@ -223,6 +228,54 @@ services:
       retries: 24
       start_period: 60s
 
+  avatar-builder:
+    profiles: ["avatar-builder"]
+    image: ${LIVETALKING_IMAGE:?set-in-runtime-env}
+    runtime: nvidia
+    restart: unless-stopped
+    entrypoint: ["python3"]
+    command: ["/opt/shuzhiren/avatar_builder_api.py"]
+    networks: [avatar-build]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-0}
+      AVATAR_BUILDER_TOKEN: ${AVATAR_BUILDER_TOKEN:?set-in-runtime-env}
+      AVATAR_BUILDER_PORT: 8020
+      AVATAR_BUILDER_CANDIDATE_ROOT: /var/lib/shuzhiren-avatar-candidates
+      AVATAR_BUILDER_LOCK_DATABASE_URL: ${AVATAR_BUILDER_LOCK_DATABASE_URL:?set-in-runtime-env}
+    volumes:
+      - ${MODEL_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/models:ro
+      - ${AVATAR_CANDIDATE_VOLUME_PATH:?set-in-runtime-env}:/var/lib/shuzhiren-avatar-candidates
+    expose:
+      - "8020"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  avatar-publisher:
+    profiles: ["avatar-builder"]
+    image: ${LIVETALKING_IMAGE:?set-in-runtime-env}
+    restart: unless-stopped
+    entrypoint: ["python3"]
+    command: ["/opt/shuzhiren/avatar_publisher_api.py"]
+    networks: [avatar-build]
+    environment:
+      AVATAR_PUBLISHER_TOKEN: ${AVATAR_PUBLISHER_TOKEN:?set-in-runtime-env}
+      AVATAR_PUBLISHER_PORT: 8021
+      AVATAR_PUBLISHER_CANDIDATE_ROOT: /var/lib/shuzhiren-avatar-candidates
+      AVATAR_PUBLISHER_PUBLISHED_ROOT: /var/lib/shuzhiren-avatars
+    volumes:
+      - ${AVATAR_CANDIDATE_VOLUME_PATH:?set-in-runtime-env}:/var/lib/shuzhiren-avatar-candidates:ro
+      - ${AVATAR_VOLUME_PATH:?set-in-runtime-gateway-env}:/var/lib/shuzhiren-avatars
+    expose:
+      - "8021"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8021/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
   cosyvoice:
     profiles: ["cosyvoice"]
     restart: unless-stopped
@@ -251,6 +304,8 @@ networks:
   runtime-media:
     internal: true
   livetalking-egress: {}
+  avatar-build:
+    internal: true
 
 volumes:
   overlay-assets: {}

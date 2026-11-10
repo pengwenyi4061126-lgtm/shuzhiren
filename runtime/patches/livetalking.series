@@ -6,3 +6,5 @@ livetalking-stream-secret.patch
 livetalking-local-tts.patch
 livetalking-aigc-label.patch
 livetalking-overlay.patch
+livetalking-session-admission.patch
+livetalking-runtime-stream.patch

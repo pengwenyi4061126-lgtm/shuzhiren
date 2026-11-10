@@ -18,18 +18,35 @@ for (const profile of ["output-probe", "channel-adapter", "alert-notifier", "cos
 for (const source of ["RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE"]) {
   if (!contents.compose.includes(source) || !contents.runtime.includes(`${source}=`)) throw new Error(`Runtime Compose must retain immutable deployment image input: ${source}`);
 }
-if (contents.compose.includes("build:")) throw new Error("Runtime production Compose must not build mutable local images");
+if (/^\s+build\s*:/m.test(contents.compose)) throw new Error("Runtime production Compose must not build mutable local images");
 for (const [name, key] of [["runtime", "RUNTIME_SHARED_TOKEN="], ["runtime", "RUNTIME_GATEWAY_READ_TOKEN="], ["gateway", "RUNTIME_GATEWAY_STATE_PATH="], ["gateway", "PREVIEW_GRANT_MAX_SECONDS="], ["channel", "CHANNEL_ADAPTER_TARGETS="], ["notifier", "ALERT_NOTIFIER_TARGETS="]]) {
   if (!contents[name].includes(key)) throw new Error(`${name} template must supply ${key} for Compose interpolation`);
 }
 for (const required of ["PREVIEW_BROKER_URL: ${PREVIEW_BROKER_URL:-}", "PREVIEW_BROKER_TOKEN: ${PREVIEW_BROKER_TOKEN:-}", "PREVIEW_GRANT_MAX_SECONDS: ${PREVIEW_GRANT_MAX_SECONDS:-600}"]) {
   if (!contents.compose.includes(required)) throw new Error(`Runtime Compose must pass controlled preview configuration: ${required}`);
 }
-for (const required of ["RUNTIME_WORKER_DATABASE_URL", "CHANNEL_ADAPTER_DATABASE_URL", "ALERT_NOTIFIER_DATABASE_URL", "CONTROL_PLANE_URL", "LIVETALKING_AVATAR_ID", "STREAM_RTMP_URL", "STREAM_KEY_FILE", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_MODEL_PATH", "COSYVOICE_MODEL_DIR"]) {
+for (const required of ["RUNTIME_WORKER_DATABASE_URL", "CHANNEL_ADAPTER_DATABASE_URL", "ALERT_NOTIFIER_DATABASE_URL", "AVATAR_BUILDER_LOCK_DATABASE_URL", "CONTROL_PLANE_URL", "LIVETALKING_AVATAR_ID", "STREAM_RTMP_URL", "STREAM_KEY_FILE", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "AVATAR_BUILDER_TOKEN", "AVATAR_PUBLISHER_TOKEN", "AVATAR_CANDIDATE_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_MODEL_PATH", "COSYVOICE_MODEL_DIR"]) {
   if (!Object.values(contents).some((content) => content.includes(`${required}=`))) throw new Error(`Runtime Compose template set must supply ${required}`);
 }
 
 const composeDoc = yaml.load(contents.compose);
+const avatarBuilder = composeDoc.services["avatar-builder"];
+if (JSON.stringify(avatarBuilder?.profiles) !== JSON.stringify(["avatar-builder"])) throw new Error("Avatar candidate generation must require the explicit avatar-builder profile because it shares the live GPU");
+if (JSON.stringify(avatarBuilder?.networks) !== JSON.stringify(["avatar-build"])) throw new Error("Avatar builder must remain on its isolated internal network");
+if (avatarBuilder?.environment?.AVATAR_BUILDER_LOCK_DATABASE_URL !== "${AVATAR_BUILDER_LOCK_DATABASE_URL:?set-in-runtime-env}") throw new Error("Avatar builder must hold the shared GPU advisory lock using its dedicated database principal");
+const builderVolumes = [].concat(avatarBuilder?.volumes ?? []);
+if (!builderVolumes.includes("${MODEL_VOLUME_PATH:?set-in-runtime-gateway-env}:/app/models:ro")) throw new Error("Avatar builder must mount model weights read-only");
+if (!builderVolumes.includes("${AVATAR_CANDIDATE_VOLUME_PATH:?set-in-runtime-env}:/var/lib/shuzhiren-avatar-candidates")) throw new Error("Avatar builder must write only to its dedicated candidate volume");
+if (builderVolumes.some((volume) => String(volume).includes("${AVATAR_VOLUME_PATH"))) throw new Error("Avatar builder must never mount the published avatar volume");
+const avatarPublisher = composeDoc.services["avatar-publisher"];
+if (JSON.stringify(avatarPublisher?.profiles) !== JSON.stringify(["avatar-builder"])) throw new Error("Avatar publishing must require the explicit avatar-builder profile");
+if (JSON.stringify(avatarPublisher?.networks) !== JSON.stringify(["avatar-build"])) throw new Error("Avatar publisher must remain on its isolated internal network");
+const publisherVolumes = [].concat(avatarPublisher?.volumes ?? []);
+if (!publisherVolumes.includes("${AVATAR_CANDIDATE_VOLUME_PATH:?set-in-runtime-env}:/var/lib/shuzhiren-avatar-candidates:ro")) throw new Error("Avatar publisher must mount candidate artifacts read-only");
+if (!publisherVolumes.includes("${AVATAR_VOLUME_PATH:?set-in-runtime-gateway-env}:/var/lib/shuzhiren-avatars")) throw new Error("Avatar publisher must write to the published runtime avatar volume");
+if (composeDoc.services["runtime-worker"]?.environment?.AVATAR_BUILDER_URL !== "http://avatar-builder:8020" || composeDoc.services["runtime-worker"]?.environment?.AVATAR_BUILDER_TOKEN !== "${AVATAR_BUILDER_TOKEN:?set-in-runtime-env}") throw new Error("Runtime worker must reach the authenticated Avatar Builder over the internal build network");
+if (composeDoc.services["runtime-worker"]?.environment?.AVATAR_PUBLISHER_URL !== "http://avatar-publisher:8021" || composeDoc.services["runtime-worker"]?.environment?.AVATAR_PUBLISHER_TOKEN !== "${AVATAR_PUBLISHER_TOKEN:?set-in-runtime-env}") throw new Error("Runtime worker must reach the authenticated Avatar Publisher over the internal build network");
+if (![].concat(composeDoc.services["runtime-worker"]?.networks ?? []).includes("avatar-build")) throw new Error("Runtime worker must share only the internal avatar-build network with the builder");
 const portErrors = checkComposePorts(composeDoc).errors;
 if (portErrors.length) throw new Error(`Runtime Compose ports must agree between environment, expose, health checks and service URLs:\n${portErrors.map(({ code, message }) => `[${code}] ${message}`).join("\n")}`);
 const isolationErrors = checkRuntimeComposeIsolation(composeDoc).errors;

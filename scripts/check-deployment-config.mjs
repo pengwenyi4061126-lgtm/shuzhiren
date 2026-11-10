@@ -21,7 +21,7 @@ const LIVETALKING_CONTEXT_EXCLUDED = Object.freeze([
   "vendor/LiveTalking/.git", "vendor/LiveTalking/.git/config", "vendor/LiveTalking/.env", "vendor/LiveTalking/.env.local", "vendor/LiveTalking/avatars/musetalk/.env",
   "vendor/LiveTalking/models/put models here.txt", "vendor/LiveTalking/models/musetalkV15/unet.pth", "vendor/LiveTalking/data/custom_config.json", "vendor/LiveTalking/data/avatars/approved/full_imgs/0.png",
   "vendor/LiveTalking/livetalking.log", "vendor/LiveTalking/web/debug.log", "vendor/LiveTalking/secrets/stream-key", "vendor/LiveTalking/weights/model.pth",
-  "vendor/LiveTalking/recordings/session.mp4", "vendor/LiveTalking/exports/run.json", "vendor/LiveTalking/cache/model.bin", "vendor/LiveTalking/logs/run.txt"
+  "vendor/LiveTalking/recordings/session.mp4", "vendor/LiveTalking/exports/run.json", "vendor/LiveTalking/cache/model.bin", "vendor/LiveTalking/logs/run.txt", "runtime/livetalking/tests/test_session_admission.py"
 ]);
 const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "vendor/LiveTalking/app.py", "vendor/LiveTalking/config.py", "vendor/LiveTalking/requirements.txt", "vendor/LiveTalking/server/routes.py", "vendor/LiveTalking/streamout/rtmp.py",
@@ -29,7 +29,7 @@ const LIVETALKING_CONTEXT_INCLUDED = Object.freeze([
   "runtime/patches/livetalking-stream-secret.patch", "runtime/patches/livetalking-local-tts.patch", "runtime/patches/livetalking.series", "runtime/livetalking/launcher.py", "runtime/livetalking/shuzhiren_secrets.py",
   "vendor/LiveTalking/LICENSE", "runtime/patches/LIVETALKING_MODIFICATIONS.md",
   "runtime/patches/livetalking-aigc-label.patch", "runtime/livetalking/shuzhiren_aigc_label.py",
-  "runtime/patches/livetalking-overlay.patch", "runtime/livetalking/shuzhiren_overlay.py"
+  "runtime/patches/livetalking-overlay.patch", "runtime/patches/livetalking-session-admission.patch", "runtime/patches/livetalking-runtime-stream.patch", "runtime/livetalking/shuzhiren_overlay.py"
 ]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -347,6 +347,7 @@ required(control, "控制面", ["NODE_ENV", "DATABASE_URL", "DATABASE_QUERY_TIME
 if (!allowPlaceholders && !/^[a-f0-9]{40}$/.test(control.get("RELEASE_REVISION") ?? "")) errors.push("控制面 的 RELEASE_REVISION 必须是完整 40 位小写 git SHA");
 required(controlCompose, "控制面 Compose", ["CONTROL_PLANE_IMAGE", "CONTROL_PLANE_MIGRATOR_IMAGE"]);
 required(runtime, "运行时", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_GATEWAY_IMAGE", "RUNTIME_WORKER_IMAGE", "RUNTIME_OBSERVER_IMAGE", "OUTPUT_PROBE_IMAGE", "CHANNEL_ADAPTER_IMAGE", "ALERT_NOTIFIER_IMAGE", "LIVETALKING_IMAGE", "COSYVOICE_IMAGE", "STREAM_OUTPUT_MODE", "STREAM_RTMP_URL", "STREAM_KEY_FILE", "STREAM_FPS", "RUNTIME_GATEWAY_URL", "RUNTIME_SHARED_TOKEN", "RUNTIME_GATEWAY_DEMO_MODE", "RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS", "CHANNEL_ADAPTER_URL", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "RUNTIME_WORKER_DATABASE_URL", "CONTROL_PLANE_URL", "RUNTIME_OBSERVER_TARGETS_DIR", "RUNTIME_OBSERVER_POLL_MS", "RUNTIME_OBSERVER_TIMEOUT_MS", "RUNTIME_OBSERVER_FAIL_CLOSED", "RUNTIME_OBSERVER_PORT", "RUNTIME_WATCHDOG_POLL_MS", "RUNTIME_WATCHDOG_BATCH_SIZE", "RUNTIME_TELEMETRY_MAX_AGE_SECONDS", "USAGE_METER_POLL_MS", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE", "OUTBOX_POLL_MS", "SCHEDULER_POLL_MS", "SCHEDULER_BATCH_SIZE", "OUTBOX_MAX_ATTEMPTS", "OUTBOX_LEASE_SECONDS", "OUTBOX_RETRY_BASE_MS", "OUTBOX_RETRY_MAX_MS", "RUNTIME_WORKER_PORT"]);
+required(runtime, "运行时", ["AVATAR_BUILDER_TOKEN", "AVATAR_BUILDER_LOCK_DATABASE_URL", "AVATAR_CANDIDATE_VOLUME_PATH"]);
 required(gateway, "Gateway", ["NVIDIA_VISIBLE_DEVICES", "RUNTIME_SHARED_TOKEN", "COSYVOICE_REQUIRED", "LIVETALKING_AVATAR_ID", "MODEL_VOLUME_PATH", "AVATAR_VOLUME_PATH", "RECORDINGS_VOLUME_PATH", "COSYVOICE_SAMPLE_RATE", "COSYVOICE_MODEL_DIR", "RUNTIME_REQUEST_TIMEOUT_SECONDS", "RUNTIME_COMMAND_JOURNAL_PATH", "RUNTIME_COMMAND_JOURNAL_REQUIRED", "RUNTIME_GATEWAY_STATE_PATH", "RUNTIME_GATEWAY_HOST_BIND", "PREVIEW_GRANT_MAX_SECONDS", "STREAM_RTMP_URL", "PROGRAM_AUDIOTYPE", "FALLBACK_AUDIOTYPE", "HUMAN_HANDOFF_AUDIOTYPE"]);
 required(channelAdapter, "渠道适配器", ["CHANNEL_ADAPTER_DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "CONTROL_PLANE_URL", "CHANNEL_ADAPTER_PORT", "CHANNEL_ADAPTER_REPLAY_LEASE_SECONDS", "CHANNEL_ADAPTER_MAX_REQUESTS_PER_MINUTE", "CHANNEL_ADAPTER_DISPATCH_TOKEN", "CHANNEL_ADAPTER_TARGETS"]);
 required(alertNotifier, "告警通知器", ["ALERT_NOTIFIER_DATABASE_URL", "DATABASE_QUERY_TIMEOUT_MS", "ALERT_NOTIFIER_PORT", "ALERT_NOTIFIER_POLL_MS", "ALERT_NOTIFIER_LEASE_SECONDS", "ALERT_NOTIFIER_MAX_ATTEMPTS", "ALERT_NOTIFIER_RETRY_BASE_MS", "ALERT_NOTIFIER_RETRY_MAX_MS", "ALERT_NOTIFIER_TARGETS"]);
@@ -360,10 +361,11 @@ await verifyDeploymentReleaseManifest(control, controlCompose, runtime, controlI
 const databasePrincipals = [
   databasePrincipal(control, "控制面", "DATABASE_URL"),
   databasePrincipal(runtime, "运行时", "RUNTIME_WORKER_DATABASE_URL"),
+  databasePrincipal(runtime, "运行时", "AVATAR_BUILDER_LOCK_DATABASE_URL"),
   databasePrincipal(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_DATABASE_URL"),
   databasePrincipal(alertNotifier, "告警通知器", "ALERT_NOTIFIER_DATABASE_URL")
 ].filter(Boolean);
-if (databasePrincipals.length === 4 && new Set(databasePrincipals).size !== databasePrincipals.length) errors.push("控制面、runtime worker、渠道适配器和告警通知器必须使用四个不同的 PostgreSQL 用户名");
+if (databasePrincipals.length === 5 && new Set(databasePrincipals).size !== databasePrincipals.length) errors.push("控制面、runtime worker、avatar builder lock、渠道适配器和告警通知器必须使用五个不同的 PostgreSQL 用户名");
 migrationOwnerPrincipal(databasePrincipals);
 outboundControlPlaneUrl(channelAdapter, "渠道适配器");
 positiveInteger(channelAdapter, "渠道适配器", "CHANNEL_ADAPTER_PORT");
@@ -404,6 +406,20 @@ if (gateway.has("RUNTIME_COMMAND_DEADLINE_SECONDS")) {
   if (Number.isFinite(deadlineMs) && Number.isFinite(workerTimeoutMs) && deadlineMs >= workerTimeoutMs) errors.push("Gateway 的 RUNTIME_COMMAND_DEADLINE_SECONDS 必须小于运行时 RUNTIME_GATEWAY_REQUEST_TIMEOUT_MS，否则 worker 会在 Gateway 仍在合成时重试");
 }
 privateSecret(runtime, "运行时", "RUNTIME_SHARED_TOKEN");
+privateSecret(runtime, "运行时", "AVATAR_BUILDER_TOKEN");
+privateSecret(runtime, "运行时", "AVATAR_PUBLISHER_TOKEN");
+if (runtime.get("AVATAR_BUILDER_TOKEN") && runtime.get("AVATAR_BUILDER_TOKEN") === runtime.get("AVATAR_PUBLISHER_TOKEN")) errors.push("AVATAR_BUILDER_TOKEN 与 AVATAR_PUBLISHER_TOKEN 必须使用不同令牌");
+{
+  const token = runtime.get("AVATAR_PUBLISHER_TOKEN") ?? "";
+  if (!(allowPlaceholders && isPlaceholder(token)) && (token.length < 48 || /\s/.test(token))) errors.push("运行时 的 AVATAR_PUBLISHER_TOKEN 必须是至少 48 个字符且不含空白的独立私网令牌");
+}
+{
+  const token = runtime.get("AVATAR_BUILDER_TOKEN") ?? "";
+  if (!(allowPlaceholders && isPlaceholder(token)) && (token.length < 48 || /\s/.test(token))) errors.push("运行时 的 AVATAR_BUILDER_TOKEN 必须是至少 48 个字符且不含空白的独立私网令牌");
+  const candidatePath = runtime.get("AVATAR_CANDIDATE_VOLUME_PATH") ?? "";
+  if (!candidatePath.startsWith("/")) errors.push("运行时 的 AVATAR_CANDIDATE_VOLUME_PATH 必须是 Linux 主机绝对路径");
+  if (candidatePath && candidatePath === gateway.get("AVATAR_VOLUME_PATH")) errors.push("运行时 的 AVATAR_CANDIDATE_VOLUME_PATH 不得与已发布的 AVATAR_VOLUME_PATH 相同");
+}
 privateSecret(gateway, "Gateway", "RUNTIME_SHARED_TOKEN");
 privateSecret(control, "控制面", "RUNTIME_SHARED_TOKEN");
 if (runtime.get("OUTPUT_PROBE_SHARED_TOKEN")) privateSecret(runtime, "运行时", "OUTPUT_PROBE_SHARED_TOKEN");

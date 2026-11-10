@@ -232,11 +232,18 @@ try {
   assert.equal(reviewedProject.scriptReview.productVersionId, project.productVersionId);
   const reviewedProjects = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects`, { headers: requestHeaders });
   assert.ok((await reviewedProjects.json()).data.find((item) => item.id === project.id).scriptReview, "project review state must survive a fresh listing request");
-  const projectRecordingInput = { projectRevision: 2, productVersionId: project.productVersionId, scriptSnapshot: reviewedProject.script, photoAssetId: photoAsset.data.id, fileName: "integration-recording.webm", objectKey: `assets/${tenantId}/integration-recording.webm`, checksum: `sha256:${"f".repeat(64)}`, bytes: 1024 };
+  const projectRecordingInput = { archiveRequestId: randomUUID(), projectRevision: 2, productVersionId: project.productVersionId, scriptSnapshot: reviewedProject.script, photoAssetId: photoAsset.data.id, fileName: "integration-recording.webm", objectKey: `assets/${tenantId}/integration-recording.webm`, checksum: `sha256:${"f".repeat(64)}`, bytes: 1024 };
   const projectRecordingResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify(projectRecordingInput) });
   assert.equal(projectRecordingResponse.status, 201, "a reviewed WebM recording should be archived against its project and approved photo asset");
   const projectRecording = (await projectRecordingResponse.json()).data;
   assert.equal(projectRecording.verifiedObjectVersion, "integration-version-1", "project recordings must retain immutable object verification evidence");
+  assert.deepEqual(projectRecording.recordingQuality, { status: "verified", profile: "photo-narration-webm", videoWidth: 720, videoHeight: 1280, audioTrackCount: 1, durationSeconds: 42.5, verifier: "ffprobe" }, "project recordings must retain independent server-side quality evidence");
+  assert.deepEqual((await client.query("select recording_quality from creation_project_recordings where tenant_id = $1 and id = $2", [tenantId, projectRecording.id])).rows[0].recording_quality, projectRecording.recordingQuality);
+  const replayedRecordingResponse = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ ...projectRecordingInput, objectKey: `assets/${tenantId}/integration-recording-retry.webm` }) });
+  assert.equal(replayedRecordingResponse.status, 201, "a lost archive response should safely replay under the same archive request id");
+  assert.equal((await replayedRecordingResponse.json()).data.id, projectRecording.id, "an archive replay must return the original immutable recording, not create another version");
+  const conflictingRecordingReplay = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { method: "POST", headers: operatorRequestHeaders, body: JSON.stringify({ ...projectRecordingInput, fileName: "different-content.webm" }) });
+  assert.equal(conflictingRecordingReplay.status, 409, "an archive request id cannot be reused for different recording metadata");
   const projectRecordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { headers: requestHeaders });
   assert.equal((await projectRecordings.json()).data[0].id, projectRecording.id, "the project archive list must return the registered recording");
   const foreignProjectRecordings = await fetch(`http://127.0.0.1:${consolePort}/api/v1/studio/projects/${project.id}/recordings`, { headers: isolatedRequestHeaders });
@@ -1646,7 +1653,8 @@ async function startMockServer() {
       assert.equal(request.headers.authorization, `Bearer ${mediaEvidenceToken}`);
       const evidence = await requestBody(request);
       const contentType = evidence.kind === "portrait_photo" ? "image/jpeg" : evidence.kind === "product_clip" && evidence.objectKey.endsWith("integration-recording.webm") ? "video/webm" : evidence.kind === "portrait" || evidence.kind === "product_clip" ? "video/mp4" : evidence.kind === "music" ? "audio/mpeg" : "audio/wav";
-      return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
+      const recordingQuality = evidence.qualityProfile === "photo-narration-webm" ? { recordingQuality: { status: "verified", profile: "photo-narration-webm", videoWidth: 720, videoHeight: 1280, audioTrackCount: 1, durationSeconds: 42.5, verifier: "ffprobe" } } : {};
+      return json(response, 200, { objectKey: evidence.objectKey, checksum: evidence.expectedChecksum, objectVersion: "integration-version-1", bytes: 1024, contentType, ...recordingQuality, evidenceRef: `evidence://integration/${evidence.objectKey}`, verifiedAt: new Date().toISOString() });
     }
     if (url.pathname === "/v1/media-evidence/download-grant" && request.method === "POST") {
       assert.equal(request.headers.authorization, `Bearer ${mediaEvidenceToken}`);
