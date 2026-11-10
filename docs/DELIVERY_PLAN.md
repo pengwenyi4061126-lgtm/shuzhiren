@@ -18,6 +18,7 @@
 - 本机 `npm run verify:local` 的最终结果为 `PASS  local verification completed (94 checks; PostgreSQL, Docker, GPU, and platform acceptance are intentionally external; 53 CI verification steps not run locally are listed above; add --with-gateway --python after installing runtime/gateway/requirements.txt to verify Gateway Python)`，退出码为 `0`（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）。
 - `/studio` 的 HTTP GET 返回 `200`；生产构建列出了 Studio、录播、直播场次、脚本播放、形象构建与预览授权对应的路由（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）。
 - 4090 主机的 `scripts/check-runtime-host.sh` 记录了 RTX 4090、24,564 MiB 显存、Docker NVIDIA runtime 和约 239 GiB 初始空闲磁盘；CUDA 基础容器已枚举到同一张 GPU。
+- 2026-11-11 在同一类 4090 主机上完成了 Avatar Builder 的真实短视频冒烟：数据库锁连接、上传、GPU 预处理、候选预览、完整性清单和 Publisher 发布均通过；详细证据见 [V-20261111-01](VERIFICATION_LOG.md#v-20261111-01)。该条不替代 LiveTalking/CosyVoice/Gateway 全量运行、RTMP 目标端和长时开播验收。
 
 ### 4090 实机镜像构建结果
 

@@ -5478,3 +5478,32 @@ skipped 步骤数: "0"
 说明: >-
   验收脚本默认只读；只有明确传入 --execute 才发送 start_program 或 stop_program。会话 ID 使用字符串 0，脚本不把实时 4090 画面、长时开播或目标平台输出写成已完成；这些结果仍由 RW-031-02 至 RW-031-04、RW-032-02、RW-032-03 和 RW-000-12 的外部证据决定。
 ```
+
+## V-20261111-01 4090 Avatar Builder 构建、预览与发布冒烟通过
+
+```yaml
+编号: V-20261111-01
+类型: 结论
+结论: 单张 RTX 4090 主机上的 LiveTalking Avatar Builder 已完成一次真实短视频任务闭环：上传返回 202，任务从 queued 进入 running 并报告 20/50/75 进度，最终 completed；候选预览返回 JPEG；Publisher 重新校验候选清单后发布成功并生成运行时 Avatar ID。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: Ubuntu GPU 主机，RTX 4090，Docker NVIDIA runtime
+    命令或验收步骤: 在 Avatar Builder 容器内提交 2 秒视频并轮询构建任务，再请求候选预览与 Publisher 发布接口
+    镜像: shuzhiren/livetalking:b17e6ef
+    服务: Avatar Builder / Avatar Publisher
+    检查:
+      - { 名称: builder_health, 结果: '{"ok":true}' }
+      - { 名称: avatar_build_submit, 结果: HTTP 202 }
+      - { 名称: avatar_build_task, 结果: queued -> running -> completed }
+      - { 名称: avatar_preview, 结果: HTTP 200, content_type: image/jpeg, bytes: 59559 }
+      - { 名称: avatar_publish, 结果: HTTP 200, status: published }
+      - { 名称: candidate_manifest, 结果: 106 files, required files present }
+      - { 名称: published_manifest, 结果: 106 files, shuzhiren-published.json present }
+未覆盖:
+  - LiveTalking + CosyVoice + Gateway + runtime-worker 全量 Compose 启动
+  - RTMP 目标端、录播归档、音画同步和 4 小时连续开播
+  - 4090 实机画面观感与目标平台观看端
+说明: >-
+  首次任务失败原因已确认为远端手工容器的数据库网络配置：postgres.internal 在该主机不可解析；修复测试容器接入 PostgreSQL 私网并使用独立 Avatar Builder 锁账号后，任务进入真实 GPU 处理并完成。本机代码同时让 avatar_builder_api.py 在保留统一 API 错误码的同时记录真实异常 traceback。该条只证明形象构建、预览和发布的短视频闭环；不把容器健康或短任务结果扩大解释为实时直播、录播输出或长时稳定性完成。
+```

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -27,6 +28,11 @@ TASKS = {}
 TASK_BY_CANDIDATE = {}
 TASKS_LOCK = threading.Lock()
 EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="avatar-builder")
+LOGGER = logging.getLogger("shuzhiren.avatar_builder")
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 def authorized(request):
@@ -180,6 +186,16 @@ def run_build(task_id, tenant_id, candidate_id, source_checksum, video_path, vid
             task = TASKS[task_id]
             task.update({"status": "completed", "progress": 100, "sourceName": video_name, "sourceMetadata": metadata})
     except Exception:
+        # Keep the public API fail-closed and deliberately generic, but retain
+        # the real traceback in the container log.  A generic error code alone
+        # made database/network/configuration failures indistinguishable from
+        # model failures during GPU acceptance.
+        LOGGER.exception(
+            "avatar_build_failed task_id=%s tenant_id=%s candidate_id=%s",
+            task_id,
+            tenant_id,
+            candidate_id,
+        )
         shutil.rmtree(temporary_root, ignore_errors=True)
         with TASKS_LOCK:
             task = TASKS.get(task_id)
