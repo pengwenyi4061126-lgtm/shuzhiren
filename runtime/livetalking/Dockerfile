@@ -10,6 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 RUN groupadd --system --gid 10002 livetalking && useradd --system --uid 10002 --gid 10002 --home-dir /tmp --no-create-home livetalking
 COPY vendor/LiveTalking/requirements.txt ./requirements.txt
 RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128 && python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
+# MuseTalk's avatar preprocessor imports face_recognition.  dlib-bin supplies
+# the CPython 3.12 wheel; installing face-recognition without dependency
+# resolution avoids rebuilding dlib from source on Ubuntu 24.04.
+RUN python3 -m pip install --break-system-packages --no-cache-dir dlib-bin==20.0.1.post1 face-recognition-models==0.3.0 && \
+    python3 -m pip install --break-system-packages --no-cache-dir --no-deps face-recognition==1.3.0
 COPY vendor/LiveTalking/ ./
 COPY runtime/patches/livetalking.series runtime/patches/livetalking-*.patch /tmp/livetalking-patches/
 # Apply runtime/patches/livetalking.series in order; any failing patch fails the
