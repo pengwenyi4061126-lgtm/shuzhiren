@@ -307,6 +307,24 @@ try {
   await Promise.all([writeFile(files.control, control), writeFile(files.releaseManifest, deploymentReleaseManifest()), writeFile(files.releaseSbom, releaseEvidence.sbom), writeFile(files.releaseProvenance, releaseEvidence.provenance), writeFile(files.controlCompose, controlCompose), writeFile(files.migrationOwner, migrationOwner), writeFile(files.runtime, runtime(validProbeTarget)), writeFile(files.gateway, gateway), writeFile(files.channel, channel), writeFile(files.alert, alert)]);
   const valid = check(["--require-cosyvoice"]);
   assert.equal(valid.status, 0, `valid deployment config failed:\n${valid.stderr}\n${valid.stdout}`);
+  // The avatar-builder entrypoint imports the LiveTalking application from /app.
+  // Keep this contract regression-tested: the legacy single-path value must fail
+  // instead of being accepted as a substring of the corrected PYTHONPATH.
+  {
+    const liveTalkingDockerfile = path.join(root, "runtime", "livetalking", "Dockerfile");
+    const liveTalkingDockerfileText = await readFile(liveTalkingDockerfile, "utf8");
+    assert.match(liveTalkingDockerfileText, /^ENV PYTHONPATH=\/opt\/shuzhiren:\/app$/m, "LiveTalking Dockerfile must expose both runtime and application import roots");
+    const legacyDockerfileText = liveTalkingDockerfileText.replace("ENV PYTHONPATH=/opt/shuzhiren:/app", "ENV PYTHONPATH=/opt/shuzhiren");
+    assert.notEqual(legacyDockerfileText, liveTalkingDockerfileText, "the LiveTalking Dockerfile regression fixture must change the import path");
+    await writeFile(liveTalkingDockerfile, legacyDockerfileText);
+    try {
+      const legacy = check(["--require-cosyvoice"]);
+      assert.notEqual(legacy.status, 0, "the legacy LiveTalking PYTHONPATH must be rejected");
+      assert.match(legacy.stderr, /ENV PYTHONPATH=\/opt\/shuzhiren:\/app/, "the rejection must identify the required application import root");
+    } finally {
+      await writeFile(liveTalkingDockerfile, liveTalkingDockerfileText);
+    }
+  }
   // L17 (39.6, 39.8): image sources come from runtime/open-source.lock.json; a leftover *_REF only warns.
   assert.doesNotMatch(valid.stderr, /_REF/, "a runtime env without *_REF variables must not mention them");
   await writeFile(files.runtime, `${runtime(validProbeTarget)}LIVETALKING_REF=c7269433a2b6ecebcd9342445d2ecc882c98b0da\n`);

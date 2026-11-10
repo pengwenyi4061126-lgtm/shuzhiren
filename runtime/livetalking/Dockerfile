@@ -33,7 +33,10 @@ COPY runtime/livetalking/shuzhiren_aigc_label.py /opt/shuzhiren/
 # Background assets are mounted read-only at /opt/shuzhiren/overlay-assets (Runtime Compose volume overlay-assets).
 COPY runtime/livetalking/shuzhiren_overlay.py /opt/shuzhiren/
 COPY runtime/livetalking/avatar_builder_api.py runtime/livetalking/avatar_publisher_api.py /opt/shuzhiren/
-ENV PYTHONPATH=/opt/shuzhiren
+# The avatar-builder profile executes /opt/shuzhiren/avatar_builder_api.py by
+# absolute path. Keep the LiveTalking application tree importable for that
+# entrypoint as well as for the normal /app/app.py launcher.
+ENV PYTHONPATH=/opt/shuzhiren:/app
 
 EXPOSE 8010
 USER livetalking
