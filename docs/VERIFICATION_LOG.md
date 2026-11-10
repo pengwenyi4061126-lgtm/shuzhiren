@@ -5446,3 +5446,35 @@ skipped 步骤数: "0"
 静态门禁覆盖:
   - { 门禁: console:client-requests:check, 行为测试: [无] }
 ```
+
+## V-20261110-01 运行时验收入口与会话 0 透传检查已落库
+
+```yaml
+编号: V-20261110-01
+类型: 结论
+结论: 提交 49940a8 新增 GPU Compose 网络隔离、LiveTalking 会话 0 和显式 start/stop 验收入口；本机 verify:local 的 94 项检查、运行时验收脚本合同测试、Studio 内容工作流测试、类型检查、Lint 与生产构建均通过。
+判定: 静态检查
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-10
+    退出码: "0"
+    操作系统: Windows 10.0.22631.7376
+    提交: 49940a8ad9e425cb210fdf39c14e81d9c594e63a
+    检查:
+      - { 名称: runtime:acceptance:scripts:test, 标签: static }
+      - { 名称: studio:content-workflow:test, 标签: static }
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+    未执行的 CI 检查:
+      - { job: python-gateway, 名称: "npm run runtime:gateway:config:test", 原因: 本机未启用 --with-gateway，且未安装 runtime/gateway 的 Python 依赖 }
+      - { job: postgres-integration, 名称: "npm run control-plane:integration", 原因: 本机缺少 PostgreSQL }
+      - { job: compose-render, 名称: "docker compose --env-file config/runtime.example.env --env-file config/runtime-gateway.example.env --profile cosyvoice -f infra/compose/docker-compose.runtime.yml config", 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: "docker build --file runtime/livetalking/Dockerfile --tag shuzhiren/livetalking:ci .", 原因: 本机缺少 Docker }
+  - 类别: 需外部环境
+    环境: 单张 RTX 4090 主机
+    命令或验收步骤: 运行 scripts/acceptance/runtime-network-isolation.sh 与 scripts/acceptance/livetalking-session-zero.sh；完整模式另需 RTMP 接收端、输出探针和运行时凭据
+说明: >-
+  验收脚本默认只读；只有明确传入 --execute 才发送 start_program 或 stop_program。会话 ID 使用字符串 0，脚本不把实时 4090 画面、长时开播或目标平台输出写成已完成；这些结果仍由 RW-031-02 至 RW-031-04、RW-032-02、RW-032-03 和 RW-000-12 的外部证据决定。
+```

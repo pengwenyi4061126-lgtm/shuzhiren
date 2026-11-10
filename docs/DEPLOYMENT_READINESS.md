@@ -115,14 +115,14 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-030-02 | M15：租户一致的复合外键 | 代码已完成且有验证证据 | V-20261105-20 | 30 | M15：已确认（806d24a）；相关检查：`db:verify -- --allow-privileged` |
 | RW-030-03 | L16：审计哈希链与链头不可被服务主体改写 | 代码已完成且有验证证据 | V-20261105-20 | 30 | L16：已确认（3fd7235）；相关检查：`service-principals:integration` |
 | RW-031-01 | M17：运行时媒体私有网络与 Observer 只读凭据 | 代码已完成但待 CI 或 Linux 验证 | — | 31 | M17：已确认（7e7ed12）；登记的回归测试 `runtime:compose:check` 为 static。只读凭据 `RUNTIME_GATEWAY_READ_TOKEN` 在 709e404，其行为测试 `observer:runtime:test`、`deploy:check:test`、`test-runtime-gateway-config.py`、`test-runtime-gateway-concurrency.py` 在 V-20261106-02 中为 success；Audit_Register 为 M17 登记的回归测试仍只有 static 的 `runtime:compose:check`，按本矩阵的取证规则不改状态 |
-| RW-031-02 | 31.4：Gateway 能访问 LiveTalking 与 CosyVoice（`/healthz` 中两个依赖均可用） | 代码已完成但待外部环境验证 | — | 31 | 环境：4090。验收入口 `scripts/acceptance/runtime-network-isolation.sh` 尚不在仓库中（任务 32.5） |
-| RW-031-03 | 31.5：Gateway 以外的运行时服务无法连接 LiveTalking 与 CosyVoice | 代码已完成但待外部环境验证 | — | 31 | 环境：4090。验收入口同 RW-031-02 |
-| RW-031-04 | 31.6：LiveTalking 经 `livetalking-egress` 推流成功 | 代码已完成但待外部环境验证 | — | 31 | 环境：4090。验收入口同 RW-031-02，另需 RTMP 接收端记录 |
+| RW-031-02 | 31.4：Gateway 能访问 LiveTalking 与 CosyVoice（`/healthz` 中两个依赖均可用） | 代码已完成但待外部环境验证 | V-20261110-01 | 31 | 环境：4090。验收入口：`scripts/acceptance/runtime-network-isolation.sh`；默认只读，`--network-only` 只检查 Compose 网络和健康状态，仍需在真实主机运行并留存输出 |
+| RW-031-03 | 31.5：Gateway 以外的运行时服务无法连接 LiveTalking 与 CosyVoice | 代码已完成但待外部环境验证 | V-20261110-01 | 31 | 环境：4090。验收入口同 RW-031-02，脚本检查非媒体服务未加入私有媒体网络 |
+| RW-031-04 | 31.6：LiveTalking 经 `livetalking-egress` 推流成功 | 代码已完成但待外部环境验证 | V-20261110-01 | 31 | 环境：4090。验收入口同 RW-031-02，完整模式另需 RTMP 接收端和独立输出探针记录 |
 | RW-032-01 | 32.2：只读状态目录中 WAL 模式 Command_Journal 备份的 CI 行为测试 | 代码已完成且有验证证据 | V-20261105-20 | 32 | M19：需环境验证（14afbe2）；相关检查：python-gateway 的 `test-runtime-gateway-state-backup.py` |
-| RW-032-02 | 32.7：RTMP 模式下 LiveTalking 只列出会话 `"0"` | 代码已完成但待外部环境验证 | — | 32 | 环境：4090。验收入口 `scripts/acceptance/livetalking-session-zero.sh` 尚不在仓库中（任务 33.4） |
-| RW-032-03 | 32.8：会话 ID 为 `0` 的 `start_program` 得到 accepted 回执 | 代码已完成但待外部环境验证 | — | 32 | 环境：4090。验收入口同 RW-032-02 |
+| RW-032-02 | 32.7：RTMP 模式下 LiveTalking 只列出会话 `"0"` | 代码已完成但待外部环境验证 | V-20261110-01 | 32 | 环境：4090。验收入口：`scripts/acceptance/livetalking-session-zero.sh`；默认只读，检查 LiveTalking 只暴露字符串会话 ID `0` |
+| RW-032-03 | 32.8：会话 ID 为 `0` 的 `start_program` 得到 accepted 回执 | 代码已完成但待外部环境验证 | V-20261110-01 | 32 | 环境：4090。验收入口同 RW-032-02，`--execute` 才发送显式的 `start_program` |
 | RW-032-04 | 32.1：以 `shuzhiren-runtime-gateway-backup.service` 在 Gateway 无日志连接时备份 | 代码已完成但待 CI 或 Linux 验证 | — | 32 | 环境：Linux。验收入口：`systemctl start shuzhiren-runtime-gateway-backup.service` 与 `journalctl -u` 输出 |
-| RW-032-05 | 会话 ID `"0"` 的绑定校验与逐字符透传（32.3–32.6）及其行为测试（32.9） | 代码未完成 | — | 32 | 32.3 的拒绝逻辑在 `apps/console` 的两个场次路由中；以 `0` 为会话 ID 的行为测试不在仓库中 |
+| RW-032-05 | 会话 ID `"0"` 的绑定校验与逐字符透传（32.3–32.6）及其行为测试（32.9） | 代码已完成但待 CI 或 Linux 验证 | V-20261110-01 | 32 | Gateway 行为测试已加入 `scripts/test-runtime-gateway-config.py`，Studio 合同测试覆盖字符串 `0` 的拒绝/透传；Python Gateway 依赖和 Linux 运行仍需在 CI 或主机执行 |
 | RW-033-01 | M22：开发 compose 只绑定回环地址，凭据来自环境变量 | 代码已完成但待 CI 或 Linux 验证 | — | 33 | M22：已确认（5c67f88）；登记的回归测试 `control-plane:compose:check` 为 static |
 | RW-033-02 | M23：LiveTalking 镜像不带入敏感内容 | 代码已完成且有验证证据 | V-20261105-20 | 33 | M23：已确认（c8ab9d8）；相关检查：`deploy:check:test` |
 | RW-033-03 | N6：CI checkout 中 LiveTalking 镜像构建不因悬空的 `.git` 文件失败 | 代码已完成但待 CI 或 Linux 验证 | — | 33, 1 | N6：已修复（43718f8）；回归测试为 static 镜像构建 |

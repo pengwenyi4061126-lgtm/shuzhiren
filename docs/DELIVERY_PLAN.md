@@ -15,8 +15,8 @@
 ### 已具备的仓库能力
 
 - `/studio` 已形成项目工作台：项目选择、素材上传与审核、商品事实、脚本生成与审核、照片口播录播、数字人形象构建/审核/发布、直播草稿与 AI 身份提示规则均在同一界面路径中。
-- 本机 `npm run verify:local` 的最终结果为 `PASS  local verification completed (93 checks; PostgreSQL, Docker, GPU, and platform acceptance are intentionally external; 50 CI verification steps not run locally are listed above; add --with-gateway --python after installing runtime/gateway/requirements.txt to verify Gateway Python)`，退出码为 `0`。
-- `/studio` 的 HTTP GET 返回 `200`；生产构建列出了 Studio、录播、直播场次、脚本播放、形象构建与预览授权对应的路由。
+- 本机 `npm run verify:local` 的最终结果为 `PASS  local verification completed (94 checks; PostgreSQL, Docker, GPU, and platform acceptance are intentionally external; 53 CI verification steps not run locally are listed above; add --with-gateway --python after installing runtime/gateway/requirements.txt to verify Gateway Python)`，退出码为 `0`（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）。
+- `/studio` 的 HTTP GET 返回 `200`；生产构建列出了 Studio、录播、直播场次、脚本播放、形象构建与预览授权对应的路由（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）。
 - 4090 主机的 `scripts/check-runtime-host.sh` 记录了 RTX 4090、24,564 MiB 显存、Docker NVIDIA runtime 和约 239 GiB 初始空闲磁盘；CUDA 基础容器已枚举到同一张 GPU。
 
 ### 4090 实机镜像构建结果
@@ -34,7 +34,7 @@
 | 数字人形象与声线 | 尚未挂入真实素材、授权记录和声线库 | 在 Studio 中上传，完成审核，再创建形象构建任务 |
 | PostgreSQL、对象存储、OIDC 与生产环境文件 | 租机只有示例环境文件 | 创建独立服务账号、私网数据库、对象存储桶、生产环境文件与密钥目录 |
 | RTMP 目的端、推流密钥和独立输出探针 | 尚未配置 | 先接内部 RTMP 中继，再接目标端；以探针记录帧率、码率、音频活动和音画同步 |
-| GitHub 同步 | 本地 `master` 与 `origin/master` 已复核为 `0 0`；核心运行时提交 `7164993` 已同步 | 为 4090 主机配置可读取的受控 release 来源，替换现有上传式部署副本 |
+| GitHub 同步 | 本地 `master` 与 `origin/master` 已复核为 `0 0`；当前交付提交 `49940a8` 已同步（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)） | 为 4090 主机配置可读取的受控 release 来源，替换现有上传式部署副本 |
 
 ## 分阶段执行方案
 
@@ -87,7 +87,7 @@
 ### P4：交付与 Git 收敛
 
 1. 把本轮主机预检、两个 GPU 镜像构建、许可证哈希与 CUDA 冒烟、Compose 健康、试播和故障演练结果逐项登记。
-2. 本轮核心运行时变更已推送到 `origin/master`（`7164993`），并以 `git rev-list --left-right --count origin/master...master` 复核为 `0 0`；本次文档修正随当前提交同步，再把主机部署来源切换到 Git 提交或签名 release manifest。
+2. 本轮核心运行时变更已推送到 `origin/master`（`49940a8`），并以 `git rev-list --left-right --count origin/master...master` 复核为 `0 0`（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）；再把主机部署来源切换到 Git 提交或签名 release manifest。
 3. 远程主机改为从 Git 提交或签名 release manifest 获取部署包，不再依赖手工压缩包副本。
 4. 打包运行手册：模型/权重清单、目录权限、环境变量来源、启动顺序、回滚步骤、日常录播与直播操作步骤。
 
