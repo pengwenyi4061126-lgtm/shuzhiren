@@ -24,6 +24,8 @@ test("runtime acceptance scripts are present and read-only by default", async ()
   assert.match(network, /first active dynamic session/);
   assert.match(network, /LIVETALKING_BASE_URL/);
   assert.match(network, /discovered dynamic runtime session/);
+  assert.match(network, /RUNTIME_ACCEPTANCE_RTMP_SINK_NAME/);
+  assert.match(network, /ossrs\/srs:5/);
   assert.doesNotMatch(network, /session_id=\"\$\{RUNTIME_SESSION_ID:-0\}\"/);
   assert.match(network, /--network-only/);
   assert.doesNotMatch(network, /docker\s+(?:compose\s+)?(?:up|down|rm|network\s+connect|network\s+disconnect)\b/);

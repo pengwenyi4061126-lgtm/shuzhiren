@@ -22,6 +22,8 @@ Optional:
   RUNTIME_COMPOSE_ENV_FILES    colon-separated Compose env files
   RUNTIME_GATEWAY_URL           Gateway URL (default http://127.0.0.1:8090)
   RUNTIME_SESSION_ID            session to observe (default: first active dynamic session)
+  RUNTIME_ACCEPTANCE_RTMP_SINK_NAME
+                                explicit local-only SRS sink name for acceptance
   OUTPUT_PROBE_MAX_AV_SYNC_MS   maximum allowed probe sync error (default 120)
   EVIDENCE_FILE                 write redacted JSON observations to this path
 
@@ -80,12 +82,22 @@ for service in runtime-worker runtime-observer output-probe channel-adapter aler
 done
 
 declare -A egress_services=()
+egress_test_sink_name="${RUNTIME_ACCEPTANCE_RTMP_SINK_NAME:-}"
+egress_test_sink=""
 while IFS= read -r member; do
   [[ -n "$member" ]] || continue
+  container_name="$(docker inspect -f '{{.Name}}' "$member" | sed 's#^/##')"
   service="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$member")"
   [[ "$service" == "livetalking" ]] || {
-    printf 'ERROR  unexpected service %s is attached to LiveTalking egress network %s\n' "$service" "$egress_network" >&2
-    exit 1
+    if [[ -z "$egress_test_sink_name" || "$container_name" != "$egress_test_sink_name" ]]; then
+      printf 'ERROR  unexpected service %s (container %s) is attached to LiveTalking egress network %s\n' "$service" "$container_name" "$egress_network" >&2
+      exit 1
+    fi
+    [[ -z "$egress_test_sink" ]] || { printf 'ERROR  more than one acceptance RTMP sink is attached to %s\n' "$egress_network" >&2; exit 1; }
+    sink_image="$(docker inspect -f '{{.Config.Image}}' "$member")"
+    [[ "$sink_image" == "ossrs/srs:5" ]] || { printf 'ERROR  acceptance RTMP sink %s must use ossrs/srs:5; found %s\n' "$container_name" "$sink_image" >&2; exit 1; }
+    egress_test_sink="$container_name"
+    continue
   }
   egress_services["$service"]="$member"
 done < <(docker network inspect -f '{{range .Containers}}{{println .Name}}{{end}}' "$egress_network")
@@ -103,7 +115,12 @@ done < <(docker network inspect -f '{{range .Containers}}{{println .Name}}{{end}
 }
 printf 'PASS   runtime media network is internal and contains only Gateway, LiveTalking and CosyVoice\n'
 printf 'PASS   non-media runtime services are absent from the media network\n'
-printf 'PASS   LiveTalking alone owns the egress network and media services publish no host ports\n'
+if [[ -n "$egress_test_sink" ]]; then
+  printf 'PASS   explicit acceptance RTMP sink %s is allowed on the egress network\n' "$egress_test_sink"
+else
+  printf 'PASS   LiveTalking alone owns the egress network\n'
+fi
+printf 'PASS   media services publish no host ports\n'
 
 gateway_url="${RUNTIME_GATEWAY_URL:-http://127.0.0.1:8090}"
 session_id="${RUNTIME_SESSION_ID:-}"
