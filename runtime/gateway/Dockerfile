@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 RUN addgroup --system --gid 10001 shuzhiren && adduser --system --uid 10001 --ingroup shuzhiren gateway
-COPY --chown=gateway:shuzhiren app.py audio.py .
+COPY --chown=gateway:shuzhiren app.py audio.py ./
 # A separate COPY keeps the app.py/audio.py line that check-deployment-config.mjs and check-runtime-gateway-journal.mjs match.
 COPY --chown=gateway:shuzhiren captions.py .
 
