@@ -82,6 +82,35 @@
   本条只证明短时内部 RTMP 接收端和录播收尾闭环。容器内的 AIGC 指标证明帧处理链已启用，不替代观看端逐帧确认；外部目标端与长时稳定性继续由后续独立证据登记。
 ```
 
+## V-20261111-03 远程 Git 同步、GPU/Docker 预检与网络隔离复核
+
+```yaml
+编号: V-20261111-03
+类型: 结论
+结论: 远程运行副本已同步到 origin/master 的 212f59e 且工作树干净；修复后的网络隔离验收通过，但主机实际为 Ubuntu 24.04 且可用磁盘约 106 GiB，低于目标 Ubuntu 22.04 与 150 GiB 门槛，因此完整外部运行验收仍未放行。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: 远程 GPU 云主机，单张 RTX 4090，Docker NVIDIA runtime
+    命令或验收步骤: >-
+      先执行 git fetch origin master 与 git reset --hard origin/master，再执行
+      WORKSPACE_ROOT=/home/wuyou/shuzizhibo-git bash scripts/check-runtime-host.sh；最后在显式指定
+      RUNTIME_ACCEPTANCE_RTMP_SINK_NAME=compose-rtmp-sink 的条件下执行
+      bash scripts/acceptance/runtime-network-isolation.sh --network-only。
+    检查:
+      - { 名称: git_sync, 结果: 远程 master 与 origin/master 均为 212f59e，工作树干净 }
+      - { 名称: host_profile, 结果: Ubuntu 24.04；RTX 4090；24564 MiB 显存；Driver 595.99.02；Docker 29.1.3；NVIDIA runtime 可用 }
+      - { 名称: disk_gate, 结果: 可用磁盘约 106 GiB，项目门槛为 150 GiB，未通过 }
+      - { 名称: network_isolation, 结果: runtime-network-isolation.sh --network-only 返回 0；默认媒体网络仅含 Gateway、LiveTalking、CosyVoice，显式测试 sink 例外通过 }
+未覆盖:
+  - Ubuntu 22.04 主机或对 Ubuntu 24.04 的明确验收决策
+  - 至少 150 GiB 可用磁盘
+  - 签名 release manifest 部署来源
+  - 真实目标平台 RTMP、独立 output-probe/avSyncProbeUrl、4090 画面观感和 4 小时连续开播
+说明: >-
+  显式测试 sink 只用于网络验收，镜像必须为 ossrs/srs:5；它不代表正式平台已配置，也不替代目标平台观看端证据。该条记录远程环境事实，不能把外部主机结果升级成本机行为验证。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
