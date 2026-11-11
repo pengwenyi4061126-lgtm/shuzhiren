@@ -16,7 +16,7 @@ npm run observer:targets:apply -- --candidate /srv/shuzhiren/observer-config/run
 
 ## 1. 服务器基线
 
-- Ubuntu 22.04 或兼容 Linux，单张 RTX 4090，建议至少 64 GB 内存和 1 TB NVMe。
+- Ubuntu 24.04，单张 RTX 4090，建议至少 64 GB 内存和 1 TB NVMe。Ubuntu 24.04 是当前远程 GPU 云主机的验收基线；历史 Ubuntu 22.04 候选容器记录仍保留在 `VERIFICATION_LOG.md`，不再作为当前宿主机目标。
 - 已安装可用的 NVIDIA 驱动、Docker Engine、Docker Compose GPU 支持；`nvidia-smi` 必须可见 GPU。
 - 仅对反向代理公开控制台；PostgreSQL、MinIO、Redis、Gateway 与 Worker 位于私网。
 - 将模型、头像、录屏目录分别挂载到独立磁盘路径，不将权重、录屏或流密钥写入 Git。模型和头像目录以只读方式挂载；录屏目录必须可由 LiveTalking 容器 UID/GID `10002` 写入，例如 `sudo install -d -m 0700 -o 10002 -g 10002 /srv/shuzhiren/recordings`。
@@ -47,6 +47,18 @@ REQUIRED_GPU_NAME='RTX 4090D' MIN_FREE_GIB=250 bash scripts/check-runtime-host.s
 ```
 
 要额外证明容器能够看到 GPU，先独立核验并预拉一个带 `@sha256:` 摘要的 CUDA 镜像，再执行 `GPU_SMOKE_IMAGE=registry.example/cuda@sha256:... bash scripts/check-runtime-host.sh --container-smoke`。脚本不会因预检而下载不受控镜像。
+
+### 1.1 当前 4090 GPU Docker smoke 记录（2026-11-11）
+
+当前远程 Ubuntu 24.04 GPU 云主机已完成一次短时 GPU 容器冒烟。为区分“能启动 GPU 容器”和“具备生产容量”，本次 smoke 使用临时 `70 GiB` 磁盘阈值，命令如下：
+
+```bash
+MIN_FREE_GIB=70 \
+GPU_SMOKE_IMAGE=nvidia/cuda@sha256:61f6c08f2b59036cb935e56d1e31a6b64e3ae2c7ddb86d33fa0b044c7917b719 \
+bash scripts/check-runtime-host.sh --container-smoke
+```
+
+真实结果：`GPU accepted`、Docker NVIDIA runtime 可用、CUDA 容器内 `nvidia-smi` 成功识别 RTX 4090。当前主机约有 `78 GiB` 可用空间，因而通过了本次 `70 GiB` smoke；生产默认门槛仍是 `150 GiB`，当前未满足，不能把该 smoke 记录解释为生产容量或生产开播验收。历史主机与候选镜像事实继续见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06) 和 [V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)。
 
 ## 2. 部署前配置
 
@@ -699,6 +711,15 @@ docker compose --env-file /srv/shuzhiren/control-plane-compose.env -f infra/comp
 - 渠道连接未验证、验证无可审计证据，或最后验证超过 24 小时。
 - 高风险问题没有人工场控值守与接管路径。
 - 未完成 PostgreSQL 归档校验与隔离恢复演练，或录屏/对象存储没有受控的站外复制路径。
+
+### 当前真实剩余项
+
+1. 配置真实平台 RTMP，并部署独立 `output-probe`/`avSyncProbeUrl`，取得目标端帧率、码率、音频活动、音画同步和实际输出观测证据。
+2. 在 RTX 4090 上核验画面观感、AIGC 标识、字幕和音画质量，并完成单路 4 小时连续开播与故障演练。
+3. 挂载真实 LiveTalking/MuseTalk/CosyVoice 模型、声线、形象和商品素材，完成每组许可证、肖像/声音/商品授权及审核记录。
+4. 配置并实测签名 release manifest、OCI registry/provenance、OIDC、PostgreSQL、对象存储版本化/保留锁和独立 evidence verifier。
+5. 完成抖音专属 OAuth、Webhook、商品同步和账单 Adapter；当前仓库中的标准化 provider bridge 不等同于这些平台实现。
+6. 将可用磁盘从当前约 `78 GiB` 扩容到生产门槛 `150 GiB` 以上，再运行完整 `runtime:acceptance:verify`。
 
 ## 6. 4090 实机验收证据
 

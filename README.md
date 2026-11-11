@@ -48,7 +48,7 @@
 
 ## 上线前的必备输入
 
-- Linux 4090 服务器的 SSH 访问；建议 Ubuntu 22.04、NVIDIA 驱动和 Docker 已就绪。
+- Linux 4090 服务器的 SSH 访问；当前验收基线为 Ubuntu 24.04、NVIDIA 驱动和 Docker 已就绪。生产部署仍须满足至少 150 GiB 可用磁盘；本轮 4090 GPU Docker smoke 已通过，但当前主机约 78 GiB 可用，因此不能标记为生产验收通过（[V-20261111-03](docs/VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-07](docs/VERIFICATION_LOG.md#v-20261111-07)；外部证据的治理判定仍为“未验证”）。
 - 目标平台合法推流地址和 Stream Key。Stream Key 只写入 `STREAM_KEY_FILE` 指向的只读文件，不写入任何 env 文件（见 Runbook 2.3 节）。
 - 对真人肖像、声音、商品图片、音乐和脚本的书面授权。
 - 所用模型权重的许可证确认。语音全部由 CosyVoice 合成后经 LiveTalking `/humanaudio` 注入，LiveTalking 以 `--tts none` 运行，不调用 edge-tts 等在线语音服务。
@@ -64,13 +64,13 @@
 
 ## 下一步
 
-1. 先执行 P0：在 4090 上验证 MuseTalk、CosyVoice、推流和连续运行。
-2. 再做 P1：加入商品编排、字幕、录屏、人工切换和故障恢复。
-3. 仅在 P1 的真实成交与合规指标合格后，加入实时 RAG 问答。
+1. 当前 P0 的 Ubuntu 24.04 + Docker + RTX 4090 GPU smoke 和短时内部运行链路已完成（[V-20261111-02](docs/VERIFICATION_LOG.md#v-20261111-02)、[V-20261111-03](docs/VERIFICATION_LOG.md#v-20261111-03)；外部证据的治理判定仍为“未验证”）；继续补齐真实模型、授权素材、正式 RTMP/output-probe 与 4090 实机验收。
+2. 继续收敛 P1/P2：同一个内容项目分别生成可审核录播和受控实时直播，保留商品、脚本、形象、声线和审核记录的版本追溯。
+3. 通过 4 小时连续开播、故障演练和目标平台输出证据后，再进入生产放行；实时 RAG 仍必须服从商品事实和策略治理。
 
 ## 当前实现状态
 
-阶段 1 已完成；阶段 2 至 6 的控制面、治理、Gateway、观测、告警、渠道标准化接入、用量门禁和多租户框架已经落在仓库中。控制台代码位于 `apps/console`，开源运行时入口位于 `runtime/gateway` 与 `infra/compose`。`scripts/acceptance/` 提供只读优先的 GPU Compose 网络、LiveTalking 会话 `"0"` 和显式执行验收入口；本机代码与合同测试已通过，证据见 `docs/VERIFICATION_LOG.md#v-20261110-01`；真实 4090 输出仍按就绪矩阵单列。首个目标直播平台已定为抖音（D1，2026-11-05），抖音的 OAuth/Webhook/商品同步/账单 Adapter 尚未实现（RW-040-01 至 RW-040-04：代码未完成，需另立规格）。真实 ERP/PIM、OIDC 成员同步、对象存储、4090 试播和结算对账仍是部署方必须接入并留存证据的外部工作，不能用开发态或模拟服务替代。
+阶段 1 已完成；阶段 2 至 6 的控制面、治理、Gateway、观测、告警、渠道标准化接入、用量门禁和多租户框架已经落在仓库中。控制台代码位于 `apps/console`，开源运行时入口位于 `runtime/gateway` 与 `infra/compose`。`scripts/acceptance/` 提供只读优先的 GPU Compose 网络、LiveTalking 会话 `"0"` 和显式执行验收入口；本机代码与合同测试已通过，证据见 `docs/VERIFICATION_LOG.md#v-20261110-01`。当前远程 Ubuntu 24.04 + RTX 4090 主机的 Docker GPU smoke 已通过（[V-20261111-03](docs/VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-07](docs/VERIFICATION_LOG.md#v-20261111-07)；外部证据的治理判定仍为“未验证”）：容器内 `nvidia-smi` 可见 RTX 4090，运行时容器健康，内部 RTMP/短时会话也已有记录；但可用磁盘约 78 GiB，低于 150 GiB 生产门槛，所以真实 4090 输出仍按就绪矩阵单列。首个目标直播平台已定为抖音（D1，2026-11-05），抖音的 OAuth/Webhook/商品同步/账单 Adapter 尚未实现（RW-040-01 至 RW-040-04：代码未完成，需另立规格）。真实 RTMP/output-probe、4090 画面观感、4 小时连续开播、真实模型/授权素材、签名 release/OIDC/对象存储以及结算对账仍是部署方必须接入并留存证据的外部工作，不能用开发态或模拟服务替代。
 
 P0 新增的三项功能（各项状态以就绪矩阵为准，部署说明见 Runbook 2.12 至 2.14 节）：
 

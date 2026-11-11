@@ -1,13 +1,16 @@
 # 系统迁移恢复交接
 
-更新日期：2026-11-08（Asia/Shanghai）
+更新日期：2026-11-11（Asia/Shanghai）
 
 ## 当前检查点
 
-- 核对日期：2026-11-08
-- origin/master：0223d4cc99e64fce1f16a1712a43257001c18e5f
+> 当前目标仍是桌面版“一个内容项目、两个输出”：同一项目产出录播视频和受控实时直播。Ubuntu 24.04 + RTX 4090 的 Docker GPU smoke 已通过（未验证；[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)）；主机约 78 GiB 可用空间，未达到 150 GiB 生产门槛。短时内部 RTMP/动态会话已记录，但真实目标端、4090 画面观感和 4 小时连续开播仍未验收（[V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）。
+
+- 核对日期：2026-11-11
+- origin/master：635c953418f826f2a859868b005f8b0c75796ca9
 - 同步状态：一致
 - 最新 CI 运行：run 42435674115，提交 0223d4cc99e64fce1f16a1712a43257001c18e5f，结论 success
+- 当前提交补充：`635c953` 的本机门禁结果以本文件更新后的新验证条目为准，未把未查询到的 CI 结果写成 success；远程 Git 仓库此前核对到同一提交且工作树干净（[V-20261111-11](VERIFICATION_LOG.md#v-20261111-11)）。
 - 仓库：`git@github.com:pengwenyi4061126-lgtm/shuzhiren.git`
 - 分支：`master`
 - 核对方式：先执行 `git fetch origin`，再执行 `git rev-list --left-right --count origin/master...master`；本次推送后需再次核对同步状态。最新 CI 运行取自 GitHub Actions 接口 `GET /repos/pengwenyi4061126-lgtm/shuzhiren/actions/runs?head_sha=<提交>`（#516）；VERIFICATION_LOG 中最近一条登记的运行是 [#516 / V-20261108-13](VERIFICATION_LOG.md#v-20261108-13)。
