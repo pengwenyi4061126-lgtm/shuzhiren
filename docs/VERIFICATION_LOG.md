@@ -203,6 +203,41 @@
   首次候选构建暴露了 Ubuntu 22.04 pip 22.0.2 不识别 --break-system-packages 的真实错误；a4f5882 移除该参数并同步更新部署门禁。候选镜像只做隔离启动验证，未改动稳定服务；依据来自外部 GPU 主机，按治理规则保留为未验证。
 ```
 
+## V-20261111-07 远程运行时与主机容量复核
+
+```yaml
+编号: V-20261111-07
+类型: 结论
+结论: 远程部署工作树已快进到 e50e396，当前稳定 Compose 服务仍在运行；主机为 Ubuntu 24.04、RTX 4090、Driver 595.99.02、Docker GPU 运行时可用，但根分区当前可用空间约 78 GiB，低于项目要求的至少 150 GiB。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: Ubuntu 24.04 GPU 云主机，单张 NVIDIA GeForce RTX 4090（24564 MiB），Docker Compose 运行时
+    命令或验收步骤: >-
+      在远程工作树执行 git rev-parse --short HEAD、git status --short、df -h /、
+      nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader、
+      docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Image}}'。
+    镜像:
+      - shuzhiren/livetalking:rtmp-c1
+      - shuzhiren/cosyvoice:c1bed0a-cvfix5
+      - shuzhiren/runtime-gateway:00350f2
+      - shuzhiren/runtime-worker:00350f2
+      - shuzhiren/runtime-observer:00350f2
+    检查:
+      - { 名称: git_sync, 结果: HEAD=e50e396；工作树无未提交修改 }
+      - { 名称: host_profile, 结果: Ubuntu 24.04；RTX 4090；24564 MiB；Driver 595.99.02；GPU 容器运行时可用 }
+      - { 名称: disk_gate, 结果: 根分区总 295G、已用 205G、可用 78G；150 GiB 门槛未满足 }
+      - { 名称: runtime_health, 结果: compose-livetalking-1 与 compose-cosyvoice-1 healthy；Gateway、Worker、Observer 运行中 }
+      - { 名称: candidate_state, 结果: ubuntu22-candidate 容器未在 docker ps 中出现；稳定 LiveTalking 未被候选镜像替换 }
+未覆盖:
+  - Ubuntu 22.04 宿主机或对 Ubuntu 24.04 的明确验收决策，以及至少 150 GiB 可用磁盘
+  - 正式目标平台 RTMP、独立 output-probe/avSyncProbeUrl、4090 画面观感和 4 小时连续开播
+  - 签名 release manifest 的最终部署来源与真实模型/声线权重挂载
+说明: >-
+  该条只更新远程当前状态；内部 rtmp-sink 的运行不代表正式平台推流，容器 healthy 不代表目标端观看、画面观感或长时稳定性完成。
+  依据来自外部 GPU 主机，按治理规则保留为未验证。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
