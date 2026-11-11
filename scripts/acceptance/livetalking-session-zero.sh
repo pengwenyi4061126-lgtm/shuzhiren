@@ -54,7 +54,40 @@ recordings_before_file=""
 recordings_after_file=""
 recording_probe_file=""
 recording_path=""
+helper_pid_file=""
+offer_helper_stopped=false
+
+cleanup_offer_helper() {
+  if "$offer_helper_stopped"; then
+    return 0
+  fi
+  offer_helper_stopped=true
+
+  # The Python WebRTC helper is a child process inside the LiveTalking
+  # container. Killing the host-side `docker exec` client alone does not
+  # necessarily close the PeerConnection, so terminate the recorded
+  # container PID first. Every docker operation is bounded: cleanup must not
+  # turn a failed acceptance run into another hung run.
+  if [[ -n "$helper_pid_file" ]]; then
+    helper_container_pid="$(timeout 5s docker exec "$livetalking_container" sh -c 'cat "$1" 2>/dev/null || true' sh "$helper_pid_file" 2>/dev/null || true)"
+    if [[ "$helper_container_pid" =~ ^[0-9]+$ ]]; then
+      timeout 5s docker exec "$livetalking_container" kill -TERM "$helper_container_pid" >/dev/null 2>&1 || true
+      for _ in $(seq 1 40); do
+        if ! timeout 3s docker exec "$livetalking_container" kill -0 "$helper_container_pid" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 0.25
+      done
+      if timeout 3s docker exec "$livetalking_container" kill -0 "$helper_container_pid" >/dev/null 2>&1; then
+        timeout 5s docker exec "$livetalking_container" kill -KILL "$helper_container_pid" >/dev/null 2>&1 || true
+      fi
+    fi
+    timeout 5s docker exec "$livetalking_container" rm -f -- "$helper_pid_file" >/dev/null 2>&1 || true
+  fi
+}
+
 cleanup() {
+  cleanup_offer_helper
   if [[ -n "$offer_pid" ]]; then
     kill "$offer_pid" 2>/dev/null || true
     wait "$offer_pid" 2>/dev/null || true
@@ -90,29 +123,36 @@ print(json.dumps(items, ensure_ascii=False, separators=(",", ":")))
 ' > "$recordings_before_file"
   offer_file="$(mktemp)"
   offer_error_file="$(mktemp)"
+  helper_pid_file="/tmp/shuziren-acceptance-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}.pid"
   # Generate a real offer with audio/video receive transceivers. LiveTalking's
   # /offer route creates the Avatar session and returns its dynamic session ID.
   # Keep the RTCPeerConnection alive until start/stop have completed. If this
   # helper exits immediately, LiveTalking correctly removes the session and
   # the RTMP acceptance test observes a false 502 at end_record.
-  docker exec "$livetalking_container" python3 -c '
+  docker exec -e "SHUZIREN_ACCEPTANCE_PID_FILE=$helper_pid_file" "$livetalking_container" python3 -c '
 import asyncio
 import json
+import os
 import urllib.request
+from pathlib import Path
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
 async def main():
-    pc = RTCPeerConnection()
+    pid_file = Path(os.environ["SHUZIREN_ACCEPTANCE_PID_FILE"])
+    pid_file.write_text(str(os.getpid()), encoding="ascii")
+    pc = None
     connected = asyncio.Event()
 
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        if pc.connectionState == "connected":
-            connected.set()
-        elif pc.connectionState in ("failed", "closed"):
-            connected.set()
-
     try:
+        pc = RTCPeerConnection()
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            if pc.connectionState == "connected":
+                connected.set()
+            elif pc.connectionState in ("failed", "closed"):
+                connected.set()
+
         pc.addTransceiver("audio", direction="recvonly")
         pc.addTransceiver("video", direction="recvonly")
         await pc.setLocalDescription(await pc.createOffer())
@@ -134,7 +174,12 @@ async def main():
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), flush=True)
         await asyncio.sleep(600)
     finally:
-        await pc.close()
+        if pc is not None:
+            await pc.close()
+        try:
+            pid_file.unlink()
+        except FileNotFoundError:
+            pass
 
 asyncio.run(main())
 ' > "$offer_file" 2> "$offer_error_file" &
@@ -410,6 +455,33 @@ if not video or not audio or duration <= 0:
     raise SystemExit("ERROR  recording must contain a video stream, an audio stream, and a positive duration")
 print(f"PASS   recording ffprobe verified path={sys.argv[2]} video={video.get('codec_name')} {video.get('width')}x{video.get('height')} audio={audio.get('codec_name')} duration={duration:.3f}s")
 PY
+
+  cleanup_offer_helper
+  session_cleanup_ready=false
+  printf 'WAIT   waiting for LiveTalking session cleanup (up to 30s)\n'
+  for _ in $(seq 1 30); do
+    if docker exec "$gateway_container" python3 -c '
+import json
+import os
+import urllib.request
+
+base = os.environ["LIVETALKING_BASE_URL"].rstrip("/")
+with urllib.request.urlopen(base + "/api/admin/sessions", timeout=5) as response:
+    payload = json.load(response)
+sessions = payload.get("data", {}).get("sessions") if isinstance(payload.get("data"), dict) else None
+if payload.get("code") != 0 or not isinstance(sessions, list) or sessions:
+    raise SystemExit(1)
+' >/dev/null 2>&1; then
+      session_cleanup_ready=true
+      break
+    fi
+    sleep 1
+  done
+  if ! "$session_cleanup_ready"; then
+    printf 'ERROR  LiveTalking session was not removed after WebRTC helper cleanup\n' >&2
+    exit 1
+  fi
+  printf 'PASS   LiveTalking session list is empty after helper cleanup\n'
 fi
 
 if [[ -n "${EVIDENCE_FILE:-}" ]]; then

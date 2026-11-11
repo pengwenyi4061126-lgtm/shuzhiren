@@ -33,6 +33,12 @@ test("runtime acceptance scripts are present and read-only by default", async ()
   assert.match(session, /RTCPeerConnection/);
   assert.match(session, /addTransceiver\("audio", direction="recvonly"\)/);
   assert.match(session, /addTransceiver\("video", direction="recvonly"\)/);
+  assert.match(session, /SHUZIREN_ACCEPTANCE_PID_FILE/);
+  assert.match(session, /docker exec -e/);
+  assert.match(session, /cleanup_offer_helper/);
+  assert.match(session, /kill -TERM/);
+  assert.match(session, /kill -KILL/);
+  assert.match(session, /session list is empty/);
   assert.match(session, /dynamic session/i);
   assert.doesNotMatch(session, /session_id":"0"/);
   assert.match(session, /--execute/);
