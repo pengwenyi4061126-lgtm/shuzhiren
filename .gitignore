@@ -11,6 +11,8 @@ assets/voice/
 assets/portraits/
 /recordings/
 exports/
+sample-assets/digital-host/live-trial.mp4
+sample-assets/digital-host/sample-live-trial-evidence.json
 
 # Model weights and runtime caches
 models/

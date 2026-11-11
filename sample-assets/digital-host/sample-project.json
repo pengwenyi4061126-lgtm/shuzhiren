@@ -1,0 +1,21 @@
+{
+  "name": "数字人样片 · 氨基酸洁面慕斯",
+  "audience": "第一次使用数字人直播的店主",
+  "outputMode": "both",
+  "product": {
+    "externalSku": "A-102",
+    "name": "氨基酸洁面慕斯",
+    "priceCent": 9900,
+    "stock": 286,
+    "highlights": ["氨基酸表活", "按压泡沫"],
+    "faq": ["赠旅行装三件套", "48 小时内发货"],
+    "sourceRef": "pim://demo/A-102/revision-current"
+  },
+  "assets": {
+    "recordingPortrait": "host-portrait.png",
+    "voiceRuntimeId": "p0-test-voice",
+    "voiceChecksum": "sha256:c7b31d6dbe7cc6a716dded00550db5b50940bf209e424e4ad207b12e657c8ff6",
+    "productVisual": "product-card.svg"
+  },
+  "script": "你好，欢迎来到数字人直播样片。今天介绍氨基酸洁面慕斯，价格九十九元。它采用氨基酸表活，泡沫细腻，适合日常清洁。按压泵头方便取用，商品资料还记录赠旅行装三件套，并支持四十八小时内发货。以上内容来自已审核商品资料，实际购买请以商品详情页为准。"
+}

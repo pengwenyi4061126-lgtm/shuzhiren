@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" viewBox="0 0 1080 1350" role="img" aria-labelledby="title desc">
+  <title id="title">氨基酸洁面慕斯样本商品图</title>
+  <desc id="desc">米白色背景上的绿色洁面慕斯瓶和商品信息。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f4e9"/>
+      <stop offset="1" stop-color="#dceee5"/>
+    </linearGradient>
+    <linearGradient id="bottle" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#81c9ac"/>
+      <stop offset="1" stop-color="#2e8068"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#255b4c" flood-opacity=".2"/>
+    </filter>
+  </defs>
+  <rect width="1080" height="1350" rx="48" fill="url(#bg)"/>
+  <circle cx="880" cy="190" r="170" fill="#ffffff" opacity=".45"/>
+  <circle cx="170" cy="1120" r="230" fill="#b9dfcf" opacity=".36"/>
+  <text x="88" y="132" fill="#1d4f42" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="32" font-weight="700">SHUZHIREN SAMPLE</text>
+  <text x="88" y="260" fill="#173f35" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="68" font-weight="800">氨基酸洁面</text>
+  <text x="88" y="340" fill="#173f35" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="68" font-weight="800">慕斯</text>
+  <text x="92" y="410" fill="#50776b" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="27">细腻泡沫 · 日常清洁 · 按压取用</text>
+  <g filter="url(#shadow)">
+    <rect x="342" y="470" width="396" height="570" rx="42" fill="url(#bottle)"/>
+    <rect x="458" y="394" width="164" height="106" rx="22" fill="#236451"/>
+    <rect x="494" y="360" width="92" height="50" rx="20" fill="#1a4c3e"/>
+    <rect x="385" y="630" width="310" height="240" rx="22" fill="#f8f4e9" opacity=".94"/>
+    <text x="540" y="700" fill="#275f50" text-anchor="middle" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="29" font-weight="700">氨基酸</text>
+    <text x="540" y="750" fill="#275f50" text-anchor="middle" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="29" font-weight="700">洁面慕斯</text>
+    <text x="540" y="812" fill="#6d9688" text-anchor="middle" font-family="Arial,sans-serif" font-size="20">AMINO FOAM</text>
+  </g>
+  <rect x="88" y="1130" width="904" height="128" rx="30" fill="#173f35"/>
+  <text x="132" y="1210" fill="#f8f4e9" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="42" font-weight="800">样本价 ¥99.00</text>
+  <text x="690" y="1208" fill="#b9dfcf" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="25">赠旅行装三件套</text>
+</svg>
