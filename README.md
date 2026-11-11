@@ -17,6 +17,8 @@
 
 4090 服务器的部署前配置校验、控制台/GPU 运行时启动顺序与试播阻断项见 [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md)。控制台提供 Next standalone 镜像和默认回环绑定的 Compose；真实环境变量准备好后先运行 `npm run deploy:check`，再启动服务。
 
+最近一次远端 Ubuntu 24.04 + RTX 4090 的实际核验记录见 [docs/REMOTE_GPU_DEPLOYMENT_STATUS.md](docs/REMOTE_GPU_DEPLOYMENT_STATUS.md)。该记录区分了已更新的控制面、仍沿用的媒体镜像，以及尚未完成的生产配置和目标端验收。
+
 ## 一张 4090 的生产边界
 
 | 能做 | 不应承诺 |
