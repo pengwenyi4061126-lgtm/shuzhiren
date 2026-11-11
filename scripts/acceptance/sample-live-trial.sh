@@ -16,7 +16,7 @@ runtime_gateway_url="$(printenv RUNTIME_GATEWAY_URL || true)"
 [ -n "$runtime_gateway_url" ] || runtime_gateway_url=http://127.0.0.1:8090
 output_dir="$(printenv SAMPLE_LIVE_OUTPUT_DIR || true)"
 [ -n "$output_dir" ] || output_dir="$PWD/sample-assets/digital-host"
-script_text='你好，欢迎来到数字人直播样片。今天介绍氨基酸洁面慕斯，价格九十九元，氨基酸表活，泡沫细腻，按压泵头方便使用。商品资料显示赠旅行装三件套，并支持四十八小时内发货。以上内容来自已审核资料，实际购买请以商品详情页为准。'
+script_text='你好，欢迎观看数字人直播样片，今天介绍氨基酸洁面慕斯。'
 
 gateway_post() {
   local body="$1" output="$2"
