@@ -362,6 +362,31 @@
   该条只记录 Git 提交传播与工作树状态，按治理规则不把外部主机命令输出升级为生产环境全面验收。
 ```
 
+## V-20261111-12 渠道 provider 注册表与 Channel_Adapter 契约单测
+
+```yaml
+编号: V-20261111-12
+类型: 结论
+结论: 提交 226e2779e9272f573d9ab96f4179cac62f0a4604 将渠道 provider 注册表抽为独立模块，并在现有 Channel_Adapter 行为测试中加入 provider 白名单、能力矩阵、AI 标识门槛和输出协议断言；标准化 Webhook、重放租约、出站回复和错误边界回归仍由同一测试覆盖。命令退出码为 0。
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run channel-adapter:test
+    日期: 2026-11-11
+    退出码: "0"
+    操作系统: Windows 11 专业版 10.0.22631.7376（23H2），Node.js v24.22.2
+    提交: 226e2779e9272f573d9ab96f4179cac62f0a4604
+    检查:
+      - { 名称: "npm run channel-adapter:test", 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: postgres-integration, 名称: "npm run control-plane:integration", 原因: 本机未启动 PostgreSQL；当前条目只执行 provider 与 Channel_Adapter 契约测试 }
+未覆盖:
+  - 当前提交在 PostgreSQL CI 上重新执行数据库触发器、渠道连接治理和控制面集成的结果；已有历史集成证据仍见 V-20261105-20
+  - 抖音 OAuth、原生 Webhook、商品同步和账单 Adapter；这些仍是另立规格及平台权限前置项
+说明: >-
+  本条只证明代码侧 provider 白名单与标准化 Channel_Adapter 契约已经有可运行单测；RW-040-06 保持“代码已完成但待 CI 或 Linux 验证”，避免把本机测试升级为 PostgreSQL/平台验收。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。

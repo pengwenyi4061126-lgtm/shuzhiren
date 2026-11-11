@@ -150,7 +150,7 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-040-03 | 目标平台商品同步 Adapter | 代码未完成 | — | 40 | 同 RW-040-01 |
 | RW-040-04 | 目标平台账单 Adapter（拉取该平台账单，并映射佣金、服务费、运费、优惠分摊、税费、保证金、跨期退款和打款周期语义；区别于已实现的平台无关账单批次、账单行、订单级差异与结案） | 代码未完成 | — | 40 | 同 RW-040-01 |
 | RW-040-05 | N9：Channel_Adapter 的 `/v1/replies` 下发失败时返回错误，不产生未处理的 rejection | 代码已完成且有验证证据 | V-20261105-20 | 40 | N9：已确认（734ee8e）；相关检查：`channel-adapter:test` |
-| RW-040-06 | 40.8–40.11 的锁定测试：渠道 provider 白名单的单元与数据库测试、Channel_Adapter 标准化入口与出站回复的契约测试 | 代码未完成 | — | 40 | 任务 49.8、49.9 的测试文件不在仓库中 |
+| RW-040-06 | 40.8–40.11 的锁定测试：渠道 provider 白名单的单元与数据库测试、Channel_Adapter 标准化入口与出站回复的契约测试 | 代码已完成但待 CI 或 Linux 验证 | V-20261111-12 | 40 | provider 注册表已抽为可独立单测的模块；`channel-adapter:test` 覆盖 provider 白名单、能力矩阵、AI 标识门槛、标准化入口、重放租约与 `/v1/replies` 出站契约。数据库触发器与控制面集成路径已有 `channel_connections` 治理用例，需在当前提交的 PostgreSQL CI 上复验后再升级为有验证证据 |
 | RW-000-01 | Linux 主机只读预检 `scripts/check-runtime-host.sh` | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 来源：dc2916e 的 `docs/DEPLOYMENT_READINESS.md`。CI 只运行 `bash -n` 与 `--help`（static）；需在 Linux 4090 主机上运行 |
 | RW-000-02 | 录制证据登记与 `RECORDING_EVIDENCE_VERIFIER_*` 回执封存 | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 来源同 RW-000-01。CI 中只有 static 检查 `recording:evidence:check` |
 | RW-000-03 | 渠道证据 verifier（`CHANNEL_EVIDENCE_VERIFIER_*`）的控制面契约与门禁 | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 来源同 RW-000-01。CI 中只有 static 检查 `channel:verification:check`；verifier 服务的部署是 EP-09 |
