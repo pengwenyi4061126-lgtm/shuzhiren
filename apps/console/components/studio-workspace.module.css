@@ -36,6 +36,11 @@
 .projectSelect { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding-left: 8px; border: 1px solid #d8e1dc; border-radius: 5px; background: #fff; color: #58675f; }
 .projectSelect select { width: min(190px, 16vw); min-width: 100px; height: 31px; border: 0; outline: 0; background: transparent; color: #33443c; font: inherit; font-size: 10px; }
 .newProject { min-height: 31px; padding: 0 9px; border: 1px solid #d8e1dc; border-radius: 5px; background: #fff; color: #35473e; font-size: 10px; font-weight: 700; cursor: pointer; }
+.demoSeedAction { display: inline-flex; align-items: center; gap: 5px; min-height: 31px; padding: 0 10px; border: 0; border-radius: 5px; background: #147b67; color: #fff; font-size: 10px; font-weight: 750; cursor: pointer; }
+.demoSeedAction:disabled { opacity: .55; cursor: wait; }
+.emptyProjectGuide { display: grid; gap: 4px; margin: -4px 0 18px; padding: 12px 13px; border-left: 3px solid #25836d; background: #f0f8f4; color: #34483e; }
+.emptyProjectGuide strong { font-size: 11px; }
+.emptyProjectGuide span { color: #6f7d75; font-size: 10px; line-height: 1.5; }
 .avatarBuild { display: grid; gap: 10px; margin: 0 0 18px; padding: 12px 0 16px; border-top: 1px solid #dfe7e2; border-bottom: 1px solid #dfe7e2; }
 .avatarBuildHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .avatarBuildHead h3 { margin: 4px 0 0; color: #263730; font-size: 14px; }

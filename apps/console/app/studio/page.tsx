@@ -4,6 +4,7 @@ import { listAssets } from "@/lib/assets";
 import { listProducts } from "@/lib/catalog";
 import { listChannelConnections } from "@/lib/channels";
 import { authorizedPageRequestContext } from "@/lib/control-plane/page-context";
+import { controlPlaneConfig } from "@/lib/control-plane/config";
 import { listCreationProjects } from "@/lib/creation-projects";
 
 export const dynamic = "force-dynamic";
@@ -13,5 +14,5 @@ export default async function StudioPage() {
   if (!actor) return <AccessDenied />;
   const [products, channels, assets, projects] = await Promise.all([listProducts(actor), listChannelConnections(actor), listAssets(actor), listCreationProjects(actor)]);
   const assetOptions = assets.map(({ id, kind, name, approval, expiresAt, rightsScope, checksum, runtimeVoiceId, contentVerification }) => ({ id, kind, name, approval, expiresAt, rightsScope, checksum, runtimeVoiceId, contentType: contentVerification?.contentType ?? "" }));
-  return <StudioWorkspace products={products} channels={channels} assets={assetOptions} initialProjects={projects} canCreate={actor.role === "admin" || actor.role === "operator"} canApproveAssets={actor.role === "admin" || actor.role === "reviewer"} />;
+  return <StudioWorkspace products={products} channels={channels} assets={assetOptions} initialProjects={projects} canCreate={actor.role === "admin" || actor.role === "operator"} canApproveAssets={actor.role === "admin" || actor.role === "reviewer"} demoMode={controlPlaneConfig().demoMode} />;
 }

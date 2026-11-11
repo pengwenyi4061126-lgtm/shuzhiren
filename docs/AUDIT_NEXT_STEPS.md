@@ -17,12 +17,11 @@
 
 ## 审计现场基线
 
-- 审计基线 `HEAD`：`51d1b7846331b0527917313e37675f32e1d1a2cb`（本轮 Adapter 集成提交为 `4ecb29bbf7cb6e493b345eb71c3692d89d6685cd`）。
-- 审计基线 `origin/master` 与审计基线 `HEAD` 相同；本轮提交后的远端同步以最终 Git 核对为准。
-- 审计开始时当前分支为 `master`，工作树干净。
-- 最终只读复核时，工作树出现 4 个已跟踪文件修改，以及 `apps/douyin-adapter/` 下 10 个未跟踪文件和 `docs/providers/douyin/OFFICIAL_API_RESEARCH.md` 1 个未跟踪文件；这些路径不是本次审计的写入目标，本次审计未对其执行写操作，均保持原状。 - 本报告的交付判断以当前提交 `HEAD` 和已登记证据为准；最终工作树中的未提交/未跟踪内容不计入 HEAD 交付，也不计入已验证结果（该工作树状态未验证）。
-- `HEAD` 提交主题为 `test: record full local verification`；其相对于 V-20261111-13 所引用的 `4a1aaa3` 仅新增 `docs/VERIFICATION_LOG.md` 记录，未见源码文件变化。
-- 本次审计只执行了 Git 状态/引用核对和文档读取；未运行本机测试、Docker、PostgreSQL、4090 主机命令、抖音接口或外部验收。
+- 当前审计提交 `HEAD`：`803e03f3548132b8a80ddc732bdb4a01931ec816`（`docs: record remote gpu deployment smoke`）。
+- 本地 `origin/master` 远程跟踪引用仍为 `51d1b7846331b0527917313e37675f32e1d1a2cb`，因此本地 `master` 比该引用超前 3 个提交；这不是 GitHub 实时状态证明。
+- 本地 `gpu-mirror/master` 远程跟踪引用为 `803e03f3548132b8a80ddc732bdb4a01931ec816`，但本轮对该 SSH 远端的只读 `git ls-remote` 因当前密钥/认证失败，不能把它写成实时远端确认。
+- 本轮开始时分支为 `master` 且工作树干净；最终状态除本轮 4 个 `docs/` 文件外，还出现 `apps/console` 下 3 个已修改文件和 `demo-seed` 相关未跟踪文件。本轮没有写入、回滚或清理这些 `apps/console` 变更，也没有写入远端。
+- 本轮治理复核执行了 `npm run docs:governance:check`、当前提交消息校验和 `git diff --check`，均通过；未运行 Docker、PostgreSQL、4090 主机命令、抖音接口或外部验收。
 
 ## 已完成
 

@@ -33,12 +33,12 @@
 
 | 项目 | 当前状态 | 后续动作 |
 | --- | --- | --- |
-| LiveTalking 与 CosyVoice 运行时镜像 | 两个 GPU 镜像已在 4090 主机构建；稳定运行时的短时动态会话/RTMP 已通过；Ubuntu 22.04 LiveTalking 候选镜像也已完成一次 Gateway/内部 RTMP/录播短时闭环并回滚稳定服务，但该外部证据整体仍未验证，远程部署工作树已通过 bundle 同步到 `c7a5350`（[V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)、[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)、[V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)、[V-20261111-08](VERIFICATION_LOG.md#v-20261111-08)、[V-20261111-09](VERIFICATION_LOG.md#v-20261111-09)、[V-20261111-10](VERIFICATION_LOG.md#v-20261111-10)、[V-20261111-11](VERIFICATION_LOG.md#v-20261111-11)） | 宿主机版本已按 Ubuntu 24.04 统一；仍需扩容、正式目标端与长时证据，再收敛到受签名 release manifest 约束的镜像引用 |
+| LiveTalking 与 CosyVoice 运行时镜像 | 两个 GPU 镜像已在 4090 主机构建；稳定运行时的短时动态会话/RTMP 已通过；Ubuntu 22.04 LiveTalking 候选镜像也已完成一次 Gateway/内部 RTMP/录播短时闭环并回滚稳定服务，但该外部证据整体仍未验证。历史证据曾记录远程部署工作树通过 bundle 同步到 `c7a5350`，不代表当前 `803e03f` 已部署（[V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)、[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)、[V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)、[V-20261111-08](VERIFICATION_LOG.md#v-20261111-08)、[V-20261111-09](VERIFICATION_LOG.md#v-20261111-09)、[V-20261111-10](VERIFICATION_LOG.md#v-20261111-10)、[V-20261111-11](VERIFICATION_LOG.md#v-20261111-11)） | 宿主机版本已按 Ubuntu 24.04 统一；仍需扩容、正式目标端与长时证据，再收敛到受签名 release manifest 约束的镜像引用 |
 | 模型权重 | 主机目录中未发现 LiveTalking/MuseTalk 或 CosyVoice 可运行权重 | 按锁定版本下载、校验哈希、记录许可证和挂载路径 |
 | 数字人形象与声线 | 尚未挂入真实素材、授权记录和声线库 | 在 Studio 中上传，完成审核，再创建形象构建任务 |
 | PostgreSQL、对象存储、OIDC 与生产环境文件 | 租机只有示例环境文件 | 创建独立服务账号、私网数据库、对象存储桶、生产环境文件与密钥目录 |
 | RTMP 目的端、推流密钥和独立输出探针 | 尚未配置 | 先接内部 RTMP 中继，再接目标端；以探针记录帧率、码率、音频活动和音画同步 |
-| GitHub 同步 | `c7a5350` 已推送到 GitHub `origin/master`；远程部署副本也通过 Git bundle 快进到同一提交，远程属于外部环境，按治理规则该同步证据仍标为未验证；网络隔离脚本也已在显式测试 sink 例外下通过（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)、[V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)、[V-20261111-09](VERIFICATION_LOG.md#v-20261111-09)、[V-20261111-10](VERIFICATION_LOG.md#v-20261111-10)、[V-20261111-11](VERIFICATION_LOG.md#v-20261111-11)） | 后续仍需把镜像引用收敛到受签名 release manifest 的发布流程 |
+| GitHub 同步 | 当前本地 `master=803e03f`，本地 `origin/master=51d1b78`，前者超前 3 个提交；本地 `gpu-mirror/master=803e03f`。本轮对 `origin` 与 `gpu-mirror` 的只读 `git ls-remote` 均因 SSH 认证失败，未确认实时远端，也未声称 `803e03f` 已推送或部署；网络隔离历史证据仍见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03) 等条目 | 凭据恢复后分别核对并推送/同步，再把镜像引用收敛到受签名 release manifest 的发布流程 |
 | 远程宿主机版本与磁盘 | 当前主机为已批准的 Ubuntu 24.04 基线；根分区可用磁盘约 78 GiB，小于 150 GiB 门槛（[V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)） | 扩容到至少 150 GiB 并重新运行主机预检；完成前不标记生产验收通过 |
 | GPU 容器用户态版本 | CosyVoice 为 Ubuntu 22.04、稳定 LiveTalking 为 Ubuntu 24.04；两者均在同一张 RTX 4090 上报告 CUDA 可用，Ubuntu 22.04 LiveTalking 候选为历史隔离验证记录，不是当前宿主机切换要求（[V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)、[V-20261111-08](VERIFICATION_LOG.md#v-20261111-08)） | 正式发布仍需签名镜像引用、镜像一致性证据和外部长时验收 |
 
@@ -93,7 +93,7 @@
 ### P4：交付与 Git 收敛
 
 1. 把本轮主机预检、两个 GPU 镜像构建、许可证哈希与 CUDA 冒烟、Compose 健康、试播和故障演练结果逐项登记。
-2. 本轮核心运行时变更已推送到 `origin/master`（`a4f5882`），远程主机已从同一分支快进，工作树干净；过程和网络隔离复核见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03) 与 [V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)。
+2. 历史验证记录曾证明 `a4f5882` 已推送并让远程主机快进；这不覆盖当前 `803e03f`。当前提交的本地 Git 状态与认证失败情况见上方 GitHub 同步表，未把当前提交写成已推送或已部署。
 3. 下一步把远程部署从“已同步 Git 工作树”收敛为受签名 release manifest 约束的镜像与部署包来源，不再依赖手工压缩包副本。
 4. 打包运行手册：模型/权重清单、目录权限、环境变量来源、启动顺序、回滚步骤、日常录播与直播操作步骤。
 
@@ -125,7 +125,7 @@
 - **内部 RTMP 输出短时结果已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：RTMP sink 日志出现 `fmle-publish`、`new live source`、`start publish` 和 `cleanup when unpublish`；验收期间记录 `output_connected=true`、`output_fps=9.732`、`last_output_at` 有值。
 - **AIGC 标识运行时指标已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：`enabled=true`，文字为 `本直播由AI数字人生成`，`frames_labelled=14048`，`frames_dropped=0`，`last_error=null`。
 - **录播文件容器内 ffprobe 结果已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：生成 MP4，视频 H.264、512×682，音频 AAC、16 kHz、单声道，时长约 5.056 秒；录播目录已调整为容器 UID 10002、主机用户组可读的 setgid 目录。
-- **Git 同步记录（外部证据仍未验证，见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)、[V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)、[V-20261111-09](VERIFICATION_LOG.md#v-20261111-09)、[V-20261111-10](VERIFICATION_LOG.md#v-20261111-10)、[V-20261111-11](VERIFICATION_LOG.md#v-20261111-11)）**：远程命令输出记录其通过 bundle 快进到 `c7a5350`，`HEAD` 与 `origin/master` 一致且工作树干净；这解决了远程副本落后于本地代码的问题，但还不等于完成签名 release manifest 发布流程。
+- **Git 同步状态（本轮只读复核）**：当前本地 `master=803e03f`，本地 `origin/master=51d1b78`（ahead 3），本地 `gpu-mirror/master=803e03f`；对两个 SSH 远端执行 `git ls-remote --heads ... master` 均因认证失败，故当前不能证明 `803e03f` 已推送到 GitHub 或部署到 GPU 主机。历史 bundle 同步记录仍见 [V-20261111-11](VERIFICATION_LOG.md#v-20261111-11)，不覆盖本次提交，也不等于完成签名 release manifest 发布流程。
 - **网络隔离已复核（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）**：`runtime-network-isolation.sh --network-only` 返回 `0`；默认 egress 仍只允许 LiveTalking，只有显式设置 `RUNTIME_ACCEPTANCE_RTMP_SINK_NAME=compose-rtmp-sink` 时才允许该 `ossrs/srs:5` 测试 sink。该例外不代表正式平台 RTMP 已配置。
 - **主机门槛仍未满足（见 [V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)）**：当前系统为已批准的 Ubuntu 24.04，根分区可用磁盘约 78 GiB，低于至少 150 GiB 的生产容量门槛。扩容并重新预检前，不把该主机写成最终生产验收通过。
 - **容器用户态版本已拆分记录（见 [V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)）**：CosyVoice 的 GPU 容器是 Ubuntu 22.04，LiveTalking 当前 GPU 容器是 Ubuntu 24.04；两者都报告 RTX 4090。Ubuntu 22.04 LiveTalking 候选只作为历史隔离验证，不再作为当前宿主机目标。

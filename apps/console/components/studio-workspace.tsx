@@ -21,7 +21,7 @@ import { listProjectRecordings } from "@/lib/project-recording-vault";
 import styles from "./studio-workspace.module.css";
 
 type AssetOption = { id: string; kind: string; name: string; approval: string; expiresAt?: string; rightsScope: string; contentType: string; checksum: string; runtimeVoiceId?: string };
-type Props = { products: Product[]; channels: ChannelConnection[]; assets: AssetOption[]; initialProjects: CreationProject[]; canCreate: boolean; canApproveAssets: boolean };
+type Props = { products: Product[]; channels: ChannelConnection[]; assets: AssetOption[]; initialProjects: CreationProject[]; canCreate: boolean; canApproveAssets: boolean; demoMode: boolean };
 type OutputMode = "recording" | "live" | "both";
 type LiveRun = { id: string; showName: string };
 type AvatarBuildJob = { id: string; projectRevision: number; sourceAssetId: string; status: "queued" | "running" | "preview_ready" | "failed" | "cancelled"; reviewStatus: "pending" | "approved" | "rejected"; publishStatus: "not_approved" | "queued" | "publishing" | "published" | "failed"; publishAttempts: number; runtimeAvatarId?: string; publishErrorCode?: string; reviewNote?: string; progress: number; attempts: number; failureCode?: string; failureDetail?: string; createdAt: string };
@@ -29,7 +29,7 @@ type PendingOutput = PendingLiveOutput;
 type ScriptStyle = "friendly" | "professional" | "faq";
 type ScriptLength = "short" | "standard" | "detailed";
 
-export function StudioWorkspace({ products, channels, assets: initialAssets, initialProjects, canCreate, canApproveAssets }: Props) {
+export function StudioWorkspace({ products, channels, assets: initialAssets, initialProjects, canCreate, canApproveAssets, demoMode }: Props) {
   const [catalogProducts, setCatalogProducts] = useState(products);
   const versions = useMemo(() => catalogProducts.flatMap((product) => product.versions.filter((version) => version.status === "approved").map((version) => ({ product, version }))), [catalogProducts]);
   const connectedChannels = channels.filter((channel) => channel.status === "connected");
@@ -72,6 +72,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   const [avatarJobBusy, setAvatarJobBusy] = useState(false);
   const [avatarReviewBusy, setAvatarReviewBusy] = useState("");
   const [avatarSourceId, setAvatarSourceId] = useState("");
+  const [demoSeedBusy, setDemoSeedBusy] = useState(false);
 
   useEffect(() => {
     const dialog = assetDialog.current;
@@ -333,6 +334,40 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
     setNotice("");
   }
 
+  async function seedDemoProject() {
+    if (!demoMode || !canCreate || demoSeedBusy) return;
+    setDemoSeedBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await clientFetch("/api/v1/studio/demo-seed", { method: "POST" });
+      const result = await response.json() as { data?: CreationProject; created?: boolean; error?: string };
+      if (!response.ok || !result.data) throw new Error(result.error ?? "Demo 项目创建失败");
+      const project = result.data;
+      const nextReviewEpoch = scriptReviewEpoch + 1;
+      setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+      setRecordingComposerKey((key) => key + 1);
+      setScriptReviewEpoch(nextReviewEpoch);
+      setScriptReviewMark(project.scriptReview ? { epoch: nextReviewEpoch, productVersionId: project.scriptReview.productVersionId, text: project.script } : null);
+      setProjectId(project.id);
+      setProjectRevision(project.revision);
+      setProjectName(project.name);
+      setGoal(project.goal);
+      setAudience(project.audience);
+      setOutput(project.outputMode);
+      setProductVersionId(project.productVersionId);
+      setAssetIds(project.assetIds);
+      setScript(project.script);
+      setCreatedRun(null);
+      setNotice(result.created === false ? "Demo 项目已恢复；脚本审核状态保持有效。" : "Demo 项目已创建；同一份内容已准备好录播与直播两个输出。");
+      navigateStep(1, "studio-project-step");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Demo 项目创建失败，请检查商品与素材后重试。");
+    } finally {
+      setDemoSeedBusy(false);
+    }
+  }
+
   function selectProject(id: string) {
     if (id === projectId) return;
     const project = projects.find((item) => item.id === id);
@@ -574,7 +609,8 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
 
     <form className={styles.layout} onSubmit={createLiveOutput}>
       <section className={styles.editor} id="studio-project-step" tabIndex={-1} onFocusCapture={() => setActiveStep(1)}>
-        <div className={styles.sectionHead}><div><span className={styles.kicker}>PROJECT</span><h2>一个内容项目</h2></div><div className={styles.projectActions}>{projects.length ? <label className={styles.projectSelect}><FolderOpen size={14} /><select aria-label="打开已保存项目" value={projectId} onChange={(event) => selectProject(event.target.value)}><option value="">新建项目</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name} · r{project.revision}</option>)}</select></label> : null}<button className={styles.newProject} type="button" onClick={startNewProject}>新建</button><span className={`${styles.projectBadge} ${hasUnsavedChanges ? styles.projectDirty : ""}`}><Clapperboard size={15} />{hasUnsavedChanges ? "有未保存更改" : projectId ? `已保存 r${projectRevision}` : "新草稿"}</span></div></div>
+        <div className={styles.sectionHead}><div><span className={styles.kicker}>PROJECT</span><h2>一个内容项目</h2></div><div className={styles.projectActions}>{projects.length ? <label className={styles.projectSelect}><FolderOpen size={14} /><select aria-label="打开已保存项目" value={projectId} onChange={(event) => selectProject(event.target.value)}><option value="">新建项目</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name} · r{project.revision}</option>)}</select></label> : null}{!projects.length && demoMode ? <button className={styles.demoSeedAction} type="button" onClick={() => void seedDemoProject()} disabled={!canCreate || demoSeedBusy}><Sparkles size={14} />{demoSeedBusy ? "准备 Demo…" : "一键体验 Demo"}</button> : null}<button className={styles.newProject} type="button" onClick={startNewProject}>新建</button><span className={`${styles.projectBadge} ${hasUnsavedChanges ? styles.projectDirty : ""}`}><Clapperboard size={15} />{hasUnsavedChanges ? "有未保存更改" : projectId ? `已保存 r${projectRevision}` : "新草稿"}</span></div></div>
+        {!projects.length ? <div className={styles.emptyProjectGuide} role="status"><strong>第一次使用？先载入一份完整 Demo 内容</strong><span>{demoMode ? "它会自动关联已审核商品与素材，完成脚本审核，让你直接查看录播与直播两个输出。" : "填写商品、素材和脚本后保存，即可进入录播或直播输出。"}</span></div> : null}
         <label className={styles.field}>项目名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder={selected?.product.name ?? "例：周末护肤专题"} /></label>
         <label className={styles.field}>商品与已审核事实<select value={productVersionId} onChange={(event) => { setProductVersionId(event.target.value); setScript(""); setScriptReviewEpoch((epoch) => epoch + 1); setScriptReviewMark(null); }} disabled={!versions.length}>{versions.map(({ product, version }) => <option key={version.id} value={version.id}>{product.name} · v{version.revision} · 已审核{getProductFactsStatus(version.facts) !== "current" ? " · 需更新" : ""}</option>)}</select></label>
         {factsStatus && factsStatus !== "current" ? <div className={styles.factsWarning} role="status"><CircleAlert size={16} /><div><strong>{productFactsStatusLabel(factsStatus)}</strong><span>{productFactsStatusDetail(factsStatus)}</span><div><Link href="/products" target="_blank" rel="noreferrer">在新标签页更新商品事实</Link><button type="button" onClick={() => void refreshProductFacts()}>刷新并检查版本</button></div></div></div> : null}

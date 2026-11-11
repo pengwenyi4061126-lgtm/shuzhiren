@@ -7,13 +7,19 @@
 > 当前目标仍是桌面版“一个内容项目、两个输出”：同一项目产出录播视频和受控实时直播。Ubuntu 24.04 + RTX 4090 的 Docker GPU smoke 已通过（未验证；[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-07](VERIFICATION_LOG.md#v-20261111-07)）；主机约 78 GiB 可用空间，未达到 150 GiB 生产门槛。短时内部 RTMP/动态会话已记录，但真实目标端、4090 画面观感和 4 小时连续开播仍未验收（[V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）。
 
 - 核对日期：2026-11-11
-- origin/master：635c953418f826f2a859868b005f8b0c75796ca9
-- 同步状态：一致
+- origin/master：51d1b7846331b0527917313e37675f32e1d1a2cb
+- 同步状态：领先 3 个提交
 - 最新 CI 运行：run 42435674115，提交 0223d4cc99e64fce1f16a1712a43257001c18e5f，结论 success
-- 当前提交补充：`635c953` 的本机门禁结果以本文件更新后的新验证条目为准，未把未查询到的 CI 结果写成 success；远程 Git 仓库此前核对到同一提交且工作树干净（[V-20261111-11](VERIFICATION_LOG.md#v-20261111-11)）。
+- 当前提交：`803e03f3548132b8a80ddc732bdb4a01931ec816`
+- CI 说明：上述运行是历史登记结果（[V-20261108-13](VERIFICATION_LOG.md#v-20261108-13)），不代表 `803e03f` 已通过 CI；本提交尚无已核对的 CI 运行。
+- 本地 `origin/master`：`51d1b7846331b0527917313e37675f32e1d1a2cb`；本地 `master` 超前 3 个提交。
+- 本地 `gpu-mirror/master`：`803e03f3548132b8a80ddc732bdb4a01931ec816`；这是远程跟踪引用，不是本轮实时远端确认。
+- 同步说明：本轮对 GitHub 与 GPU mirror 的只读 `git ls-remote` 均因 SSH 认证失败，因此上述同步状态只表示本地引用关系。
+- 当前工作区：除本轮 `docs/` 文档修改外，还存在 `apps/console` 下 3 个已修改文件及 `demo-seed` 相关未跟踪文件；本轮未触碰、回滚或清理这些变更。
+- 当前提交补充：本轮治理检查、当前提交消息校验和 `git diff --check` 均通过；没有把未查询到的 CI、GitHub 推送或 GPU 主机部署写成 success。
 - 仓库：`git@github.com:pengwenyi4061126-lgtm/shuzhiren.git`
 - 分支：`master`
-- 核对方式：先执行 `git fetch origin`，再执行 `git rev-list --left-right --count origin/master...master`；本次推送后需再次核对同步状态。最新 CI 运行取自 GitHub Actions 接口 `GET /repos/pengwenyi4061126-lgtm/shuzhiren/actions/runs?head_sha=<提交>`（#516）；VERIFICATION_LOG 中最近一条登记的运行是 [#516 / V-20261108-13](VERIFICATION_LOG.md#v-20261108-13)。
+- 核对方式：凭据恢复后执行 `git fetch origin`、`git rev-list --left-right --count origin/master...master` 和 `git ls-remote --heads origin master`；GPU mirror 另行执行同等只读核对。当前未执行成功，因此后续推送/部署前必须重新核对。历史 CI 运行仍按对应提交的验证条目解释，不作为 `803e03f` 的当前结果。
 - 本机环境：Windows 开发机，Node 24（`package.json` 的 `engines.node` 为 `^24.11.0`）。
 - 工作区状态：恢复前先以 `git status --short` 为准；不得通过重装依赖、解压运行时或清理工作区覆盖已有审计修复。
 - 本文件不保存任何平台密钥、SSH 私钥、GPU 租机凭据、OIDC 凭据或数据库口令。
@@ -210,4 +216,4 @@ CI 中 PostgreSQL 集成、Gateway Python、Docker 构建与镜像冒烟、Node 
 - 本轮补齐 Gateway journal 的恢复闭环：`restore-runtime-gateway-state-drill.sh` 先重新绑定 snapshot/manifest、确认 SHA-256，再只向预先存在的空隔离目录恢复，拒绝生产状态路径和 evidence 覆盖，并检查 SQLite 完整性以及 Gateway 实际需要的 journal 字段。CI 用临时目录生成真实 `media` 与 CosyVoice `speak` 已完成记录、备份、恢复、清空进程缓存后重试；两者均只返回持久化回执的 `duplicate: true`，下游 LiveTalking、CosyVoice 和音频注入桩均为零调用（[run 42040219509 @ fd9179d](VERIFICATION_LOG.md#v-20261105-20)，`test-runtime-gateway-state-restore-drill.py` 为 success）。真实 Linux 演练仍必须以独立 Gateway 实例和三类下游访问日志测量 RPO/RTO，站外不可变存储也仍属外部基础设施责任。
 - 平台无关的结算内核现已包括账单批次、来源 SHA-256、不可变账单行、订单级差异、独立私网导入 token 与证据化结案。首个目标平台已定为抖音（D1，2026-11-05）；抖音 OAuth/Webhook/已核验生活服务商品与账单请求 Adapter 已落库并通过 [V-20261111-14](VERIFICATION_LOG.md#v-20261111-14)，仍待抖音佣金、服务费、运费、优惠分摊、税费和跨期退款的真实 CSV 样本及权限确认。平台账号、应用审核和真实数据是外部前置条件；Adapter mock 通过不等于真实平台可用。节目切换的仓库内观测关联已完成；仍需在目标平台部署水印/指纹、目的端回放或指标验证器，并以 GPU、平台账号、推流密钥和外部验收证据证明它可信，不能把 Gateway 接受回执误当作已播出证明。
 - 渠道回复的 `providerReplyEndpoint` 只是受控标准化桥接契约；抖音、淘宝、视频号等实际 API、OAuth scope、应用审核和商家账号权限仍是外部平台前置条件。缺少回执时 worker 保持失败/可重试状态，不会把互动伪装成已处理。
-- 下一步：先运行 `npm run verify:local` 纳入抖音 Adapter 测试并提交/推送当前变更；随后按部署就绪矩阵收集平台账号、真实商品/账单样本和 EP 行外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
+- 下一步：凭据恢复后先核对并推送/同步 `803e03f`，再按部署就绪矩阵收集平台账号、真实商品/账单样本和 EP 行外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
