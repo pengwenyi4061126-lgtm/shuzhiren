@@ -18,6 +18,28 @@ output_dir="$(printenv SAMPLE_LIVE_OUTPUT_DIR || true)"
 [ -n "$output_dir" ] || output_dir="$PWD/sample-assets/digital-host"
 script_text='你好，欢迎来到数字人直播样片。今天介绍氨基酸洁面慕斯，价格九十九元，氨基酸表活，泡沫细腻，按压泵头方便使用。商品资料显示赠旅行装三件套，并支持四十八小时内发货。以上内容来自已审核资料，实际购买请以商品详情页为准。'
 
+gateway_post() {
+  local body="$1" output="$2"
+  GATEWAY_URL="$runtime_gateway_url" GATEWAY_TOKEN="$shared_token" GATEWAY_BODY="$body" GATEWAY_OUTPUT="$output" python3 - <<'PY'
+import os, sys, urllib.error, urllib.request
+request = urllib.request.Request(
+    os.environ["GATEWAY_URL"] + "/v1/media",
+    data=os.environ["GATEWAY_BODY"].encode("utf-8"),
+    headers={"content-type": "application/json", "authorization": "Bearer " + os.environ["GATEWAY_TOKEN"]},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request, timeout=120) as response:
+        status, payload = response.status, response.read()
+except urllib.error.HTTPError as error:
+    status, payload = error.code, error.read()
+open(os.environ["GATEWAY_OUTPUT"], "wb").write(payload)
+print(status)
+if status >= 400:
+    raise SystemExit(22)
+PY
+}
+
 [[ "$duration" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR SAMPLE_LIVE_TRIAL_SECONDS must be a positive integer" >&2; exit 1; }
 runtime_acceptance_init_compose
 gateway_container="$(runtime_acceptance_container runtime-gateway)"
@@ -53,16 +75,12 @@ recording_path=""
 cleanup() {
   if [ -n "$session_id" ] && [ "$stop_sent" != true ]; then
     cleanup_id="sample_live_cleanup_$(date -u +%Y%m%dT%H%M%SZ)_$$"
-    cleanup_config="$(mktemp)"
-    printf 'header = "Authorization: Bearer %s"\n' "$shared_token" > "$cleanup_config"
-    chmod 600 "$cleanup_config"
     cleanup_body="$(python3 - "$cleanup_id" "$session_id" <<'PY'
 import json,sys
 print(json.dumps({"command_id":sys.argv[1],"session_id":sys.argv[2],"action":"stop_program"},separators=(",",":")))
 PY
 )"
-    curl --silent --show-error --max-time 20 --config "$cleanup_config" -H 'content-type: application/json' --data "$cleanup_body" "$runtime_gateway_url/v1/media" >/dev/null 2>&1 || true
-    rm -f "$cleanup_config"
+    gateway_post "$cleanup_body" /tmp/shuziren-sample-live-cleanup.json >/dev/null 2>&1 || true
   fi
   helper_container_pid="$(docker exec "$livetalking_container" sh -c 'cat "$1" 2>/dev/null || true' sh "$helper_pid_file" 2>/dev/null || true)"
   if [[ "$helper_container_pid" =~ ^[0-9]+$ ]]; then
@@ -144,11 +162,7 @@ command_id,session_id,segment_id,script,voice,checksum,avatar=sys.argv[1:]
 print(json.dumps({"command_id":command_id,"session_id":session_id,"action":"start_program","program_segment_id":segment_id,"program_script":script,"script_sha256":hashlib.sha256(script.encode()).hexdigest(),"runtime_voice_id":voice,"voice_checksum":checksum,"runtime_avatar_id":avatar},ensure_ascii=False,separators=(",",":")))
 PY
 )"
-curl_config="$(mktemp)"
-printf 'header = "Authorization: Bearer %s"\n' "$shared_token" > "$curl_config"
-chmod 600 "$curl_config"
-start_status="$(curl --silent --show-error --max-time 120 --config "$curl_config" --output "$start_file" --write-out '%{http_code}' -H 'content-type: application/json' --data "$start_body" "$runtime_gateway_url/v1/media")"
-rm -f "$curl_config"
+start_status="$(gateway_post "$start_body" "$start_file")" || start_status=0
 [ "$start_status" = 200 ] || { cat "$start_file" >&2; echo "ERROR start_program HTTP $start_status" >&2; exit 1; }
 python3 - "$start_file" "$start_id" "$session_id" <<'PY'
 import json,sys
@@ -188,11 +202,7 @@ import json,sys
 print(json.dumps({"command_id":sys.argv[1],"session_id":sys.argv[2],"action":"stop_program"},separators=(",",":")))
 PY
 )"
-curl_config="$(mktemp)"
-printf 'header = "Authorization: Bearer %s"\n' "$shared_token" > "$curl_config"
-chmod 600 "$curl_config"
-stop_status="$(curl --silent --show-error --max-time 30 --config "$curl_config" --output "$stop_file" --write-out '%{http_code}' -H 'content-type: application/json' --data "$stop_body" "$runtime_gateway_url/v1/media")"
-rm -f "$curl_config"
+stop_status="$(gateway_post "$stop_body" "$stop_file")" || stop_status=0
 [ "$stop_status" = 200 ] || { cat "$stop_file" >&2; echo "ERROR stop_program HTTP $stop_status" >&2; exit 1; }
 stop_sent=true
 echo "PASS stop_program accepted"
