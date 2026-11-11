@@ -111,6 +111,31 @@
   显式测试 sink 只用于网络验收，镜像必须为 ossrs/srs:5；它不代表正式平台已配置，也不替代目标平台观看端证据。该条记录远程环境事实，不能把外部主机结果升级成本机行为验证。
 ```
 
+## V-20261111-04 GPU 容器用户态、CUDA 与 RTX 4090 运行时复核
+
+```yaml
+编号: V-20261111-04
+类型: 结论
+结论: 远程运行中的 CosyVoice 容器报告 Ubuntu 22.04、torch 2.3.1+cu121 与 RTX 4090；LiveTalking 当前 rtmp-c1 容器报告 Ubuntu 24.04、torch 2.9.1+cu128 与同一张 RTX 4090；两项 GPU 访问均成功，但全链路 Ubuntu 22.04 用户态尚未完成。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: 远程 GPU 云主机，运行中的 LiveTalking 与 CosyVoice 容器
+    命令或验收步骤: >-
+      在 compose-livetalking-1 与 compose-cosyvoice-1 内读取 /etc/os-release，并执行
+      python3 -c 'import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))'。
+    检查:
+      - { 名称: cosyvoice_os, 结果: ubuntu 22.04 }
+      - { 名称: cosyvoice_cuda, 结果: torch 2.3.1+cu121；CUDA available=true；NVIDIA GeForce RTX 4090 }
+      - { 名称: livetalking_os, 结果: ubuntu 24.04 }
+      - { 名称: livetalking_cuda, 结果: torch 2.9.1+cu128；CUDA available=true；NVIDIA GeForce RTX 4090 }
+未覆盖:
+  - LiveTalking 基于 Ubuntu 22.04 用户态的重建、启动和完整短时验收
+  - Ubuntu 22.04 宿主机、150 GiB 磁盘、正式目标平台 RTMP、独立 output-probe/avSyncProbeUrl、4090 画面观感和 4 小时连续开播
+说明: >-
+  该条只记录容器内部用户态与 GPU 访问事实。宿主机仍为 Ubuntu 24.04；CosyVoice 的 22.04 容器不能替代 LiveTalking 和宿主机的 22.04 要求。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。

@@ -18,6 +18,7 @@
 - 本机 `npm run verify:local` 的最终结果为 `PASS  local verification completed (94 checks; PostgreSQL, Docker, GPU, and platform acceptance are intentionally external; 53 CI verification steps not run locally are listed above; add --with-gateway --python after installing runtime/gateway/requirements.txt to verify Gateway Python)`，退出码为 `0`（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）。
 - `/studio` 的 HTTP GET 返回 `200`；生产构建列出了 Studio、录播、直播场次、脚本播放、形象构建与预览授权对应的路由（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）。
 - 远程 GPU 主机最新实测为 Ubuntu 24.04、RTX 4090（24,564 MiB 显存）、Driver 595.99.02、Docker 29.1.3，NVIDIA runtime 可用；当前可用磁盘约 106 GiB，低于本项目 150 GiB 门槛，因此这台主机仍不是完整生产验收通过环境（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）。
+- 运行中的 GPU 容器分层事实已复核：CosyVoice 为 Ubuntu 22.04 + `torch 2.3.1+cu121` + RTX 4090，LiveTalking 当前 `rtmp-c1` 镜像为 Ubuntu 24.04 + `torch 2.9.1+cu128` + RTX 4090；两者均能访问显卡，但这不等于整条运行链路已经在 Ubuntu 22.04 用户态上验收（[V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)）。
 - 2026-11-11 在同一类 4090 主机上完成了 Avatar Builder 的真实短视频冒烟：数据库锁连接、上传、GPU 预处理、候选预览、完整性清单和 Publisher 发布均通过；详细证据见 [V-20261111-01](VERIFICATION_LOG.md#v-20261111-01)。该条不替代 LiveTalking/CosyVoice/Gateway 全量运行、RTMP 目标端和长时开播验收。
 
 ### 4090 实机镜像构建结果
@@ -37,6 +38,7 @@
 | RTMP 目的端、推流密钥和独立输出探针 | 尚未配置 | 先接内部 RTMP 中继，再接目标端；以探针记录帧率、码率、音频活动和音画同步 |
 | GitHub 同步 | 本地与远程部署副本均已同步到 `212f59e`，远程 `master` 工作树干净，且网络隔离脚本已在显式测试 sink 例外下通过（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)） | 后续仍需把镜像引用收敛到受签名 release manifest 的发布流程 |
 | 远程宿主机版本与磁盘 | 实际主机为 Ubuntu 24.04，不是目标文档中的 Ubuntu 22.04；可用磁盘约 106 GiB，小于 150 GiB 门槛（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)） | 二选一：换用/重装 Ubuntu 22.04 且扩容到至少 150 GiB，或书面接受 Ubuntu 24.04 并扩容；完成前不标记生产验收通过 |
+| GPU 容器用户态版本 | CosyVoice 已是 Ubuntu 22.04；当前 LiveTalking 镜像仍是 Ubuntu 24.04，二者都在同一张 RTX 4090 上可用（[V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)） | 若目标要求全链路 Ubuntu 22.04，需在释放磁盘后重建并复测 LiveTalking 22.04 镜像；否则明确记录 24.04 用户态例外 |
 
 ## 分阶段执行方案
 
@@ -123,11 +125,13 @@
 - **Git 已同步（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）**：远程主机已从 `origin/master` 拉取并切到 `212f59e`，工作树干净；这解决了远程副本落后于本地代码的问题，但还不等于完成签名 release manifest 发布流程。
 - **网络隔离已复核（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）**：`runtime-network-isolation.sh --network-only` 返回 `0`；默认 egress 仍只允许 LiveTalking，只有显式设置 `RUNTIME_ACCEPTANCE_RTMP_SINK_NAME=compose-rtmp-sink` 时才允许该 `ossrs/srs:5` 测试 sink。该例外不代表正式平台 RTMP 已配置。
 - **主机门槛仍未满足（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）**：实际系统为 Ubuntu 24.04，当前可用磁盘约 106 GiB；项目目标写的是 Ubuntu 22.04 且至少 150 GiB。两项都未完成前，不把该主机写成最终生产验收通过。
+- **容器用户态版本已拆分记录（见 [V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)）**：CosyVoice 的 GPU 容器是 Ubuntu 22.04，LiveTalking 当前 GPU 容器是 Ubuntu 24.04；两者都报告 RTX 4090。是否重建 LiveTalking 22.04 镜像仍是目标决策项。
 - **还没有冒充完成的部分**：当前 `OUTPUT_PROBE_TARGETS=[]`，所以尚未证明抖音/外部目标端输出、独立音画同步探针、长时连续开播和 4090 实机画面观感；这些仍是单独的外部验收项。
 
 ### 下一步只剩三类工作
 
 1. 将已同步的远程 Git 工作树进一步收敛为签名 release manifest 部署，避免手工改远程 Dockerfile。
 2. 解决 Ubuntu 版本与磁盘门槛：换用 Ubuntu 22.04 且至少 150 GiB，或明确批准 Ubuntu 24.04 并扩容到至少 150 GiB。
-3. 配置真实 RTMP 目标与独立 `output-probe`/`avSyncProbeUrl`，再做目标端试播。
-4. 在 4090 上做画面逐项验收和 4 小时稳定性测试；这一步不在本机或短时 smoke test 中虚报完成。
+3. 若坚持全链路 Ubuntu 22.04，释放磁盘后重建 LiveTalking 22.04 镜像并重新跑 GPU、会话、RTMP 和录播验收。
+4. 配置真实 RTMP 目标与独立 `output-probe`/`avSyncProbeUrl`，再做目标端试播。
+5. 在 4090 上做画面逐项验收和 4 小时稳定性测试；这一步不在本机或短时 smoke test 中虚报完成。
