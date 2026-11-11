@@ -8,9 +8,9 @@
 
 | 项目 | 实际结果 |
 | --- | --- |
-| 本地源码 | `E:\\shuzizhibo`，HEAD `0b1ea13`，工作树已清理 |
-| GitHub `origin/master` | 已推送至 `0b1ea13`（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)） |
-| GPU Git 镜像 | 已通过 `ssh://wuyou@59.49.251.108:11904/home/wuyou/shuzizhibo-git` 推送至 `0b1ea13`（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)） |
+| 本地源码 | `E:\\shuzizhibo`，样片工作流与验收记录均已提交，工作树已清理 |
+| GitHub `origin/master` | 已包含 4090 样片工作流与验收记录（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)） |
+| GPU Git 镜像 | 已包含 4090 样片工作流与验收记录（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)） |
 | 控制面镜像 | `shuzhiren/control-plane:54e8bfd-dev`，镜像 ID `d13283d29fe6` |
 | 生产容器 | `shuzhiren-p0-control-plane`，host network，端口 `3001`，当前运行新镜像 |
 | 控制面健康 | `http://127.0.0.1:3001/api/health` 返回 HTTP 200 |
@@ -48,11 +48,11 @@ docker start shuzhiren-p0-control-plane
 
 ## Git 对接结果
 
-2026-11-11 已完成 `0b1ea13` 的双向同步（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)）：
+2026-11-11 已完成样片工作流和验收记录的双向同步（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)）。
 
 ```text
-origin/master     07ebfdb..0b1ea13
-gpu-mirror/master 07ebfdb..0b1ea13
+origin/master     样片工作流与验收记录已推送
+gpu-mirror/master 样片工作流与验收记录已推送
 ```
 
 后续提交仍按常规 `git push origin master` 与 `git push gpu-mirror master` 推送；镜像推送不等同于远端控制面已经重建或切换。
