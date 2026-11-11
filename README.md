@@ -70,13 +70,13 @@
 
 ## 当前实现状态
 
-阶段 1 已完成；阶段 2 至 6 的控制面、治理、Gateway、观测、告警、渠道标准化接入、用量门禁和多租户框架已经落在仓库中。控制台代码位于 `apps/console`，开源运行时入口位于 `runtime/gateway` 与 `infra/compose`。`scripts/acceptance/` 提供只读优先的 GPU Compose 网络、LiveTalking 会话 `"0"` 和显式执行验收入口；本机代码与合同测试已通过，证据见 `docs/VERIFICATION_LOG.md#v-20261110-01`。当前远程 Ubuntu 24.04 + RTX 4090 主机的 Docker GPU smoke 已通过（[V-20261111-03](docs/VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-07](docs/VERIFICATION_LOG.md#v-20261111-07)；外部证据的治理判定仍为“未验证”）：容器内 `nvidia-smi` 可见 RTX 4090，运行时容器健康，内部 RTMP/短时会话也已有记录；但可用磁盘约 78 GiB，低于 150 GiB 生产门槛，所以真实 4090 输出仍按就绪矩阵单列。首个目标直播平台已定为抖音（D1，2026-11-05），抖音的 OAuth/Webhook/商品同步/账单 Adapter 尚未实现（RW-040-01 至 RW-040-04：代码未完成，需另立规格）。真实 RTMP/output-probe、4090 画面观感、4 小时连续开播、真实模型/授权素材、签名 release/OIDC/对象存储以及结算对账仍是部署方必须接入并留存证据的外部工作，不能用开发态或模拟服务替代。
+阶段 1 已完成；阶段 2 至 6 的控制面、治理、Gateway、观测、告警、渠道标准化接入、用量门禁和多租户框架已经落在仓库中。控制台代码位于 `apps/console`，开源运行时入口位于 `runtime/gateway` 与 `infra/compose`。`scripts/acceptance/` 提供只读优先的 GPU Compose 网络、LiveTalking 会话 `"0"` 和显式执行验收入口；本机代码与合同测试已通过，证据见 `docs/VERIFICATION_LOG.md#v-20261110-01`。当前远程 Ubuntu 24.04 + RTX 4090 主机的 Docker GPU smoke 已通过（[V-20261111-03](docs/VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-07](docs/VERIFICATION_LOG.md#v-20261111-07)；外部证据的治理判定仍为“未验证”）：容器内 `nvidia-smi` 可见 RTX 4090，运行时容器健康，内部 RTMP/短时会话也已有记录；但可用磁盘约 78 GiB，低于 150 GiB 生产门槛，所以真实 4090 输出仍按就绪矩阵单列。首个目标直播平台已定为抖音（D1，2026-11-05）；抖音 OAuth、原生 Webhook、已核验生活服务商品/账单请求客户端和显式 CSV 映射已落库并通过本机 mock 契约（[V-20261111-14](docs/VERIFICATION_LOG.md#v-20261111-14)，规格见 [`docs/providers/douyin/README.md`](docs/providers/douyin/README.md)）。抖店全品类商品字段、真实账号权限、目标端输出、4090 画面观感、4 小时连续开播、真实模型/授权素材、签名 release/OIDC/对象存储以及结算对账仍是部署方必须接入并留存证据的外部工作，不能用开发态或模拟服务替代。
 
 P0 新增的三项功能（各项状态以就绪矩阵为准，部署说明见 Runbook 2.12 至 2.14 节）：
 
 - 默认预设库：迁移 082 的平台级预设目录（两个默认声音、一个形象槽位）、`/api/v1/presets` 与资产页“从默认库添加”。仓库不附带任何声音或形象素材，三条预设都标为“商用授权未核实”；使用前须取得授权素材并核实权重许可证（EP-16）。sft 默认声音另需自带“中文女”“中文男”说话人的 CosyVoice 权重，并在 4090 上运行。
 - AIGC 标识：LiveTalking 在每一帧推流和录制画面上叠加显式标识，开播前检查核对运行时报告的标识文字，release manifest 与录制登记保存隐式标识元数据。画面实机核验需要 4090 与抖音观看端（RW-000-12），标识是否满足《人工智能生成合成内容标识办法》与 GB 45438-2025 及抖音审核要求，需要法务和平台确认（EP-15）。
-- 互动规则引擎：runtime-worker 按已批准的规则，对观众进场、关注、礼物、评论关键词以及定时、冷场触发生成话术，经策略引擎判定后写入语音 outbox 或回复草稿，默认规则含定时播报的 AI 身份提示。接收真实抖音事件需要抖音开放平台的直播互动数据权限（EP-17）和仓库中尚未编写的抖音 Webhook Adapter（RW-040-02）；在此之前只能用归一化 Webhook 模拟。
+- 互动规则引擎：runtime-worker 按已批准的规则，对观众进场、关注、礼物、评论关键词以及定时、冷场触发生成话术，经策略引擎判定后写入语音 outbox 或回复草稿，默认规则含定时播报的 AI 身份提示。抖音原生 Webhook Adapter 已实现并有 mock 契约测试，但接收真实事件仍需要抖音开放平台的直播互动数据权限与主播授权（EP-17）；权限取得前仍只能用归一化 Webhook 模拟。
 
 完整阶段状态见 [docs/IMPLEMENTATION_ROADMAP.md](docs/IMPLEMENTATION_ROADMAP.md)，代码和外部上线条件见 [docs/DEPLOYMENT_READINESS.md](docs/DEPLOYMENT_READINESS.md)。
 

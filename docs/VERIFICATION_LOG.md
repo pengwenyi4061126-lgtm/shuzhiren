@@ -5878,3 +5878,28 @@ skipped 步骤数: "0"
 说明: >-
   首次任务失败原因已确认为远端手工容器的数据库网络配置：postgres.internal 在该主机不可解析；修复测试容器接入 PostgreSQL 私网并使用独立 Avatar Builder 锁账号后，任务进入真实 GPU 处理并完成。本机代码同时让 avatar_builder_api.py 在保留统一 API 错误码的同时记录真实异常 traceback。该条只证明形象构建、预览和发布的短视频闭环；不把容器健康或短任务结果扩大解释为实时直播、录播输出或长时稳定性完成。
 ```
+
+## V-20261111-14 抖音 Adapter 官方协议边界与本机 mock 契约通过
+
+```yaml
+编号: V-20261111-14
+类型: 结论
+结论: 抖音 Adapter 已落库并通过 13 项本机 Node 行为测试：OAuth state/nonce 一次性消费、client_key 与官方 data token 响应、Webhook content.challenge、X-Douyin-Signature 的 SHA1(client_secret + 原始消息体)、Msg-Id 幂等、生活服务商品请求、交易/资金账单、订单/结算请求和显式 CSV 账单映射均通过 mock fetch 验证。
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run douyin-adapter:test
+    日期: 2026-11-11
+    退出码: "0"
+    操作系统: Windows 10.0.22631.7376
+    提交: 51d1b7846331b0527917313e37675f32e1d1a2cb
+    未执行的 CI 检查: [无]
+    检查:
+      - { 名称: douyin-adapter:test, 结果: success, 标签: behavioral }
+未覆盖:
+  - 抖音开发者/服务商账号、应用审核、scope、主播授权和真实 Webhook 投递
+  - 抖店全品类电商商品字段；当前只实现已核验的生活服务商品端点与配置化映射
+  - 真实账单下载 URL、各 bill_type CSV 样本、正式 RTMP 目标、4090 画面观感和 4 小时连续开播
+说明: >-
+  本条证明代码和 mock 契约，不证明真实平台权限、目标端输出或生产放行。控制台已注册 douyin provider，但商品挂车和外发回复能力保持 false，直到取得并核验对应官方权限。官方资料依据见 docs/providers/douyin/OFFICIAL_API_RESEARCH.md 及其链接。
+```

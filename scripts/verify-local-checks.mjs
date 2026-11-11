@@ -84,6 +84,7 @@ export const LOCAL_CHECKS = Object.freeze([
   { id: "output-probe:config:test", kind: "npm", script: "output-probe:config:test", label: "behavioral" },
   { id: "output-probe:response:check", kind: "npm", script: "output-probe:response:check", label: "static" },
   { id: "channel-adapter:test", kind: "npm", script: "channel-adapter:test", label: "behavioral" },
+  { id: "douyin-adapter:test", kind: "npm", script: "douyin-adapter:test", label: "behavioral" },
   { id: "interaction-rules:test", kind: "npm", script: "interaction-rules:test", label: "behavioral" },
   // static: it also matches the text of migration 082, the grant files and the asset workspace.
   { id: "presets:test", kind: "npm", script: "presets:test", label: "static" },

@@ -151,6 +151,7 @@ jobs:
       - run: npm run output-probe:test
       - run: npm run output-probe:config:test
       - run: npm run channel-adapter:test
+      - run: npm run douyin-adapter:test
       - run: npm run interaction-rules:test
       - run: npm run presets:test
       - run: npm run alert-notifier:test

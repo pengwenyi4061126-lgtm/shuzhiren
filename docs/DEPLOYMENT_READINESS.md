@@ -145,10 +145,10 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 | RW-038-06 | M25：Gateway 的阻塞调用移出事件循环 | 代码已完成且有验证证据 | V-20261105-20 | 38 | M25：已确认（b80ce32）；相关检查：`test-runtime-gateway-concurrency.py` |
 | RW-039-01 | L17：源码锁定文件与实际部署一致 | 代码已完成且有验证证据 | V-20261105-20 | 39 | L17：已确认（013d65d）；相关检查：`deploy:images:test`、`deploy:check:test` |
 | RW-039-02 | L18：LiveTalking 修改声明与镜像许可证文件 | 代码已完成且有验证证据 | V-20261105-20 | 39 | L18：已确认（211f379）；相关检查：`runtime:images:licenses:test`；模型权重许可证审查见 EP-13、EP-14 |
-| RW-040-01 | 目标平台 OAuth Adapter | 代码未完成 | — | 40 | D1 已决定（抖音，2026-11-05）；需另立规格，仓库中没有抖音对接代码 |
-| RW-040-02 | 目标平台 Webhook Adapter（接收该平台原生 Webhook 事件，区别于 Channel_Adapter 已实现的 `POST /v1/webhooks/{channelConnectionId}`） | 代码未完成 | — | 40 | 同 RW-040-01 |
-| RW-040-03 | 目标平台商品同步 Adapter | 代码未完成 | — | 40 | 同 RW-040-01 |
-| RW-040-04 | 目标平台账单 Adapter（拉取该平台账单，并映射佣金、服务费、运费、优惠分摊、税费、保证金、跨期退款和打款周期语义；区别于已实现的平台无关账单批次、账单行、订单级差异与结案） | 代码未完成 | — | 40 | 同 RW-040-01 |
+| RW-040-01 | 目标平台 OAuth Adapter | 代码已完成且有验证证据 | V-20261111-14 | 40 | D1 已决定（抖音，2026-11-05）；`apps/douyin-adapter/src/oauth.mjs`、`token.mjs` 支持一次性 state/nonce、抖音 client_key 参数、token/refresh 与官方 data 响应；真实应用审核与账号仍属 EP-02 |
+| RW-040-02 | 目标平台 Webhook Adapter（接收该平台原生 Webhook 事件，区别于 Channel_Adapter 已实现的 `POST /v1/webhooks/{channelConnectionId}`） | 代码已完成且有验证证据 | V-20261111-14 | 40 | `apps/douyin-adapter/src/webhook.mjs` 覆盖 `content.challenge`、`X-Douyin-Signature = SHA1(client_secret + raw body)` 和 `Msg-Id` 幂等；真实 webhook 配置、互动权限与 5 秒回调验收仍属 EP-17 |
+| RW-040-03 | 目标平台商品同步 Adapter | 代码已完成且有验证证据 | V-20261111-14 | 40 | `apps/douyin-adapter/src/api.mjs` 覆盖已核验的生活服务商品模板/保存/上下架/库存/多 SKU 端点，并保留显式 body/字段映射；抖店全品类商品接口尚未在官方资料中确认，真实权限与商品样本仍属 EP-02/EP-19 |
+| RW-040-04 | 目标平台账单 Adapter（拉取该平台账单，并映射佣金、服务费、运费、优惠分摊、税费、保证金、跨期退款和打款周期语义；区别于已实现的平台无关账单批次、账单行、订单级差异与结案） | 代码已完成且有验证证据 | V-20261111-14 | 40 | `apps/douyin-adapter/src/api.mjs` 覆盖交易账单/资金账单/订单查询/结算请求与账单下载，显式 CSV 映射要求按实际表头配置；真实账号、账单下载 URL 和各 bill_type 字段样本尚未取得 |
 | RW-040-05 | N9：Channel_Adapter 的 `/v1/replies` 下发失败时返回错误，不产生未处理的 rejection | 代码已完成且有验证证据 | V-20261105-20 | 40 | N9：已确认（734ee8e）；相关检查：`channel-adapter:test` |
 | RW-040-06 | 40.8–40.11 的锁定测试：渠道 provider 白名单的单元与数据库测试、Channel_Adapter 标准化入口与出站回复的契约测试 | 代码已完成但待 CI 或 Linux 验证 | V-20261111-12 | 40 | provider 注册表已抽为可独立单测的模块；`channel-adapter:test` 覆盖 provider 白名单、能力矩阵、AI 标识门槛、标准化入口、重放租约与 `/v1/replies` 出站契约。数据库触发器与控制面集成路径已有 `channel_connections` 治理用例，需在当前提交的 PostgreSQL CI 上复验后再升级为有验证证据 |
 | RW-000-01 | Linux 主机只读预检 `scripts/check-runtime-host.sh` | 代码已完成但待 CI 或 Linux 验证 | — | 无 | 来源：dc2916e 的 `docs/DEPLOYMENT_READINESS.md`。CI 只运行 `bash -n` 与 `--help`（static）；需在 Linux 4090 主机上运行 |
@@ -178,9 +178,9 @@ Audit_Register 的"已确认"与本矩阵的状态记录不同事实：审计记
 
 | 编号 | 事项 | 决定 | 所选平台 | 决策日期 | 覆盖规格 |
 | --- | --- | --- | --- | --- | --- |
-| D1 | 首个目标直播平台 | 已决定 | 抖音 | 2026-11-05 | — |
+| D1 | 首个目标直播平台 | 已决定 | 抖音 | 2026-11-05 | `docs/providers/douyin/README.md` |
 
-抖音 Adapter 需另立规格；仓库中没有任何平台对接代码。RW-040-01 至 RW-040-04 的状态为代码未完成，不是外部前置条件；抖音开放平台账号、应用审核和 scope 属于 EP-02。
+抖音 Adapter 规格与代码已落库；mock 契约测试不等于真实平台放行。抖音开放平台账号、应用审核、scope、Webhook 配置和目标端规则仍属于 EP-02、EP-17、EP-19 等外部前置条件。抖店全品类商品字段与权限未从当前官方资料确认，不能用生活服务接口代替。
 
 ## 发布判定
 

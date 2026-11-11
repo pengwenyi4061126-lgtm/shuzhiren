@@ -6,7 +6,7 @@ import { verifyChannelConnectionEvidence } from "@/lib/channel-evidence";
 import { channelAdapters, isChannelProvider as isRegisteredChannelProvider, NormalizedWebhookRtmpAdapter } from "./channel-adapters";
 import type { ChannelAdapter, ChannelCapability, ChannelProvider, OutputProtocol } from "./channel-adapters";
 
-export { NormalizedWebhookRtmpAdapter, RtmpOnlyAdapter } from "./channel-adapters";
+export { DouyinAdapter, NormalizedWebhookRtmpAdapter, RtmpOnlyAdapter } from "./channel-adapters";
 export type { ChannelAdapter, ChannelCapability, ChannelProvider, OutputProtocol } from "./channel-adapters";
 
 export type ChannelStatus = "connected" | "degraded" | "disabled";

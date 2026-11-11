@@ -126,7 +126,7 @@ assert.deepEqual(npmCiCopyViolations("Dockerfile", npmCiDockerfile, ["apps/web",
 assert.deepEqual(npmCiCopyViolations("Dockerfile", `FROM ${pinned}\nCOPY package.json ./\nRUN npm ci\n`, []), ["Dockerfile:3 npm ci runs before COPY package-lock.json"]);
 const repoLock = JSON.parse(await repoText("package-lock.json"));
 const repoWorkspaces = Object.keys(repoLock.packages).filter((key) => /^apps\/[^/]+$/.test(key));
-assert.equal(repoWorkspaces.length, 6);
+assert.equal(repoWorkspaces.length, 7);
 const repoManifests = Object.fromEntries(await Promise.all(repoWorkspaces.map(async (dir) => [dir, JSON.parse(await repoText(`${dir}/package.json`))])));
 assert.deepEqual(npmLockViolations(repoLock, repoManifests), []);
 for (const binary of ["@next/swc-linux-x64-musl", "@next/swc-linux-x64-gnu", "@img/sharp-linuxmusl-x64", "@img/sharp-linux-x64"]) assert.ok(repoLock.packages[`node_modules/${binary}`], `package-lock.json locks ${binary} for the Linux images`);

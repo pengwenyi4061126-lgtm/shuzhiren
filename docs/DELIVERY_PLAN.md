@@ -114,6 +114,7 @@
 2. 创建模型、已发布形象、候选形象、录制、Gateway 命令日志、observer 配置和密钥目录后，打通 LiveTalking + CosyVoice + Gateway 三服务私网健康检查。
 3. 同步补齐 PostgreSQL、对象存储和内部 RTMP 接收端，再从 Studio 创建第一个完整内容项目并生成录播。
 4. 将当前主机本地镜像发布为受签名 release manifest 约束的镜像引用；让租机从该 release 获取部署包，取代上传式部署副本。
+5. 抖音 D1 Adapter 已完成代码与 mock 契约（[V-20261111-14](VERIFICATION_LOG.md#v-20261111-14)）；下一步只需在取得平台账号/权限后做真实 OAuth、Webhook、商品样本、账单 CSV 和目标端回调验收，抖店全品类商品字段仍以官方开放权限为准。
 
 ## 最新远程运行进度（2026-11-11）
 
@@ -130,8 +131,9 @@
 - **容器用户态版本已拆分记录（见 [V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)）**：CosyVoice 的 GPU 容器是 Ubuntu 22.04，LiveTalking 当前 GPU 容器是 Ubuntu 24.04；两者都报告 RTX 4090。Ubuntu 22.04 LiveTalking 候选只作为历史隔离验证，不再作为当前宿主机目标。
 - **Ubuntu 22.04 候选镜像已完成隔离启动与完整短时链路检查，但治理判定仍未验证（见 [V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)、[V-20261111-08](VERIFICATION_LOG.md#v-20261111-08)）**：候选镜像已通过 Ubuntu 22.04、CUDA、RTX 4090、AIGC 画面层、动态 WebRTC、Gateway start/stop、内部 RTMP、MP4/AAC/H.264 录播和会话清理；验证后已回滚稳定容器。正式目标端、长时稳定性、宿主机容量和实机观感仍未完成。
 - **还没有冒充完成的部分**：当前 `OUTPUT_PROBE_TARGETS=[]`，所以尚未证明抖音/外部目标端输出、独立音画同步探针、长时连续开播和 4090 实机画面观感；这些仍是单独的外部验收项。
+- **抖音 Adapter 代码状态**：`apps/douyin-adapter` 已覆盖 OAuth、原生 Webhook、已核验生活服务商品请求、交易/资金账单、结算请求、账单下载和显式 CSV 映射，并通过 [V-20261111-14](VERIFICATION_LOG.md#v-20261111-14)；mock 通过不等于账号权限、真实字段、正式 RTMP 或目标端已验收。
 
-### 下一步只剩三类工作
+### 下一步只剩四类工作
 
 1. 将已同步的远程 Git 工作树进一步收敛为签名 release manifest 部署，避免手工改远程 Dockerfile。
 2. 解决磁盘门槛：在当前 Ubuntu 24.04 基线上扩容到至少 150 GiB，并重新运行主机预检。

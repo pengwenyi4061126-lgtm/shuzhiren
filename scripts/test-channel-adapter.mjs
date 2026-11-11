@@ -8,16 +8,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseControlPlaneUrl, parseNormalizedEvent, parseOutboundReply, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "../apps/channel-adapter/lib.mjs";
 import { channelAdapters, isChannelProvider, supportedChannelProviders } from "../apps/console/lib/channel-adapters.ts";
 
-assert.deepEqual(supportedChannelProviders, ["generic-rtmp", "normalized-webhook-rtmp"], "the provider registry must be explicit and ordered");
+assert.deepEqual(supportedChannelProviders, ["generic-rtmp", "normalized-webhook-rtmp", "douyin"], "the provider registry must be explicit and ordered");
 assert.equal(isChannelProvider("generic-rtmp"), true);
 assert.equal(isChannelProvider("normalized-webhook-rtmp"), true);
-assert.equal(isChannelProvider("douyin"), false, "unimplemented platform providers must not enter the production registry");
+assert.equal(isChannelProvider("douyin"), true);
 assert.equal(channelAdapters.get("generic-rtmp")?.capability.supportsOutboundReplies, false);
 assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.capability.supportsOutboundReplies, true);
 assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.capability.supportsWebhook, true);
 assert.deepEqual(channelAdapters.get("normalized-webhook-rtmp")?.validateShow({ resolution: "720p", aiDisclosureEnabled: false }), ["目标渠道要求 AI 标识"]);
 assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.supportsOutput("rtmp"), true);
 assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.supportsOutput("srt"), false);
+assert.equal(channelAdapters.get("douyin")?.capability.supportsComments, true);
+assert.equal(channelAdapters.get("douyin")?.capability.supportsProductPins, false, "product sync is not claimed until the official commerce permission is verified");
+assert.equal(channelAdapters.get("douyin")?.capability.supportsOutboundReplies, false, "outbound replies are not claimed until the official permission is verified");
+assert.deepEqual(channelAdapters.get("douyin")?.validateShow({ resolution: "1080p", aiDisclosureEnabled: false }), ["目标渠道要求 AI 标识"]);
+assert.equal(channelAdapters.get("douyin")?.supportsOutput("rtmp"), true);
 
 const secret = "channel-signing-secret-at-least-32-chars";
 const now = 1_700_000_000_000;

@@ -1088,13 +1088,13 @@ test("SECRET: the matrix is scanned for the secret patterns, reported by name on
   );
 });
 
-test("the repository docs/DEPLOYMENT_READINESS.md has no errors and keeps D1 decided with the four rows 代码未完成", () => {
+test("the repository docs/DEPLOYMENT_READINESS.md has no errors and keeps D1 decided with the four verified adapter rows", () => {
   const text = readFileSync(path.join(repoRoot, "docs", "DEPLOYMENT_READINESS.md"), "utf8");
   const log = repositoryLog();
   assert.equal(describeRows(validateReadinessMatrix(text, { vlog: log.entries })), "");
   const parsed = parseReadinessMatrix(text);
-  assert.deepEqual({ ...d1Decision(parsed), line: 0 }, { decision: "已决定", platform: "抖音", date: "2026-11-05", spec: "—", line: 0 });
-  for (const id of D1_ROWS) assert.equal(parsed.rows.find((row) => row.id === id).status, "代码未完成", id);
+  assert.deepEqual({ ...d1Decision(parsed), line: 0 }, { decision: "已决定", platform: "抖音", date: "2026-11-05", spec: "`docs/providers/douyin/README.md`", line: 0 });
+  for (const id of D1_ROWS) assert.equal(parsed.rows.find((row) => row.id === id).status, "代码已完成且有验证证据", id);
   for (const row of parsed.rows.filter((item) => item.kind === "EP")) assert.equal(row.condition, row.id === "EP-12" ? "已满足" : "未满足", row.id);
 });
 

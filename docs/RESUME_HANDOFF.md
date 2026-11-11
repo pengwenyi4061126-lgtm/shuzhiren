@@ -155,7 +155,8 @@ npm run build
 
 仓库内的工作按矩阵状态分为：
 
-- 代码未完成：RW-040-01 至 RW-040-04。
+- 代码未完成：无（本轮目标平台 Adapter 已落库；其余未完成项以就绪矩阵为准）。
+- 代码已完成且有验证证据：RW-040-01 至 RW-040-04。
 - 代码已完成但待外部环境验证：RW-013-02、RW-014-02 至 RW-014-05、RW-015-02 至 RW-015-05、RW-031-02 至 RW-031-04、RW-032-02、RW-032-03、RW-000-12。
 - 代码已完成但待 CI 或 Linux 验证：RW-002-01、RW-002-03、RW-012-01、RW-021-01、RW-025-02、RW-031-01、RW-032-04、RW-032-05、RW-033-01、RW-033-03、RW-036-01、RW-037-04、RW-038-02、RW-038-03、RW-040-06、RW-000-01 至 RW-000-03。
 - 其余 RW 行为代码已完成且有验证证据，引用 [V-20261105-20](VERIFICATION_LOG.md#v-20261105-20)、[V-20261106-02](VERIFICATION_LOG.md#v-20261106-02) 等条目；RW-005-01、RW-006-01、RW-010-01、RW-013-01、RW-036-02 依据 [run 42083647115 @ ed934bf](VERIFICATION_LOG.md#v-20261106-02) 改为该状态，RW-000-13 至 RW-000-15 依据 [run 42132486742 @ c0f9f52](VERIFICATION_LOG.md#v-20261106-04) 改为该状态。
@@ -207,6 +208,6 @@ CI 中 PostgreSQL 集成、Gateway Python、Docker 构建与镜像冒烟、Node 
 - 本轮将 release evidence 从“签名 manifest 里的两个摘要字段”收紧为可读的同目录 artifact：`deploy:check` 现在加载 `release-sbom-index.json` 与 `release-provenance-index.json`，重算 SHA-256，验证 artifact type、Buildx attestation 标记、完整提交、builder identity 和十个精确 image digest。测试覆盖篡改 index 后 fail-closed。该索引证明 workflow 声明了对应 OCI attestation subject；真实 OCI referrer 拉取/验证、registry 保留和部署机访问授权仍要在受控发布环境实测。
 - 本轮把 PostgreSQL 恢复演练从手工说明收紧为 `restore-postgres-drill.sh`：只接受已通过 archive/manifest 验证的 `.dump`，确认值必须绑定该 archive SHA-256，只能写入无 public 表、名称为 `shuzhiren_restore_*` 的隔离数据库；恢复后检查 migration 数量与 tenants/live_runs/audit_events/outbox_events/schema_migrations，并写入不可覆盖的 drill evidence。CI/Linux 以 PostgreSQL client stand-in 覆盖安全目标库拒绝和恢复命令契约（[run 42040219509 @ fd9179d](VERIFICATION_LOG.md#v-20261105-20)，`test-postgres-restore-drill.sh` 为 success）；真实 `pg_restore`、DBA 创建/销毁隔离库和 RPO/RTO 测量仍须在受控 Linux/PostgreSQL 环境演练。
 - 本轮补齐 Gateway journal 的恢复闭环：`restore-runtime-gateway-state-drill.sh` 先重新绑定 snapshot/manifest、确认 SHA-256，再只向预先存在的空隔离目录恢复，拒绝生产状态路径和 evidence 覆盖，并检查 SQLite 完整性以及 Gateway 实际需要的 journal 字段。CI 用临时目录生成真实 `media` 与 CosyVoice `speak` 已完成记录、备份、恢复、清空进程缓存后重试；两者均只返回持久化回执的 `duplicate: true`，下游 LiveTalking、CosyVoice 和音频注入桩均为零调用（[run 42040219509 @ fd9179d](VERIFICATION_LOG.md#v-20261105-20)，`test-runtime-gateway-state-restore-drill.py` 为 success）。真实 Linux 演练仍必须以独立 Gateway 实例和三类下游访问日志测量 RPO/RTO，站外不可变存储也仍属外部基础设施责任。
-- 平台无关的结算内核现已包括账单批次、来源 SHA-256、不可变账单行、订单级差异、独立私网导入 token 与证据化结案。首个目标平台已定为抖音（D1，2026-11-05）；仍待完成的仓库内工作是抖音的 OAuth/Webhook/商品同步/账单 Adapter（RW-040-01 至 RW-040-04：代码未完成，需另立规格），以及抖音佣金、服务费、运费、优惠分摊、税费和跨期退款等结算语义映射。平台账号、应用审核和真实数据是外部前置条件，但 Adapter 实现本身不是。节目切换的仓库内观测关联已完成；仍需在目标平台部署水印/指纹、目的端回放或指标验证器，并以 GPU、平台账号、推流密钥和外部验收证据证明它可信，不能把 Gateway 接受回执误当作已播出证明。
+- 平台无关的结算内核现已包括账单批次、来源 SHA-256、不可变账单行、订单级差异、独立私网导入 token 与证据化结案。首个目标平台已定为抖音（D1，2026-11-05）；抖音 OAuth/Webhook/已核验生活服务商品与账单请求 Adapter 已落库并通过 [V-20261111-14](VERIFICATION_LOG.md#v-20261111-14)，仍待抖音佣金、服务费、运费、优惠分摊、税费和跨期退款的真实 CSV 样本及权限确认。平台账号、应用审核和真实数据是外部前置条件；Adapter mock 通过不等于真实平台可用。节目切换的仓库内观测关联已完成；仍需在目标平台部署水印/指纹、目的端回放或指标验证器，并以 GPU、平台账号、推流密钥和外部验收证据证明它可信，不能把 Gateway 接受回执误当作已播出证明。
 - 渠道回复的 `providerReplyEndpoint` 只是受控标准化桥接契约；抖音、淘宝、视频号等实际 API、OAuth scope、应用审核和商家账号权限仍是外部平台前置条件。缺少回执时 worker 保持失败/可重试状态，不会把互动伪装成已处理。
-- 下一步：先完成矩阵中状态为代码未完成的 RW 行，再按部署就绪矩阵在受控环境收集 EP 行的外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
+- 下一步：先运行 `npm run verify:local` 纳入抖音 Adapter 测试并提交/推送当前变更；随后按部署就绪矩阵收集平台账号、真实商品/账单样本和 EP 行外部证据，并以 `npm run runtime:acceptance:verify` 作为真实开播门禁。
