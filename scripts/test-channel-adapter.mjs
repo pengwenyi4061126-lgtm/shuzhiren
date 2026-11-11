@@ -6,6 +6,18 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseControlPlaneUrl, parseNormalizedEvent, parseOutboundReply, parseTargets, payloadSha256, publicRequestError, verifyWebhook } from "../apps/channel-adapter/lib.mjs";
+import { channelAdapters, isChannelProvider, supportedChannelProviders } from "../apps/console/lib/channel-adapters.ts";
+
+assert.deepEqual(supportedChannelProviders, ["generic-rtmp", "normalized-webhook-rtmp"], "the provider registry must be explicit and ordered");
+assert.equal(isChannelProvider("generic-rtmp"), true);
+assert.equal(isChannelProvider("normalized-webhook-rtmp"), true);
+assert.equal(isChannelProvider("douyin"), false, "unimplemented platform providers must not enter the production registry");
+assert.equal(channelAdapters.get("generic-rtmp")?.capability.supportsOutboundReplies, false);
+assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.capability.supportsOutboundReplies, true);
+assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.capability.supportsWebhook, true);
+assert.deepEqual(channelAdapters.get("normalized-webhook-rtmp")?.validateShow({ resolution: "720p", aiDisclosureEnabled: false }), ["目标渠道要求 AI 标识"]);
+assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.supportsOutput("rtmp"), true);
+assert.equal(channelAdapters.get("normalized-webhook-rtmp")?.supportsOutput("srt"), false);
 
 const secret = "channel-signing-secret-at-least-32-chars";
 const now = 1_700_000_000_000;

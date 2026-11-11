@@ -3,34 +3,20 @@ import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { recordAuditEvent, recordAuditEventInTransaction } from "@/lib/audit";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { verifyChannelConnectionEvidence } from "@/lib/channel-evidence";
+import { channelAdapters, isChannelProvider as isRegisteredChannelProvider, NormalizedWebhookRtmpAdapter } from "./channel-adapters";
+import type { ChannelAdapter, ChannelCapability, ChannelProvider, OutputProtocol } from "./channel-adapters";
 
-export type ChannelCapability = { channel: string; supportsRtmp: boolean; supportsSrt: boolean; supportsComments: boolean; supportsOutboundReplies: boolean; supportsProductPins: boolean; requiresAiDisclosure: boolean; maxResolution: "720p" | "1080p"; supportsReplay: boolean; supportsWebhook: boolean };
+export { NormalizedWebhookRtmpAdapter, RtmpOnlyAdapter } from "./channel-adapters";
+export type { ChannelAdapter, ChannelCapability, ChannelProvider, OutputProtocol } from "./channel-adapters";
+
 export type ChannelStatus = "connected" | "degraded" | "disabled";
-export type OutputProtocol = "rtmp" | "srt";
-export type ChannelProvider = "generic-rtmp" | "normalized-webhook-rtmp";
 export type ChannelConnection = { id: string; tenantId: string; name: string; provider: ChannelProvider; status: ChannelStatus; outputProtocol: OutputProtocol; capability: ChannelCapability; secretRef: string; lastVerifiedAt?: string; verificationEvidenceRef?: string; verifiedBy?: string };
 export type CreateChannelConnectionInput = Pick<ChannelConnection, "name" | "provider" | "outputProtocol" | "secretRef">;
 export type ChannelVerificationInput = { status: ChannelStatus };
 export const maxChannelVerificationAgeMs = 24 * 60 * 60 * 1000;
 const channelVerificationEvidenceRefPattern = /^(?:evidence:\/\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}|urn:[A-Za-z0-9][A-Za-z0-9:._/-]{0,255})$/;
 
-export interface ChannelAdapter { readonly provider: ChannelProvider; readonly capability: ChannelCapability; supportsOutput(protocol: OutputProtocol): boolean; validateShow(input: { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean }): string[]; }
-
-export class RtmpOnlyAdapter implements ChannelAdapter {
-  readonly provider: ChannelProvider = "generic-rtmp";
-  readonly capability: ChannelCapability = { channel: "generic-rtmp", supportsRtmp: true, supportsSrt: false, supportsComments: false, supportsOutboundReplies: false, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: false };
-  supportsOutput(protocol: OutputProtocol) { return protocol === "rtmp"; }
-  validateShow(input: { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean }) { const errors: string[] = []; if (input.resolution === "1080p" && this.capability.maxResolution !== "1080p") errors.push("目标渠道不支持 1080p"); if (this.capability.requiresAiDisclosure && !input.aiDisclosureEnabled) errors.push("目标渠道要求 AI 标识"); return errors; }
-}
-
-export class NormalizedWebhookRtmpAdapter implements ChannelAdapter {
-  readonly provider: ChannelProvider = "normalized-webhook-rtmp";
-  readonly capability: ChannelCapability = { channel: "normalized-webhook-rtmp", supportsRtmp: true, supportsSrt: false, supportsComments: true, supportsOutboundReplies: true, supportsProductPins: false, requiresAiDisclosure: true, maxResolution: "1080p", supportsReplay: false, supportsWebhook: true };
-  supportsOutput(protocol: OutputProtocol) { return protocol === "rtmp"; }
-  validateShow(input: { resolution: "720p" | "1080p"; aiDisclosureEnabled: boolean }) { const errors: string[] = []; if (input.resolution === "1080p" && this.capability.maxResolution !== "1080p") errors.push("目标渠道不支持 1080p"); if (this.capability.requiresAiDisclosure && !input.aiDisclosureEnabled) errors.push("目标渠道要求 AI 标识"); return errors; }
-}
-
-const adapters = new Map<ChannelProvider, ChannelAdapter>([["generic-rtmp", new RtmpOnlyAdapter()], ["normalized-webhook-rtmp", new NormalizedWebhookRtmpAdapter()]]);
+const adapters = channelAdapters;
 export const supportedChannelProviders = [...adapters.keys()];
 
 type ChannelStore = { connections: Map<string, ChannelConnection> };
@@ -173,7 +159,7 @@ function channelReadiness(connection: ChannelConnection | null, input: ChannelSh
   return errors.length ? { passed: false, detail: errors.join("；") } : { passed: true, detail: `${connection.name} 已验证 · ${connection.outputProtocol.toUpperCase()} · ${adapter.capability.maxResolution}` };
 }
 
-export function isChannelProvider(value: unknown): value is ChannelProvider { return typeof value === "string" && adapters.has(value as ChannelProvider); }
+export function isChannelProvider(value: unknown): value is ChannelProvider { return isRegisteredChannelProvider(value); }
 export function isChannelVerificationEvidenceRef(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 300 && channelVerificationEvidenceRefPattern.test(value); }
 export function channelVerificationStatus(connection: Pick<ChannelConnection, "status" | "lastVerifiedAt" | "verificationEvidenceRef" | "verifiedBy">, now = Date.now()) {
   if (connection.status !== "connected") return { active: false, detail: `渠道连接当前为 ${connection.status}` };
