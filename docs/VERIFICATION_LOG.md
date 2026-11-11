@@ -334,6 +334,34 @@
   本条更新 V-20261111-09 的历史状态，记录当前提交的实际同步结果；Git 同步通过不等于生产运行时全部验收通过。
 ```
 
+## V-20261111-11 GitHub 推送与远程部署镜像同步到 c7a5350
+
+```yaml
+编号: V-20261111-11
+类型: 结论
+结论: 文档修正提交 c7a5350063fbc9a783a2ed0bcb461777a22142fb 已通过 GitHub origin/master 推送；随后使用同一提交的增量 Git bundle 经 SSH 上传到远程部署副本并 fast-forward。远程 HEAD、origin/master 均为 c7a53500，工作树干净，临时 bundle 已清理。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: GitHub origin 与远程 Ubuntu 24.04 GPU 云主机，部署副本 /home/wuyou/shuzizhibo-git
+    命令或验收步骤: >-
+      本地 git push origin master；本地 git bundle create/verify；scp 上传到远程 /tmp；远程执行
+      git fetch /tmp/shuzizhibo-update-c7a5350.bundle refs/heads/master:refs/remotes/bundle/master、
+      git merge --ff-only bundle/master、git update-ref refs/remotes/origin/master c7a5350、
+      git status -sb、git rev-parse --short HEAD、git rev-parse --short origin/master，随后删除远程临时文件。
+    检查:
+      - { 名称: github_push, 结果: 83f5b64..c7a5350 master -> master }
+      - { 名称: bundle_verify, 结果: 增量 bundle 校验通过，基于 83f5b640，包含 refs/heads/master -> c7a5350 }
+      - { 名称: remote_fast_forward, 结果: 83f5b640..c7a53500 Fast-forward }
+      - { 名称: remote_head, 结果: HEAD=c7a53500；origin/master=c7a53500；git status -sb 为 master...origin/master，无未提交修改 }
+      - { 名称: temporary_cleanup, 结果: 远程 /tmp bundle 与本地临时 bundle 均已删除 }
+未覆盖:
+  - 远程主机后续能否直接访问 GitHub 的网络恢复情况；本次验证的是 GitHub 推送与 bundle over SSH 两条路径的命令结果
+  - 签名 release manifest、正式目标端 RTMP、长时开播和 4090 实机画面观感
+说明: >-
+  该条只记录 Git 提交传播与工作树状态，按治理规则不把外部主机命令输出升级为生产环境全面验收。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
