@@ -8,12 +8,13 @@
 
 | 项目 | 实际结果 |
 | --- | --- |
-| 本地源码 | `E:\\shuzizhibo`，HEAD `54e8bfd`，工作树已清理 |
-| GPU Git 镜像 | `/home/wuyou/shuzizhibo-git`，远端 HEAD `54e8bfd` |
+| 本地源码 | `E:\\shuzizhibo`，HEAD `0b1ea13`，工作树已清理 |
+| GitHub `origin/master` | 已推送至 `0b1ea13`（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)） |
+| GPU Git 镜像 | 已通过 `ssh://wuyou@59.49.251.108:11904/home/wuyou/shuzizhibo-git` 推送至 `0b1ea13`（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)） |
 | 控制面镜像 | `shuzhiren/control-plane:54e8bfd-dev`，镜像 ID `d13283d29fe6` |
 | 生产容器 | `shuzhiren-p0-control-plane`，host network，端口 `3001`，当前运行新镜像 |
 | 控制面健康 | `http://127.0.0.1:3001/api/health` 返回 HTTP 200 |
-| Studio 页面 | `http://127.0.0.1:3001/studio` 返回 HTTP 200，响应体 52,465 bytes |
+| Studio 页面（已部署控制面） | `http://127.0.0.1:3001/studio` 返回 HTTP 200，响应体 52,465 bytes；该容器仍是此前 `54e8bfd` 版本 |
 | Demo 隔离 | 生产模式 `POST /api/v1/studio/demo-seed` 返回 HTTP 404，符合门禁设计 |
 | 启动日志 | Next.js Ready；健康、Studio、Demo 路由均有实际访问日志 |
 | 回滚 | 旧容器保留为 `shuzhiren-p0-control-plane-rollback-78ae0258`，镜像 `78ae0258-dev`，当前停止 |
@@ -34,7 +35,7 @@
 - 尚未接入真实平台权限、正式 RTMP、stream-key 和生产服务令牌。
 - 没有活动 LiveTalking 会话，因此 4090 实时画面观感、动态口型录播、长时开播和平台端输出仍需实机验收。
 - 运行中的媒体镜像仍是既有标签；本轮只更新并切换控制面。
-- GitHub `origin` 尚未推送：当前环境未检测到可用 SSH/HTTPS 凭据；GPU Git 镜像已同步。
+- 当前 UI 样片提交 `0b1ea13` 已同步到 GitHub 与 GPU Git 镜像，但还没有重建/切换远端控制面容器；不能把 Git 同步写成远端 UI 已部署。
 
 ## 回滚命令
 
@@ -45,14 +46,14 @@ docker rename shuzhiren-p0-control-plane-rollback-78ae0258 shuzhiren-p0-control-
 docker start shuzhiren-p0-control-plane
 ```
 
-## GitHub 对接的剩余动作
+## Git 对接结果
 
-在配置 GitHub SSH key 或 HTTPS token 后执行：
+2026-11-11 已完成 `0b1ea13` 的双向同步（[V-20261111-15](VERIFICATION_LOG.md#v-20261111-15)）：
 
-```powershell
-Set-Location E:\\shuzizhibo
-ssh -T git@github.com
-git fetch origin master
-git push origin master
+```text
+origin/master     07ebfdb..0b1ea13
+gpu-mirror/master 07ebfdb..0b1ea13
 ```
+
+后续提交仍按常规 `git push origin master` 与 `git push gpu-mirror master` 推送；镜像推送不等同于远端控制面已经重建或切换。
 

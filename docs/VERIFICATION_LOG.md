@@ -5903,3 +5903,44 @@ skipped 步骤数: "0"
 说明: >-
   本条证明代码和 mock 契约，不证明真实平台权限、目标端输出或生产放行。控制台已注册 douyin provider，但商品挂车和外发回复能力保持 false，直到取得并核验对应官方权限。官方资料依据见 docs/providers/douyin/OFFICIAL_API_RESEARCH.md 及其链接。
 ```
+
+## V-20261111-15 4090 样片在桌面 Studio 的录播闭环通过
+
+```yaml
+编号: V-20261111-15
+类型: 结论
+结论: >-
+  内容工坊可实际载入已验证的 4090 样片，使用项目批准的照片与 CosyVoice WAV 生成可播放配音，
+  并在浏览器生成通过质量门的 720×1280 WebM 录播预览。
+判定: 静态检查
+依据来源:
+  - 类别: 本机运行
+    命令: npm run studio:content-workflow:test
+    日期: 2026-11-11
+    退出码: "0"
+    操作系统: Windows 10.0.22631.7376
+    提交: 0b1ea13
+    未执行的 CI 检查: [无]
+    检查:
+      - { 名称: studio:content-workflow:test, 结果: success, 标签: static }
+    观测:
+      - { 名称: 样片项目载入, 结果: success }
+      - { 名称: 批准照片源, 结果: success, sha256: "52681702eada8ad42cedf1dc283066784194b5f91e9c5153f335bceb3914c18c" }
+      - { 名称: 批准声线预览, 结果: success, 时长秒: 43.44, readyState: 4 }
+      - { 名称: 录播成片, 结果: success, 尺寸: "720x1280", 时长秒: 43.388, readyState: 4 }
+      - { 名称: 自动质量检查, 结果: success }
+      - { 名称: GitHub master 推送, 结果: "07ebfdb..0b1ea13" }
+      - { 名称: GPU Git 镜像推送, 结果: "07ebfdb..0b1ea13" }
+    证据:
+      - sample-assets/digital-host/studio-verified-sample.png
+      - sample-assets/digital-host/README.md
+失败根因及修复: >-
+  配音请求完成后，录播组件可能因项目状态刷新重建，导致组件本地 Blob 与 object URL 被清空。
+  修复后由 StudioWorkspace 持有生成的音频 Blob，PhotoRecordingComposer 重建后恢复 audio URL；浏览器回归已确认。
+未覆盖:
+  - 正式平台 RTMP、平台端观看质量与 4 小时连续开播
+  - 照片驱动动态口型 Avatar；本样片的录播输出仍是照片播报视频
+说明: >-
+  已注册的内容工作流回归决定本条的“静态检查”判定；浏览器验收脚本已实际运行并保存截图，
+  但尚未注册到 LOCAL_CHECKS 的 behavioral gate，因此不把本条扩大为正式平台或长时直播验收。
+```
