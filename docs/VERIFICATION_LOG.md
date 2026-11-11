@@ -307,6 +307,33 @@
   这是 Git 历史同步的外部证据，不把网络 fetch 失败改写成成功；同步结果以远程工作树与已确认的本地 push 提交为准，按治理规则保留为未验证。
 ```
 
+## V-20261111-10 远程部署工作树同步到 83f5b64
+
+```yaml
+编号: V-20261111-10
+类型: 结论
+结论: 本地与 origin/master 当前提交为 83f5b640；远程主机到 github.com:443 仍未采用直接 fetch，使用本地已校验的 Git bundle 经 SSH 上传，在远程执行 fetch 与 fast-forward。远程 HEAD、origin/master 均为 83f5b640，工作树干净；远程临时 bundle 与本地临时 bundle 均已清理。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: 远程 Ubuntu 24.04 GPU 云主机，部署副本 /home/wuyou/shuzizhibo-git
+    命令或验收步骤: >-
+      本地将 E:\\shuzizhibo-update-83f5b64.bundle 经 scp 上传到远程 /tmp；远程执行
+      git fetch /tmp/shuzizhibo-update-83f5b64.bundle refs/heads/master:refs/remotes/bundle/master、
+      git merge --ff-only bundle/master、git update-ref refs/remotes/origin/master 83f5b64、
+      git status -sb、git rev-parse --short HEAD、git rev-parse --short origin/master，随后删除远程临时文件。
+    检查:
+      - { 名称: bundle_upload, 结果: scp 传输完成，文件大小约 2666 KiB }
+      - { 名称: remote_fast_forward, 结果: 5d7e06a..83f5b640 Fast-forward }
+      - { 名称: remote_head, 结果: HEAD=83f5b640；origin/master=83f5b640；git status -sb 为 master...origin/master，无未提交修改 }
+      - { 名称: temporary_cleanup, 结果: 远程 /tmp bundle 与本地临时 bundle 均已删除 }
+未覆盖:
+  - 远程主机后续能否直接访问 GitHub 的网络恢复情况；本次只验证 bundle over SSH 同步路径
+  - 签名 release manifest、正式目标端 RTMP、长时开播和 4090 实机画面观感
+说明: >-
+  本条更新 V-20261111-09 的历史状态，记录当前提交的实际同步结果；Git 同步通过不等于生产运行时全部验收通过。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
