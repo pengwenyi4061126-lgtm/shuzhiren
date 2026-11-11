@@ -11,12 +11,14 @@ ARG PYTHON_RTMPSTREAM_COMMIT=02b2ca0bafde75736ca4a4d28b820fafc147fb7b
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-dev python3-pip python3-psycopg2 ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libgl1 libglib2.0-0 git cmake pkg-config build-essential patch fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10002 livetalking && useradd --system --uid 10002 --gid 10002 --home-dir /tmp --no-create-home livetalking
 COPY vendor/LiveTalking/requirements.txt ./requirements.txt
-RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128 && python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
+# Ubuntu 22.04 ships pip 22.0.2, which predates --break-system-packages; the
+# container owns this system Python, so install directly into it.
+RUN python3 -m pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128 && python3 -m pip install --no-cache-dir -r requirements.txt
 # MuseTalk's avatar preprocessor imports face_recognition.  dlib-bin supplies
 # the CPython 3.10 manylinux wheel; installing face-recognition without
 # dependency resolution avoids rebuilding dlib from source on Ubuntu 22.04.
-RUN python3 -m pip install --break-system-packages --no-cache-dir dlib-bin==20.0.1.post1 face-recognition-models==0.3.0 && \
-    python3 -m pip install --break-system-packages --no-cache-dir --no-deps face-recognition==1.3.0
+RUN python3 -m pip install --no-cache-dir dlib-bin==20.0.1.post1 face-recognition-models==0.3.0 && \
+    python3 -m pip install --no-cache-dir --no-deps face-recognition==1.3.0
 COPY vendor/LiveTalking/ ./
 # LiveTalking's RTMP transport imports the native python_rtmpstream extension.
 # Build the pinned upstream commit against Ubuntu's Python/FFmpeg development
@@ -32,7 +34,7 @@ RUN set -eux; \
     git submodule update --init --recursive; \
     patch -p1 < /tmp/python-rtmpstream-patches/python-rtmpstream-cmake.patch; \
     patch -p1 < /tmp/python-rtmpstream-patches/python-rtmpstream-clock.patch; \
-    python3 -m pip install --break-system-packages --no-cache-dir ./python; \
+    python3 -m pip install --no-cache-dir ./python; \
     python3 -c 'import rtmp_streaming; print("python_rtmpstream: ok")'; \
     rm -rf /tmp/python_rtmpstream-src /tmp/python-rtmpstream-patches
 # Avatar Builder runs on an internal network, so prefetch LiveTalking's SFD
