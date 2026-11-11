@@ -136,6 +136,37 @@
   该条只记录容器内部用户态与 GPU 访问事实。宿主机仍为 Ubuntu 24.04；CosyVoice 的 22.04 容器不能替代 LiveTalking 和宿主机的 22.04 要求。
 ```
 
+## V-20261111-05 远程动态会话验收修复清理残留并完成短时闭环
+
+```yaml
+编号: V-20261111-05
+类型: 结论
+结论: 5291824 在远程 RTX 4090 主机上完成一次真实 LiveTalking 动态会话闭环；新增的容器内 helper PID 清理与 session 为空收尾检查通过，修复了原验收脚本只终止 docker exec 客户端而残留 WebRTC session 的问题。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: Ubuntu GPU 云主机，单张 RTX 4090，Docker NVIDIA runtime
+    命令或验收步骤: >-
+      RUNTIME_GATEWAY_URL=http://127.0.0.1:8090 timeout 120s bash scripts/acceptance/livetalking-session-zero.sh
+      --execute --stop-after（远程工作树 revision 5291824）
+    镜像:
+      - 远程运行中的 LiveTalking、CosyVoice 与 Runtime Gateway 服务镜像
+    检查:
+      - { 名称: dynamic_session, 结果: WebRTC offer 创建动态 session；/api/admin/sessions 可见 }
+      - { 名称: start_program, 结果: HTTP 200，accepted=true，回执保留 sessionid }
+      - { 名称: rtmp_output, 结果: output_connected=true，output_fps=9.786，last_output_at 有值 }
+      - { 名称: aigc_label, 结果: enabled=true，文字为“本直播由AI数字人生成”，frames_labelled=65656，frames_dropped=0，last_error=null }
+      - { 名称: stop_program, 结果: HTTP 200，回执保留 sessionid }
+      - { 名称: recording, 结果: 容器内生成 MP4；H.264 512x682，AAC，时长 5.184 秒 }
+      - { 名称: helper_cleanup, 结果: 容器内 helper PID 收到 TERM 后退出，必要时有界 KILL；最终 /api/admin/sessions 返回空列表 }
+未覆盖:
+  - Ubuntu 22.04 宿主机、至少 150 GiB 可用磁盘和全链路 Ubuntu 22.04 用户态
+  - 正式目标平台 RTMP、独立 output-probe/avSyncProbeUrl、4090 画面观感和 4 小时连续开播
+  - 签名 release manifest 的最终部署来源
+说明: >-
+  本条证明修复后的远程短时运行闭环与清理收尾；由于依据来自外部 GPU 主机，按治理规则保留为未验证，不把远程结果冒充本机行为验证。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
