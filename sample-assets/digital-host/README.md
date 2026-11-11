@@ -18,3 +18,14 @@
 2. 音频必须是可解码 WAV，24 kHz、单声道，时长与脚本一致。
 3. 录播成片需要有视频、音频、字幕和商品事实；预览确认后才能保存。
 4. 直播试播需要动态会话、RTMP `output_connected=true`、输出 FPS、AIGC 标识帧和 MP4 录制证据。
+
+## 已验证的 4090 基础试播（2026-11-11）
+
+这套样本已经在实际 4090 Runtime 上跑完一轮 60 秒试播，不是前端假预览：
+
+- 动态数字人会话、节目下发、RTMP 输出、AIGC 标识与 MP4 录制均已完成；运行时确认 `output_connected=true`、输出为 25 FPS、标识帧正常且无丢帧。
+- 成片为 65.6 秒、3,889,419 bytes，H.264 High / 512 × 682 / 25 FPS，AAC-LC / 16 kHz / 单声道；全文件解码通过，音频峰值为 -2.3 dB。
+- [`qa-frames/contact-sheet.jpg`](qa-frames/contact-sheet.jpg) 是第 5、20、40、60 秒的实际录制抽帧，可直接检查画面连续性和右上角 AIGC 标识。
+- `live-trial.mp4` 与 `sample-live-trial-evidence.json` 按仓库既有 `.gitignore` 留在本地与 GPU 运行环境，不提交到公共 Git；它们是本轮验收的原始成片和机器证据。
+
+![4090 实际数字人试播抽帧](qa-frames/contact-sheet.jpg)
