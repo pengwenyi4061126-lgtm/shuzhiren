@@ -387,6 +387,41 @@
   本条只证明代码侧 provider 白名单与标准化 Channel_Adapter 契约已经有可运行单测；RW-040-06 保持“代码已完成但待 CI 或 Linux 验证”，避免把本机测试升级为 PostgreSQL/平台验收。
 ```
 
+## V-20261111-13 Ubuntu24 目标收敛后的本机完整门禁通过
+
+```yaml
+编号: V-20261111-13
+类型: 结论
+结论: 提交 4a1aaa337cc9b283344007b0fa6a35f51e8065cb 的文档目标收敛与现有代码在本机完成完整 verify:local，94 项检查退出码为 0；文档治理、Studio 内容工作流、渠道契约、类型检查、Lint 和生产构建均通过。
+判定: 行为验证
+依据来源:
+  - 类别: 本机运行
+    命令: npm run verify:local
+    日期: 2026-11-11
+    退出码: "0"
+    操作系统: Windows 10.0.22631.7376
+    提交: 4a1aaa337cc9b283344007b0fa6a35f51e8065cb
+    检查:
+      - { 名称: docs:governance:check, 标签: static }
+      - { 名称: docs:governance:test, 标签: behavioral }
+      - { 名称: studio:content-workflow:test, 标签: static }
+      - { 名称: channel-adapter:test, 标签: behavioral }
+      - { 名称: typecheck, 标签: static }
+      - { 名称: lint, 标签: static }
+      - { 名称: build, 标签: static }
+      - { 名称: runtime:acceptance:test, 标签: behavioral }
+    未执行的 CI 检查:
+      - { job: python-gateway, 名称: "npm run runtime:gateway:config:test", 原因: 本机未安装 Python 3 或未启用 --with-gateway }
+      - { job: postgres-integration, 名称: "npm run control-plane:integration", 原因: 本机缺少 PostgreSQL }
+      - { job: compose-render, 名称: "docker compose ... config", 原因: 本机缺少 Docker }
+      - { job: docker-build, 名称: "docker build ...", 原因: 本机缺少 Docker }
+      - { job: static-gates, 名称: "npm run ci:action-pins:verify", 原因: Local_Verification 不访问 GitHub 网络 }
+静态门禁覆盖:
+  - { 门禁: docs:governance:check, 行为测试: [docs:governance:test] }
+说明: >-
+  verify:local 明确列出 53 个未在本机执行的 CI/外部步骤；AIGC numpy 画面绘制测试因本机未安装 numpy 跳过。远程 Ubuntu 24.04 + RTX 4090、生产 150 GiB 磁盘、真实 RTMP/output-probe、4090 画面观感、4 小时开播、真实模型/授权素材、签名 release/OIDC/对象存储和抖音专属 Adapter 仍按未验证或代码未完成处理。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
