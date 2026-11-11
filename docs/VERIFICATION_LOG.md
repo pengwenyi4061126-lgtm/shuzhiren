@@ -280,6 +280,33 @@
   依据来自外部 GPU 主机，按治理规则保留为未验证。
 ```
 
+## V-20261111-09 远程部署工作树通过 Git bundle 快进到当前提交
+
+```yaml
+编号: V-20261111-09
+类型: 结论
+结论: 本地已确认 5d7e06a 推送到 GitHub origin/master；由于远程主机到 github.com:443 临时不可达，远程未能通过 HTTPS fetch，随后使用已校验的完整 Git bundle 经 SSH 传输，在远程执行 fetch 与 fast-forward；远程 HEAD、origin/master 与 5d7e06a 一致，工作树干净。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: 远程 Ubuntu 24.04 GPU 云主机，部署副本 /home/wuyou/shuzizhibo-git
+    命令或验收步骤: >-
+      本地 git bundle create 并 git bundle verify；SSH 传输到远程 /tmp；远程执行
+      git fetch /tmp/shuzizhibo-update-5d7e06a.bundle refs/heads/master:refs/remotes/bundle/master、
+      git merge --ff-only bundle/master；依据本地 push 已成功的事实将 refs/remotes/origin/master
+      对齐到同一已知提交，并执行 git status -sb 与 git rev-parse。
+    检查:
+      - { 名称: bundle_verify, 结果: 完整 bundle 校验通过，包含 refs/heads/master -> 5d7e06a }
+      - { 名称: remote_fast_forward, 结果: 5b6b22b..5d7e06a Fast-forward }
+      - { 名称: remote_head, 结果: HEAD=5d7e06a；origin/master=5d7e06a；git status -sb 为 master...origin/master，无未提交修改 }
+      - { 名称: temporary_cleanup, 结果: 远程 /tmp bundle 已删除 }
+未覆盖:
+  - 远程主机后续能否直接访问 GitHub 的网络恢复情况；本次只证明 bundle 同步路径可用
+  - 签名 release manifest 发布、正式目标端 RTMP、长时开播和 4090 实机画面观感
+说明: >-
+  这是 Git 历史同步的外部证据，不把网络 fetch 失败改写成成功；同步结果以远程工作树与已确认的本地 push 提交为准，按治理规则保留为未验证。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
