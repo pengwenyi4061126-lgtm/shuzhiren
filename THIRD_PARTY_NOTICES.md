@@ -23,7 +23,7 @@ npm 依赖、Python 依赖（`requirements.txt` 安装的包）、CUDA 基础镜
 | --- | --- | --- | --- | --- |
 | `python_rtmpstream` | https://github.com/lipku/python_rtmpstream.git | `02b2ca0bafde75736ca4a4d28b820fafc147fb7b` | MIT License | 是：`runtime/livetalking/Dockerfile` 在构建时拉取 `python` 子目录并安装原生 `rtmp_streaming` 扩展，供 LiveTalking 的 RTMP 输出使用 |
 
-`python_rtmpstream` 不作为 Git 子模块提交到本仓库；LiveTalking 镜像通过 `PYTHON_RTMPSTREAM_COMMIT` 固定提交，并在构建时应用 `runtime/patches/python-rtmpstream-cmake.patch` 与 `runtime/patches/python-rtmpstream-clock.patch`。前者移除上游开发机路径并改用容器内 Python/FFmpeg，后者补充 Ubuntu 24.04 所需的 POSIX 时钟声明。该组件的许可证全文随其源码进入构建层并在安装后清理源码目录，SBOM 仍应记录已安装扩展及其依赖。
+`python_rtmpstream` 不作为 Git 子模块提交到本仓库；LiveTalking 镜像通过 `PYTHON_RTMPSTREAM_COMMIT` 固定提交，并在构建时应用 `runtime/patches/python-rtmpstream-cmake.patch` 与 `runtime/patches/python-rtmpstream-clock.patch`。前者移除上游开发机路径并改用容器内 Python/FFmpeg，后者补充容器 FFmpeg 构建所需的 POSIX 时钟声明。该组件的许可证全文随其源码进入构建层并在安装后清理源码目录，SBOM 仍应记录已安装扩展及其依赖。
 
 说明：
 
@@ -90,5 +90,5 @@ Apache License 2.0 第 4 条要求再分发修改后的作品时附带许可证�
 下表列出运行时镜像以 `apt-get install` 安装、并以其内容（而不是作为构建或运行工具）进入直播画面的发行版软件包。其余系统软件包（`python3`、`ffmpeg`、`git` 等）按 SBOM 审查。`npm run runtime:images:licenses:check` 核对下表中的软件包确实由对应 Dockerfile 安装、本节写明其许可证，并拒绝未登记的 `fonts-*` 字体包；CI 的 `docker-build` job 运行 `scripts/check-runtime-image-licenses.mjs --livetalking-image` 时检查镜像中保留了该软件包的 Debian 版权文件且其中写明该许可证。
 | 软件包 | 镜像 | 许可证 | 用途 | 镜像内许可证文本 |
 | --- | --- | --- | --- | --- |
-| `fonts-noto-cjk`（Ubuntu 24.04 发行版软件包，Noto Sans CJK） | livetalking | SIL Open Font License 1.1 | AIGC 显式标识的中文字形：`runtime/livetalking/shuzhiren_aigc_label.py` 读取 `/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc`（缺失时 `NotoSansCJK-Regular.ttc`），用 Pillow 把标识文字绘制到每一帧 | `/usr/share/doc/fonts-noto-cjk/copyright` |
+| `fonts-noto-cjk`（Ubuntu 22.04 发行版软件包，Noto Sans CJK） | livetalking | SIL Open Font License 1.1 | AIGC 显式标识的中文字形：`runtime/livetalking/shuzhiren_aigc_label.py` 读取 `/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc`（缺失时 `NotoSansCJK-Regular.ttc`），用 Pillow 把标识文字绘制到每一帧 | `/usr/share/doc/fonts-noto-cjk/copyright` |
 说明：OFL 1.1 允许字体随软件捆绑分发和用于商业用途，不允许单独出售字体文件；用该字体渲染进视频画面的文字不受该许可证约束。镜像不修改字体文件。上述理解不是许可证审查结论，需部署方确认。Pillow 不是直接安装的依赖：它随 `torchvision` 安装进镜像，按 SBOM 审查。

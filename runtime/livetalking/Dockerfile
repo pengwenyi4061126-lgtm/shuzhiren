@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04@sha256:24c8e3581ea6330038b0d374920721983312627f8adbfcf390bdb4b399d280ed
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:61f6c08f2b59036cb935e56d1e31a6b64e3ae2c7ddb86d33fa0b044c7917b719
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/tmp
@@ -13,15 +13,15 @@ RUN groupadd --system --gid 10002 livetalking && useradd --system --uid 10002 --
 COPY vendor/LiveTalking/requirements.txt ./requirements.txt
 RUN python3 -m pip install --break-system-packages --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128 && python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
 # MuseTalk's avatar preprocessor imports face_recognition.  dlib-bin supplies
-# the CPython 3.12 wheel; installing face-recognition without dependency
-# resolution avoids rebuilding dlib from source on Ubuntu 24.04.
+# the CPython 3.10 manylinux wheel; installing face-recognition without
+# dependency resolution avoids rebuilding dlib from source on Ubuntu 22.04.
 RUN python3 -m pip install --break-system-packages --no-cache-dir dlib-bin==20.0.1.post1 face-recognition-models==0.3.0 && \
     python3 -m pip install --break-system-packages --no-cache-dir --no-deps face-recognition==1.3.0
 COPY vendor/LiveTalking/ ./
 # LiveTalking's RTMP transport imports the native python_rtmpstream extension.
 # Build the pinned upstream commit against Ubuntu's Python/FFmpeg development
 # packages; the compatibility patches remove developer-local paths and add the
-# POSIX clock declaration required by Ubuntu 24.04.
+# POSIX clock declaration required by the container's FFmpeg build.
 COPY runtime/patches/python-rtmpstream-*.patch /tmp/python-rtmpstream-patches/
 RUN set -eux; \
     git init /tmp/python_rtmpstream-src; \
