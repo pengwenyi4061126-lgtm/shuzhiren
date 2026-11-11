@@ -167,6 +167,42 @@
   本条证明修复后的远程短时运行闭环与清理收尾；由于依据来自外部 GPU 主机，按治理规则保留为未验证，不把远程结果冒充本机行为验证。
 ```
 
+## V-20261111-06 远程 Ubuntu 22.04 LiveTalking 候选镜像构建、启动与 GPU 依赖复核
+
+```yaml
+编号: V-20261111-06
+类型: 结论
+结论: a4f5882 修复了 Ubuntu 22.04 的 pip 兼容性问题；远程 RTX 4090 主机按官方 CUDA amd64 digest 构建并启动了隔离的 LiveTalking Ubuntu 22.04 候选镜像，依赖导入、AIGC 画面层和运行时指标接口通过，候选容器随后已清理，现有稳定容器未替换。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: Ubuntu 24.04 GPU 云主机，单张 NVIDIA GeForce RTX 4090（24564 MiB），Driver 595.99.02，Docker 29.1.3
+    命令或验收步骤: >-
+      远程工作树从 origin/master 快进到 a4f5882 后，使用
+      docker pull docker.m.daocloud.io/nvidia/cuda@sha256:61f6c08f2b59036cb935e56d1e31a6b64e3ae2c7ddb86d33fa0b044c7917b719、
+      timeout 3600s docker build --file runtime/livetalking/Dockerfile
+      --tag shuzhiren/livetalking:ubuntu22-candidate-a4f5882 .，随后以 --gpus all
+      启动候选容器并访问 /api/admin/runtime-metrics；验收后 docker rm -f 清理候选容器。
+    镜像:
+      - nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:61f6c08f2b59036cb935e56d1e31a6b64e3ae2c7ddb86d33fa0b044c7917b719
+      - shuzhiren/livetalking:ubuntu22-candidate-a4f5882@sha256:31d3fa9111c7580695cc4ab8a891296921a6bcb24f6224f41e2f8ac6923fa16e
+    检查:
+      - { 名称: git_sync, 结果: 远程 master、origin/master 与 a4f5882 一致，工作树干净 }
+      - { 名称: image_build, 结果: 27/27 步完成；候选镜像 size=10719478071；USER=livetalking；ENTRYPOINT 为 /opt/shuzhiren/launcher.py }
+      - { 名称: ubuntu22_userland, 结果: /etc/os-release 为 Ubuntu 22.04.5 LTS }
+      - { 名称: cuda_runtime, 结果: torch 2.9.1+cu128；CUDA available=true；NVIDIA GeForce RTX 4090；Driver 595.99.02；24564 MiB }
+      - { 名称: dependency_imports, 结果: dlib 20.0.1、face_recognition、rtmp_streaming 均导入成功 }
+      - { 名称: aigc_frame, 结果: 128x128 uint8 测试帧成功叠加 AIGC 标识；字体为 NotoSansCJK-Bold.ttc；位置为 top-right }
+      - { 名称: candidate_runtime, 结果: 隔离 LiveTalking 以 WebRTC 模式启动；/api/admin/runtime-metrics 返回 HTTP 200，AIGC enabled=true、frames_labelled=0、frames_dropped=0、last_error=null }
+      - { 名称: candidate_cleanup, 结果: 候选容器删除后 docker ps 中不存在 livetalking-ubuntu22-candidate }
+未覆盖:
+  - Ubuntu 22.04 宿主机与至少 150 GiB 可用磁盘；当前宿主机仍为 Ubuntu 24.04、可用磁盘约 106 GiB
+  - 将候选镜像替换为稳定 LiveTalking 服务并完成 RTMP 动态会话、正式目标平台、独立 output-probe/avSyncProbeUrl、4090 画面观感和 4 小时连续开播
+  - 签名 release manifest 的最终部署来源
+说明: >-
+  首次候选构建暴露了 Ubuntu 22.04 pip 22.0.2 不识别 --break-system-packages 的真实错误；a4f5882 移除该参数并同步更新部署门禁。候选镜像只做隔离启动验证，未改动稳定服务；依据来自外部 GPU 主机，按治理规则保留为未验证。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。

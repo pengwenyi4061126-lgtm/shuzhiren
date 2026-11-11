@@ -19,6 +19,7 @@
 - `/studio` 的 HTTP GET 返回 `200`；生产构建列出了 Studio、录播、直播场次、脚本播放、形象构建与预览授权对应的路由（[V-20261110-01](VERIFICATION_LOG.md#v-20261110-01)）。
 - 远程 GPU 主机最新实测为 Ubuntu 24.04、RTX 4090（24,564 MiB 显存）、Driver 595.99.02、Docker 29.1.3，NVIDIA runtime 可用；当前可用磁盘约 106 GiB，低于本项目 150 GiB 门槛，因此这台主机仍不是完整生产验收通过环境（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）。
 - 运行中的 GPU 容器分层事实已复核：CosyVoice 为 Ubuntu 22.04 + `torch 2.3.1+cu121` + RTX 4090，LiveTalking 当前 `rtmp-c1` 镜像为 Ubuntu 24.04 + `torch 2.9.1+cu128` + RTX 4090；两者均能访问显卡，但这不等于整条运行链路已经在 Ubuntu 22.04 用户态上验收（[V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)）。
+- 已在同一远程 4090 主机按官方 CUDA amd64 digest 构建并隔离启动 LiveTalking Ubuntu 22.04 候选镜像：`shuzhiren/livetalking:ubuntu22-candidate-a4f5882`，Ubuntu 22.04.5、`torch 2.9.1+cu128`、RTX 4090、AIGC 标识与运行时指标接口均通过；现有稳定服务未替换（[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)）。
 - 2026-11-11 在同一类 4090 主机上完成了 Avatar Builder 的真实短视频冒烟：数据库锁连接、上传、GPU 预处理、候选预览、完整性清单和 Publisher 发布均通过；详细证据见 [V-20261111-01](VERIFICATION_LOG.md#v-20261111-01)。该条不替代 LiveTalking/CosyVoice/Gateway 全量运行、RTMP 目标端和长时开播验收。
 
 ### 4090 实机镜像构建结果
@@ -31,14 +32,14 @@
 
 | 项目 | 当前状态 | 后续动作 |
 | --- | --- | --- |
-| LiveTalking 与 CosyVoice 运行时镜像 | 两个 GPU 镜像已在 4090 主机构建；远程运行时已启动，Gateway、LiveTalking、CosyVoice 健康检查、短时动态会话/RTMP 和网络隔离验收通过；远程代码已同步到 `212f59e`（[V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)、[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)） | 将远程标签收敛为受签名 release manifest 约束的镜像引用，并补内部输出探针、目标端试播与长时稳定性证据 |
+| LiveTalking 与 CosyVoice 运行时镜像 | 两个 GPU 镜像已在 4090 主机构建；稳定运行时的短时动态会话/RTMP 已通过；Ubuntu 22.04 LiveTalking 候选镜像已隔离构建并启动，但该候选整体仍未验证，远程代码已同步到 `a4f5882`（[V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)、[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)） | 候选镜像仍需在不影响稳定服务的前提下完成 Gateway/RTMP/录播短时复测，再收敛到受签名 release manifest 约束的镜像引用，并补正式目标端与长时证据 |
 | 模型权重 | 主机目录中未发现 LiveTalking/MuseTalk 或 CosyVoice 可运行权重 | 按锁定版本下载、校验哈希、记录许可证和挂载路径 |
 | 数字人形象与声线 | 尚未挂入真实素材、授权记录和声线库 | 在 Studio 中上传，完成审核，再创建形象构建任务 |
 | PostgreSQL、对象存储、OIDC 与生产环境文件 | 租机只有示例环境文件 | 创建独立服务账号、私网数据库、对象存储桶、生产环境文件与密钥目录 |
 | RTMP 目的端、推流密钥和独立输出探针 | 尚未配置 | 先接内部 RTMP 中继，再接目标端；以探针记录帧率、码率、音频活动和音画同步 |
-| GitHub 同步 | 本地与远程部署副本均已同步到 `212f59e`，远程 `master` 工作树干净，且网络隔离脚本已在显式测试 sink 例外下通过（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)） | 后续仍需把镜像引用收敛到受签名 release manifest 的发布流程 |
+| GitHub 同步 | 本地与远程部署副本均已同步到 `a4f5882`，远程 `master` 工作树干净，且网络隔离脚本已在显式测试 sink 例外下通过（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)） | 后续仍需把镜像引用收敛到受签名 release manifest 的发布流程 |
 | 远程宿主机版本与磁盘 | 实际主机为 Ubuntu 24.04，不是目标文档中的 Ubuntu 22.04；可用磁盘约 106 GiB，小于 150 GiB 门槛（[V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)） | 二选一：换用/重装 Ubuntu 22.04 且扩容到至少 150 GiB，或书面接受 Ubuntu 24.04 并扩容；完成前不标记生产验收通过 |
-| GPU 容器用户态版本 | CosyVoice 已是 Ubuntu 22.04；当前 LiveTalking 镜像仍是 Ubuntu 24.04，二者都在同一张 RTX 4090 上可用（[V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)） | 若目标要求全链路 Ubuntu 22.04，需在释放磁盘后重建并复测 LiveTalking 22.04 镜像；否则明确记录 24.04 用户态例外 |
+| GPU 容器用户态版本 | CosyVoice 已是 Ubuntu 22.04；稳定 LiveTalking 仍是 Ubuntu 24.04，但 Ubuntu 22.04 候选已在同一张 RTX 4090 上完成隔离构建、依赖导入和 WebRTC 服务启动（[V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)） | 候选镜像仍需跑 Gateway/RTMP/录播复测后才能替换稳定服务；宿主机 Ubuntu 24.04 与约 106 GiB 磁盘仍未满足最终门槛 |
 
 ## 分阶段执行方案
 
@@ -91,7 +92,7 @@
 ### P4：交付与 Git 收敛
 
 1. 把本轮主机预检、两个 GPU 镜像构建、许可证哈希与 CUDA 冒烟、Compose 健康、试播和故障演练结果逐项登记。
-2. 本轮核心运行时变更已推送到 `origin/master`（`212f59e`），远程主机已 fetch 并 reset 到同一提交，工作树干净；过程和网络隔离复核见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)。
+2. 本轮核心运行时变更已推送到 `origin/master`（`a4f5882`），远程主机已从同一分支快进，工作树干净；过程和网络隔离复核见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03) 与 [V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)。
 3. 下一步把远程部署从“已同步 Git 工作树”收敛为受签名 release manifest 约束的镜像与部署包来源，不再依赖手工压缩包副本。
 4. 打包运行手册：模型/权重清单、目录权限、环境变量来源、启动顺序、回滚步骤、日常录播与直播操作步骤。
 
@@ -122,16 +123,17 @@
 - **内部 RTMP 输出短时结果已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：RTMP sink 日志出现 `fmle-publish`、`new live source`、`start publish` 和 `cleanup when unpublish`；验收期间记录 `output_connected=true`、`output_fps=9.732`、`last_output_at` 有值。
 - **AIGC 标识运行时指标已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：`enabled=true`，文字为 `本直播由AI数字人生成`，`frames_labelled=14048`，`frames_dropped=0`，`last_error=null`。
 - **录播文件容器内 ffprobe 结果已记录（见 [V-20261111-02](VERIFICATION_LOG.md#v-20261111-02)）**：生成 MP4，视频 H.264、512×682，音频 AAC、16 kHz、单声道，时长约 5.056 秒；录播目录已调整为容器 UID 10002、主机用户组可读的 setgid 目录。
-- **Git 已同步（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）**：远程主机已从 `origin/master` 拉取并切到 `212f59e`，工作树干净；这解决了远程副本落后于本地代码的问题，但还不等于完成签名 release manifest 发布流程。
+- **Git 已同步（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)、[V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)）**：远程主机已从 `origin/master` 快进到 `a4f5882`，工作树干净；这解决了远程副本落后于本地代码的问题，但还不等于完成签名 release manifest 发布流程。
 - **网络隔离已复核（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）**：`runtime-network-isolation.sh --network-only` 返回 `0`；默认 egress 仍只允许 LiveTalking，只有显式设置 `RUNTIME_ACCEPTANCE_RTMP_SINK_NAME=compose-rtmp-sink` 时才允许该 `ossrs/srs:5` 测试 sink。该例外不代表正式平台 RTMP 已配置。
 - **主机门槛仍未满足（见 [V-20261111-03](VERIFICATION_LOG.md#v-20261111-03)）**：实际系统为 Ubuntu 24.04，当前可用磁盘约 106 GiB；项目目标写的是 Ubuntu 22.04 且至少 150 GiB。两项都未完成前，不把该主机写成最终生产验收通过。
 - **容器用户态版本已拆分记录（见 [V-20261111-04](VERIFICATION_LOG.md#v-20261111-04)）**：CosyVoice 的 GPU 容器是 Ubuntu 22.04，LiveTalking 当前 GPU 容器是 Ubuntu 24.04；两者都报告 RTX 4090。是否重建 LiveTalking 22.04 镜像仍是目标决策项。
+- **Ubuntu 22.04 候选镜像已完成隔离启动检查，但整体仍未验证（见 [V-20261111-06](VERIFICATION_LOG.md#v-20261111-06)）**：候选镜像已通过 Ubuntu 22.04、CUDA、RTX 4090、dlib/face_recognition/RTMP 扩展、AIGC 画面层和 `/api/admin/runtime-metrics` 启动检查；由于尚未替换稳定容器，仍需 Gateway/RTMP/录播复测后再决定升级。
 - **还没有冒充完成的部分**：当前 `OUTPUT_PROBE_TARGETS=[]`，所以尚未证明抖音/外部目标端输出、独立音画同步探针、长时连续开播和 4090 实机画面观感；这些仍是单独的外部验收项。
 
 ### 下一步只剩三类工作
 
 1. 将已同步的远程 Git 工作树进一步收敛为签名 release manifest 部署，避免手工改远程 Dockerfile。
 2. 解决 Ubuntu 版本与磁盘门槛：换用 Ubuntu 22.04 且至少 150 GiB，或明确批准 Ubuntu 24.04 并扩容到至少 150 GiB。
-3. 若坚持全链路 Ubuntu 22.04，释放磁盘后重建 LiveTalking 22.04 镜像并重新跑 GPU、会话、RTMP 和录播验收。
+3. 若坚持全链路 Ubuntu 22.04，在释放磁盘后用 `ubuntu22-candidate-a4f5882` 做隔离 Gateway、会话、RTMP 和录播复测；通过后再替换稳定 LiveTalking 服务。
 4. 配置真实 RTMP 目标与独立 `output-probe`/`avSyncProbeUrl`，再做目标端试播。
 5. 在 4090 上做画面逐项验收和 4 小时稳定性测试；这一步不在本机或短时 smoke test 中虚报完成。
