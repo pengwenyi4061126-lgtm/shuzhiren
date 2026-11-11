@@ -238,6 +238,48 @@
   依据来自外部 GPU 主机，按治理规则保留为未验证。
 ```
 
+## V-20261111-08 Ubuntu 22.04 LiveTalking 候选镜像完整短时直播录播闭环
+
+```yaml
+编号: V-20261111-08
+类型: 结论
+结论: 远程主机将 Compose 的 LiveTalking 服务临时切换到 Ubuntu 22.04 候选镜像后，完整短时链路通过：动态 WebRTC session、Gateway start_program、内部 RTMP 输出、AIGC 标识、stop_program、MP4 录制与 ffprobe、会话清理均成功；随后已恢复 shuzhiren/livetalking:rtmp-c1 稳定镜像并确认 healthy。
+判定: 未验证
+依据来源:
+  - 类别: 需外部环境
+    环境: Ubuntu 24.04 GPU 云主机，单张 NVIDIA GeForce RTX 4090（24564 MiB），Docker Compose 项目 compose；LiveTalking 容器用户态为 Ubuntu 22.04.5 LTS
+    命令或验收步骤: >-
+      在远程工作树 e50e396 上以 LIVETALKING_IMAGE=shuzhiren/livetalking:ubuntu22-candidate-a4f5882
+      临时重建 compose-livetalking-1，执行
+      RUNTIME_SHARED_TOKEN=<运行时容器内读取> RUNTIME_GATEWAY_URL=http://127.0.0.1:8090
+      RUNTIME_REPO_ROOT=/home/wuyou/shuzizhibo-git RUNTIME_COMPOSE_PROJECT=compose
+      RUNTIME_COMPOSE_FILE=/home/wuyou/shuzizhibo-git/infra/compose/docker-compose.runtime.yml
+      timeout 240s bash scripts/acceptance/livetalking-session-zero.sh --execute --stop-after；
+      完成后以 LIVETALKING_IMAGE=shuzhiren/livetalking:rtmp-c1 重建并等待 healthy。
+    镜像:
+      - shuzhiren/livetalking:ubuntu22-candidate-a4f5882@sha256:31d3fa9111c7580695cc4ab8a891296921a6bcb24f6224f41e2f8ac6923fa16e
+      - shuzhiren/livetalking:rtmp-c1
+      - shuzhiren/runtime-gateway:00350f2
+      - shuzhiren/cosyvoice:c1bed0a-cvfix5
+      - ossrs/srs:5
+    检查:
+      - { 名称: candidate_userland, 结果: Ubuntu 22.04.5 LTS；torch 2.9.1+cu128；CUDA available=true；NVIDIA GeForce RTX 4090 }
+      - { 名称: dynamic_session, 结果: WebRTC offer 返回动态 sessionid，LiveTalking session 列表可见 }
+      - { 名称: start_program, 结果: Gateway HTTP 200，accepted=true，receipt 保留同一 session ID }
+      - { 名称: rtmp_output, 结果: output_connected=true；output_fps=9.467；last_output_at 有值 }
+      - { 名称: aigc_label, 结果: enabled=true；文字为“本直播由AI数字人生成”；frames_labelled=139；frames_dropped=0；last_error=null }
+      - { 名称: stop_program, 结果: Gateway HTTP 200，accepted=true，receipt 保留同一 session ID }
+      - { 名称: recording, 结果: ffprobe 通过；H.264 512x682；AAC 16000 Hz 单声道；时长 4.800 秒；文件约 274840 bytes }
+      - { 名称: session_cleanup, 结果: LiveTalking session 列表清空；候选服务随后回滚为 rtmp-c1 并 healthy }
+未覆盖:
+  - Ubuntu 22.04 宿主机与至少 150 GiB 可用磁盘；当前宿主机仍为 Ubuntu 24.04、可用约 78 GiB
+  - 正式目标平台 RTMP、独立 output-probe/avSyncProbeUrl、目标端观看与音画同步
+  - 4090 实机画面观感、4 小时连续开播和签名 release manifest 的最终部署来源
+说明: >-
+  该条证明候选容器的 Gateway/内部 RTMP/录播短时链路与回滚动作可执行；内部 rtmp-sink 不代表正式平台推流，短时 4.8 秒录制不代表长时稳定性。
+  依据来自外部 GPU 主机，按治理规则保留为未验证。
+```
+
 字段规则：
 
 - `提交` 为 7 至 40 位小写十六进制 SHA；标明 40 位的字段必须写完整 SHA。`日期` 是合法的 YYYY-MM-DD 日期，`run id`、`序号`、`skipped 步骤数`、`node20 弃用告警数` 是非负整数，`退出码` 是整数。
