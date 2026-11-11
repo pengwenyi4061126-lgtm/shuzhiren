@@ -2,8 +2,10 @@ import { readBoundedJson } from "@/lib/bounded-json";
 import { isRuntimeVoiceId, isVoiceChecksum, listAssets } from "@/lib/assets";
 import { assertCreationProjectScriptReviewed, listCreationProjects } from "@/lib/creation-projects";
 import { requestContextFrom, requireRole } from "@/lib/control-plane/auth-context";
+import { controlPlaneConfig } from "@/lib/control-plane/config";
 import { RuntimeGatewayError, synthesizeRuntimeSpeechPreview } from "@/lib/runtime-gateway";
 import { isAssetCurrentlyUsable } from "@/lib/shared/asset-eligibility.mjs";
+import { isVerifiedStudioSampleScript, isVerifiedStudioSampleVoice, readVerifiedStudioSampleMedia } from "@/lib/verified-studio-sample";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +27,15 @@ export async function POST(request: Request, context: RouteContext<"/api/v1/stud
     if (!asset || asset.kind !== "voice" || !isAssetCurrentlyUsable(asset)
       || !isRuntimeVoiceId(asset.runtimeVoiceId) || !isVoiceChecksum(asset.checksum) || !asset.contentVerification) {
       return Response.json({ error: "approved_runtime_voice_required" }, { status: 409 });
+    }
+    if (controlPlaneConfig().demoMode && isVerifiedStudioSampleVoice(asset) && isVerifiedStudioSampleScript(project.script)) {
+      const audio = await readVerifiedStudioSampleMedia("voice");
+      return new Response(audio, { headers: {
+        "content-type": "audio/wav",
+        "cache-control": "no-store",
+        "content-disposition": "inline; filename=verified-4090-speech-preview.wav",
+        "x-shuziren-sample-media": "verified-4090"
+      } });
     }
     const audio = await synthesizeRuntimeSpeechPreview(project.script, asset.runtimeVoiceId, asset.checksum);
     return new Response(audio, { headers: { "content-type": "audio/wav", "cache-control": "no-store", "content-disposition": "inline; filename=speech-preview.wav" } });

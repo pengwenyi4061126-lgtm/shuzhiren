@@ -16,15 +16,15 @@ import styles from "./photo-recording-composer.module.css";
 type PhotoAsset = { id: string; name: string; checksum: string };
 type VoiceAsset = { id: string; name: string; runtimeVoiceId: string; checksum: string };
 type ServerRecording = { id: string; fileName: string; bytes: number; createdAt: string; recordingQuality?: { status: "verified" | "legacy_unverified"; durationSeconds?: number; audioTrackCount?: number } };
+export type GeneratedSpeechPreview = { projectId: string; blob: Blob; script: string; voiceAssetId: string };
 
-export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, script, projectName, productName, productPriceCent, productHighlights, projectId, productVersionId, onEnsureProject, onRecordingSaved, canCreate }: { photos: PhotoAsset[]; voiceAssets: VoiceAsset[]; selectedPhotoIds: string[]; script: string; projectName: string; productName: string; productPriceCent: number; productHighlights: string[]; projectId: string; productVersionId: string; onEnsureProject: () => Promise<CreationProject>; onRecordingSaved: (result: { localSaved: boolean; serverArchived: boolean }) => void; canCreate: boolean }) {
+export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, script, projectName, productName, productPriceCent, productHighlights, projectId, productVersionId, onEnsureProject, onRecordingSaved, generatedSpeechPreview, onGeneratedSpeechPreviewChange, canCreate }: { photos: PhotoAsset[]; voiceAssets: VoiceAsset[]; selectedPhotoIds: string[]; script: string; projectName: string; productName: string; productPriceCent: number; productHighlights: string[]; projectId: string; productVersionId: string; onEnsureProject: () => Promise<CreationProject>; onRecordingSaved: (result: { localSaved: boolean; serverArchived: boolean }) => void; generatedSpeechPreview: GeneratedSpeechPreview | null; onGeneratedSpeechPreviewChange: (preview: GeneratedSpeechPreview | null) => void; canCreate: boolean }) {
   const preferred = photos.find((photo) => selectedPhotoIds.includes(photo.id)) ?? photos[0];
   const [photoId, setPhotoId] = useState(preferred?.id ?? "");
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [photoSourceStatus, setPhotoSourceStatus] = useState(preferred ? "正在查找已批准的项目照片…" : "请先选择一张项目照片。");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [recordedAudio, setRecordedAudio] = useState<Blob | null>(null);
-  const [generatedAudio, setGeneratedAudio] = useState<{ blob: Blob; script: string; voiceAssetId: string } | null>(null);
   const [voiceAssetId, setVoiceAssetId] = useState(voiceAssets[0]?.id ?? "");
   const [recording, setRecording] = useState(false);
   const [working, setWorking] = useState(false);
@@ -51,6 +51,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
   const activePhotoId = photos.some((item) => item.id === photoId) ? photoId : (preferred?.id ?? "");
   const photo = photos.find((item) => item.id === activePhotoId);
   const selectedVoice = voiceAssets.find((item) => item.id === voiceAssetId) ?? voiceAssets[0];
+  const generatedAudio = generatedSpeechPreview?.projectId === projectId ? generatedSpeechPreview : null;
   const generatedAudioMatches = Boolean(generatedAudio && generatedAudio.script === script && generatedAudio.voiceAssetId === selectedVoice?.id);
   const audioBlob = recordedAudio ?? audioFile ?? (generatedAudioMatches ? generatedAudio?.blob ?? null : null);
   const savedOutput = savedOutputs.find((output) => output.id === selectedOutputId) ?? savedOutputs[0] ?? null;
@@ -114,6 +115,12 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
     return () => { active = false; };
   }, [activePhotoId, projectId]);
 
+  // The generated WAV is held by StudioWorkspace so it survives a composer remount.
+  // Recreate this component-local object URL whenever that shared preview is restored.
+  useEffect(() => {
+    if (generatedAudioMatches && !audioFile && !recordedAudio) setAudioPreview(generatedAudio?.blob ?? null);
+  }, [audioFile, generatedAudio?.blob, generatedAudioMatches, recordedAudio]);
+
   function setAudioPreview(blob: Blob | null) {
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     audioUrlRef.current = blob ? URL.createObjectURL(blob) : ""; setAudioUrl(audioUrlRef.current);
@@ -135,10 +142,10 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
         setRecordedAudio(blob); setAudioPreview(blob);
-        setAudioFile(null); setGeneratedAudio(null); setVideoBlob(null); setReviewed(false); setRecording(false);
+        setAudioFile(null); onGeneratedSpeechPreviewChange(null); setVideoBlob(null); setReviewed(false); setRecording(false);
         stream.getTracks().forEach((track) => track.stop()); microphoneRef.current = null; recorderRef.current = null;
       };
-      recorder.start(250); setRecordedAudio(null); setAudioFile(null); setGeneratedAudio(null); setAudioPreview(null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); setRecording(true);
+      recorder.start(250); setRecordedAudio(null); setAudioFile(null); onGeneratedSpeechPreviewChange(null); setAudioPreview(null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); setRecording(true);
     } catch (cause) { setError(cause instanceof Error ? `无法开始录音：${cause.message}` : "无法开始录音，请检查麦克风权限"); }
   }
 
@@ -146,8 +153,11 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
     if (!selectedVoice || !canCreate || !script.trim() || script.length > 12000) return;
     setWorking(true); setError(""); setArchiveNotice("");
     try {
-      const project = await onEnsureProject();
-      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(project.id)}/speech-preview`, {
+      // A reviewed, existing project is already the server-side source of truth for
+      // its speech preview. Avoid an unnecessary parent save here: on a new project
+      // that save assigns the id, while an existing project can proceed directly.
+      const ensuredProjectId = projectId || (await onEnsureProject()).id;
+      const response = await clientFetch(`/api/v1/studio/projects/${encodeURIComponent(ensuredProjectId)}/speech-preview`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ voiceAssetId: selectedVoice.id })
@@ -167,7 +177,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       }
       const blob = await response.blob();
       if (blob.size < 44 || blob.size > 4_400_000 || blob.type !== "audio/wav") throw new Error("语音服务返回了无效或超长音频。");
-      setGeneratedAudio({ blob, script, voiceAssetId: selectedVoice.id });
+      onGeneratedSpeechPreviewChange({ projectId: ensuredProjectId, blob, script, voiceAssetId: selectedVoice.id });
       setRecordedAudio(null); setAudioFile(null); setAudioPreview(blob); setVideoBlob(null); setVideoPreview(null); setReviewed(false);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "语音生成失败，请重试。"); }
     finally { setWorking(false); }
@@ -330,7 +340,7 @@ export function PhotoRecordingComposer({ photos, voiceAssets, selectedPhotoIds, 
       <label>项目照片<select value={activePhotoId} onChange={(event) => { setPhotoId(event.target.value); setImageFile(null); setPhotoSourceStatus("正在查找此设备上的照片副本…"); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }}>{photos.map((item) => <option key={item.id} value={item.id}>{item.name}{selectedPhotoIds.includes(item.id) ? " · 项目已选" : ""}</option>)}</select></label>
       <label>照片原文件（可自动使用本机副本）<input type="file" accept="image/jpeg,image/png" onChange={(event) => { const file = event.target.files?.[0] ?? null; setImageFile(file); setPhotoSourceStatus(file ? `已选择：${file.name}` : "未选择本机文件。"); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>
       <p className={styles.hint} role="status">{photoSourceStatus}</p>
-      <div className={styles.recordingActions}><label>口播音频<input type="file" accept="audio/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setAudioFile(file); setAudioPreview(file); setRecordedAudio(null); setGeneratedAudio(null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>
+      <div className={styles.recordingActions}><label>口播音频<input type="file" accept="audio/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setAudioFile(file); setAudioPreview(file); setRecordedAudio(null); onGeneratedSpeechPreviewChange(null); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }} /></label>
         {recording ? <button type="button" onClick={() => recorderRef.current?.stop()} className={styles.stop}><Square size={14} />结束录音</button> : <button type="button" onClick={startMicrophone} disabled={!canCreate || working} className={styles.mic}><Mic size={14} />录制口播</button>}</div>
       {voiceAssets.length ? <div className={styles.voicePreview}><label>审核通过的配音声线<select aria-label="选择配音声线" value={selectedVoice?.id ?? ""} onChange={(event) => { setVoiceAssetId(event.target.value); setVideoBlob(null); setVideoPreview(null); setReviewed(false); }}><option value="" disabled>选择项目声线</option>{voiceAssets.map((voice) => <option value={voice.id} key={voice.id}>{voice.name}</option>)}</select></label><button type="button" onClick={generateSpeechPreview} disabled={!canCreate || !selectedVoice || !script.trim() || working}><AudioLines size={14} />{working ? "正在生成配音…" : generatedAudioMatches ? "重新生成配音" : "用审核声线生成配音"}</button></div> : <p className={styles.hint}>要使用审核声线生成配音，请在项目素材中选择已批准的声音。</p>}
       {generatedAudio && !generatedAudioMatches && !audioFile && !recordedAudio ? <p className={styles.demo}>脚本或声线已变化，请重新生成配音后再制作视频。</p> : null}

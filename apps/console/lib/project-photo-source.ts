@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import type { RequestContext } from "@/lib/control-plane/auth-context";
 import { requireTenantWideAccess } from "@/lib/control-plane/auth-context";
+import { controlPlaneConfig } from "@/lib/control-plane/config";
 import { databasePool, withTenantTransaction } from "@/lib/database";
 import { createMediaDownloadGrant } from "@/lib/media-evidence";
+import { listAssets } from "@/lib/assets";
+import { listCreationProjects } from "@/lib/creation-projects";
+import { isVerifiedStudioSamplePhoto, readVerifiedStudioSampleMedia } from "@/lib/verified-studio-sample";
 
 const MAX_PHOTO_BYTES = 100 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -10,6 +14,10 @@ type PhotoRow = { object_key: string; checksum: string; verified_object_version:
 
 export async function getProjectPhotoSource(context: RequestContext, projectId: string, assetId: string) {
   requireTenantWideAccess(context);
+  if (controlPlaneConfig().demoMode) {
+    const demoPhoto = await getVerifiedDemoSamplePhoto(context, projectId, assetId);
+    if (demoPhoto) return demoPhoto;
+  }
   if (!UUID.test(projectId) || !UUID.test(assetId)) throw new Response("Project photo was not found", { status: 404, statusText: "project_photo_not_found" });
   if (!databasePool()) throw new Response("Project photo download requires PostgreSQL", { status: 503, statusText: "project_photo_source_unavailable" });
   const photo = await withTenantTransaction(context.tenantId, async (client) => {
@@ -67,4 +75,27 @@ export async function getProjectPhotoSource(context: RequestContext, projectId: 
     "content-disposition": `inline; filename="project-photo.${photo.verified_content_type === "image/png" ? "png" : "jpg"}"`,
     "x-content-type-options": "nosniff"
   } });
+}
+
+async function getVerifiedDemoSamplePhoto(context: RequestContext, projectId: string, assetId: string) {
+  const [project, asset] = await Promise.all([
+    listCreationProjects(context).then((items) => items.find((item) => item.id === projectId)),
+    listAssets(context).then((items) => items.find((item) => item.id === assetId))
+  ]);
+  const expiresAt = asset?.expiresAt ? Date.parse(`${asset.expiresAt}T23:59:59Z`) : Number.POSITIVE_INFINITY;
+  if (!project || !asset || !project.assetIds.includes(assetId) || asset.kind !== "portrait_photo" || asset.approval !== "approved"
+    || !Number.isFinite(expiresAt) && expiresAt !== Number.POSITIVE_INFINITY || expiresAt < Date.now() || !isVerifiedStudioSamplePhoto(asset)) return null;
+  try {
+    const data = await readVerifiedStudioSampleMedia("photo");
+    return new Response(data, { headers: {
+      "cache-control": "private, no-store",
+      "content-length": String(data.byteLength),
+      "content-type": "image/png",
+      "content-disposition": "inline; filename=project-photo.png",
+      "x-content-type-options": "nosniff",
+      "x-shuziren-sample-media": "verified-4090"
+    } });
+  } catch {
+    throw new Response("Verified demo sample is unavailable", { status: 503, statusText: "verified_demo_sample_unavailable" });
+  }
 }

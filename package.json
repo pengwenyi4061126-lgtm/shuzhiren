@@ -123,7 +123,7 @@
     "runtime:overlay:test": "node scripts/run-python-test.mjs runtime/livetalking/tests/test_overlay.py",
     "prohibited-terms:test": "node --test scripts/test-prohibited-terms.mjs",
     "program:variants:test": "node --test scripts/test-script-variants.mjs",
-    "studio:content-workflow:test": "node --test scripts/test-creation-project-script.mjs apps/console/scripts/test-studio-demo-seed.mjs",
+    "studio:content-workflow:test": "node --experimental-strip-types --test scripts/test-creation-project-script.mjs apps/console/scripts/test-studio-demo-seed.mjs apps/console/scripts/test-verified-studio-sample.mjs",
     "overlay:config:test": "node --test scripts/test-overlay-config.mjs",
     "knowledge:test": "node --test scripts/test-knowledge-base.mjs"
   },

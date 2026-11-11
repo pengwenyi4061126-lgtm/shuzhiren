@@ -13,7 +13,7 @@ import { getLiveOutputRevisionDisplay } from "@/lib/shared/live-output-revision.
 import { getProductFactsStatus, type ProductFactsStatus } from "@/lib/shared/product-facts-current.mjs";
 import { isAssetCurrentlyUsable } from "@/lib/shared/asset-eligibility.mjs";
 import { clientFetch } from "@/lib/client-request";
-import { PhotoRecordingComposer } from "@/components/photo-recording-composer";
+import { PhotoRecordingComposer, type GeneratedSpeechPreview } from "@/components/photo-recording-composer";
 import { LiveAvatarPreview } from "@/components/live-avatar-preview";
 import { AssetWorkspace } from "@/components/asset-workspace";
 import { ProhibitedTermHints } from "@/components/prohibited-term-hints";
@@ -38,6 +38,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   const [assets, setAssets] = useState(initialAssets);
   const [projectId, setProjectId] = useState(firstProject?.id ?? "");
   const [recordingComposerKey, setRecordingComposerKey] = useState(0);
+  const [generatedSpeechPreview, setGeneratedSpeechPreview] = useState<GeneratedSpeechPreview | null>(null);
   const [scriptReviewEpoch, setScriptReviewEpoch] = useState(0);
   const [scriptReviewMark, setScriptReviewMark] = useState<{ epoch: number; productVersionId: string; text: string } | null>(() => firstProject?.scriptReview ? { epoch: 0, productVersionId: firstProject.scriptReview.productVersionId, text: firstProject.script } : null);
   const [projectRevision, setProjectRevision] = useState(firstProject?.revision ?? 0);
@@ -73,6 +74,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   const [avatarReviewBusy, setAvatarReviewBusy] = useState("");
   const [avatarSourceId, setAvatarSourceId] = useState("");
   const [demoSeedBusy, setDemoSeedBusy] = useState(false);
+  const [verifiedSampleSeedBusy, setVerifiedSampleSeedBusy] = useState(false);
 
   useEffect(() => {
     const dialog = assetDialog.current;
@@ -318,6 +320,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
   function startNewProject() {
     if (hasUnsavedChanges && !window.confirm("当前项目有尚未保存的更改。放弃更改并新建项目吗？")) return;
     setRecordingComposerKey((key) => key + 1);
+    setGeneratedSpeechPreview(null);
     setScriptReviewEpoch((epoch) => epoch + 1);
     setScriptReviewMark(null);
     setProjectId("");
@@ -347,6 +350,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
       const nextReviewEpoch = scriptReviewEpoch + 1;
       setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
       setRecordingComposerKey((key) => key + 1);
+      setGeneratedSpeechPreview(null);
       setScriptReviewEpoch(nextReviewEpoch);
       setScriptReviewMark(project.scriptReview ? { epoch: nextReviewEpoch, productVersionId: project.scriptReview.productVersionId, text: project.script } : null);
       setProjectId(project.id);
@@ -368,12 +372,51 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
     }
   }
 
+  async function seedVerifiedSampleProject() {
+    if (!demoMode || !canCreate || verifiedSampleSeedBusy) return;
+    setVerifiedSampleSeedBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await clientFetch("/api/v1/studio/verified-sample-seed", { method: "POST" });
+      const result = await response.json() as { data?: CreationProject; created?: boolean; error?: string };
+      if (!response.ok || !result.data) throw new Error(result.error ?? "4090 样片项目创建失败");
+      const project = result.data;
+      await refreshProjectAssets();
+      const nextReviewEpoch = scriptReviewEpoch + 1;
+      setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+      setRecordingComposerKey((key) => key + 1);
+      setGeneratedSpeechPreview(null);
+      setScriptReviewEpoch(nextReviewEpoch);
+      setScriptReviewMark(project.scriptReview ? { epoch: nextReviewEpoch, productVersionId: project.scriptReview.productVersionId, text: project.script } : null);
+      setProjectId(project.id);
+      setProjectRevision(project.revision);
+      setProjectName(project.name);
+      setGoal(project.goal);
+      setAudience(project.audience);
+      setOutput(project.outputMode);
+      setProductVersionId(project.productVersionId);
+      setAssetIds(project.assetIds);
+      setScript(project.script);
+      setCreatedRun(null);
+      setNotice(result.created === false
+        ? "4090 已验证样片已恢复；照片、样音和审核脚本保持可用。"
+        : "4090 已验证样片已载入：可直接生成录播配音与预览；直播实录证据已写入样本说明。");
+      navigateStep(1, "studio-project-step");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "4090 样片项目创建失败，请检查本地样本文件。");
+    } finally {
+      setVerifiedSampleSeedBusy(false);
+    }
+  }
+
   function selectProject(id: string) {
     if (id === projectId) return;
     const project = projects.find((item) => item.id === id);
     if (!project) { startNewProject(); return; }
     if (hasUnsavedChanges && !window.confirm("当前项目有尚未保存的更改。放弃更改并切换项目吗？")) return;
     setRecordingComposerKey((key) => key + 1);
+    setGeneratedSpeechPreview(null);
     const nextReviewEpoch = scriptReviewEpoch + 1;
     setScriptReviewEpoch(nextReviewEpoch);
     setScriptReviewMark(project.scriptReview ? { epoch: nextReviewEpoch, productVersionId: project.scriptReview.productVersionId, text: project.script } : null);
@@ -609,7 +652,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
 
     <form className={styles.layout} onSubmit={createLiveOutput}>
       <section className={styles.editor} id="studio-project-step" tabIndex={-1} onFocusCapture={() => setActiveStep(1)}>
-        <div className={styles.sectionHead}><div><span className={styles.kicker}>PROJECT</span><h2>一个内容项目</h2></div><div className={styles.projectActions}>{projects.length ? <label className={styles.projectSelect}><FolderOpen size={14} /><select aria-label="打开已保存项目" value={projectId} onChange={(event) => selectProject(event.target.value)}><option value="">新建项目</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name} · r{project.revision}</option>)}</select></label> : null}{!projects.length && demoMode ? <button className={styles.demoSeedAction} type="button" onClick={() => void seedDemoProject()} disabled={!canCreate || demoSeedBusy}><Sparkles size={14} />{demoSeedBusy ? "准备 Demo…" : "一键体验 Demo"}</button> : null}<button className={styles.newProject} type="button" onClick={startNewProject}>新建</button><span className={`${styles.projectBadge} ${hasUnsavedChanges ? styles.projectDirty : ""}`}><Clapperboard size={15} />{hasUnsavedChanges ? "有未保存更改" : projectId ? `已保存 r${projectRevision}` : "新草稿"}</span></div></div>
+        <div className={styles.sectionHead}><div><span className={styles.kicker}>PROJECT</span><h2>一个内容项目</h2></div><div className={styles.projectActions}>{projects.length ? <label className={styles.projectSelect}><FolderOpen size={14} /><select aria-label="打开已保存项目" value={projectId} onChange={(event) => selectProject(event.target.value)}><option value="">新建项目</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name} · r{project.revision}</option>)}</select></label> : null}{demoMode ? <button className={styles.demoSeedAction} type="button" onClick={() => void seedVerifiedSampleProject()} disabled={!canCreate || verifiedSampleSeedBusy} title="载入项目内置的 4090 已验证照片、样音与审核脚本"><Sparkles size={14} />{verifiedSampleSeedBusy ? "载入样片…" : "载入 4090 样片"}</button> : null}{!projects.length && demoMode ? <button className={styles.demoSeedAction} type="button" onClick={() => void seedDemoProject()} disabled={!canCreate || demoSeedBusy}><Sparkles size={14} />{demoSeedBusy ? "准备 Demo…" : "一键体验 Demo"}</button> : null}<button className={styles.newProject} type="button" onClick={startNewProject}>新建</button><span className={`${styles.projectBadge} ${hasUnsavedChanges ? styles.projectDirty : ""}`}><Clapperboard size={15} />{hasUnsavedChanges ? "有未保存更改" : projectId ? `已保存 r${projectRevision}` : "新草稿"}</span></div></div>
         {!projects.length ? <div className={styles.emptyProjectGuide} role="status"><strong>第一次使用？先载入一份完整 Demo 内容</strong><span>{demoMode ? "它会自动关联已审核商品与素材，完成脚本审核，让你直接查看录播与直播两个输出。" : "填写商品、素材和脚本后保存，即可进入录播或直播输出。"}</span></div> : null}
         <label className={styles.field}>项目名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder={selected?.product.name ?? "例：周末护肤专题"} /></label>
         <label className={styles.field}>商品与已审核事实<select value={productVersionId} onChange={(event) => { setProductVersionId(event.target.value); setScript(""); setScriptReviewEpoch((epoch) => epoch + 1); setScriptReviewMark(null); }} disabled={!versions.length}>{versions.map(({ product, version }) => <option key={version.id} value={version.id}>{product.name} · v{version.revision} · 已审核{getProductFactsStatus(version.facts) !== "current" ? " · 需更新" : ""}</option>)}</select></label>
@@ -671,7 +714,7 @@ export function StudioWorkspace({ products, channels, assets: initialAssets, ini
             </div>;
           })}
         </div> : null}
-        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>照片 + 口播字幕 + 已审核商品名、价格与卖点</small></span></div><PhotoRecordingComposer key={`${recordingComposerKey}:${projectId}`} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} voiceAssets={assets.filter((asset) => asset.kind === "voice" && isAssetCurrentlyUsable(asset) && activeAssetIds.includes(asset.id) && asset.runtimeVoiceId && /^sha256:[a-f0-9]{64}$/i.test(asset.checksum)).map(({ id, name, runtimeVoiceId, checksum }) => ({ id, name, runtimeVoiceId: runtimeVoiceId!, checksum }))} selectedPhotoIds={activeAssetIds} script={currentScript} projectName={projectName || selected?.product.name || "内容项目"} productName={selected?.product.name ?? ""} productPriceCent={facts?.priceCent ?? -1} productHighlights={facts?.highlights ?? []} projectId={projectId} productVersionId={productVersionId} onEnsureProject={persistProject} onRecordingSaved={(result) => setRecordingOutputState((current) => ({ projectId, count: current.count + Number(result.localSaved), serverCount: result.serverArchived ? (current.projectId === projectId ? (current.serverCount ?? 0) + 1 : 1) : current.serverCount }))} canCreate={canCreate && factsCurrent && scriptReviewed && !scriptReviewBusy} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
+        {(output === "recording" || output === "both") ? <><div className={styles.outputRow}><span className={styles.outputIcon}><Clapperboard size={18} /></span><span><strong>照片播报视频</strong><small>照片 + 口播字幕 + 已审核商品名、价格与卖点</small></span></div>{/* Persisting a new project assigns an id; that must not discard an in-flight speech preview. Deliberate project switches increment recordingComposerKey. */}<PhotoRecordingComposer key={recordingComposerKey} photos={projectPhotos.map(({ id, name, checksum }) => ({ id, name, checksum }))} voiceAssets={assets.filter((asset) => asset.kind === "voice" && isAssetCurrentlyUsable(asset) && activeAssetIds.includes(asset.id) && asset.runtimeVoiceId && /^sha256:[a-f0-9]{64}$/i.test(asset.checksum)).map(({ id, name, runtimeVoiceId, checksum }) => ({ id, name, runtimeVoiceId: runtimeVoiceId!, checksum }))} selectedPhotoIds={activeAssetIds} script={currentScript} projectName={projectName || selected?.product.name || "内容项目"} productName={selected?.product.name ?? ""} productPriceCent={facts?.priceCent ?? -1} productHighlights={facts?.highlights ?? []} projectId={projectId} productVersionId={productVersionId} onEnsureProject={persistProject} onRecordingSaved={(result) => setRecordingOutputState((current) => ({ projectId, count: current.count + Number(result.localSaved), serverCount: result.serverArchived ? (current.projectId === projectId ? (current.serverCount ?? 0) + 1 : 1) : current.serverCount }))} generatedSpeechPreview={generatedSpeechPreview} onGeneratedSpeechPreviewChange={setGeneratedSpeechPreview} canCreate={canCreate && factsCurrent && scriptReviewed && !scriptReviewBusy} /><div className={styles.outputRow}><span className={styles.outputIcon}><FileText size={17} /></span><span><strong>录播制作包</strong><small>项目简报与共享脚本 Markdown</small></span><button type="button" className={styles.iconAction} aria-label="导出录播制作包" title="导出录播制作包" onClick={downloadRecordingPack}><ArrowDownToLine size={17} /></button></div></> : null}
         {(output === "live" || output === "both") ? <>
           <label className={styles.field}>直播渠道<select value={channelId} onChange={(event) => setChannelId(event.target.value)} disabled={!connectedChannels.length}>{connectedChannels.map((channel: ChannelConnection) => <option value={channel.id} key={channel.id}>{channel.name} · {channel.outputProtocol.toUpperCase()}</option>)}</select></label>
           <label className={styles.field}>计划开播时间 <span className={styles.optional}>可稍后排期</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>

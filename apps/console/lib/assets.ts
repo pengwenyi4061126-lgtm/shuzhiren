@@ -4,6 +4,7 @@ import { databasePool, withTenantTransaction } from "@/lib/database";
 import { recordAuditEvent, recordAuditEventInTransaction, type AuditEventInput } from "@/lib/audit";
 import { quarantineLiveRunsForRevocationInTransaction, type GovernanceQuarantineImpact } from "@/lib/control-plane/governance-quarantine";
 import { verifyMediaAssetContent, type MediaContentVerification } from "@/lib/media-evidence";
+import { verifiedStudioSamplePhoto, verifiedStudioSampleVoice } from "@/lib/verified-studio-sample";
 import { preferProjectLiveAssets } from "@/lib/shared/live-asset-selection.mjs";
 
 export type AssetKind = "portrait" | "portrait_photo" | "voice" | "product_clip" | "music" | "overlay_background";
@@ -56,16 +57,30 @@ type BoundAssetRow = Pick<PersistentAssetRow, "kind" | "name" | "approval_status
 declare global { var shuzhirenAssetStore: AssetStore | undefined; }
 
 const demoPortraitPhoto: MediaAsset = { id: "asset_portrait_photo_demo", tenantId: "tenant_demo", kind: "portrait_photo", name: "录播照片形象参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "照片播报录播制作", source: "授权书 #POR-PHOTO-2026-001", objectKey: "demo/portrait.jpg", checksum: "demo-portrait-photo", contentVerification: { objectVersion: "demo", bytes: 1, contentType: "image/jpeg", evidenceRef: "demo://media-evidence", verifiedAt: "2026-11-01T08:30:00.000Z" }, approvedAt: "2026-11-01T08:30:00.000Z" };
+const verifiedDemoSamplePhoto: MediaAsset = {
+  id: verifiedStudioSamplePhoto.assetId, tenantId: "tenant_demo", kind: "portrait_photo", name: "4090 已验证数字人照片样本", approval: "approved", expiresAt: "2027-10-31",
+  rightsScope: "开发态录播制作与内部质量验收", source: "项目内置虚构 AI 数字人样本", objectKey: verifiedStudioSamplePhoto.objectKey, checksum: verifiedStudioSamplePhoto.checksum,
+  contentVerification: { objectVersion: verifiedStudioSamplePhoto.objectVersion, bytes: verifiedStudioSamplePhoto.bytes, contentType: verifiedStudioSamplePhoto.contentType, evidenceRef: verifiedStudioSamplePhoto.evidenceRef, verifiedAt: "2026-11-11T07:51:00.000Z" }, approvedAt: "2026-11-11T07:51:00.000Z"
+};
+const verifiedDemoSampleVoice: MediaAsset = {
+  id: verifiedStudioSampleVoice.assetId, tenantId: "tenant_demo", kind: "voice", name: "4090 CosyVoice 声线样本", approval: "approved", expiresAt: "2027-10-31",
+  rightsScope: "开发态录播配音与 4090 试播验收", source: "LiveTalking / CosyVoice 已冻结声线 p0-test-voice", objectKey: verifiedStudioSampleVoice.objectKey, checksum: verifiedStudioSampleVoice.runtimeChecksum, runtimeVoiceId: verifiedStudioSampleVoice.runtimeVoiceId,
+  contentVerification: { objectVersion: verifiedStudioSampleVoice.objectVersion, bytes: 1, contentType: verifiedStudioSampleVoice.contentType, evidenceRef: "evidence:runtime/p0-test-voice", verifiedAt: "2026-11-11T07:51:00.000Z" }, approvedAt: "2026-11-11T07:51:00.000Z"
+};
 
 function assetStore(): AssetStore {
   globalThis.shuzhirenAssetStore ??= { assets: new Map([
     ["asset_portrait_demo", { id: "asset_portrait_demo", tenantId: "tenant_demo", kind: "portrait", name: "主播肖像授权素材", approval: "approved", expiresAt: "2027-10-31", rightsScope: "直播与录播数字人驱动", source: "授权书 #POR-2026-001", objectKey: "demo/portrait.mp4", checksum: "demo-portrait", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_portrait_photo_demo", demoPortraitPhoto],
     ["asset_voice_demo", { id: "asset_voice_demo", tenantId: "tenant_demo", kind: "voice", name: "主播声线参考", approval: "approved", expiresAt: "2027-10-31", rightsScope: "中文直播语音合成", source: "授权书 #VOC-2026-004", objectKey: "demo/voice.wav", checksum: "sha256:9b1f0c6c3d2a4e5f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f", runtimeVoiceId: "approved_voice_demo", approvedAt: "2026-11-01T08:30:00.000Z" }],
+    [verifiedDemoSamplePhoto.id, verifiedDemoSamplePhoto],
+    [verifiedDemoSampleVoice.id, verifiedDemoSampleVoice],
     ["asset_clip_a102", { id: "asset_clip_a102", tenantId: "tenant_demo", kind: "product_clip", name: "洁面慕斯预制讲品", approval: "approved", rightsScope: "A-102 商品讲解", source: "内容审核 #CLP-2026-019", objectKey: "demo/a102.mp4", checksum: "demo-clip", approvedAt: "2026-11-01T08:30:00.000Z" }],
     ["asset_bgm_demo", { id: "asset_bgm_demo", tenantId: "tenant_demo", kind: "music", name: "直播间背景音乐", approval: "approved", expiresAt: "2027-03-31", rightsScope: "店播背景音乐", source: "音乐授权 #MUS-2026-011", objectKey: "demo/bgm.mp3", checksum: "demo-music", approvedAt: "2026-11-01T08:30:00.000Z" }]
   ]) };
   if (!globalThis.shuzhirenAssetStore.assets.has(demoPortraitPhoto.id)) globalThis.shuzhirenAssetStore.assets.set(demoPortraitPhoto.id, demoPortraitPhoto);
+  if (!globalThis.shuzhirenAssetStore.assets.has(verifiedDemoSamplePhoto.id)) globalThis.shuzhirenAssetStore.assets.set(verifiedDemoSamplePhoto.id, verifiedDemoSamplePhoto);
+  if (!globalThis.shuzhirenAssetStore.assets.has(verifiedDemoSampleVoice.id)) globalThis.shuzhirenAssetStore.assets.set(verifiedDemoSampleVoice.id, verifiedDemoSampleVoice);
   return globalThis.shuzhirenAssetStore;
 }
 
