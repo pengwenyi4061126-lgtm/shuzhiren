@@ -5892,7 +5892,7 @@ skipped 步骤数: "0"
     日期: 2026-11-11
     退出码: "0"
     操作系统: Windows 10.0.22631.7376
-    提交: 51d1b7846331b0527917313e37675f32e1d1a2cb
+    提交: 4ecb29bbf7cb6e493b345eb71c3692d89d6685cd
     未执行的 CI 检查: [无]
     检查:
       - { 名称: douyin-adapter:test, 结果: success, 标签: behavioral }
